@@ -95,6 +95,16 @@ def _iter_members(self) -> Iterator[Member]: ...         # sequential, metadata 
 
 @abstractmethod
 def _open_member(self, member: Member) -> BinaryIO: ...  # raw data stream (no link following)
+                                                          # may use internal caching
+
+def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
+    # Default: naive — calls _open_member() for each member.
+    # For non-solid formats (ZIP, TAR, GZ) this is fine: no caching, no buffering.
+    # Backends with solid archives MUST override this for bounded memory:
+    #   SevenZReader: extract one folder at a time, yield its files, release before next.
+    #   RarReader (solid): run unrar once to tmpdir, yield from files, delete tmpdir after.
+    for member in self._iter_members():
+        yield member, self._open_member(member)
 
 def _get_member_by_name(self, name: str) -> Member:      # optional override
     # default: linear scan of _iter_members() — backends with indexes override this
@@ -113,9 +123,14 @@ def open(self, member: str | Member, _depth: int = 0) -> BinaryIO:
             raise ReadError(f"Link target '{member.link_target}' not in archive")
         return self.open(target, _depth=_depth + 1)
     return self._open_member(member)
+
+def stream_members(self) -> Iterator[tuple[Member, BinaryIO]]:
+    return self._iter_with_data()
 ```
 
-Everything else (`__iter__`, `__getitem__`, `read`, `open`, `extract`, `extract_all`, `members`) is implemented once in the ABC. Efficiency for solid archives is achieved in `_open_member()` itself via caching, not via a special iteration API.
+`add_members()` in `ArchiveWriter` calls `reader.stream_members()` so conversions always take the bounded-memory path.
+
+Everything else (`__iter__`, `__getitem__`, `read`, `open`, `stream_members`, `extract`, `extract_all`, `members`) is implemented once in the ABC.
 
 ### 2.4 Lazy member materialization
 
@@ -542,67 +557,104 @@ py7zr's push model (`extract(factory=...)`) and the solid block problem are hand
 - Files in the same solid block share the same `Folder` instance (object identity, not an index).
 - `SubstreamsInfo.num_unpackstreams_folders[i]` gives file count per folder.
 
-**`_open_member()` design:**
+**`_open_member()` — lazy folder cache (monotonic memory):**
 ```python
 def _open_member(self, member: Member) -> BinaryIO:
     name = member.original_name
     folder = self._file_info_map[name]["folder"]
 
     if folder not in self._folder_cache:
-        # Extract ALL files in this solid block at once
         targets = [fi["filename"] for fi in folder.files]
         class BlockFactory(py7zr.WriterFactory):
             def create(inner_self, fn):
                 spooled = tempfile.SpooledTemporaryFile(max_size=64 << 20)
-                self._folder_cache_staging[fn] = spooled
+                self._folder_cache[folder][fn] = spooled   # written into permanent cache
                 return _Py7zIOAdapter(spooled)
-        
+        self._folder_cache[folder] = {}
         self._sz.extract(targets=targets, factory=BlockFactory())
-        self._sz.reset()                            # required before next extraction
-        self._folder_cache[folder] = {              # promote staging → permanent
-            fn: buf for fn, buf in self._folder_cache_staging.items()
-        }
-        self._folder_cache_staging.clear()
+        self._sz.reset()   # required before next extraction
 
     buf = self._folder_cache[folder][name]
     buf.seek(0)
     return buf
 ```
 
-Result: first `open()` for any member in a block pays O(block_decompression). All subsequent `open()` calls for members in the same block are O(1). Sequential `for member in ar: ar.open(member)` is O(number_of_solid_blocks) total.
+First `open()` for any member in a folder pays O(folder_decompression). All subsequent calls to the same folder are O(1). Cache entries accumulate until `close()` — memory grows with the number of distinct folders accessed.
 
-**`_Py7zIOAdapter`** adapts `SpooledTemporaryFile` to the `Py7zIO` interface. It must be seekable (py7zr calls `seek(0)` after writing as a final rewind; it never reads back).
+**`_iter_with_data()` — folder-by-folder, bounded memory:**
+```python
+def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
+    for folder in self._folders:
+        targets = [fi["filename"] for fi in folder.files]
+        folder_bufs: dict[str, SpooledTemporaryFile] = {}
 
-**`_iter_members()`** is pure metadata: calls `sz.list()` which reads the pre-parsed header. O(1), no decompression.
+        class FolderFactory(py7zr.WriterFactory):
+            def create(inner_self, fn):
+                spooled = tempfile.SpooledTemporaryFile(max_size=64 << 20)
+                folder_bufs[fn] = spooled
+                return _Py7zIOAdapter(spooled)
+
+        self._sz.extract(targets=targets, factory=FolderFactory())
+        self._sz.reset()
+
+        for fi in folder.files:
+            member = self._member_map[fi["filename"]]
+            buf = folder_bufs[fi["filename"]]
+            buf.seek(0)
+            yield member, buf
+
+        # folder_bufs goes out of scope here → GC releases SpooledTemporaryFiles
+        # Peak memory = size of the largest single folder
+```
+
+**`_Py7zIOAdapter`** adapts `SpooledTemporaryFile` to the `Py7zIO` interface. Must be seekable — py7zr calls `seek(0)` after writing as a final rewind; it never reads back.
+
+**`_iter_members()`** is pure metadata: calls `sz.list()`, O(1), no decompression.
 
 ### 7.4 RAR backend — one-shot extraction for solid archives
 
 rarfile has a critical limitation: `extractall()` does **not** run `unrar` once for all files — it calls `open()` per file, spawning a separate subprocess each time. For solid archives, each subprocess re-processes the full archive. This is O(N) subprocess invocations, each doing O(archive_size) work.
 
-**Fix: bypass rarfile's extraction for solid archives and invoke `unrar` directly.**
-
+**`_open_member()` — solid cache persists until `close()`:**
 ```python
+def _open_member(self, member: Member) -> BinaryIO:
+    if not self._is_solid:
+        return self._rf.open(member.original_name)   # rarfile's hack, efficient
+    self._ensure_solid_cache()                        # runs unrar x once, lazy
+    return open(self._solid_cache_dir / member.name, 'rb')
+
 def _ensure_solid_cache(self):
     if self._solid_cache_dir is not None:
         return
     self._solid_cache_dir = Path(tempfile.mkdtemp())
     setup = rarfile.tool_setup()
-    cmd = [setup._unrar_tool, 'e', '-inul', '-r',
+    cmd = [setup._unrar_tool, 'x', '-inul',
            f'-p{self._password}' if self._password else '-p-',
            str(self._path), str(self._solid_cache_dir) + os.sep]
     subprocess.run(cmd, check=True)
-
-def _open_member(self, member: Member) -> BinaryIO:
-    if self._is_solid:
-        self._ensure_solid_cache()
-        # unrar 'e' flattens paths; members with the same basename need 'x' mode
-        # Use 'x' instead to preserve relative paths
-        return open(self._solid_cache_dir / member.name, 'rb')
-    else:
-        return self._rf.open(member.original_name)   # rarfile's hack is efficient here
 ```
 
-`_solid_cache_dir` is cleaned up in `close()` via `shutil.rmtree`. Disk space = uncompressed archive size.
+(`x` preserves relative paths; `e` flattens — we need `x` to avoid name collisions.)
+
+`_solid_cache_dir` is cleaned up in `close()`. Disk persists for the archive's lifetime.
+
+**`_iter_with_data()` — solid RAR, disk freed early:**
+```python
+def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
+    if not self._is_solid:
+        yield from super()._iter_with_data()   # default: open() per member
+        return
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        setup = rarfile.tool_setup()
+        subprocess.run([setup._unrar_tool, 'x', '-inul', ...], check=True)
+        for member in self._iter_members():
+            yield member, open(tmpdir / member.name, 'rb')
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+```
+
+Both paths run `unrar` exactly once. The distinction is lifetime: `_open_member()`'s cache persists until `close()`; `_iter_with_data()`'s tmpdir is cleaned up when the `stream_members()` loop ends (via the `finally` block in the generator, triggered by `close()` on the iterator).
 
 **`unrar e` vs `unrar x`:** `e` flattens to a single directory; `x` preserves paths. We use `x` to avoid name collisions. The command is built from rarfile's `tool_setup()` to respect any user-configured tool path.
 

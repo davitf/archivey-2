@@ -94,6 +94,13 @@ class ArchiveReader:
     def read(self, member: str | Member) -> bytes: ...
     def open(self, member: str | Member) -> BinaryIO: ...   # streaming; caller must close
 
+    # --- Sequential streaming (bounded memory) ---
+    # Yields (member, stream) pairs in archive order.
+    # For solid archives (7z, RAR), each solid block is decompressed once
+    # and its memory released before the next block starts.
+    # The stream is only valid until the iterator advances; do not hold it across yields.
+    def stream_members(self) -> Iterator[tuple[Member, BinaryIO]]: ...
+
     # --- Extraction helpers (delegates to archivey.extract internals) ---
     def extract(
         self,
@@ -121,7 +128,14 @@ class ArchiveReader:
 
 **Constraint:** calling `__getitem__`, `get`, or random `extract` on a reader opened with `Intent.SEQUENTIAL` raises `UnsupportedOperationError` unless the backend can satisfy it cheaply (e.g. the archive has an in-memory index already loaded).
 
-**Efficiency guarantee:** Calling `open()` or `read()` on members during sequential `__iter__` must not trigger more than O(solid_blocks) total decompression passes for formats with solid archives (7z, RAR). Concretely: iterating N members of a solid 7z archive must not run decompression N times. The backend achieves this via internal per-solid-block caching (see §10.4 and §10.5). No special iteration method is needed; the standard `for member in ar: ar.open(member)` pattern is efficient by design.
+**Two sequential access patterns — different memory profiles:**
+
+| Pattern | Memory profile | When to use |
+|---------|---------------|-------------|
+| `for m in ar: ar.open(m)` | Monotonically growing — each solid block is extracted into a cache that persists until `close()`. Peak = sum of all solid blocks accessed. | Random or mixed access; when you may revisit members. |
+| `for m, f in ar.stream_members()` | Bounded — each solid block is extracted, yielded, then released before the next starts. Peak = largest single solid block. | Sequential one-pass processing: hashing, conversion, scanning. |
+
+For formats without solid compression (ZIP, TAR, plain .gz), both patterns are equally efficient — there is no caching in either path.
 
 **Link following:** `open()` and `read()` transparently follow symlinks and hardlinks that point to other members in the same archive. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to `open(reader[member.link_target])`. If the link target is not present in the archive, `ReadError` is raised. If the link target itself is a link, it is followed recursively up to a maximum depth of 8 (beyond which `ReadError` is raised to prevent cycles). This behavior is format-independent and is implemented once in the `ArchiveReader` ABC — it does not rely on format-level link resolution (e.g. rarfile follows RAR5 hardlinks internally; our layer handles the remaining cases).
 
@@ -644,7 +658,9 @@ This gives O(1) decompression passes per solid block regardless of access patter
 
 Folder-to-file mapping is available from py7zr internals: each `FileInfo` dict has a `"folder"` key pointing to its `Folder` object; files in the same solid block share the same `Folder` instance. `SubstreamsInfo.num_unpackstreams_folders[i]` gives the file count per folder.
 
-**`_open_member()` implementation:** check `_folder_cache[folder]`; on miss, call `sz.extract(targets=all_files_in_folder, factory=SpooledFactory()); sz.reset()`; on hit, `buf.seek(0); return buf`.
+**`_open_member()` — lazy folder cache:** check `_folder_cache[folder]`; on miss, call `sz.extract(targets=all_files_in_folder, factory=SpooledFactory()); sz.reset()`; on hit, `buf.seek(0); return buf`. Cache entries are never evicted — memory grows until `close()`.
+
+**`_iter_with_data()` — bounded memory path:** iterates folders one at a time. Extracts one folder, yields all its members with streams, then drops the folder's `SpooledTemporaryFile`s before moving to the next folder. Used by `stream_members()`.
 
 **Solid blocks in CostReceipt:** `solid_block_count` from `archiveinfo().blocks`. `is_solid` from `archiveinfo().solid`.
 
@@ -677,7 +693,9 @@ Folder-to-file mapping is available from py7zr internals: each `FileInfo` dict h
 
 **Non-solid RAR:** uses `rarfile.open()` directly (the hack path, per-file subprocess, O(member_size)).
 
-**No solid block boundary API.** rarfile does not expose which files belong to the same compression block. The hack/no-hack split is binary per archive, not per block.
+**No solid block boundary API.** rarfile does not expose which files belong to the same compression block. The solid/non-solid split is binary per archive, not per block.
+
+**`_iter_with_data()` — solid RAR bounded path:** same one-shot `unrar x` extraction as `_open_member()` uses, but the tmpdir cleanup happens at the end of `stream_members()` iteration rather than at `close()`. For `_open_member()`, the cache persists; for `_iter_with_data()`, disk is freed as soon as the caller finishes iterating. In practice both paths run `unrar` once, so the distinction is about disk lifetime, not subprocess count.
 
 **RAR4 vs RAR5 timestamp handling:**
 - RAR4: stores local wall-clock time → naive `datetime`.
@@ -819,24 +837,25 @@ with archivey.open("archive.tar.gz") as ar:
 
 ### 15.2 Computing file hashes without writing to disk
 
-The standard iterator with `open()` is all you need. The library handles solid archive efficiency internally.
+Use `stream_members()` — it yields `(member, stream)` pairs in a single pass with bounded memory. Each solid block is decompressed once and released before the next starts.
 
 ```python
 import archivey
 import hashlib
 
 with archivey.open("archive.7z") as ar:
-    for member in ar:
+    for member, f in ar.stream_members():
         if member.type != archivey.MemberType.FILE:
             continue
         h = hashlib.sha256()
-        with ar.open(member) as f:
-            while chunk := f.read(65536):
-                h.update(chunk)
+        while chunk := f.read(65536):
+            h.update(chunk)
         print(f"{h.hexdigest()}  {member.name}")
 ```
 
-This pattern works correctly and efficiently across all formats. For solid 7z archives, the backend decompresses each solid block exactly once — subsequent `open()` calls for files in the same block are served from an internal cache. For solid RAR archives, the backend runs `unrar` once on first access and caches to disk. The caller writes no code to handle these cases.
+The same pattern works for any per-file sequential processing: MIME-type sniffing, line counting, full-text indexing, virus scanning.
+
+`ar.open(member)` in a `for member in ar` loop also works and is correct, but for solid archives it holds all previously-extracted block data in memory until `close()`. Use `open()` when you need random access or may revisit members; use `stream_members()` when you're doing a single sequential pass.
 
 ### 15.3 Opening a symlink or hardlink
 
@@ -868,18 +887,20 @@ If a link's target is not present in the archive (e.g. an external symlink), `op
 ```python
 import archivey
 
-# Convert tar.gz to zip — streams member data directly, no buffering of full archive
+# Convert tar.gz to zip — add_members() uses stream_members() internally
 with archivey.open("input.tar.gz") as reader, \
      archivey.create("output.zip") as writer:
     writer.add_members(reader)
 
-# You can filter during conversion:
+# Filter during conversion — explicit stream_members() loop:
 with archivey.open("input.tar.gz") as reader, \
      archivey.create("output.zip") as writer:
-    for member, stream in reader.iter_with_data():
+    for member, stream in reader.stream_members():
         if member.name.endswith(".py"):
             writer.add_stream(stream, name=member.name, modified=member.modified)
 ```
+
+`add_members()` internally calls `reader.stream_members()`, so it gets the bounded-memory path for solid archives automatically.
 
 ### 15.5 Checking the cost receipt before committing
 
@@ -889,11 +910,11 @@ from archivey import AccessCost
 
 with archivey.open("mystery.7z") as ar:
     if ar.cost.access_cost == AccessCost.SOLID:
-        # Solid: sequential iteration is efficient (backend caches per block).
-        # Random access still works but triggers per-block decompression on cache miss.
-        print(f"Solid archive: {ar.cost.solid_block_count} block(s). Iterating sequentially.")
-        for member in ar:
-            process(member, ar.open(member))
+        # Solid archive: use stream_members() for bounded memory.
+        # Random access via open() works but cache grows until close().
+        print(f"Solid: {ar.cost.solid_block_count} block(s). Using stream_members().")
+        for member, stream in ar.stream_members():
+            process(member, stream)
     else:
         # Direct access — jump to any member cheaply
         for name in interesting_names:
