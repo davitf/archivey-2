@@ -88,9 +88,8 @@
    - Raises `UnsupportedFormatError` with install hint when optional backend is detected but unavailable.
 
 3. **`src/archivey/_reader.py`** — `ArchiveReader` ABC:
-   - Implements all public methods in terms of `_iter_members()`, `_open_member()`, and `_iter_with_data()`.
+   - Implements all public methods in terms of `_iter_members()` and `_open_member()`.
    - `open()` and `read()` add link-following on top of `_open_member()` (cycle guard, max depth 8).
-   - Default `_iter_with_data()`: yields `(member, self._open_member(member))` — backends override for efficiency.
    - Lazy materialization cache with Sequential guard.
    - `__enter__`/`__exit__` delegates to `close()`.
 
@@ -300,24 +299,25 @@
 ### Tasks
 
 1. **`src/archivey/backends/_7z.py`** (`[7z]` extra → `py7zr`):
-   - **No streaming pull API exists in py7zr**: only `extract(targets=[...], factory=WriterFactory)` and `extractall(factory=WriterFactory)`. Must call `sz.reset()` between extractions.
-   - `SevenZReader._iter_members()`: `py7zr.SevenZipFile.list()` — cheap, metadata only.
-   - Map `py7zr.FileInfo` → `Member`: compression from `archiveinfo().method_names`.
-   - `_open_member()`: `sz.extract(targets=[name], factory=SpooledFactory); sz.reset()`. `SpooledFactory.create()` returns a `SpooledTemporaryFile(max_size=64*1024*1024)`. The factory sink is seekable (required: py7zr calls `seek(0)` after writing, though never reads back).
-   - `_iter_with_data()` override: one `sz.extractall(factory=...)` call, yields `(Member, spooled)` pairs. O(1) decompression passes for all members.
+   - `SevenZReader._iter_members()`: `py7zr.SevenZipFile.list()` — cheap, metadata only from pre-parsed header.
+   - Map `py7zr.FileInfo` → `Member`: extract `"folder"` reference for caching; compression from `archiveinfo().method_names`/`Folder.coders`.
+   - `_open_member()`: implements lazy per-folder caching.
+     - Check `self._folder_cache[file_info["folder"]]`.
+     - On cache miss: extract all files in that folder via `sz.extract(targets=folder_files, factory=SpooledFactory()); sz.reset()`.
+     - `SpooledFactory.create()` returns `_Py7zIOAdapter(SpooledTemporaryFile(max_size=64<<20))`. Must be seekable (py7zr calls `seek(0)` after write; does not read back).
+     - On cache hit: `buf.seek(0); return buf`.
    - `CostReceipt`: `solid_block_count` from `archiveinfo().blocks`; `is_solid` from `archiveinfo().solid`.
-   - `notes` in `CostReceipt`: *"Each _open_member() on a solid archive re-decompresses the full solid block. Use iter_with_data() for sequential access."*
    - `SevenZWriter`: use `py7zr.SevenZipFile(mode='w')` with `writef()` and `writestr()`.
 
 2. **`src/archivey/backends/_rar.py`** (`[rar]` extra → `rarfile` + system `unrar`):
-   - `rarfile` DOES have `open(name) -> RarExtFile (RawIOBase)` — pull model, returns seekable stream.
    - `RarReader._iter_members()`: `rarfile.RarFile.infolist()` — O(1), central dir parsed upfront.
    - Timestamp: RAR4 `ftime` → naive datetime; RAR5 `mtime` → timezone-aware UTC datetime.
-   - `_open_member()`: `rarfile.RarFile.open(member.original_name)`. For non-solid archives this is efficient (mini-archive hack). For solid archives this reruns `unrar` on the full file.
-   - `_iter_with_data()` override for solid archives: `rarfile.extractall(path=tmpdir)` runs unrar once; yield `(Member, open(tmpdir/name, 'rb'))` pairs; clean up tmpdir on close.
-   - `CostReceipt.notes` for solid: *"Each open() reruns unrar on the full archive. Use iter_with_data() for sequential processing."*
+   - `_open_member()`:
+     - **Non-solid**: `rarfile.RarFile.open(member.original_name)` — uses rarfile's mini-archive hack, O(member_size).
+     - **Solid**: `self._ensure_solid_cache()` on first call runs `unrar x -inul archive.rar destdir/` via `subprocess.run` (one invocation); subsequent calls return `open(cache_dir / member.name, 'rb')`. Cache cleaned up on `close()`.
+   - Tool binary discovered via `rarfile.tool_setup()` — respects user-configured tool path.
+   - Handle missing binary: catch `rarfile.RarCannotExec` → `UnsupportedFormatError` with install hint.
    - `SUPPORTS_WRITE = False` — raise `UnsupportedOperationError` on write attempt.
-   - Handle missing `unrar` binary: catch `rarfile.RarCannotExec` → `UnsupportedFormatError` with install hint.
 
 3. **`src/archivey/backends/_iso.py`** (`[iso]` extra → `pycdlib`):
    - `IsoReader._iter_members()`: walk `pycdlib.PyCdlib` with Rock Ridge → Joliet → Plain priority.
@@ -333,13 +333,13 @@
 
 5. **Tests `test_7z.py`**, **`test_rar.py`**, **`test_iso.py`**, **`test_dir.py`**:
    - Each uses `pytest.importorskip()` to skip if optional dep absent.
-   - Standard read/iterate/extract cycle.
+   - Standard read/iterate/extract cycle via normal `for member in ar: ar.open(member)`.
    - Format-specific quirks (solid blocks, RAR4/5 timestamps, ISO namespaces).
-   - **7z**: verify `_open_member()` buffers correctly; verify `_iter_with_data()` does exactly one `extractall()` call (mock `py7zr.SevenZipFile` to count calls).
-   - **RAR solid**: verify `_iter_with_data()` runs unrar once for all members; verify `CostReceipt.notes` is populated.
+   - **7z solid**: mock `py7zr.SevenZipFile.extract` to count calls; assert that iterating N members in one solid block calls it exactly once (first access), then cache hits for the rest.
+   - **RAR solid**: mock `subprocess.run` to count invocations; assert exactly one `unrar x` call for iterating all members.
 
 6. **Tests for sample usage patterns** (`test_patterns.py`):
-   - Hash-all-files via `iter_with_data()`: verify correctness and that solid 7z uses one pass.
+   - Hash-all-files via normal iteration: `for member in ar: hash(ar.open(member))` — verify correctness.
    - `open(symlink_member)` follows link transparently: test with TAR, ZIP symlinks.
    - `open(hardlink_member)` follows hardlink transparently: test with TAR hardlinks.
    - Link cycle in archive: verify `ReadError` raised after depth limit.
@@ -446,3 +446,7 @@ These are design points that should be discussed before implementation:
 7. **Streaming ZIP write without spooling**: Python's `ZipFile.open(name, 'w')` (3.6+) writes data descriptors, so we don't need to pre-compute CRC. But `zipfile` doesn't expose a streaming interface for very large members. Should we detect member size > threshold and use a different approach?
 
 8. **Directory backend write**: Should `archivey.create(dest, ArchiveFormat.DIRECTORY)` be a "writer" that just copies files to a directory? This makes the conversion pipeline symmetric and useful for "unarchive everything to a directory" workflows.
+
+9. **Custom streaming 7z reader (v2 item)**: The py7zr wrapper caches per solid block in `SpooledTemporaryFile`. For archives with very large solid blocks (e.g. a single 2 GiB solid block), this means buffering 2 GiB. A native streaming reader using py7zr's `archiveinfo.py` header parser + stdlib `lzma.LZMADecompressor` + the `bcj` C extension would give true streaming with no buffering. Should this be planned as an optional `[7z-native]` extra backend in v2, or is the SpooledTemporaryFile approach acceptable indefinitely?
+
+10. **Solid RAR disk requirement**: The one-shot `unrar x` approach requires disk space equal to the uncompressed archive size. For read-only inspection (e.g. listing hashes), this is wasteful. Is there a use case where the disk requirement is a problem? If so, a streaming stdin-pipe approach (piping `unrar p` output to a demultiplexer) is theoretically possible but complex to implement correctly.

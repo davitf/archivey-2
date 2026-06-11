@@ -96,13 +96,6 @@ def _iter_members(self) -> Iterator[Member]: ...         # sequential, metadata 
 @abstractmethod
 def _open_member(self, member: Member) -> BinaryIO: ...  # raw data stream (no link following)
 
-def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
-    # Default: yield (m, self._open_member(m)) for m in self._iter_members()
-    # Backends override this for efficiency:
-    #   - SevenZReader: one extractall() call, yield as data arrives
-    #   - RarReader (solid): one extractall(path=tmpdir) call, yield from files
-    ...
-
 def _get_member_by_name(self, name: str) -> Member:      # optional override
     # default: linear scan of _iter_members() — backends with indexes override this
 ```
@@ -122,7 +115,7 @@ def open(self, member: str | Member, _depth: int = 0) -> BinaryIO:
     return self._open_member(member)
 ```
 
-Everything else (`__iter__`, `__getitem__`, `read`, `open`, `iter_with_data`, `extract`, `extract_all`, `members`) is implemented once in the ABC.
+Everything else (`__iter__`, `__getitem__`, `read`, `open`, `extract`, `extract_all`, `members`) is implemented once in the ABC. Efficiency for solid archives is achieved in `_open_member()` itself via caching, not via a special iteration API.
 
 ### 2.4 Lazy member materialization
 
@@ -474,6 +467,41 @@ A future `archivey.asyncio` module using async generators is a clean add-on.
 - 1000:1 is extremely generous (typical DEFLATE is 3:1 to 10:1; text compresses to maybe 20:1). Even 42.zip's outer layer reaches ~391:1. This catches pathological ratios while not triggering on legitimate very-compressible data.
 - Both are caller-configurable via `extract(..., max_extracted_bytes=..., max_ratio=...)`.
 
+### 5.6 py7zr wrapper vs custom streaming 7z reader
+
+**Decision (v1):** use `py7zr` with lazy per-folder caching.
+
+**The limitation:** py7zr is a push-based API with no streaming pull. The caching approach buffers each solid block (in memory or spooled to disk). For archives with very large solid blocks, peak memory/disk could be significant.
+
+**The alternative — custom streaming reader.** A custom 7z reader could give true pull-based streaming with no per-block buffering:
+
+```
+fold the compressed folder stream → lzma.LZMADecompressor → 
+  read exactly file_0.uncompressed_size bytes → yield as file_0 stream →
+  read exactly file_1.uncompressed_size bytes → yield as file_1 stream →
+  ...
+```
+
+This is architecturally feasible because:
+- py7zr's `archiveinfo.py` header parser (1156 lines) is self-contained and importable directly.
+- LZMA2 is implemented via Python's stdlib `lzma.LZMADecompressor` inside py7zr.
+- The BCJ filter is a C extension (`bcj` package) — still a dependency, but a small one.
+- The decompressed stream per folder is byte-contiguous: files are laid out sequentially in the decompressed output, and sizes are known from the header.
+
+The main implementation challenges: correctly driving `lzma.LZMADecompressor` in streaming mode across chunk boundaries, and handling all codec IDs (LZMA2, LZMA1, Deflate, BZip2, Delta, BCJ variants). The latter is manageable since py7zr already maps codec IDs to decompressor chains.
+
+**Recommendation:** Implement the caching approach for v1 (1–2 days of work). Mark the custom streaming reader as a Phase 2 item under a `[7z-native]` extra — it replaces the py7zr backend with a streaming one, behind the same `ArchiveReader` ABC.
+
+### 5.7 rarfile wrapper vs custom unrar invocation
+
+**Decision (v1):** use `rarfile` for listing/metadata, but bypass its extraction for solid archives by invoking `unrar x` directly.
+
+**Rationale:** rarfile's `extractall()` spawns N subprocesses for N files. Running `unrar x archive.rar destdir/` once is strictly better for solid archives and requires only one extra `subprocess.run` call. rarfile's tool-detection machinery (`tool_setup()`) is reused to locate the correct binary.
+
+**The alternative — `python-libarchive-c`.** Investigated; libarchive's RAR backend explicitly does not support solid archives. Not viable.
+
+**Rolling a RAR reader** is not practical: the RAR format is proprietary and documented only through reverse engineering. The reference implementation is the `unrar` tool itself.
+
 ---
 
 ## 6. Dependency Matrix
@@ -505,34 +533,80 @@ TAR backends in streaming mode (`r|gz`) read blocks of 512 bytes and yield `TarI
 
 For random access on a compressed TAR (`.tar.gz` etc.), there is no efficient option — the backend materializes a sorted list of `(offset, TarInfo)` tuples by doing a full streaming scan once, then uses those offsets for subsequent random access (requiring seeking in the decompressed stream — only possible for plain `.tar` without compression wrapper). For compressed TARs, random access requires decompressing from the start each time — this is reported via `AccessCost.SOLID`.
 
-### 7.3 7z backend — push model and solid block optimization
+### 7.3 7z backend — lazy per-folder caching
 
-`py7zr` does not expose a pull-style `open(name) -> stream`. Its only extraction interface is:
+py7zr's push model (`extract(factory=...)`) and the solid block problem are handled entirely inside `SevenZReader._open_member()` via lazy per-folder caching. The public API (`for member in ar: ar.open(member)`) requires no changes.
+
+**Folder-to-file mapping** (confirmed via py7zr internals):
+- Each `FileInfo` dict has a `"folder"` key → reference to the `Folder` object it belongs to.
+- Files in the same solid block share the same `Folder` instance (object identity, not an index).
+- `SubstreamsInfo.num_unpackstreams_folders[i]` gives file count per folder.
+
+**`_open_member()` design:**
 ```python
-sz.extract(targets=[name], factory=WriterFactory)  # then sz.reset()
-sz.extractall(factory=WriterFactory)
+def _open_member(self, member: Member) -> BinaryIO:
+    name = member.original_name
+    folder = self._file_info_map[name]["folder"]
+
+    if folder not in self._folder_cache:
+        # Extract ALL files in this solid block at once
+        targets = [fi["filename"] for fi in folder.files]
+        class BlockFactory(py7zr.WriterFactory):
+            def create(inner_self, fn):
+                spooled = tempfile.SpooledTemporaryFile(max_size=64 << 20)
+                self._folder_cache_staging[fn] = spooled
+                return _Py7zIOAdapter(spooled)
+        
+        self._sz.extract(targets=targets, factory=BlockFactory())
+        self._sz.reset()                            # required before next extraction
+        self._folder_cache[folder] = {              # promote staging → permanent
+            fn: buf for fn, buf in self._folder_cache_staging.items()
+        }
+        self._folder_cache_staging.clear()
+
+    buf = self._folder_cache[folder][name]
+    buf.seek(0)
+    return buf
 ```
-`WriterFactory.create(name)` is called for all targets in a solid block upfront, then data is written to the returned `Py7zIO` objects. After each call, `reset()` must be invoked to re-initialize the decompressor.
 
-**Key finding (confirmed by profiling):** Calling `extract(targets=['c.txt'])` on a solid archive containing `[a.txt, b.txt, c.txt]` still decompresses `a.txt` and `b.txt` fully — the data just flows into a discard sink. The `targets` filter controls data capture, not CPU work.
+Result: first `open()` for any member in a block pays O(block_decompression). All subsequent `open()` calls for members in the same block are O(1). Sequential `for member in ar: ar.open(member)` is O(number_of_solid_blocks) total.
 
-**`_open_member()` implementation:** wraps `extract(targets=[name]) + reset()`. The `Py7zIO` returned by the factory is a `SpooledTemporaryFile`-backed object (spills to disk above 64 MiB). `py7zr` calls `seek(0)` on the sink after writing (a final rewind for the caller; py7zr never reads back). A seekable sink is required.
+**`_Py7zIOAdapter`** adapts `SpooledTemporaryFile` to the `Py7zIO` interface. It must be seekable (py7zr calls `seek(0)` after writing as a final rewind; it never reads back).
 
-**`_iter_with_data()` optimization:** calls `extractall(factory=...)` exactly once. Each member's `Py7zIO` is a `SpooledTemporaryFile`. After `extractall()` returns, yields `(Member, spooled_file)` pairs in order. Peak memory = size of the largest single member (not the full archive).
+**`_iter_members()`** is pure metadata: calls `sz.list()` which reads the pre-parsed header. O(1), no decompression.
 
-**`HashingIO` optimization (memory-free hashing):** for `iter_with_data()` when the caller only needs to hash or count bytes without keeping the data, the ABC can detect this via a `processing_only=True` parameter (advanced, opt-in). The `SevenZReader` can then provide a `HashableSevenZSink` — a `Py7zIO` that hashes on `write()` and ignores `seek(0)`. This is safe because py7zr's `seek(0)` is a final rewind, not followed by a read-back. This advanced optimization is not part of v1 but is architecturally sound.
+### 7.4 RAR backend — one-shot extraction for solid archives
 
-For random access (`_open_member()` called non-sequentially), each call is O(solid_block_size) decompression work. The `CostReceipt` communicates this cost explicitly.
+rarfile has a critical limitation: `extractall()` does **not** run `unrar` once for all files — it calls `open()` per file, spawning a separate subprocess each time. For solid archives, each subprocess re-processes the full archive. This is O(N) subprocess invocations, each doing O(archive_size) work.
 
-### 7.4 RAR backend — solid archive and unrar subprocess cost
+**Fix: bypass rarfile's extraction for solid archives and invoke `unrar` directly.**
 
-**For non-solid or store-only RAR:** `rarfile` uses the "hack" path: it extracts the target member's compressed data into a small temporary mini-archive and runs `unrar` on that. This is efficient — O(member_size).
+```python
+def _ensure_solid_cache(self):
+    if self._solid_cache_dir is not None:
+        return
+    self._solid_cache_dir = Path(tempfile.mkdtemp())
+    setup = rarfile.tool_setup()
+    cmd = [setup._unrar_tool, 'e', '-inul', '-r',
+           f'-p{self._password}' if self._password else '-p-',
+           str(self._path), str(self._solid_cache_dir) + os.sep]
+    subprocess.run(cmd, check=True)
 
-**For solid RAR:** `_must_disable_hack()` returns `True`. `rarfile` falls through to `_open_unrar()` which runs `unrar` on the full archive file every time. Cost per `open()` call = O(archive_size). Iterating N members = O(N × archive_size).
+def _open_member(self, member: Member) -> BinaryIO:
+    if self._is_solid:
+        self._ensure_solid_cache()
+        # unrar 'e' flattens paths; members with the same basename need 'x' mode
+        # Use 'x' instead to preserve relative paths
+        return open(self._solid_cache_dir / member.name, 'rb')
+    else:
+        return self._rf.open(member.original_name)   # rarfile's hack is efficient here
+```
 
-**`_iter_with_data()` for solid RAR:** calls `rarfile.RarFile.extractall(path=tmpdir)` — runs `unrar` once, writes all files to disk, then yields `(Member, file_handle)` pairs reading from disk. Cost = O(archive_size) for all members combined. Disk space = uncompressed archive size.
+`_solid_cache_dir` is cleaned up in `close()` via `shutil.rmtree`. Disk space = uncompressed archive size.
 
-**`_open_member()` for solid RAR:** still delegates to `rarfile.open()`, accepting the O(archive_size) per-call cost. For random-access patterns on solid RAR, the `CostReceipt` includes a note: *"Each open() reruns unrar on the full archive. Use iter_with_data() for sequential processing."*
+**`unrar e` vs `unrar x`:** `e` flattens to a single directory; `x` preserves paths. We use `x` to avoid name collisions. The command is built from rarfile's `tool_setup()` to respect any user-configured tool path.
+
+**Non-solid RAR:** rarfile's per-file hack is used. For files under 20 MiB, it creates a mini-archive with just the target's compressed data and runs `unrar` on that — O(member_size) per call.
 
 ### 7.5 Chunk size for extraction
 
