@@ -88,19 +88,41 @@ ArchiveReader (ABC in _reader.py)
 └── DirReader    (backends/_dir.py)
 ```
 
-The only methods that backends **must** implement:
+The methods backends **must or may** implement:
 ```python
 @abstractmethod
-def _iter_members(self) -> Iterator[Member]: ...        # sequential
+def _iter_members(self) -> Iterator[Member]: ...         # sequential, metadata only
 
 @abstractmethod
-def _open_member(self, member: Member) -> BinaryIO: ... # raw data stream
+def _open_member(self, member: Member) -> BinaryIO: ...  # raw data stream (no link following)
 
-def _get_member_by_name(self, name: str) -> Member:     # optional override
+def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
+    # Default: yield (m, self._open_member(m)) for m in self._iter_members()
+    # Backends override this for efficiency:
+    #   - SevenZReader: one extractall() call, yield as data arrives
+    #   - RarReader (solid): one extractall(path=tmpdir) call, yield from files
+    ...
+
+def _get_member_by_name(self, name: str) -> Member:      # optional override
     # default: linear scan of _iter_members() — backends with indexes override this
 ```
 
-Everything else (`__iter__`, `__getitem__`, `read`, `open`, `extract`, `extract_all`, `members`) is implemented once in the ABC.
+`open()` and `read()` in the ABC add link-following on top of `_open_member()`:
+```python
+def open(self, member: str | Member, _depth: int = 0) -> BinaryIO:
+    if isinstance(member, str):
+        member = self[member]
+    if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
+        if _depth > 8:
+            raise ReadError("Symlink chain too deep (possible cycle)")
+        target = self.get(member.link_target)
+        if target is None:
+            raise ReadError(f"Link target '{member.link_target}' not in archive")
+        return self.open(target, _depth=_depth + 1)
+    return self._open_member(member)
+```
+
+Everything else (`__iter__`, `__getitem__`, `read`, `open`, `iter_with_data`, `extract`, `extract_all`, `members`) is implemented once in the ABC.
 
 ### 2.4 Lazy member materialization
 
@@ -483,16 +505,56 @@ TAR backends in streaming mode (`r|gz`) read blocks of 512 bytes and yield `TarI
 
 For random access on a compressed TAR (`.tar.gz` etc.), there is no efficient option — the backend materializes a sorted list of `(offset, TarInfo)` tuples by doing a full streaming scan once, then uses those offsets for subsequent random access (requiring seeking in the decompressed stream — only possible for plain `.tar` without compression wrapper). For compressed TARs, random access requires decompressing from the start each time — this is reported via `AccessCost.SOLID`.
 
-### 7.3 7z solid block optimization
+### 7.3 7z backend — push model and solid block optimization
 
-When iterating a 7z archive sequentially, `py7zr` decompresses each solid block once. The `SevenZReader._iter_members()` implementation passes members to the caller in solid-block order, which naturally gives `O(blocks)` total decompression cost for sequential access.
+`py7zr` does not expose a pull-style `open(name) -> stream`. Its only extraction interface is:
+```python
+sz.extract(targets=[name], factory=WriterFactory)  # then sz.reset()
+sz.extractall(factory=WriterFactory)
+```
+`WriterFactory.create(name)` is called for all targets in a solid block upfront, then data is written to the returned `Py7zIO` objects. After each call, `reset()` must be invoked to re-initialize the decompressor.
 
-For random access across solid blocks, `py7zr` must re-decompress preceding blocks. The `CostReceipt` communicates this cost explicitly.
+**Key finding (confirmed by profiling):** Calling `extract(targets=['c.txt'])` on a solid archive containing `[a.txt, b.txt, c.txt]` still decompresses `a.txt` and `b.txt` fully — the data just flows into a discard sink. The `targets` filter controls data capture, not CPU work.
 
-### 7.4 Chunk size for extraction
+**`_open_member()` implementation:** wraps `extract(targets=[name]) + reset()`. The `Py7zIO` returned by the factory is a `SpooledTemporaryFile`-backed object (spills to disk above 64 MiB). `py7zr` calls `seek(0)` on the sink after writing (a final rewind for the caller; py7zr never reads back). A seekable sink is required.
+
+**`_iter_with_data()` optimization:** calls `extractall(factory=...)` exactly once. Each member's `Py7zIO` is a `SpooledTemporaryFile`. After `extractall()` returns, yields `(Member, spooled_file)` pairs in order. Peak memory = size of the largest single member (not the full archive).
+
+**`HashingIO` optimization (memory-free hashing):** for `iter_with_data()` when the caller only needs to hash or count bytes without keeping the data, the ABC can detect this via a `processing_only=True` parameter (advanced, opt-in). The `SevenZReader` can then provide a `HashableSevenZSink` — a `Py7zIO` that hashes on `write()` and ignores `seek(0)`. This is safe because py7zr's `seek(0)` is a final rewind, not followed by a read-back. This advanced optimization is not part of v1 but is architecturally sound.
+
+For random access (`_open_member()` called non-sequentially), each call is O(solid_block_size) decompression work. The `CostReceipt` communicates this cost explicitly.
+
+### 7.4 RAR backend — solid archive and unrar subprocess cost
+
+**For non-solid or store-only RAR:** `rarfile` uses the "hack" path: it extracts the target member's compressed data into a small temporary mini-archive and runs `unrar` on that. This is efficient — O(member_size).
+
+**For solid RAR:** `_must_disable_hack()` returns `True`. `rarfile` falls through to `_open_unrar()` which runs `unrar` on the full archive file every time. Cost per `open()` call = O(archive_size). Iterating N members = O(N × archive_size).
+
+**`_iter_with_data()` for solid RAR:** calls `rarfile.RarFile.extractall(path=tmpdir)` — runs `unrar` once, writes all files to disk, then yields `(Member, file_handle)` pairs reading from disk. Cost = O(archive_size) for all members combined. Disk space = uncompressed archive size.
+
+**`_open_member()` for solid RAR:** still delegates to `rarfile.open()`, accepting the O(archive_size) per-call cost. For random-access patterns on solid RAR, the `CostReceipt` includes a note: *"Each open() reruns unrar on the full archive. Use iter_with_data() for sequential processing."*
+
+### 7.5 Chunk size for extraction
 
 Default chunk size is 1 MiB (1 048 576 bytes). This is a balance between:
 - Too small: excessive system call overhead.
 - Too large: excessive peak memory usage.
 
 The chunk size is passed through to `shutil.copyfileobj(src, dst, length=CHUNK_SIZE)`.
+
+---
+
+## 8. Link-Following in ArchiveReader
+
+Three archive formats handle links differently at the library level:
+
+| Format | hardlink `open()` | symlink `open()` |
+|--------|------------------|-----------------|
+| TAR | tarfile follows automatically — `extractfile()` returns data of linked file | tarfile follows automatically |
+| RAR5 | rarfile follows `RAR5_XREDIR_HARD_LINK` and `FILE_COPY` automatically | rarfile returns target path as bytes (link not followed) |
+| ZIP | no hardlink concept | symlink stored as regular file with target path as content |
+| 7z | no hardlink concept | symlink stored with metadata; content is target path |
+
+The ABC layer adds uniform link-following on top, catching the ZIP/7z/RAR symlink cases. Backends that already follow links internally (TAR hardlinks, RAR5 hardlinks) do so at a lower level — the ABC-level check is a no-op for those (the result is already the target's data, not the link path).
+
+The `_depth` guard (`max=8`) in the ABC `open()` prevents symlink cycles within the archive from causing infinite recursion.

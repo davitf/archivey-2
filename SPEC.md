@@ -94,6 +94,14 @@ class ArchiveReader:
     def read(self, member: str | Member) -> bytes: ...
     def open(self, member: str | Member) -> BinaryIO: ...   # streaming; caller must close
 
+    # --- Efficient sequential data iteration ---
+    # Yields (member, stream) pairs in archive order.
+    # On backends with push-based decompression (7z) or costly per-file re-reads (solid RAR),
+    # this is O(1) decompression passes instead of O(N). On streaming backends (TAR, ZIP)
+    # it is equivalent to iterating and calling open() manually.
+    # The stream is valid only until the next iteration step; do not hold it across yields.
+    def iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]: ...
+
     # --- Extraction helpers (delegates to archivey.extract internals) ---
     def extract(
         self,
@@ -120,6 +128,8 @@ class ArchiveReader:
 ```
 
 **Constraint:** calling `__getitem__`, `get`, or random `extract` on a reader opened with `Intent.SEQUENTIAL` raises `UnsupportedOperationError` unless the backend can satisfy it cheaply (e.g. the archive has an in-memory index already loaded).
+
+**Link following:** `open()` and `read()` transparently follow symlinks and hardlinks that point to other members in the same archive. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to `open(reader[member.link_target])`. If the link target is not present in the archive, `ReadError` is raised. If the link target itself is a link, it is followed recursively up to a maximum depth of 8 (beyond which `ReadError` is raised to prevent cycles). This behavior is format-independent and is implemented once in the `ArchiveReader` ABC — it does not rely on format-level link resolution (e.g. rarfile follows RAR5 hardlinks internally; our layer handles the remaining cases).
 
 ### 3.3 ArchiveWriter
 
@@ -617,31 +627,52 @@ Member `size` is `None` for GZ (size field is mod-2³² unreliable for >4 GiB); 
 
 | Property | Value |
 |----------|-------|
-| Backend dependency | `py7zr` |
-| Listing cost | O(1) — header parsed upfront |
+| Backend dependency | `py7zr` ≥ 0.20 |
+| Listing cost | O(1) — header parsed upfront via `sz.list()` |
 | Access cost | SOLID (typically); DIRECT only if no solid blocks |
-| Supports write | Yes (via py7zr) |
+| Supports write | Yes (via `py7zr`) |
 | Requires seek | Yes |
 
-**Solid blocks:** `CostReceipt.solid_block_count` is populated from `py7zr`'s folder count. Sequential iteration through a single solid block is optimized to one decompression pass. Random access across solid blocks requires re-decompressing from the start of each block.
+**Push-based extraction model:** `py7zr` does not provide a streaming `open()` that returns a readable `BinaryIO`. The only extraction APIs are:
+- `sz.extract(targets=[name], factory=WriterFactory)` — calls `factory.create(name) -> Py7zIO` and pushes bytes into it.
+- `sz.extractall(factory=WriterFactory)` — same, for all members.
+After calling either method, `sz.reset()` must be called before the next extraction. `reset()` resets the decompressor state to the beginning of the file.
 
-**Compression chain:** `py7zr` exposes codec IDs per folder; these are mapped to `CompressionAlgo` values.
+**`Py7zIO` contract:** The objects returned by `WriterFactory.create()` must be seekable — `py7zr` calls `seek(0)` after writing each file as a final rewind for the caller (py7zr does not read back after `seek(0)`). Pipes and other non-seekable targets will fail. `BytesIO` and real files work correctly.
 
-**POSIX metadata:** 7z stores POSIX metadata in an optional `ntEmulation` attribute block. If absent, `mode`, `uid`, `gid` are `None`.
+**`_open_member()` implementation:** `extract(targets=[name])` + `reset()`. Returns a `BytesIO` populated by the factory. This buffers the full member in memory; for large files, a `SpooledTemporaryFile` is used (spill threshold: 64 MiB).
+
+**Sequential / `iter_with_data()` optimization:** For solid archives, calling `extract(targets=[name])` for each member N still decompresses all N preceding members in the same solid block — the `targets` filter controls only what data is captured, not what is decompressed. Therefore `iter_with_data()` calls `extractall(factory=...)` exactly once, captures all members into their respective sinks, and yields them. This is O(1) decompression passes regardless of how many members are accessed.
+
+**Memory-efficient `Py7zIO` for hashing:** A `HashingIO` (implementing `Py7zIO`) that hashes bytes on `write()` and silently ignores `seek(0)` is valid and tested. `py7zr` never reads back after `seek(0)`, so the hash-only pattern works without storing any file data.
+
+**Solid blocks:** `CostReceipt.solid_block_count` is populated from `py7zr`'s folder count (`archiveinfo().blocks`). Reported via `archiveinfo().solid` flag.
+
+**Compression chain:** `py7zr.archiveinfo().method_names` returns codec name strings (e.g. `['LZMA2', 'BCJ']`) per archive; mapped to `CompressionAlgo` values per member.
+
+**POSIX metadata:** 7z stores POSIX metadata in an optional attribute block. If absent, `mode`, `uid`, `gid` are `None`.
 
 ### 10.5 RAR (requires `[rar]` extra → `rarfile` + system `unrar`)
 
 | Property | Value |
 |----------|-------|
-| Backend dependency | `rarfile` (requires `unrar` binary on PATH) |
-| Listing cost | O(1) for RAR5; O(N) scan for some RAR4 |
+| Backend dependency | `rarfile` ≥ 4.0 (requires `unrar` binary on PATH) |
+| Listing cost | O(1) — central directory parsed upfront |
 | Access cost | SOLID if solid archive; DIRECT otherwise |
 | Supports write | No — RAR is proprietary; read-only |
 | Requires seek | Yes |
 
+**`open()` returns a real stream:** `rarfile.RarFile.open(name)` returns a `RarExtFile` (a `RawIOBase`). Unlike py7zr, this is a pull model — the caller reads bytes on demand. Seeking is supported (by reading ahead or restarting decompression, similar to `gzip.GzipFile`).
+
+**Solid archive cost — per-open full re-read:** For solid RAR archives, every `rarfile.open()` call triggers a full `unrar` subprocess run on the complete archive file from the beginning. The `_open_hack` optimization (which wraps just the target member's bytes into a mini-archive) is disabled for solid archives because the target member's decompressor needs the preceding members' decompressor context. Concretely: iterating N members and reading each via `open()` in a solid RAR archive runs `unrar` N times on the full archive — O(N × archive_size) decompression work. The `CostReceipt` must clearly flag `AccessCost.SOLID` and the `notes` field must say "Each open() on a solid archive reruns unrar on the full file."
+
+**`iter_with_data()` optimization for solid RAR:** `extract_all(path=tmpdir)` runs `unrar` once and writes all files. `iter_with_data()` uses this path: extract to a `tempfile.TemporaryDirectory`, open each file from disk, yield `(member, file_handle)` pairs, clean up afterwards. This is O(1) unrar invocations but requires disk space equal to uncompressed archive size.
+
 **RAR4 vs RAR5 timestamp handling:**
 - RAR4: stores local wall-clock time → naive `datetime`.
 - RAR5: stores UTC with sub-second precision → timezone-aware `datetime`.
+
+**Link handling:** RAR5 stores hardlinks and file-copies via the `file_redir` field. `rarfile` automatically follows `RAR5_XREDIR_HARD_LINK` and `RAR5_XREDIR_FILE_COPY` redirects inside `open()`, transparently returning the source file's data. Symlinks (`RAR5_XREDIR_UNIX_SYMLINK`) are stored with the link target path as the content; the ABC-level link-following described in §3.2 handles these uniformly across formats.
 
 **Header encryption (RAR5):** `ArchiveInfo.is_encrypted = True`; listing requires password.
 
@@ -753,6 +784,130 @@ For every writable format: `create → extract → compare` must produce identic
 ### 14.4 Non-seekable stream test
 
 Every backend that supports streaming must be tested with a `FakeNonSeekable` wrapper that raises `io.UnsupportedOperation` on all seek/tell calls.
+
+---
+
+## 15. Sample Usage Patterns
+
+This section establishes the canonical patterns for common tasks. Test suites must cover each of these patterns across all supported formats.
+
+### 15.1 Basic iteration and extraction
+
+```python
+import archivey
+
+# One-shot safe extraction (most common case)
+archivey.extract("untrusted.zip", "/safe/output/")
+
+# Inspect members before deciding to extract
+with archivey.open("archive.tar.gz") as ar:
+    print(ar.info)                      # format, solid, cost receipt
+    for member in ar:
+        print(member.name, member.size, member.type)
+```
+
+### 15.2 Computing file hashes without writing to disk
+
+This is the primary use case for `iter_with_data()`. It must be efficient across all formats — in particular, on solid 7z archives and solid RAR archives the library must not decompress the archive N times for N files.
+
+```python
+import archivey
+import hashlib
+
+with archivey.open("archive.7z") as ar:
+    for member, stream in ar.iter_with_data():
+        if member.type != archivey.MemberType.FILE:
+            continue
+        h = hashlib.sha256()
+        while chunk := stream.read(65536):
+            h.update(chunk)
+        print(f"{h.hexdigest()}  {member.name}")
+```
+
+**Why `iter_with_data()` and not a `for member in ar: ar.open(member)` loop?**
+
+For formats with native pull-streaming (TAR, ZIP), `ar.open(member)` is fine and the two patterns are equivalent. But for solid 7z archives, `ar.open(member)` buffers the member into memory and the solid block is re-decompressed for each member accessed out of a single sequential pass. `iter_with_data()` is guaranteed to use at most one decompression pass regardless of archive type. Use `iter_with_data()` by default unless you need random access.
+
+The same pattern works for any per-file processing: checksumming, MIME-type sniffing, line counting, full-text indexing — anything that needs bytes without writing to disk.
+
+### 15.3 Opening a symlink or hardlink
+
+`open()` and `read()` transparently follow links that point to other members in the same archive, regardless of format. This mirrors `tarfile.extractfile()` behavior.
+
+```python
+with archivey.open("archive.tar") as ar:
+    # Suppose the archive contains:
+    #   data/v1.0/report.txt  (regular file)
+    #   data/latest           (symlink -> v1.0/report.txt)
+    #   data/also-latest      (hardlink -> data/v1.0/report.txt)
+
+    # All three produce the same bytes:
+    content_a = ar.read("data/v1.0/report.txt")
+    content_b = ar.read("data/latest")        # follows symlink
+    content_c = ar.read("data/also-latest")   # follows hardlink
+    assert content_a == content_b == content_c
+
+    # The Member object itself still reflects the link type:
+    link_member = ar["data/latest"]
+    assert link_member.type == archivey.MemberType.SYMLINK
+    assert link_member.link_target == "v1.0/report.txt"
+```
+
+If a link's target is not present in the archive (e.g. an external symlink), `open()` raises `ReadError`.
+
+### 15.4 Format conversion (streaming, no intermediate file)
+
+```python
+import archivey
+
+# Convert tar.gz to zip — streams member data directly, no buffering of full archive
+with archivey.open("input.tar.gz") as reader, \
+     archivey.create("output.zip") as writer:
+    writer.add_members(reader)
+
+# You can filter during conversion:
+with archivey.open("input.tar.gz") as reader, \
+     archivey.create("output.zip") as writer:
+    for member, stream in reader.iter_with_data():
+        if member.name.endswith(".py"):
+            writer.add_stream(stream, name=member.name, modified=member.modified)
+```
+
+### 15.5 Checking the cost receipt before committing
+
+```python
+import archivey
+from archivey import AccessCost
+
+with archivey.open("mystery.7z") as ar:
+    if ar.cost.access_cost == AccessCost.SOLID:
+        print(f"Solid archive: {ar.cost.solid_block_count} block(s). "
+              f"Random access will be expensive. Using iter_with_data().")
+        for member, stream in ar.iter_with_data():
+            process(member, stream)
+    else:
+        # Direct access — can jump to any member cheaply
+        for name in interesting_names:
+            data = ar.read(name)
+            process_data(name, data)
+```
+
+### 15.6 Creating an archive from a stream source
+
+```python
+import archivey, io
+
+with archivey.create("report.zip") as writer:
+    # From bytes
+    writer.add_bytes(b"Hello, world!", name="greeting.txt")
+
+    # From a BinaryIO stream (size known in advance)
+    with open("large_data.bin", "rb") as f:
+        writer.add_stream(f, name="data/large.bin", size=os.path.getsize("large_data.bin"))
+
+    # From the filesystem (recursively)
+    writer.add("src/", name="source/")
+```
 
 ---
 

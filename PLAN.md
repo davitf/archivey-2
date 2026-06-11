@@ -88,7 +88,9 @@
    - Raises `UnsupportedFormatError` with install hint when optional backend is detected but unavailable.
 
 3. **`src/archivey/_reader.py`** — `ArchiveReader` ABC:
-   - Implements all public methods in terms of `_iter_members()` and `_open_member()`.
+   - Implements all public methods in terms of `_iter_members()`, `_open_member()`, and `_iter_with_data()`.
+   - `open()` and `read()` add link-following on top of `_open_member()` (cycle guard, max depth 8).
+   - Default `_iter_with_data()`: yields `(member, self._open_member(member))` — backends override for efficiency.
    - Lazy materialization cache with Sequential guard.
    - `__enter__`/`__exit__` delegates to `close()`.
 
@@ -298,19 +300,24 @@
 ### Tasks
 
 1. **`src/archivey/backends/_7z.py`** (`[7z]` extra → `py7zr`):
-   - `SevenZReader._iter_members()`: iterate `py7zr.SevenZipFile.list()`.
-   - Map `py7zr.FileInfo` → `Member`: handle `CompressionMethod` from codec IDs.
-   - `_open_member()`: `py7zr.SevenZipFile.read([name])[name]` → `BytesIO`.
-   - Sequential optimization: use `py7zr`'s streaming extraction context if available.
-   - `CostReceipt`: `solid_block_count` from folder structure.
-   - `SevenZWriter`: use `py7zr.SevenZipFile(mode='w')`.
+   - **No streaming pull API exists in py7zr**: only `extract(targets=[...], factory=WriterFactory)` and `extractall(factory=WriterFactory)`. Must call `sz.reset()` between extractions.
+   - `SevenZReader._iter_members()`: `py7zr.SevenZipFile.list()` — cheap, metadata only.
+   - Map `py7zr.FileInfo` → `Member`: compression from `archiveinfo().method_names`.
+   - `_open_member()`: `sz.extract(targets=[name], factory=SpooledFactory); sz.reset()`. `SpooledFactory.create()` returns a `SpooledTemporaryFile(max_size=64*1024*1024)`. The factory sink is seekable (required: py7zr calls `seek(0)` after writing, though never reads back).
+   - `_iter_with_data()` override: one `sz.extractall(factory=...)` call, yields `(Member, spooled)` pairs. O(1) decompression passes for all members.
+   - `CostReceipt`: `solid_block_count` from `archiveinfo().blocks`; `is_solid` from `archiveinfo().solid`.
+   - `notes` in `CostReceipt`: *"Each _open_member() on a solid archive re-decompresses the full solid block. Use iter_with_data() for sequential access."*
+   - `SevenZWriter`: use `py7zr.SevenZipFile(mode='w')` with `writef()` and `writestr()`.
 
-2. **`src/archivey/backends/_rar.py`** (`[rar]` extra → `rarfile`):
-   - `RarReader._iter_members()`: `rarfile.RarFile.infolist()`.
-   - Timestamp handling: RAR4 naive, RAR5 UTC aware.
-   - `_open_member()`: `rarfile.RarFile.open(member)`.
+2. **`src/archivey/backends/_rar.py`** (`[rar]` extra → `rarfile` + system `unrar`):
+   - `rarfile` DOES have `open(name) -> RarExtFile (RawIOBase)` — pull model, returns seekable stream.
+   - `RarReader._iter_members()`: `rarfile.RarFile.infolist()` — O(1), central dir parsed upfront.
+   - Timestamp: RAR4 `ftime` → naive datetime; RAR5 `mtime` → timezone-aware UTC datetime.
+   - `_open_member()`: `rarfile.RarFile.open(member.original_name)`. For non-solid archives this is efficient (mini-archive hack). For solid archives this reruns `unrar` on the full file.
+   - `_iter_with_data()` override for solid archives: `rarfile.extractall(path=tmpdir)` runs unrar once; yield `(Member, open(tmpdir/name, 'rb'))` pairs; clean up tmpdir on close.
+   - `CostReceipt.notes` for solid: *"Each open() reruns unrar on the full archive. Use iter_with_data() for sequential processing."*
    - `SUPPORTS_WRITE = False` — raise `UnsupportedOperationError` on write attempt.
-   - Handle missing `unrar` binary gracefully: `UnsupportedFormatError` with hint.
+   - Handle missing `unrar` binary: catch `rarfile.RarCannotExec` → `UnsupportedFormatError` with install hint.
 
 3. **`src/archivey/backends/_iso.py`** (`[iso]` extra → `pycdlib`):
    - `IsoReader._iter_members()`: walk `pycdlib.PyCdlib` with Rock Ridge → Joliet → Plain priority.
@@ -328,6 +335,15 @@
    - Each uses `pytest.importorskip()` to skip if optional dep absent.
    - Standard read/iterate/extract cycle.
    - Format-specific quirks (solid blocks, RAR4/5 timestamps, ISO namespaces).
+   - **7z**: verify `_open_member()` buffers correctly; verify `_iter_with_data()` does exactly one `extractall()` call (mock `py7zr.SevenZipFile` to count calls).
+   - **RAR solid**: verify `_iter_with_data()` runs unrar once for all members; verify `CostReceipt.notes` is populated.
+
+6. **Tests for sample usage patterns** (`test_patterns.py`):
+   - Hash-all-files via `iter_with_data()`: verify correctness and that solid 7z uses one pass.
+   - `open(symlink_member)` follows link transparently: test with TAR, ZIP symlinks.
+   - `open(hardlink_member)` follows hardlink transparently: test with TAR hardlinks.
+   - Link cycle in archive: verify `ReadError` raised after depth limit.
+   - Link to external (missing) target: verify `ReadError`.
 
 ---
 
