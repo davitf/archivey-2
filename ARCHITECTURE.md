@@ -32,10 +32,14 @@ src/archivey/
     └── _iso.py            # ISO 9660 (pycdlib, optional)
 
 tests/
-├── corpus/                # Static test archives (committed binary files)
-│   ├── adversarial/       # zip bombs, path traversal, corrupt archives
-│   └── equivalence/       # same logical dir as zip/tar/7z/rar/iso
-├── conftest.py
+├── fixtures/              # Committed binary archives — only what can't be generated
+│   ├── adversarial/       # Hand-crafted: path traversal, zip bombs, corrupt headers
+│   ├── external/          # Archives requiring specific tools/OS (Windows junctions, etc.)
+│   └── *.json             # Sidecar per committed archive (expected member list)
+├── create_adversarial.py  # Script that (re)generates adversarial fixtures
+├── sample_archives.py     # Declarative specs: ArchiveContents, FileInfo, ArchiveCreationInfo
+├── create_archives.py     # Generates archives from specs into tmp_path / cache dir
+├── conftest.py            # pytest_generate_tests, sample_archive_path fixture
 ├── test_detection.py
 ├── test_types.py
 ├── test_zip.py
@@ -44,10 +48,11 @@ tests/
 ├── test_7z.py
 ├── test_rar.py
 ├── test_iso.py
-├── test_extraction.py     # filter/security tests
+├── test_extraction.py     # filter/security tests; uses adversarial fixtures
 ├── test_writing.py
 ├── test_conversion.py
-└── test_equivalence.py    # equivalence matrix
+├── test_equivalence.py    # equivalence matrix across formats
+└── test_patterns.py       # sample usage patterns (hashing, link-following, conversion)
 ```
 
 ---
@@ -90,24 +95,47 @@ ArchiveReader (ABC in _reader.py)
 
 The methods backends **must or may** implement:
 ```python
-@abstractmethod
-def _iter_members(self) -> Iterator[Member]: ...         # sequential, metadata only
+# --- Class-level attributes (set once per backend class, not per instance) ---
+
+_SUPPORTS_RANDOM_ACCESS: bool = True
+# Set to False for inherently sequential formats (plain .tar on a non-seekable stream).
+# The ABC reads this to decide whether to allow open() and extract().
+
+_MEMBER_LIST_UPFRONT: bool = True
+# Set to True if the format has a central directory (ZIP, 7z) so get_members() is cheap.
+# Set to False for streaming formats (TAR) where listing requires reading the whole archive.
+
+# --- Required abstract methods ---
 
 @abstractmethod
-def _open_member(self, member: Member) -> BinaryIO: ...  # raw data stream (no link following)
-                                                          # may use internal caching
+def _iter_members(self) -> Iterator[Member]: ...
+# Yield Member objects in archive order, metadata only.
+# Called once by the base class to populate the member registry.
+# Store any backend-specific data needed by _open_member in member.raw_info.
+
+@abstractmethod
+def _open_member(self, member: Member) -> BinaryIO: ...
+# Return a raw data stream for member. No link following.
+# May use internal caching (e.g. 7z folder cache).
+# Called only for members where member.is_file is True.
+
+@abstractmethod
+def _close_archive(self) -> None: ...
+# Release backend resources (file handles, temp dirs). Called once by close().
+
+# --- Optional overrides ---
 
 def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
-    # Default: naive — calls _open_member() for each member.
-    # For non-solid formats (ZIP, TAR, GZ) this is fine: no caching, no buffering.
-    # Backends with solid archives MUST override this for bounded memory:
-    #   SevenZReader: extract one folder at a time, yield its files, release before next.
-    #   RarReader (solid): run unrar once to tmpdir, yield from files, delete tmpdir after.
+    # Default: naive — calls _open_member() per file member.
+    # Correct for non-solid formats (ZIP, TAR, GZ): no extra cost.
+    # Solid-archive backends MUST override for bounded memory:
+    #   SevenZReader: folder by folder, release before moving to next.
+    #   RarReader (solid): single unrar pass, tmpdir freed in finally.
     for member in self._iter_members():
-        yield member, self._open_member(member)
-
-def _get_member_by_name(self, name: str) -> Member:      # optional override
-    # default: linear scan of _iter_members() — backends with indexes override this
+        if member.is_file:
+            yield member, self._open_member(member)
+        else:
+            yield member, None
 ```
 
 `open()` and `read()` in the ABC add link-following on top of `_open_member()`:
@@ -168,45 +196,82 @@ This is a standard "read-ahead buffer" pattern — the key property is that the 
 
 ### 2.6 Extraction as a separate, composable module
 
-`_extraction.py` implements the safe extraction coordinator as a pure function:
+`_extraction.py` implements the safe extraction coordinator. It has no deferred/pending state; both streaming and random-access extraction use the same unified forward pass driven by `_iter_with_data()`.
 
 ```python
-def extract_member(
-    member: Member,
-    open_fn: Callable[[Member], BinaryIO],
-    dest: Path,
-    policy: ExtractionPolicy,
-    overwrite: OverwritePolicy,
-    bomb_tracker: BombTracker,
-) -> ExtractionResult:
+class ExtractionCoordinator:
+    def __init__(self, dest: Path, policy: ExtractionPolicy,
+                 overwrite: OverwritePolicy, bomb_tracker: BombTracker): ...
+
+    def run(
+        self,
+        members: Iterable[Member],
+        open_fn: Callable[[Member], BinaryIO],
+        hardlink_sources: dict[int, Member],  # member_id → source member (pre-built)
+    ) -> dict[Path, Member]:
+        """Single forward pass. Works identically in streaming and random-access mode."""
 ```
 
-This function:
-1. Applies `_filters.py` to the member (path check, type check, permission transform).
-2. Handles the overwrite policy.
-3. Creates directories as needed, atomically via `Path.mkdir(parents=True, exist_ok=True)`.
-4. For files: opens the source via `open_fn`, copies in chunks, tracks bytes via `BombTracker`.
-5. For symlinks: creates after all files (two-pass to handle ordering).
-6. Sets metadata (mtime, permissions) on a best-effort basis after writing.
+The `hardlink_sources` map is built before the pass starts by scanning the full member list (available in random-access mode) or the upcoming-members list where possible. It tells the coordinator: "this member's data will be needed for N hardlinks that follow it — make sure its path is recorded."
 
-The coordinator is a pure function with no knowledge of archive formats. `ArchiveReader.extract_all()` in the ABC calls it in a loop.
+During the pass:
+- **FILE / DIR / SYMLINK**: write immediately. Record `member_id → extracted_path`.
+- **HARDLINK**: if source `extracted_path` is already recorded, `os.link` it; otherwise `shutil.copy2`. In streaming mode, TAR guarantees target precedes link — if the source was filtered out, that's an explicit error with a clear message. In random-access mode, if the source wasn't selected by the filter, it's added to the extraction set implicitly (marked "data needed, discard after linking").
+- After the pass: apply mtime/permissions to all extracted paths (best-effort, single `os.utime` / `os.chmod` loop).
 
-### 2.7 Two-pass extraction for hardlinks and symlinks
+This replaces the previous `ExtractionHelper` class and its pending/deferred state machine. No move-vs-link signaling. No `can_move_file` flag. No `pending_target_members_by_source_id` dict.
 
-Symlinks and hardlinks may reference files that appear later in the archive. The coordinator uses a deferred list:
+### 2.7 Symlinks: single-pass with post-creation check
+
+Symlinks don't need a second pass. They are written in archive order as encountered. After creating each symlink:
 
 ```
-Pass 1: Extract all FILE and DIRECTORY members
-         Collect SYMLINK and HARDLINK members → deferred[]
-
-Pass 2: Process deferred[]
-         For HARDLINK: os.link(already_extracted_target, dest_path)
-                       If cross-device: shutil.copy2 with warning
-         For SYMLINK:  os.symlink(link_target, dest_path)
-                       Verify resolution stays within dest root (post-creation check)
+os.symlink(link_target, dest_path)
+resolved = (dest_path.parent / link_target).resolve()
+if not resolved.is_relative_to(dest.resolve()):
+    dest_path.unlink()
+    raise FilterRejectionError(...)
 ```
 
-### 2.8 Filters as pure transform functions
+This is simpler than deferred creation and catches escapes immediately rather than at the end of the run. It is safe because symlink creation is atomic on POSIX; the escape check happens before any follow-through reads.
+
+The one edge case is a symlink whose target is a *later* member in the same archive (rare in practice). In streaming mode, this is treated the same as an escaped symlink — rejected with a clear error. In random-access mode, the check is deferred until all members are written (same final verification). The default `DATA` extraction filter already rejects most such patterns.
+
+### 2.8 Test architecture
+
+Tests are split into two tiers:
+
+**Tier 1 — generated-on-demand** (the vast majority): archive content is declared as Python `ArchiveContents` / `FileInfo` specs, generated at test time into a per-session cache directory (keyed by a hash of the spec + creation parameters), and never committed to the repo. The `conftest.py` fixture handles generation and caching transparently.
+
+```python
+@pytest.mark.sample_archives(container=ContainerFormat.ZIP, configs=["default", "altlibs"])
+def test_read_basic(sample_archive: SampleArchive, archivey_config):
+    with open_archive(sample_archive.get_archive_path(), config=archivey_config) as ar:
+        assert ar.get_members() == sample_archive.contents.expected_members()
+```
+
+The `sample_archive.contents` object is both the generation spec and the ground truth — no JSON needed for generated archives. Format-specific feature flags (`ArchiveFormatFeatures`) tell the assertion helper which fields to compare (e.g. rounded mtimes for `zipfile`-generated ZIPs, no dir entries for py7zr).
+
+**Tier 2 — committed fixtures with JSON sidecars** (a small set, committed to `tests/fixtures/`):
+
+- Archives that require a specific OS or unavailable tool to generate (Windows junctions, RAR created with exact version flags, malformed-but-valid-in-the-wild archives).
+- Adversarial archives: hand-crafted zip bombs, path traversal attempts, corrupt headers. These are small binary files; committing them is cheap and they rarely change.
+- For every committed archive `foo.rar`, a sidecar `foo.json` documents the expected member list. A single parametrized test `test_fixtures.py::test_committed_fixture` runs all of them.
+
+```json
+{
+  "format": "RAR5",
+  "members": [
+    {"name": "dir/", "type": "DIR", "size": 0},
+    {"name": "dir/file.txt", "type": "FILE", "size": 42,
+     "mtime": "2023-01-15T12:00:00+00:00"}
+  ]
+}
+```
+
+**Cross-tool verification**: For any archive parseable by `7z l -slt` or `unrar lt`, CI can run these and compare the output against the parsed `Member` fields. This is implemented as an optional pytest plugin (`--verify-with-7z`) so it doesn't require tool installation in all environments.
+
+### 2.10 Filters as pure transform functions
 
 ```python
 # _filters.py
@@ -229,7 +294,7 @@ POLICY_TRANSFORMS: dict[ExtractionPolicy, Callable[[Member], Member]] = {
 
 `check_universal` always runs first. Policy transforms always run second. The result is a new (immutable) `Member` with adjusted permissions — no mutation.
 
-### 2.9 Error wrapping pattern
+### 2.11 Error wrapping pattern
 
 Every backend wraps its library's exceptions at the call site, preserving the chain:
 
@@ -255,7 +320,7 @@ def open_member(self, member: Member) -> BinaryIO:
     return self._zf.open(member.original_name)
 ```
 
-### 2.10 Cost Receipt computation
+### 2.12 Cost Receipt computation
 
 Each backend computes its `CostReceipt` in `open_read()`, **before** any heavy I/O:
 
@@ -278,7 +343,7 @@ TAR.GZ backend:
   → solid_block_count = len(archive.solid_units)
 ```
 
-### 2.11 Optional dependencies and graceful degradation
+### 2.13 Optional dependencies and graceful degradation
 
 ```python
 # backends/_7z.py

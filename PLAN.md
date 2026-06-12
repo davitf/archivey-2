@@ -1,454 +1,384 @@
-# Archivey — Implementation Plan
+# Archivey — Implementation Plan (v2 Selective Rewrite)
 
-> A phased delivery plan. The goal is a working, safe, well-tested library. Phases are sized for roughly 1–3 days of focused work each. Later phases can be reordered based on what formats are highest priority.
+> **Starting point:** the existing `archivey-dev` codebase.
+> **Approach:** selective rewrite — keep the parts that are already good, replace the parts that need it.
+> **No backwards-compatibility requirement:** the new public API is defined in SPEC.md and ARCHITECTURE.md, not inherited from DEV.
 >
-> **Guiding principle:** each phase ends with a mergeable, tested, mypy-clean state. No half-built phases.
+> Each phase ends with a mergeable, mypy-clean, passing state.
+> Phases are sized for roughly 1–3 days of focused work each.
 
 ---
 
-## Phase 0: Project Scaffold
+## What we're keeping from DEV (largely as-is)
 
-**Goal:** a clean project skeleton that all subsequent phases build on.
+- Format backends: ZIP, TAR, single-file compressors, ISO, directory — logic and edge cases are correct and well-tested. Port with interface adjustments only.
+- 7z backend: the thread-queue streaming approach (`StreamingFile`) and per-folder extraction cache — both are good. Port and clean up.
+- RAR backend: the `unrar p` pipe demultiplexer (`RarStreamReader`) and solid-cache approach — port and clean up.
+- `ArchiveStream`: lazy-opening + exception translation wrapper — clean design, keep it.
+- `RewindableStreamWrapper` + `RecordableStream` — correct, keep them.
+- `DecompressorStream`, `XzStream`, `LzipStream` — keep, move to better location.
+- Format detection logic.
+- Test declarative approach: `ArchiveContents`, `FileInfo`, `ArchiveCreationInfo`, `conftest.py` parametrization.
+
+## What we're rewriting
+
+- **`ExtractionHelper`**: replace with `ExtractionCoordinator` (unified streaming pass, no deferred/pending state machine).
+- **`BaseArchiveReader` interface**: rename methods, remove `for_iteration` parameter, convert `streaming_only`/`members_list_supported` constructor args to class attributes, remove `_prepare_member_for_open` hook.
+- **`io_helpers.py`**: split into logical modules; rewrite `BinaryIOWrapper` to remove the method-replacement trick.
+- **Public API**: align to SPEC.md — `iter_members_with_streams` → `stream_members`, add `CostReceipt`, `ArchiveInfo` fields, etc.
+- **Test binary archives**: stop committing generated archives; generated-on-demand only.
+
+---
+
+## Phase 1: Project scaffold and initial port
+
+**Goal:** new project compiles, all DEV tests pass.
 
 ### Tasks
 
-1. **`pyproject.toml`** (PEP 517 / PEP 621):
-   - Build backend: `hatchling` (zero-config, src layout native).
-   - `[project]` metadata: name, version `0.1.0.dev0`, Python `>=3.11`.
-   - `[project.optional-dependencies]`: `7z`, `rar`, `iso`, `zstd`, `all`, `dev`.
-   - `[tool.pytest.ini_options]`: testpaths, coverage, markers.
+1. **`pyproject.toml`** — clean slate:
+   - Build backend: `hatchling`.
+   - `[project]` metadata: `archivey`, version `0.2.0.dev0`, Python `>=3.11`.
+   - Optional extras: `7z` (py7zr), `rar` (rarfile), `iso` (pycdlib), `zstd` (zstandard), `all`, `dev`.
    - `[tool.mypy]`: `strict = true`, `python_version = "3.11"`.
-   - `[tool.ruff]`: `select = ["E", "F", "I", "UP", "B", "SIM"]`, line-length 100.
-   - `[tool.coverage.report]`: `fail_under = 90`.
+   - `[tool.ruff]`, `[tool.coverage]`.
 
-2. **Src layout**:
-   ```
-   src/archivey/__init__.py   # empty for now
-   src/archivey/py.typed
-   tests/__init__.py
-   tests/conftest.py
-   ```
+2. **Copy source from DEV**: bring over all `src/archivey/` Python files verbatim to start. This gives a baseline that compiles and passes tests before any changes.
 
-3. **CI workflow** (`.github/workflows/ci.yml`):
-   - Matrix: Python 3.11, 3.12, 3.13; ubuntu-latest + windows-latest.
-   - Steps: install dev deps → ruff check → mypy → pytest with coverage.
+3. **Copy test infrastructure**: `sample_archives.py`, `create_archives.py`, `conftest.py`, `testing_utils.py`, and all `test_*.py` files. Move committed test archives to `tests/fixtures/`.
 
-4. **`CHANGELOG.md`** stub with `## [Unreleased]` section.
+4. **Verify**: `mypy src/` passes, `pytest tests/` passes (minus any tests depending on DEV-only API).
 
-5. **Verify**: `pytest tests/` passes (0 tests, 0 failures); `mypy src/` passes.
+### Acceptance criteria
+- All tests pass.
+- No new public API exposed yet (this is a private fork state).
 
 ---
 
-## Phase 1: Types, Errors, and Detection
+## Phase 2: Stream layer reorganization
 
-**Goal:** all public types, the exception hierarchy, and format detection are implemented and tested. Nothing reads an actual archive yet.
+**Goal:** `io_helpers.py` is split into logical modules; `BinaryIOWrapper` is simplified.
 
 ### Tasks
 
-1. **`src/archivey/_errors.py`** — full exception hierarchy as specified in SPEC §6.
-   - Each exception class gets `format`, `member_name`, and `message` attributes.
-   - `__str__` renders all fields.
+1. **Create `src/archivey/internal/streams/` package**:
+   - `detect.py`: `RecordableStream`, `RewindableStreamWrapper` — only used for format detection.
+   - `slice.py`: `SlicingStream`.
+   - `compat.py`: `is_seekable`, `is_stream`, `is_filename`, `ensure_binaryio`, `ensure_bufferedio`, `fix_stream_start_position`, `read_exact`. Also `BinaryIOWrapper` (simplified, see below).
+   - Keep `archive_stream.py` in place (it's clean and focused).
+   - Move `decompressor_stream.py`, `xz_stream.py`, `lzip_stream.py` into `streams/` as `decompress.py`, `xz.py`, `lzip.py`.
 
-2. **`src/archivey/_types.py`** — all enums and dataclasses:
-   - `ArchiveFormat`, `MemberType`, `CompressionAlgo`, `CompressionMethod`
-   - `ListingCost`, `AccessCost`, `StreamCapability`, `Intent`
-   - `ExtractionPolicy`, `OverwritePolicy`
-   - `Member` frozen dataclass (full field set)
-   - `ArchiveInfo`, `CostReceipt`, `FormatInfo`
-   - `CompressionSpec` with class-level constants
+2. **Simplify `BinaryIOWrapper`**: remove the method-replacement hot-path trick (`self.read = self._raw.read` after first call). Replace with straightforward delegation. The micro-optimization isn't worth the fragility.
+   ```python
+   def read(self, size=-1):
+       return self._raw.read(size)
+   def readinto(self, b):
+       if hasattr(self._raw, 'readinto'):
+           return self._raw.readinto(b)
+       data = self.read(len(b)); b[:len(data)] = data; return len(data)
+   ```
 
-3. **`src/archivey/_detection.py`**:
-   - `MAGIC_TABLE: list[tuple[bytes, int, ArchiveFormat]]` — magic bytes, offset, format.
-   - `detect_format(source) -> FormatInfo` — reads peek, matches magic, falls back to extension.
-   - `PeekableStream` — wraps non-seekable `BinaryIO`, buffers first N bytes, transparent replay.
-   - `DETECTION_LIMIT = 4096`, `ISO_DETECTION_LIMIT = 32774`.
+3. **Update all imports**: `from archivey.internal.io_helpers import X` → appropriate new path. Keep `io_helpers.py` as a re-export shim temporarily to avoid changing format backends in this phase.
 
-4. **Tests**:
-   - `test_types.py`: construct every type, verify frozen, verify `__repr__`.
-   - `test_errors.py`: raise and catch every exception type; verify `__cause__` chain is preserved.
-   - `test_detection.py`: feed raw magic bytes for every format → correct `ArchiveFormat`; test `PeekableStream` replay; test ISO extended limit; test extension fallback; test conflict (magic wins).
+4. **Verify**: same test suite passes, mypy clean.
+
+### Acceptance criteria
+- `io_helpers.py` is ≤ 50 lines (all re-exports).
+- No behaviour change.
+
+---
+
+## Phase 3: Base reader interface cleanup
+
+**Goal:** the ABC contract between `BaseArchiveReader` and format backends is cleaner.
+
+### Changes
+
+1. **Rename `iter_members_for_registration()` → `_iter_members()`** in `BaseArchiveReader` and all backends.
+
+2. **Remove `for_iteration` parameter from `_open_member()`**:
+   - Currently used by 7z to hint whether it's an iteration call vs random access. Instead, solid backends override `_iter_members_and_streams_internal()` entirely — they never rely on `_open_member` being called during iteration.
+   - Update 7z and RAR backends to override `_iter_members_and_streams_internal()` rather than checking `for_iteration`.
+
+3. **Convert `streaming_only` + `members_list_supported` from constructor args to class attributes**:
+   ```python
+   class TarReader(BaseArchiveReader):
+       _SUPPORTS_RANDOM_ACCESS = False   # set to True if source is seekable (resolved at __init__)
+       _MEMBER_LIST_UPFRONT = False
+
+   class ZipReader(BaseArchiveReader):
+       _SUPPORTS_RANDOM_ACCESS = True
+       _MEMBER_LIST_UPFRONT = True
+   ```
+   Note: `_SUPPORTS_RANDOM_ACCESS` is still determined at instance level for TAR (depends on whether the source is seekable), so `__init__` may override the class default.
+
+4. **Remove `_prepare_member_for_open()` hook**:
+   - Currently used by 7z to fetch link targets not populated at listing time (a py7zr limitation). Instead: store a lazy resolver in `member.raw_info`; `_open_member` calls it as needed. No extra hook required.
+
+5. **Rename `_iter_members_and_streams_internal()` → `_iter_with_data()`** to match ARCHITECTURE.md naming.
+
+6. **Update `_translate_exception()` signature**: take `Exception` → return `ArchiveError | None`. (Already the case; just verify all backends are consistent.)
+
+7. **Verify**: all tests pass, mypy clean.
+
+### Acceptance criteria
+- No `for_iteration` parameter anywhere.
+- No `_prepare_member_for_open` method anywhere.
+- All backends updated consistently.
+
+---
+
+## Phase 4: ExtractionHelper rewrite
+
+**Goal:** replace the deferred-pending state machine with a unified streaming coordinator.
+
+### Design
+
+The new `ExtractionCoordinator` in `internal/extraction_helper.py` (or rename to `extraction_coordinator.py`):
+
+```python
+@dataclass
+class ExtractionCoordinator:
+    archive_reader: ArchiveReader
+    root_path: str
+    overwrite_mode: OverwriteMode
+
+    # Built before the pass, in random-access mode.
+    # Maps source member_id → list of hardlink members that point to it.
+    _hardlink_targets: dict[int, list[ArchiveMember]] = field(default_factory=...)
+
+    # Populated during the pass.
+    _extracted_path_by_id: dict[int, str] = field(default_factory=dict)
+    _extracted_members_by_path: dict[str, ArchiveMember] = field(default_factory=dict)
+
+    def run(self, members_and_streams: Iterable[tuple[ArchiveMember, BinaryIO | None]]) -> dict[str, ArchiveMember]:
+        for member, stream in members_and_streams:
+            self._process(member, stream)
+        self._apply_metadata()
+        return self._extracted_members_by_path
+
+    def _process(self, member, stream): ...
+```
+
+**Pre-pass hardlink closure** (random-access mode only):
+
+```python
+def build_hardlink_map(members: list[ArchiveMember]) -> dict[int, list[ArchiveMember]]:
+    # For each hardlink, find its source and record it.
+    # Sources not already in the selected set are added as "data needed".
+    ...
+```
+
+**During-pass logic** (no deferred state):
+- `FILE`: write `stream → dest_path` immediately. Record `member_id → dest_path`.
+- `DIR`: `os.makedirs(path, exist_ok=True)`.
+- `HARDLINK`: look up `_extracted_path_by_id[source_id]`. If found: `os.link(source_path, dest_path)` (fallback: `shutil.copy2`). If not found and streaming mode: `ArchiveError("hardlink target not yet extracted")`. If not found and random-access: cannot happen if pre-pass was correct.
+- `SYMLINK`: `os.symlink(target, dest_path)`, then verify the resolved path stays within root (post-creation check). If escaped: unlink and raise.
+
+**Removal of complexity**:
+- No `pending_files_to_extract_by_id` / `pending_target_members_by_source_id` dicts.
+- No `can_move_file` flag.
+- No `process_file_extracted()` method.
+- No two-pass file extraction for the random-access path — everything is a single ordered pass over `_iter_with_data()`.
+
+**Remaining second pass for random-access**: after the main pass, an optional second pass re-opens any hardlink sources that the filter excluded but that were needed. This is the only deferred work, it's O(skipped_sources), and it's explicit.
+
+### Tasks
+
+1. Implement `ExtractionCoordinator` as described above.
+2. Update `BaseArchiveReader.extractall()` and `BaseArchiveReader.extract()` to use it.
+3. Remove `ExtractionHelper`.
+4. Port all tests from `test_extractall.py` to the new logic.
+
+### Acceptance criteria
+- All existing extraction tests pass.
+- No `pending_*` attributes anywhere in the new code.
+- Streaming-mode extraction works correctly with a non-seekable TAR stream.
+- Hardlinks and symlinks extracted correctly in both modes.
+
+---
+
+## Phase 5: Public API alignment
+
+**Goal:** the public API matches SPEC.md.
+
+### Tasks
+
+1. **`iter_members_with_streams()` → `stream_members()`** (public rename, keep alias for one release if desired).
+
+2. **`ArchiveInfo`**: add `solid_block_count`, `archive_comment`, `format` fields as per SPEC §4. Update all backends to populate them.
+
+3. **`Member` dataclass**: add `extra: dict[str, Any] = field(default_factory=dict, hash=False, compare=False)`. Add `atime` field. Verify `frozen=True` still works with `hash=False` on `extra`.
+
+4. **`CostReceipt`** (`ListingCost`, `AccessCost`, `StreamCapability`): implement as per SPEC §7. Wire into `open_archive()` return or expose via `reader.get_archive_info()`.
+
+5. **`open_archive()` `streaming` parameter**: already exists in DEV as `streaming_only`, renamed. Verify the deprecation warning for `streaming_only`.
+
+6. **Exception hierarchy**: align to SPEC §6. Verify `ArchiveMemberNotFoundError`, `ArchiveMemberCannotBeOpenedError`, `ArchiveEncryptedError`, `ArchiveCorruptedError`, `ArchiveIOError`, `SameFileError` all exist and are raised in the right places.
+
+7. **`has_random_access()`**: verify it returns `False` for non-seekable TAR, `True` for everything else.
+
+8. **`resolve_link()`**: verify it handles symlink chains up to depth 8, returns `None` for external targets.
+
+9. **Update `__init__.py`** re-exports.
+
+10. **Tests**: `test_types.py` for new `Member` fields; `test_api.py` for `CostReceipt` values per format.
 
 ### Acceptance criteria
 - `mypy --strict` passes.
-- All detection tests pass on Linux and Windows.
-- 100% branch coverage on `_detection.py`.
+- Public API matches SPEC.md §2–§7.
+- `CostReceipt` returns correct values for all 7 backends.
 
 ---
 
-## Phase 2: Backend Infrastructure + ZIP
+## Phase 6: Test infrastructure overhaul
 
-**Goal:** the backend registry, the `ArchiveReader` ABC, and a fully functional ZIP backend (read only).
+**Goal:** no generated binary archives committed to the repo; committed fixtures are documented with JSON sidecars.
 
 ### Tasks
 
-1. **`src/archivey/backends/_base.py`** — `Backend` ABC (as in ARCHITECTURE §2.2).
+1. **Delete committed generated archives** (any `test_archives/*.zip`, `*.tar`, `*.7z`, etc. that are generated by `create_archives.py`). Add them to `.gitignore`.
 
-2. **`src/archivey/backends/__init__.py`** — `BackendRegistry` singleton:
-   - `register(cls)`, `detect_backend(peek, path, intent) -> type[Backend]`.
-   - Raises `UnsupportedFormatError` with install hint when optional backend is detected but unavailable.
+2. **Add caching to archive generation**: `sample_archive_path` fixture in `conftest.py` caches to `~/.cache/archivey-tests/` (or `$XDG_CACHE_HOME/archivey-tests/`), keyed by `hash(spec + creation_params)`. Regenerates only if missing or `--regen` flag passed.
 
-3. **`src/archivey/_reader.py`** — `ArchiveReader` ABC:
-   - Implements all public methods in terms of `_iter_members()`, `_open_member()`, and `_iter_with_data()`.
-   - `open()` and `read()` add link-following on top of `_open_member()` (cycle guard, max depth 8).
-   - `stream_members()` delegates to `_iter_with_data()`.
-   - Default `_iter_with_data()`: naive `_open_member()` per member — correct for non-solid formats; overridden by solid-archive backends.
-   - `add_members()` in `ArchiveWriter` calls `reader.stream_members()` so conversion always takes the bounded-memory path.
-   - Lazy materialization cache with Sequential guard.
-   - `__enter__`/`__exit__` delegates to `close()`.
+3. **Committed fixtures** (`tests/fixtures/`):
+   - Move existing adversarial archives here; strip any that can be regenerated from `create_adversarial.py`.
+   - Add `create_adversarial.py` script with instructions for generating each one (idempotent).
+   - For each committed archive `foo.zip`, add `foo.json` sidecar (format documented in ARCHITECTURE §2.8).
 
-4. **`src/archivey/backends/_zip.py`** — `ZipReader`:
-   - Implement `_iter_members()`: iterate `ZipFile.infolist()`, map each `ZipInfo` → `Member`.
-   - `mode` from `external_attr >> 16` (only if `create_system == 3`).
-   - `modified` from `date_time` as naive `datetime`; upgrade to aware if ZIP64 NTFS extra present.
-   - Symlink detection via Unix extra field `0x000A`.
-   - `_open_member()`: `ZipFile.open(member.original_name)`.
-   - Non-seekable ZIP: spool to `SpooledTemporaryFile(max_size=50*1024*1024)`.
-   - `CostReceipt`: `O1`, `DIRECT`, `SEEKABLE` (or `REPLAY_ONLY` if spooled).
-   - Register `ZipBackend` at module bottom.
+4. **Parametrized fixture test**: `test_fixtures.py::test_committed_fixture` — opens each archive in `tests/fixtures/`, reads all members, asserts fields match the JSON sidecar. Runs on all platforms including Windows.
 
-5. **`src/archivey/__init__.py`** — wire up `open()`, `detect_format()`:
-   ```python
-   def open(source, *, format=None, intent=Intent.AUTO, ...) -> ArchiveReader:
-       peek = _detection.peek_bytes(source)
-       fmt = format or _detection.detect_format_from_peek(peek, source).format
-       backend_cls = registry.detect_backend(peek, source if isinstance(source, Path) else None, intent)
-       return backend_cls().open_read(source, intent, ...)
-   ```
+5. **Remove `tests/archivey/` nesting**: flatten to `tests/` (remove the intermediate directory that DEV uses). Update all import paths.
 
-6. **Tests `test_zip.py`**:
-   - Open real ZIP files (created in fixture with `zipfile`).
-   - Iterate members, verify `Member` fields.
-   - Random access by name.
-   - `read()` returns correct bytes.
-   - `open()` returns readable stream.
-   - Unix permissions round-trip.
-   - Symlink detection.
-   - Non-seekable stream (spooling).
-   - Encrypted ZIP raises `EncryptionError`.
-   - Corrupt ZIP raises `CorruptionError`.
+6. **Cross-tool verification** (optional CI job): `tests/verify_with_7z.py` — for each generated archive, runs `7z l -slt` and compares member list to parsed output. Gated behind `--verify-with-7z` flag, skipped if `7z` not in PATH.
 
 ### Acceptance criteria
-- Can open and read any standard ZIP file.
-- All member fields correctly populated (including `None` where format doesn't provide).
-- `mypy --strict` clean.
+- `git status` after test run shows no new binary files.
+- CI generates all archives from scratch in a fresh environment and all tests pass.
+- Every file in `tests/fixtures/` has a corresponding `.json` sidecar.
 
 ---
 
-## Phase 3: TAR Backend
+## Phase 7: Writing support
 
-**Goal:** TAR backend for all variants (bare, gz, bz2, xz) and the single-file compressor backend.
-
-### Tasks
-
-1. **`src/archivey/backends/_tar.py`** — `TarReader`:
-   - `_iter_members()`: `TarFile.next()` loop, map `TarInfo` → `Member`.
-   - Handle PAX extended headers (`pax_headers`): override mtime (full precision), atime, charset.
-   - `MemberType` from TAR type byte table.
-   - Hardlink members: `type=HARDLINK`, `link_target=TarInfo.linkname`.
-   - `CostReceipt`: `ON` listing, `SOLID` for compressed variants, `DIRECT` for plain `.tar`.
-   - Truncation detection: check for end-of-archive marker after final member.
-   - Handle GNU long name/link extension headers transparently (tarfile does this).
-   - `_open_member()`: `TarFile.extractfile(tarinfo)`.
-   - Detect TAR sub-format from `tarfile.OPEN_METH` candidates.
-
-2. **`src/archivey/backends/_single.py`** — `SingleFileReader`:
-   - Formats: `GZ`, `BZ2`, `XZ`; later `ZST` if `[zstd]` installed.
-   - Construct a single `Member` with name inferred from path.
-   - `_iter_members()` yields the single member.
-   - `_open_member()`: returns `gzip.open()` / `bz2.open()` / `lzma.open()`.
-   - `CostReceipt`: `O1` (one member), `SOLID`, appropriate seek capability.
-
-3. **Tests `test_tar.py`**:
-   - Plain `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`.
-   - PAX headers: unicode names, high-precision mtime, subsecond access time.
-   - Symlinks, hardlinks, directories.
-   - Device nodes → `MemberType.OTHER`.
-   - Truncated TAR → `TruncatedError` / warning (configurable).
-   - Non-seekable `.tar.gz` stream.
-
-4. **Tests `test_single.py`**:
-   - `.gz`, `.bz2`, `.xz` files.
-   - Name inference.
-   - `read()` returns correct decompressed bytes.
-
----
-
-## Phase 4: Safe Extraction
-
-**Goal:** the extraction system — filters, policies, bomb detection — is implemented and forms the security core of the library.
-
-### Tasks
-
-1. **`src/archivey/_filters.py`**:
-   - `check_universal(member: Member) -> None` — raises appropriate `FilterRejectionError` subclass.
-   - `transform_strict(member: Member) -> Member` — returns new Member with adjusted permissions.
-   - `transform_standard(member: Member) -> Member`.
-   - `POLICY_TRANSFORMS` dict.
-   - `resolve_within(path: Path, root: Path) -> Path` — raises `SymlinkEscapeError` if not within root.
-
-2. **`src/archivey/_extraction.py`**:
-   - `BombTracker` class.
-   - `extract_member(...)` single-member extraction function.
-   - `extract_all(reader, dest, policy, overwrite, bomb_tracker, on_progress) -> list[ExtractionResult]`.
-   - Two-pass symlink/hardlink handling.
-   - Metadata restoration (mtime via `os.utime`, permissions via `os.chmod`).
-   - Atomic directory creation.
-
-3. **`src/archivey/_progress.py`** — `ExtractionProgress`, `ExtractionResult`, `ExtractionStatus`.
-
-4. **Wire `extract_all` / `extract` into `ArchiveReader` ABC and `archivey.extract()`**.
-
-5. **Adversarial test corpus** — create binary test fixtures:
-   - `tests/corpus/adversarial/path_traversal.zip` — member named `../../evil.txt`.
-   - `tests/corpus/adversarial/absolute_path.tar` — member named `/etc/passwd`.
-   - `tests/corpus/adversarial/symlink_escape.zip` — symlink → `../../outside`.
-   - `tests/corpus/adversarial/bomb_flat.zip` — 1 MiB zeros compressed to ~1 KiB, ratio ~1000:1.
-   - `tests/corpus/adversarial/corrupt.zip` — truncated central directory.
-   - A Python script `tests/corpus/create_adversarial.py` that regenerates these.
-
-6. **Tests `test_extraction.py`**:
-   - All adversarial corpus cases.
-   - `STRICT` policy strips executable bit, setuid, uid/gid.
-   - `STANDARD` policy preserves executable but strips setuid.
-   - `TRUSTED` policy passes through all permissions.
-   - Overwrite policies: `ERROR`, `SKIP`, `REPLACE`.
-   - Bomb detection: ratio trigger, total bytes trigger.
-   - Progress callback receives correct values.
-   - Two-pass hardlink extraction.
-   - Symlink post-creation verification.
-
-### Acceptance criteria
-- All adversarial tests pass.
-- Extraction from ZIP and TAR produces correct files on disk.
-- No path escapes under any policy.
-
----
-
-## Phase 5: Writing
-
-**Goal:** `ArchiveWriter` ABC + ZIP and TAR writers + conversion pipeline.
+**Goal:** `ArchiveWriter` ABC, ZIP and TAR writers, conversion pipeline.
 
 ### Tasks
 
 1. **`src/archivey/_writer.py`** — `ArchiveWriter` ABC:
-   - `add()`, `add_bytes()`, `add_stream()`, `add_member()`, `add_members()`.
-   - `__enter__`/`__exit__` with clean `close()` on exception.
-   - `add_members()` default implementation: iterate reader, stream each member.
+   - `add(path, *, name=None, recursive=True)` — add from filesystem.
+   - `add_bytes(data, name, *, mtime=None, mode=None)` — add from bytes.
+   - `add_stream(stream, name, *, size=None, mtime=None, mode=None)` — add from stream.
+   - `add_member(member, stream)` — preserve a Member's metadata exactly.
+   - `add_members(reader)` — calls `reader.stream_members()` and `add_member` in a loop.
+   - `close()`, `__enter__`/`__exit__`.
 
-2. **`src/archivey/backends/_zip.py`** — `ZipWriter`:
-   - `add_stream()`: uses `SpooledTemporaryFile` per member to compute CRC before writing local header (required by `zipfile`). Alternatively: use `ZipFile.open(name, 'w')` write mode (Python 3.6+) which handles CRC via data descriptor. The latter is preferred as it avoids buffering.
+2. **`ZipWriter`** in `formats/zip_reader.py` (or `zip_writer.py`):
+   - `add_stream()`: uses `ZipFile.open(name, 'w')` (Python 3.6+) to avoid pre-buffering for CRC.
    - `add_bytes()`: `ZipFile.writestr()`.
-   - `add()` for paths: `ZipFile.write()` for files, recursive for directories.
-   - Compression spec → `zipfile` compression constant mapping.
+   - `add()`: `ZipFile.write()` for files, `os.walk` for directories.
 
-3. **`src/archivey/backends/_tar.py`** — `TarWriter`:
-   - `add_stream()`: creates `TarInfo`, sets fields from metadata, calls `TarFile.addfile()`.
-   - `add()` for paths: `TarFile.add()` with `recursive=True/False`.
-   - Compression spec → tarfile mode string (`w:gz`, `w:bz2`, `w:xz`).
+3. **`TarWriter`** in `formats/tar_reader.py`:
+   - `add_stream()`: `TarFile.addfile(tarinfo, stream)`.
+   - `add()`: `TarFile.add()` with `recursive=False` for files, walking for directories.
 
-4. **Wire `archivey.create()`** in `__init__.py`.
+4. **`create_archive()` in `core.py`** — analogous to `open_archive()`.
 
-5. **Tests `test_writing.py`**:
-   - Create ZIP and TAR archives with files, bytes, and streams.
-   - Verify member names, sizes, metadata round-trip.
-   - Directory recursion.
-   - Compression level respected.
+5. **Tests `test_writing.py`** and **`test_conversion.py`**:
+   - Round-trip: write then read back; verify member names, sizes, content, mtime.
+   - `stream_members()` in conversion: verify memory profile (no full buffering).
+   - `add_members()` across formats: `tar.gz` → `zip`, `zip` → `tar`.
 
-6. **Tests `test_conversion.py`**:
-   - `tar.gz` → `zip`: verify identical member names, sizes, and content.
-   - `zip` → `tar.gz`.
-   - Large file (stream-based, no full buffering) — verified via memory tracking.
-   - Members with unsupported types for target format are skipped with warning.
+### Acceptance criteria
+- ZIP and TAR round-trip correctly.
+- `add_members(reader)` produces an archive with correct content for all reader formats.
+- No full archive buffering during stream-to-stream conversion (verify via `tracemalloc`).
 
 ---
 
-## Phase 6: Equivalence Matrix and CI Corpus
+## Phase 8: 7z and RAR streaming improvements
 
-**Goal:** prove the "one interface, same results" promise with an automated test matrix.
+**Goal:** integrate DEV's best streaming approaches with the new interface.
+
+DEV already has two excellent implementations:
+- **7z**: `StreamingFile` with thread+queue — truly streaming, O(queue_bound) memory.
+- **RAR**: `RarStreamReader` with `unrar p` pipe demultiplexer — single subprocess, CRC-validated.
 
 ### Tasks
 
-1. **`tests/corpus/equivalence/`**: a canonical directory tree:
-   ```
-   canonical/
-   ├── README.txt            (ASCII text)
-   ├── unicode_Ñoño.txt      (UTF-8 filename)
-   ├── subdir/
-   │   └── nested.bin        (binary data, known CRC)
-   ├── empty_dir/
-   ├── link -> README.txt    (symlink)
-   └── executable.sh         (mode 0o755)
-   ```
-   Packaged as `.zip`, `.tar.gz`, `.tar.bz2`, `.tar.xz` (all committed as binary fixtures).
-   Script `tests/corpus/create_equivalence.py` regenerates from the canonical directory.
+1. **7z `_iter_with_data()` override**: use the thread+queue `StreamingFile` approach from DEV rather than the "extract folder to tmpdir" approach from ARCHITECTURE.md. This gives true streaming with bounded memory without any disk I/O. Verify the per-folder memory release still happens (the queue bound acts as the buffer).
 
-2. **`tests/test_equivalence.py`** — equivalence matrix:
-   - For each format, open and read all members.
-   - Assert that `member.name`, `member.type`, `member.size`, `crc32` (for files) match across all formats.
-   - Assert that `member.modified` is equivalent (within 2-second tolerance for DOS timestamps).
-   - Assert that `member.mode & 0o777` is equivalent (within format limitations).
-   - Document known limitations inline (e.g. ZIP without Unix extra has no permission bits).
+2. **RAR `_iter_with_data()` override**: use the `unrar p` pipe demultiplexer approach from DEV. This avoids tmpdir entirely — data flows directly from `unrar` stdout to the caller. Verify CRC checking is retained.
 
-3. **Hypothesis-based property tests** (`test_properties.py`):
-   - Generate random `Member` objects and verify `check_universal()` correctly rejects/accepts.
-   - Generate random path strings and verify normalization is idempotent (normalizing twice == normalizing once).
+3. **Both backends**: ensure `_open_member()` (for random access) still uses the tmpdir/cache approach — the pipe demultiplexer is sequential-only.
+
+4. **Tests**:
+   - 7z solid: assert `stream_members()` over a solid archive decompresses each folder exactly once (count `py7zr.SevenZipFile.extract` calls).
+   - RAR solid: assert `stream_members()` spawns exactly one `unrar p` subprocess.
+   - Both: assert `stream_members()` peak memory is bounded (instrument with `tracemalloc`).
+   - Both: `open()` (random access) still works after `stream_members()` returns.
+
+### Acceptance criteria
+- 7z solid: one `py7zr.extract()` call per folder during `stream_members()`.
+- RAR solid: one `unrar p` process for the full `stream_members()` pass.
+- `open()` unaffected by whether `stream_members()` has been called.
 
 ---
 
-## Phase 7: Optional Backends
+## Phase 9: Zstandard and extended compression
 
-**Goal:** 7z, RAR, ISO, and Directory backends. Each is gated behind its optional dependency.
+**Goal:** `.zst` and `.tar.zst` support.
 
 ### Tasks
 
-1. **`src/archivey/backends/_7z.py`** (`[7z]` extra → `py7zr`):
-   - `SevenZReader._iter_members()`: `py7zr.SevenZipFile.list()` — cheap, metadata only from pre-parsed header.
-   - Map `py7zr.FileInfo` → `Member`: extract `"folder"` reference for caching; compression from `archiveinfo().method_names`/`Folder.coders`.
-   - `_open_member()`: lazy per-folder cache. On miss: `sz.extract(targets=folder_files, factory=SpooledFactory()); sz.reset()`. Populate `self._folder_cache[folder]`. On hit: `buf.seek(0); return buf`. Cache grows until `close()`.
-   - `_iter_with_data()` override: iterate folders one at a time. Extract folder N into local `folder_bufs`, yield all its `(Member, stream)` pairs, then let `folder_bufs` go out of scope before extracting folder N+1. Peak memory = largest single folder.
-   - Both paths use `_Py7zIOAdapter(SpooledTemporaryFile(max_size=64<<20))` — must be seekable (py7zr calls `seek(0)` after write; does not read back).
-   - `CostReceipt`: `solid_block_count` from `archiveinfo().blocks`; `is_solid` from `archiveinfo().solid`.
-   - `SevenZWriter`: use `py7zr.SevenZipFile(mode='w')` with `writef()` and `writestr()`.
-
-2. **`src/archivey/backends/_rar.py`** (`[rar]` extra → `rarfile` + system `unrar`):
-   - `RarReader._iter_members()`: `rarfile.RarFile.infolist()` — O(1), central dir parsed upfront.
-   - Timestamp: RAR4 `ftime` → naive datetime; RAR5 `mtime` → timezone-aware UTC datetime.
-   - `_open_member()`: non-solid → `rarfile.open()` (hack path); solid → `_ensure_solid_cache()` on first call (runs `unrar x` once), return `open(cache_dir / member.name, 'rb')`. Cache persists until `close()`.
-   - `_iter_with_data()` override (solid): run `unrar x` to fresh tmpdir, yield `(Member, file_handle)` pairs, clean up tmpdir in `finally` when the generator closes. Disk freed as soon as caller finishes `stream_members()` loop.
-   - Both paths use `rarfile.tool_setup()` to locate the binary; respect user-configured tool path.
-   - Handle missing binary: catch `rarfile.RarCannotExec` → `UnsupportedFormatError` with install hint.
-   - `SUPPORTS_WRITE = False` — raise `UnsupportedOperationError` on write attempt.
-
-3. **`src/archivey/backends/_iso.py`** (`[iso]` extra → `pycdlib`):
-   - `IsoReader._iter_members()`: walk `pycdlib.PyCdlib` with Rock Ridge → Joliet → Plain priority.
-   - Namespace auto-selection: try `rr_path`, fall back to `joliet_path`, then `iso_path`.
-   - `_open_member()`: `pycdlib_iso.get_file_from_iso_fp(iso_path=...)`.
-   - Report selected namespace in `ArchiveInfo.extra["iso.namespace"]`.
-   - ISO detection extended limit (32 774 bytes).
-
-4. **`src/archivey/backends/_dir.py`**:
-   - `DirReader._iter_members()`: `os.walk()` recursively, map `stat()` → `Member`.
-   - `CostReceipt`: `O1`, `DIRECT`, `SEEKABLE`.
-   - Useful as a "source" for the conversion pipeline.
-
-5. **Tests `test_7z.py`**, **`test_rar.py`**, **`test_iso.py`**, **`test_dir.py`**:
-   - Each uses `pytest.importorskip()` to skip if optional dep absent.
-   - Standard read/iterate/extract cycle via normal `for member in ar: ar.open(member)`.
-   - Format-specific quirks (solid blocks, RAR4/5 timestamps, ISO namespaces).
-   - **7z solid**: mock `py7zr.SevenZipFile.extract` to count calls; assert one call per folder (solid block), not per file; verify `stream_members()` uses folder-by-folder loop.
-   - **RAR solid**: mock `subprocess.run`; assert exactly one `unrar x` call for `stream_members()`, one for `open()` path (first access triggers cache). Verify `stream_members()` cleans up tmpdir after iteration; `open()` path cleans up on `close()`.
-
-6. **Tests for sample usage patterns** (`test_patterns.py`):
-   - Hash-all-files via `stream_members()`: verify correctness across all formats.
-   - Hash-all-files via `for member in ar: ar.open(member)`: also correct, verify same hashes.
-   - Memory profile test for solid 7z: verify folder-by-folder (instrument `SpooledTemporaryFile` creation counts).
-   - `open(symlink_member)` follows link transparently: test with TAR, ZIP symlinks.
-   - `open(hardlink_member)` follows hardlink transparently: test with TAR hardlinks.
-   - Link cycle in archive: verify `ReadError` raised after depth limit.
-   - Link to external (missing) target: verify `ReadError`.
+1. **`SingleFileReader`**: add `ZST` using `zstandard` package (gated behind `[zstd]` extra).
+2. **`TarReader`**: add `.tar.zst` via `tarfile` + `zstandard` codec hook.
+3. **`TarWriter`**: `w:zst` mode.
+4. **Format detection**: add `.zst` magic bytes.
+5. Tests: skip if `zstandard` not installed.
 
 ---
 
-## Phase 8: Cost Receipt, Intent, and Streaming Hardening
+## Phase 10: Polish, documentation, and packaging
 
-**Goal:** the `CostReceipt` system is fully functional and intent-based optimization works.
+**Goal:** `0.2.0` release-ready.
 
 ### Tasks
 
-1. **Verify `CostReceipt` for all backends** — write a test that opens one of each format and asserts the correct `listing_cost`, `access_cost`, and `stream_capability` values.
-
-2. **`Intent.RANDOM` enforcement**: if `intent=RANDOM` and the backend has `access_cost=SOLID`, raise `UnsupportedOperationError` with the cost receipt details in the message.
-
-3. **`Intent.SEQUENTIAL` enforcement**: forbid `.members()`, `__len__`, `__getitem__`. Verify with tests.
-
-4. **`Intent.AUTO` behavior**: if the source is non-seekable, auto-select sequential; if seekable, allow both. Document this in `archivey.open()` docstring.
-
-5. **Streaming hardening** — test every backend with a `FakeNonSeekable` wrapper:
-   - TAR backends: pass (streaming mode).
-   - ZIP: triggers spool behavior.
-   - 7z/RAR/ISO: raises `UnsupportedOperationError` with `REQUIRES_SEEK = True`.
+1. **README.md** — quick-start: open, iterate, stream_members, extract, create, convert. Install with extras.
+2. **API docstrings** — Google-style on all public methods. Build with `mkdocstrings`.
+3. **`archivey.__version__`** via `importlib.metadata`.
+4. **`archivey.list_formats()`** — returns available formats based on installed extras.
+5. **`CHANGELOG.md`** — fill in `## [0.2.0]` section.
+6. **CI matrix** — Python 3.11, 3.12, 3.13; ubuntu-latest + windows-latest. Cache generated test archives per Python version.
+7. **Coverage** — `fail_under = 90`, report on PRs.
 
 ---
 
-## Phase 9: Zstandard and Extended Compression Support
+## Cross-cutting concerns
 
-**Goal:** `.zst` and `.tar.zst` support, plus any remaining compression methods.
+### What stays from DEV in each phase
 
-### Tasks
+| Area | Keep | Change |
+|------|------|--------|
+| ZIP backend | Logic, edge cases | Interface (rename methods) |
+| TAR backend | Logic, PAX, all variants | Interface |
+| 7z backend | Thread+queue StreamingFile, folder cache | Interface, remove `for_iteration` |
+| RAR backend | Pipe demultiplexer, CRC validation | Interface |
+| ISO, dir backends | Logic | Interface |
+| Single-file readers | All | None |
+| Format detection | All | None |
+| ArchiveStream | All | None |
+| DecompressorStream/XZ/lzip | All | Move to streams/ |
+| RewindableStreamWrapper | All | Move to streams/ |
+| BinaryIOWrapper | Outer shape | Remove method-replacement |
+| ExtractionHelper | `apply_member_metadata`, `check_overwrites` | Rewrite the rest |
+| BaseArchiveReader | Registration, link resolution, iter logic | Rename interface, remove hooks |
+| Test declarative specs | All of sample_archives.py | Remove committed generated binaries |
 
-1. **`src/archivey/backends/_single.py`** — add `ZST` format using `zstandard` package (if installed).
-2. **`src/archivey/backends/_tar.py`** — add `.tar.zst` detection and `tarfile` mode `r|zst` / `w|zst` (requires `zstandard` hooked into `tarfile`).
-3. Zstandard frame index: if available (seekable source), use it for random access. If not, mark `AccessCost.SOLID`.
-4. `CompressionAlgo.ZSTD` round-trip in tar writer.
-5. Tests with actual `.zst` files; skip if `zstandard` not installed.
+### Risk areas
 
----
-
-## Phase 10: Polish, Documentation, and Packaging
-
-**Goal:** library is ready for a `0.1.0` release.
-
-### Tasks
-
-1. **`README.md`** — quick-start examples: open, iterate, extract, create, convert. Install instructions with extras.
-
-2. **API documentation** — Google-style docstrings on all public methods. Build with `pdoc` or `mkdocstrings`.
-
-3. **`archivey.__version__`** — wired from `pyproject.toml` via `importlib.metadata`.
-
-4. **`archivey.list_formats()`** — returns currently available formats (based on installed extras).
-
-5. **Performance benchmarks** (`benchmarks/` directory, not part of CI):
-   - Extract 1 000 small files from ZIP vs TAR.
-   - Extract one large file from `.tar.gz` vs `.7z` vs `.zip`.
-   - Profile with `cProfile` and check no hot paths in pure Python.
-
-6. **Final coverage pass** — ensure all edge cases in the adversarial corpus are covered by tests. Target: 90%+ overall, 100% on `_filters.py` and `_errors.py`.
-
-7. **`CHANGELOG.md`** — fill in `[0.1.0]` section.
-
-8. **Tag `v0.1.0`** after all CI passes on all matrix combinations.
-
----
-
-## Milestone Summary
-
-| Phase | Deliverable | Key test signal |
-|-------|-------------|-----------------|
-| 0 | Scaffold | CI green, 0 tests |
-| 1 | Types + Detection | Magic bytes unit tests |
-| 2 | ZIP read | Read a real ZIP |
-| 3 | TAR read + single-file | Read tar.gz, .gz, .bz2, .xz |
-| 4 | Safe extraction | Adversarial corpus all pass |
-| 5 | Writing + conversion | tar.gz → zip round-trip |
-| 6 | Equivalence matrix | Same logical tree == same Member |
-| 7 | Optional backends | 7z, RAR, ISO, Directory |
-| 8 | Cost receipt + intent | All cost receipts correct |
-| 9 | Zstandard | .tar.zst read/write |
-| 10 | Polish + 0.1.0 | Docs, benchmarks, release |
-
----
-
-## Open Questions (for revision)
-
-These are design points that should be discussed before implementation:
-
-1. **Encoding strategy for legacy ZIPs**: The `encoding` parameter defaults to `"utf-8"`, but many legacy Windows ZIPs use `cp437` or `cp1252`. Should `archivey.open()` accept `encoding="auto"` that attempts chardet detection on non-UTF-8 paths? (Adds `chardet` as optional dep.)
-
-2. **Password handling**: Should passwords be `str` (and we encode with the archive's encoding) or `bytes` (fully explicit)? Both? ZIP and RAR use different password semantics. Recommendation: accept `str | bytes`, encode `str` with `"utf-8"` for 7z/RAR5, `"cp437"` for ZIP.
-
-3. **Multivolume RAR/7z**: Currently flagged in `ArchiveInfo.is_multivolume` but no read support. Should v1 at least detect the volumes automatically if they follow the standard naming convention (`.part1.rar`, `.part2.rar`)?
-
-4. **Windows junction points**: Are they common enough to warrant actual recreation on Windows via `os.symlink()` with `target_is_directory=True`? Or just extract as a normal symlink and let Windows handle it?
-
-5. **`max_ratio` default**: 1000:1 is conservative. Some legitimate archives of highly repetitive data (database dumps, log files) can exceed this. Should it be higher (e.g. 10000:1) or should the default be `None` (no ratio limit, only total bytes limit)?
-
-6. **`on_rejection` parameter**: Currently `FilterRejectionError` is always raised. Should there be an `OnRejection.WARN` mode that logs and skips rather than raising? This would be useful for "extract everything possible from untrusted archive, skip dangerous entries." High value for production use cases.
-
-7. **Streaming ZIP write without spooling**: Python's `ZipFile.open(name, 'w')` (3.6+) writes data descriptors, so we don't need to pre-compute CRC. But `zipfile` doesn't expose a streaming interface for very large members. Should we detect member size > threshold and use a different approach?
-
-8. **Directory backend write**: Should `archivey.create(dest, ArchiveFormat.DIRECTORY)` be a "writer" that just copies files to a directory? This makes the conversion pipeline symmetric and useful for "unarchive everything to a directory" workflows.
-
-9. **Custom streaming 7z reader (v2 item)**: The py7zr wrapper caches per solid block in `SpooledTemporaryFile`. For archives with very large solid blocks (e.g. a single 2 GiB solid block), this means buffering 2 GiB. A native streaming reader using py7zr's `archiveinfo.py` header parser + stdlib `lzma.LZMADecompressor` + the `bcj` C extension would give true streaming with no buffering. Should this be planned as an optional `[7z-native]` extra backend in v2, or is the SpooledTemporaryFile approach acceptable indefinitely?
-
-10. **Solid RAR disk requirement**: The one-shot `unrar x` approach requires disk space equal to the uncompressed archive size. For read-only inspection (e.g. listing hashes), this is wasteful. Is there a use case where the disk requirement is a problem? If so, a streaming stdin-pipe approach (piping `unrar p` output to a demultiplexer) is theoretically possible but complex to implement correctly.
+- **Hardlink edge cases in streaming mode**: TAR guarantees target precedes link, but 7z does not. The new `ExtractionCoordinator` must be explicit about what it supports per mode.
+- **py7zr link target availability**: the `_prepare_member_for_open` hook removal requires storing link-target resolution in `raw_info`. Verify this works for all 7z archives with symlinks.
+- **`BinaryIOWrapper` simplification**: some format backends may rely on the hot-path method replacement for performance. Benchmark before removing.
+- **Cache invalidation for generated test archives**: the cache key must include the archivey version and library versions, not just the spec hash, to avoid stale archives after upgrades.
