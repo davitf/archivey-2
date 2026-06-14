@@ -166,13 +166,15 @@ field:
 
 ---
 
-### Requirement: Header-encrypted RAR5 requires a password and unrar
+### Requirement: Decrypt header-encrypted RAR5 via an optional crypto backend
 
-RAR5 header encryption uses AES, which the standard library cannot perform, so the
-native parser cannot decrypt an encrypted header on its own. The system SHALL,
-for header-encrypted RAR5 archives, require both a password and the `unrar` binary
-even to LIST members, and SHALL set `ArchiveInfo.is_encrypted = True`. Without a
-password, listing SHALL raise `EncryptionError`.
+RAR5 header encryption uses AES, which the standard library cannot perform. The
+native parser SHALL derive the AES key and decrypt encrypted headers *itself* when
+a password and the `[crypto]` extra (a cryptography backend) are available — it
+does NOT need the `unrar` binary to list a header-encrypted archive (`unrar` is
+required only to read member *data*). The system SHALL set
+`ArchiveInfo.is_encrypted = True`. Without a password (or without the crypto
+backend), listing SHALL raise `EncryptionError`.
 
 #### Scenario: listing a header-encrypted RAR5 archive without a password
 
@@ -181,5 +183,30 @@ password, listing SHALL raise `EncryptionError`.
 
 #### Scenario: listing a header-encrypted RAR5 archive with a password
 
-- **WHEN** a header-encrypted RAR5 archive is opened with a valid password and `unrar` is available
-- **THEN** the member list is produced (via `unrar`, since native header decryption is not possible) and `ArchiveInfo.is_encrypted` is `True`
+- **WHEN** a header-encrypted RAR5 archive is opened with a valid password and `[crypto]` installed
+- **THEN** the member list is produced natively by decrypting the headers (no `unrar` needed for listing) and `ArchiveInfo.is_encrypted` is `True`
+- **AND** reading member *data* still requires the `unrar` binary
+
+---
+
+### Requirement: Surface unsupported RAR variants and integrity limits
+
+The native parser SHALL raise a clean `ArchiveError` for archive shapes it does not
+support — multi-volume RAR sets and legacy RAR2 archives — rather than mis-parsing
+them. For RAR5 members that carry only a Blake2sp hash and no CRC32,
+`Member.crc32` SHALL be `None` (never a guessed value).
+
+#### Scenario: multi-volume RAR set
+
+- **WHEN** a multi-volume RAR archive is opened
+- **THEN** the system raises a clean `ArchiveError` indicating multi-volume archives are unsupported
+
+#### Scenario: legacy RAR2 archive
+
+- **WHEN** a RAR2-format archive is opened
+- **THEN** the system raises a clean `ArchiveError` indicating RAR2 is unsupported
+
+#### Scenario: RAR5 member with only a Blake2sp hash
+
+- **WHEN** a RAR5 member records a Blake2sp hash but no CRC32
+- **THEN** `Member.crc32` is `None`

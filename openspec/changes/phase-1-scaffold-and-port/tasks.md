@@ -9,14 +9,22 @@
 
 ## 1. Obtain the DEV source
 
+> Access is confirmed working: a plain HTTPS `git clone` succeeds from this
+> environment. (The GitHub API / WebFetch is unauthenticated-rate-limited and
+> returns `403` — do not use it to conclude the repo is private.) See the
+> "Reference repository" section of the root `CLAUDE.md`.
+
 - [ ] 1.1 Clone the DEV repository into a scratch location outside the project
-      tree, e.g. `git clone https://github.com/davitf/archivey-dev /tmp/archivey-dev`.
-- [ ] 1.2 Check out a pinned, reproducible revision (the `v0.1.0a4` tag, or a
-      specific commit SHA) rather than tracking `main`, so the port is repeatable.
-- [ ] 1.3 Record the exact source revision (tag + commit SHA) in the Phase 1
-      commit message / PR description for traceability.
-- [ ] 1.4 If the clone is unavailable (network/permissions), stop and surface the
-      blocker — every later step depends on this source.
+      tree: `git clone https://github.com/davitf/archivey-dev.git /tmp/archivey-dev`.
+- [ ] 1.2 Check out a pinned, reproducible commit SHA rather than tracking the
+      default branch, so the port is repeatable. Known-good revision:
+      `730275b7a755f8b5b8d08d3d4d9b267b5bdadb0d` (default-branch HEAD when these
+      specs were authored; the clone carries no release tags). A newer SHA may be
+      chosen deliberately.
+- [ ] 1.3 Record the exact source commit SHA in the Phase 1 commit message / PR
+      description for traceability.
+- [ ] 1.4 If the clone fails, retry over HTTPS (with backoff); only if it still
+      fails, stop and surface the blocker — every later step depends on this source.
 
 ## 2. Project configuration
 

@@ -60,40 +60,88 @@ derived from the substreams info.
 
 ---
 
-### Requirement: Decode folders natively via stdlib codecs
+### Requirement: Decode folder coder chains natively
 
-The system SHALL decode each folder's coder chain by composing standard-library
-decompressors: LZMA1/LZMA2, the simple BCJ filters (x86 / ARM / ARMT / PPC /
-SPARC / IA64), and Delta via `lzma` `FORMAT_RAW` filters; BZip2 via `bz2`; Deflate
-via `zlib`; and STORED as a pass-through. Files within a folder are laid out
-contiguously in the decompressed output, so the backend produces a member's stream
-by reading exactly `member.size` bytes, in order, from the folder's decompressed
-byte stream.
+The system SHALL decode each folder's coder chain by composing decompressors —
+the common codecs needing only the standard library, with a few less-common ones
+provided by small optional packages:
+
+| 7z codec | Method ID | Backend | Availability |
+|----------|-----------|---------|--------------|
+| STORED | `0x00` | pass-through | core |
+| LZMA1 / LZMA2 | `0x030101` / `0x21` | `lzma` `FORMAT_RAW` | core |
+| Delta | `0x03` | `lzma.FILTER_DELTA` | core |
+| BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`–`0x09`, `0x03030103`… | `lzma.FILTER_X86`/`ARM`/… | core |
+| Deflate | `0x040108` | `zlib` (raw) | core |
+| BZip2 | `0x040202` | `bz2` | core |
+| PPMd (var.H) | `0x030401` | `pyppmd` | optional `[7z]` |
+| Deflate64 | `0x040109` | `inflate64` | optional `[7z]` |
+| AES-256 / SHA-256 | `0x06f10701` | crypto backend | optional `[crypto]` |
+| BCJ2 | `0x0303011B` | — | unsupported (detect & raise) |
+
+Files within a folder are laid out contiguously in the decompressed output, so the
+backend produces a member's stream by reading exactly `member.size` bytes, in
+order, from the folder's decompressed byte stream. The core codec set requires no
+third-party runtime dependency. A coder chain is applied in reverse coder order for
+decoding (e.g. an `AES → LZMA2` coder list means decrypt, then decompress).
 
 #### Scenario: member compressed with a BCJ + LZMA2 chain
 
 - **WHEN** a member lives in a folder coded as BCJ-over-LZMA2
 - **THEN** the backend composes the stdlib `lzma` `FORMAT_RAW` filter chain, decodes the folder, and returns bytes identical to the original file content
 
+#### Scenario: PPMd member with the [7z] extra installed
+
+- **WHEN** a folder is PPMd-compressed and the `[7z]` extra (`pyppmd`) is installed
+- **THEN** the backend decodes it natively
+
+#### Scenario: PPMd member without the [7z] extra
+
+- **WHEN** a folder is PPMd-compressed and `pyppmd` is not installed
+- **THEN** the backend raises a clear error indicating the `[7z]` extra is required
+
 ---
 
-### Requirement: Reject unsupported codecs explicitly
+### Requirement: Reject genuinely unsupported codecs explicitly
 
-The system SHALL raise a clear error that names the codec when a folder uses a
-codec outside the natively supported set — notably **PPMD** and **BCJ2**, which
-are not available through the standard library (BCJ2 is a multi-stream filter not
-implemented by `lzma`). The library MUST NOT silently return incorrect data and
-MUST NOT fall back to a third-party reader.
-
-#### Scenario: PPMD-compressed member
-
-- **WHEN** a member's folder is compressed with PPMD
-- **THEN** the backend raises an error naming PPMD as an unsupported codec, rather than returning data
+The system SHALL raise a clear error naming the codec when a folder uses a codec
+with no available backend — notably **BCJ2** (`0x0303011B`), a multi-stream filter
+not implemented by any standard or available package — or an unrecognized method
+ID. The library MUST NOT silently return incorrect data and MUST NOT fall back to a
+third-party reader. (PPMd and Deflate64 are supported via the optional `[7z]`
+extra and are NOT in this category.)
 
 #### Scenario: BCJ2-filtered member
 
 - **WHEN** a member's folder uses the BCJ2 filter
 - **THEN** the backend raises an error naming BCJ2 as an unsupported codec
+
+#### Scenario: unrecognized method ID
+
+- **WHEN** a folder uses a coder whose method ID is not recognized
+- **THEN** the backend raises a clear error naming the unknown method ID rather than returning data
+
+---
+
+### Requirement: Decrypt AES-encrypted 7z via an optional crypto backend
+
+The system SHALL read AES-256-encrypted 7z archives — including header-encrypted
+archives — when a password and the `[crypto]` extra (a cryptography backend) are
+available. The key is derived per the 7z SHA-256 scheme and applied as a decrypt
+stage ahead of decompression. For a header-encrypted archive the encrypted end
+header is decrypted before parsing, so even *listing* requires the password and the
+crypto backend. Without them, the system SHALL raise `EncryptionError`. When the
+archive (or any folder) is encrypted, `ArchiveInfo.is_encrypted` SHALL be `True`.
+
+#### Scenario: encrypted 7z read with password and crypto backend
+
+- **WHEN** an AES-encrypted 7z archive is opened with a valid password and `[crypto]` installed
+- **THEN** members decrypt and decompress to their original bytes
+
+#### Scenario: header-encrypted 7z opened without a password
+
+- **WHEN** a header-encrypted 7z archive is opened without a password
+- **THEN** the system raises `EncryptionError`, because the end header cannot be decrypted to list members
 
 ---
 

@@ -71,10 +71,12 @@ the oracle's. These oracle libraries are `dev`-group dependencies only and are
 never required at runtime; oracle-backed tests SHALL be skipped (not failed) when
 the oracle library or CLI tool is unavailable in the environment.
 
-The corpus MUST exercise the codecs the native 7z reader claims to support
-(LZMA1, LZMA2, simple BCJ filters, Delta, BZip2, Deflate, STORED) and MUST assert
-that archives using unsupported codecs (e.g. PPMD, BCJ2) raise the documented
-"unsupported codec" error rather than diverging silently from the oracle.
+The corpus MUST exercise the core codecs the native 7z reader supports without
+extras (LZMA1, LZMA2, simple BCJ filters, Delta, BZip2, Deflate, STORED) and —
+when the relevant extras are installed — PPMd / Deflate64 (`[7z]`) and
+AES-encrypted archives (`[crypto]`). It MUST assert that genuinely unsupported
+codecs (BCJ2, and unrecognized method IDs) raise the documented "unsupported
+codec" error rather than diverging silently from the oracle.
 
 #### Scenario: native 7z reader matches the py7zr oracle
 
@@ -90,7 +92,7 @@ that archives using unsupported codecs (e.g. PPMD, BCJ2) raise the documented
 
 #### Scenario: unsupported 7z codec is rejected, not guessed
 
-- **WHEN** a 7-Zip archive using PPMD or BCJ2 is read by the native reader
+- **WHEN** a 7-Zip archive using BCJ2 (or an unrecognized method ID) is read by the native reader
 - **THEN** the documented unsupported-codec error is raised, rather than returning bytes that disagree with the oracle
 
 ### Requirement: Non-seekable stream coverage for every streaming backend

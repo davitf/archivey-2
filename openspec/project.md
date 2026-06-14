@@ -49,11 +49,15 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `packaging-and-extras` | Install-time contract: zero-dep core (incl. native 7z read + RAR metadata), extras→capability mapping, Python/OS matrix, `__version__` |
 
 **7z/RAR strategy (native-first):** 7z and RAR are read with **native** parsers,
-not `py7zr`/`rarfile`. 7z reading decodes through stdlib `lzma`/`bz2`/`zlib`
-(zero runtime deps; unsupported codecs like PPMD/BCJ2 error explicitly). RAR
-metadata is parsed natively while the external `unrar` binary does the proprietary
-decompression. `py7zr` is kept only for 7z *writing* (`[7z-write]`); `py7zr` and
-`rarfile` otherwise serve only as `dev`-group test oracles (see `testing-contract`).
+not `py7zr`/`rarfile`. 7z reading decodes common codecs through stdlib
+`lzma`/`bz2`/`zlib` (zero runtime deps); PPMd/Deflate64 come from the `[7z]` extra,
+AES decryption from `[crypto]`, and only BCJ2 is detect-and-rejected. RAR metadata
+is parsed natively (encrypted RAR5 headers decrypted via `[crypto]`) while the
+external `unrar` binary does the proprietary data decompression. `py7zr` is kept
+only for 7z *writing* (`[7z-write]`); `py7zr` and `rarfile` otherwise serve only as
+`dev`-group test oracles (see `testing-contract`). Provenance: the `archivey-dev`
+`sevenzip-native-reader` / `rar-native-metadata-reader` explorations (clone per
+`CLAUDE.md`).
 
 ## Implementation order
 

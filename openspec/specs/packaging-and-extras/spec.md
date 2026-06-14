@@ -31,7 +31,7 @@ distribution name `archivey`.
 
 - **WHEN** `pip install archivey` is run with no extras
 - **THEN** no third-party runtime packages are installed
-- **AND** ZIP, TAR (all stdlib variants), GZ/BZ2/XZ, directory, and 7-Zip **reading** all work, and RAR listing works (RAR data reads also require the system `unrar` binary)
+- **AND** ZIP, TAR (all stdlib variants), GZ/BZ2/XZ, directory, and 7-Zip **reading of common codecs** all work, and RAR listing works (PPMd/Deflate64 need `[7z]`; encryption needs `[crypto]`; RAR data reads need the system `unrar` binary)
 
 #### Scenario: writing 7z requires the [7z-write] extra
 
@@ -44,12 +44,15 @@ distribution name `archivey`.
 
 The system SHALL gate each optional capability behind a named install extra that
 pulls in exactly the third-party dependency it requires. Because 7z and RAR
-reading are native (no Python library), the only library extras left are for ISO,
-the extra compression codecs, 7z *writing*, and the CLI. The mapping is:
+reading are native (no Python library for the common case), the library extras
+cover only the less-common 7z codecs, encryption, 7z *writing*, ISO, the extra
+compression formats, and the CLI. The mapping is:
 
 | Extra | Pulls in | Enables |
 |-------|----------|---------|
-| *(none)* | stdlib only + native parsers | ZIP, TAR + `tar.gz`/`tar.bz2`/`tar.xz`, GZ, BZ2, XZ, directory, **7z read**, **RAR metadata/listing** |
+| *(none)* | stdlib only + native parsers | ZIP, TAR + `tar.gz`/`tar.bz2`/`tar.xz`, GZ, BZ2, XZ, directory, **7z read** (common codecs: LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/STORED), **RAR metadata/listing** (unencrypted) |
+| `[7z]` | `pyppmd`, `inflate64` | 7z **PPMd** and **Deflate64** members |
+| `[crypto]` | a cryptography backend (`cryptography`/`pycryptodome`) | reading **AES-encrypted 7z** and **header-encrypted RAR5** |
 | `[7z-write]` | `py7zr` | 7-Zip **writing** (reading is native, no extra) |
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
 | `[zstd]` | `zstandard` | Zstandard (`.zst`, `.tar.zst`) |
@@ -57,10 +60,11 @@ the extra compression codecs, 7z *writing*, and the CLI. The mapping is:
 | `[cli]` | `tqdm` | the `archivey` command-line interface and its progress bar |
 | `[all]` | every optional runtime dependency above | every optional capability |
 
-There is **no `[rar]` extra**: RAR reading needs no Python package, only the
-external `unrar` binary at runtime (see `format-rar`). The `py7zr` and `rarfile`
-libraries are otherwise used only as test oracles and live in the `dev`
-dependency group.
+There is **no `[rar]` extra**: RAR reading needs no Python package for metadata,
+only the external `unrar` binary at runtime for member *data* (see `format-rar`);
+encrypted RAR5 headers use the shared `[crypto]` backend. The `py7zr` and
+`rarfile` libraries are otherwise used only as test oracles and live in the `dev`
+dependency group. BCJ2-filtered 7z members are not supported by any extra.
 
 Installing an extra MUST make its capability available without requiring any other
 extra. The `[all]` extra MUST be equivalent to installing every individual
@@ -82,7 +86,7 @@ are pulled in by `uv sync` (or `pip install --group dev`) for contributors.
 #### Scenario: `[all]` enables every optional capability
 
 - **WHEN** `pip install archivey[all]` is run
-- **THEN** every optional capability (7z write, ISO, ZST, LZ4, CLI) is available
+- **THEN** every optional capability (7z PPMd/Deflate64, AES decryption, 7z write, ISO, ZST, LZ4, CLI) is available
 
 #### Scenario: RAR reading requires only the system unrar binary
 
