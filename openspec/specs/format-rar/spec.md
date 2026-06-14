@@ -57,17 +57,23 @@ without the `rarfile` library. Listing is O(1) and decompresses no member data.
 
 ---
 
-### Requirement: Require the unrar binary to read member data
+### Requirement: Require the unrar binary to read compressed member data
 
-The system SHALL obtain member *data* by invoking the system `unrar` binary. If
-`unrar` is not available on PATH, listing still works but any data read
-(`open()` / `read()` / extraction) SHALL raise a clear error stating that the
-`unrar` binary is required.
+The system SHALL read **stored** (uncompressed, unencrypted) members directly as
+raw bytes through the shared `compressed-streams` pass-through backend, and SHALL
+obtain all other member *data* by invoking the system `unrar` binary. If `unrar` is
+required but not available on PATH, the system SHALL raise
+`PackageNotInstalledError` naming `unrar`. Listing never requires `unrar`.
 
-#### Scenario: reading data without unrar installed
+#### Scenario: reading a compressed member without unrar installed
 
-- **WHEN** `reader.read(member)` or `reader.open(member)` is called and `unrar` is not on PATH
-- **THEN** the system raises a clear error indicating the `unrar` binary is required to read RAR data
+- **WHEN** `reader.read(member)` is called on a non-stored member and `unrar` is not on PATH
+- **THEN** the system raises `PackageNotInstalledError` naming `unrar`
+
+#### Scenario: reading a stored member without unrar
+
+- **WHEN** `reader.read(member)` is called on a stored (uncompressed) member and `unrar` is not on PATH
+- **THEN** the raw bytes are returned without invoking `unrar`
 
 ---
 
@@ -76,13 +82,14 @@ The system SHALL obtain member *data* by invoking the system `unrar` binary. If
 For solid-archive sequential iteration (`stream_members()`), the system SHALL run
 a single `unrar p -inul <archive>` subprocess and demultiplex its stdout into
 per-member streams using the member sizes from the native header, validating each
-member's CRC32 incrementally. This processes the whole archive in one subprocess —
-O(archive_size) total — rather than spawning one subprocess per member.
+member's checksum (CRC32 or Blake2sp, per `hashes`) incrementally. This processes
+the whole archive in one subprocess — O(archive_size) total — rather than spawning
+one subprocess per member.
 
 #### Scenario: streaming a solid RAR with stream_members()
 
 - **WHEN** `stream_members()` is called on a solid RAR archive
-- **THEN** the system runs exactly one `unrar p` subprocess, demultiplexes its stdout into per-member streams by header-provided sizes, and validates each member's CRC32 as it is read
+- **THEN** the system runs exactly one `unrar p` subprocess, demultiplexes its stdout into per-member streams by header-provided sizes, and validates each member's checksum as it is read
 
 ---
 
@@ -169,17 +176,23 @@ field:
 ### Requirement: Decrypt header-encrypted RAR5 via an optional crypto backend
 
 RAR5 header encryption uses AES, which the standard library cannot perform. The
-native parser SHALL derive the AES key and decrypt encrypted headers *itself* when
-a password and the `[crypto]` extra (a cryptography backend) are available — it
-does NOT need the `unrar` binary to list a header-encrypted archive (`unrar` is
-required only to read member *data*). The system SHALL set
-`ArchiveInfo.is_encrypted = True`. Without a password (or without the crypto
-backend), listing SHALL raise `EncryptionError`.
+native parser SHALL derive the AES key and decrypt encrypted headers *itself* via
+the wrapped crypto backend (`[crypto]`, see `compressed-streams`) when a password is
+supplied — it does NOT need the `unrar` binary to list a header-encrypted archive
+(`unrar` is required only to read member *data*). The system SHALL set
+`ArchiveInfo.is_encrypted = True`. Without a password, listing SHALL raise
+`EncryptionError`; with a password but no crypto backend installed, listing SHALL
+raise `PackageNotInstalledError`.
 
 #### Scenario: listing a header-encrypted RAR5 archive without a password
 
 - **WHEN** a header-encrypted RAR5 archive is opened without a password
 - **THEN** the system raises `EncryptionError`
+
+#### Scenario: header-encrypted RAR5 with a password but no crypto backend
+
+- **WHEN** a header-encrypted RAR5 archive is opened with a password but `[crypto]` is not installed
+- **THEN** the system raises `PackageNotInstalledError`
 
 #### Scenario: listing a header-encrypted RAR5 archive with a password
 
@@ -191,22 +204,23 @@ backend), listing SHALL raise `EncryptionError`.
 
 ### Requirement: Surface unsupported RAR variants and integrity limits
 
-The native parser SHALL raise a clean `ArchiveError` for archive shapes it does not
-support — multi-volume RAR sets and legacy RAR2 archives — rather than mis-parsing
-them. For RAR5 members that carry only a Blake2sp hash and no CRC32,
-`Member.crc32` SHALL be `None` (never a guessed value).
+The native parser SHALL raise `UnsupportedFeatureError` for archive shapes it does
+not support — multi-volume RAR sets and legacy RAR2 archives (extract version ≤ 20)
+— rather than mis-parsing them. For RAR5 members that carry only a Blake2sp hash and
+no CRC32, `Member.hashes` SHALL contain a `"blake2sp"` entry (bytes) and no
+`"crc32"` key — never a guessed CRC.
 
 #### Scenario: multi-volume RAR set
 
 - **WHEN** a multi-volume RAR archive is opened
-- **THEN** the system raises a clean `ArchiveError` indicating multi-volume archives are unsupported
+- **THEN** the system raises `UnsupportedFeatureError` rather than a partial or garbled member list
 
 #### Scenario: legacy RAR2 archive
 
-- **WHEN** a RAR2-format archive is opened
-- **THEN** the system raises a clean `ArchiveError` indicating RAR2 is unsupported
+- **WHEN** a RAR2-era archive (extract version ≤ 20) is opened and is not supported
+- **THEN** the system raises `UnsupportedFeatureError`
 
 #### Scenario: RAR5 member with only a Blake2sp hash
 
 - **WHEN** a RAR5 member records a Blake2sp hash but no CRC32
-- **THEN** `Member.crc32` is `None`
+- **THEN** `member.hashes["blake2sp"]` holds the digest (bytes) and `"crc32"` is absent from `member.hashes`

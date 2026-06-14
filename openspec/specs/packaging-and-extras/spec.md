@@ -52,7 +52,7 @@ compression formats, and the CLI. The mapping is:
 |-------|----------|---------|
 | *(none)* | stdlib only + native parsers | ZIP, TAR + `tar.gz`/`tar.bz2`/`tar.xz`, GZ, BZ2, XZ, directory, **7z read** (common codecs: LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/STORED), **RAR metadata/listing** (unencrypted) |
 | `[7z]` | `pyppmd`, `inflate64` | 7z **PPMd** and **Deflate64** members |
-| `[crypto]` | a cryptography backend (`cryptography`/`pycryptodome`) | reading **AES-encrypted 7z** and **header-encrypted RAR5** |
+| `[crypto]` | `cryptography` | reading **AES-encrypted 7z** and **header-encrypted RAR5** (accessed through an internal wrapper so the backend is swappable) |
 | `[7z-write]` | `py7zr` | 7-Zip **writing** (reading is native, no extra) |
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
 | `[zstd]` | `zstandard` | Zstandard (`.zst`, `.tar.zst`) |

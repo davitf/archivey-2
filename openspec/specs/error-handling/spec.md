@@ -25,8 +25,17 @@ ArchiveyError(Exception)
 │       ├── PathTraversalError  # ../ or absolute path
 │       ├── SymlinkEscapeError  # symlink resolves outside dest
 │       └── SpecialFileError    # device node, FIFO, socket
+├── UnsupportedFeatureError     # recognized but unhandled feature/variant/codec
+│                               #   (e.g. multi-volume, RAR2, BCJ2, unknown coder)
+├── PackageNotInstalledError    # a required optional package or external tool is
+│                               #   absent (codec backend, crypto backend, unrar)
 └── UnsupportedOperationError   # e.g. random access on sequential reader
 ```
+
+`UnsupportedFeatureError` and `PackageNotInstalledError` may be raised at open or
+read time (e.g. listing a multi-volume archive, or reading a member whose codec
+package is missing), so they are top-level `ArchiveyError` subtypes rather than
+nested under `OpenError`/`ReadError`.
 
 #### Scenario: catch all library errors with a single clause
 
@@ -37,6 +46,16 @@ ArchiveyError(Exception)
 
 - **WHEN** an archive member has a bad CRC
 - **THEN** `CorruptionError` is raised, allowing callers to handle it separately from, for example, `EncryptionError`
+
+#### Scenario: missing optional package or tool
+
+- **WHEN** a member requires a codec, crypto backend, or external tool whose package/binary is not installed (e.g. `pyppmd`, the crypto backend, or `unrar`)
+- **THEN** `PackageNotInstalledError` is raised, naming the missing package or tool
+
+#### Scenario: recognized but unsupported feature
+
+- **WHEN** an archive uses a recognized feature the reader does not handle (e.g. multi-volume, RAR2, or the BCJ2 coder)
+- **THEN** `UnsupportedFeatureError` is raised rather than producing incorrect output
 
 ---
 

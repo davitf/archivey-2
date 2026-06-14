@@ -152,7 +152,12 @@ class Member:
     is_sparse: bool = False                 # TAR sparse files; extraction as regular file
 
     # --- Integrity ---
-    crc32: int | None = None
+    # Per-algorithm digests, keyed by lowercase algorithm name. CRC32 values are
+    # ints ("crc32"); cryptographic/other digests are raw bytes ("blake2sp",
+    # "sha256", ...). Empty when the format records no integrity data. A format
+    # MUST NOT report one algorithm's value under another's key (e.g. a RAR5
+    # Blake2sp hash is "blake2sp", never "crc32"). Excluded from __hash__/__eq__.
+    hashes: Mapping[str, int | bytes] = field(default_factory=dict, hash=False, compare=False)
 
     # --- Format-specific overflow ---
     # Keys are namespaced: "zip.extra_fields", "tar.pax_headers", "iso.rock_ridge", etc.
@@ -160,7 +165,7 @@ class Member:
     extra: dict[str, Any] = field(default_factory=dict, hash=False, compare=False)
 ```
 
-`Member` is `frozen=True` for immutability, hashability, and thread-safety. The `extra` field is excluded from `__hash__` and `__eq__` so format-specific extras do not affect logical identity comparisons.
+`Member` is `frozen=True` for immutability, hashability, and thread-safety. The `hashes` and `extra` fields are excluded from `__hash__` and `__eq__`: integrity digests vary by format (so they would break cross-format equivalence) and format-specific extras do not affect logical identity. There is no `crc32` field or accessor — callers read `member.hashes.get("crc32")`.
 
 #### Scenario: unavailable field is None
 
@@ -170,7 +175,12 @@ class Member:
 #### Scenario: Member is hashable and usable as a dict key
 
 - **WHEN** a `Member` object is placed in a `set` or used as a dict key
-- **THEN** it hashes and compares correctly based on its identity fields (excluding `extra`)
+- **THEN** it hashes and compares correctly based on its identity fields (excluding `hashes` and `extra`)
+
+#### Scenario: integrity digests under their algorithm keys
+
+- **WHEN** a ZIP member records a CRC32 and a RAR5 member records only a Blake2sp hash
+- **THEN** the ZIP member has `hashes["crc32"]` as an int and no `"blake2sp"` key, and the RAR5 member has `hashes["blake2sp"]` as bytes and no `"crc32"` key
 
 ---
 

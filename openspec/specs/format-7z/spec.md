@@ -74,6 +74,7 @@ provided by small optional packages:
 | BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`–`0x09`, `0x03030103`… | `lzma.FILTER_X86`/`ARM`/… | core |
 | Deflate | `0x040108` | `zlib` (raw) | core |
 | BZip2 | `0x040202` | `bz2` | core |
+| Zstd | `0x04f71101` | `zstandard` | optional `[zstd]` |
 | PPMd (var.H) | `0x030401` | `pyppmd` | optional `[7z]` |
 | Deflate64 | `0x040109` | `inflate64` | optional `[7z]` |
 | AES-256 / SHA-256 | `0x06f10701` | crypto backend | optional `[crypto]` |
@@ -84,64 +85,104 @@ backend produces a member's stream by reading exactly `member.size` bytes, in
 order, from the folder's decompressed byte stream. The core codec set requires no
 third-party runtime dependency. A coder chain is applied in reverse coder order for
 decoding (e.g. an `AES → LZMA2` coder list means decrypt, then decompress).
+Decoding composes the shared `compressed-streams` backends — the 7z reader does NOT
+call codec libraries (`lzma`, `pyppmd`, `inflate64`, the crypto backend) directly —
+and the reader verifies each member's stored CRC32 (`hashes["crc32"]`) as it is
+read. Other 7z-fork codecs (e.g. Brotli) follow the same optional-package pattern
+through the compressed-streams layer.
 
 #### Scenario: member compressed with a BCJ + LZMA2 chain
 
 - **WHEN** a member lives in a folder coded as BCJ-over-LZMA2
-- **THEN** the backend composes the stdlib `lzma` `FORMAT_RAW` filter chain, decodes the folder, and returns bytes identical to the original file content
+- **THEN** the backend composes the shared `lzma` `FORMAT_RAW` filter-chain backend, decodes the folder, and returns bytes identical to the original file content
 
-#### Scenario: PPMd member with the [7z] extra installed
+#### Scenario: per-member CRC verified on read
 
-- **WHEN** a folder is PPMd-compressed and the `[7z]` extra (`pyppmd`) is installed
-- **THEN** the backend decodes it natively
+- **WHEN** a 7z member that records a CRC32 is decoded
+- **THEN** the reader verifies the decompressed bytes against `hashes["crc32"]` and raises `CorruptionError` on mismatch
 
 #### Scenario: PPMd member without the [7z] extra
 
 - **WHEN** a folder is PPMd-compressed and `pyppmd` is not installed
-- **THEN** the backend raises a clear error indicating the `[7z]` extra is required
+- **THEN** the backend raises `PackageNotInstalledError` naming `pyppmd` (installable via the `[7z]` extra)
 
 ---
 
-### Requirement: Reject genuinely unsupported codecs explicitly
+### Requirement: Reject genuinely unsupported codecs and variants
 
-The system SHALL raise a clear error naming the codec when a folder uses a codec
-with no available backend — notably **BCJ2** (`0x0303011B`), a multi-stream filter
-not implemented by any standard or available package — or an unrecognized method
-ID. The library MUST NOT silently return incorrect data and MUST NOT fall back to a
+The system SHALL raise `UnsupportedFeatureError`, naming the codec, when a folder
+uses a coder with no available backend — notably **BCJ2** (`0x0303011B`), a
+multi-stream filter not implemented by any standard or available package, or any
+newer branch filter absent from the installed liblzma — or an unrecognized method
+ID. The system SHALL also raise `UnsupportedFeatureError` for **multi-volume** 7z
+archives, and SHALL handle 7z **anti-items** without corrupting the member list.
+The library MUST NOT silently return incorrect data and MUST NOT fall back to a
 third-party reader. (PPMd and Deflate64 are supported via the optional `[7z]`
 extra and are NOT in this category.)
 
 #### Scenario: BCJ2-filtered member
 
 - **WHEN** a member's folder uses the BCJ2 filter
-- **THEN** the backend raises an error naming BCJ2 as an unsupported codec
+- **THEN** `UnsupportedFeatureError` is raised naming BCJ2, with no garbage output
 
 #### Scenario: unrecognized method ID
 
 - **WHEN** a folder uses a coder whose method ID is not recognized
-- **THEN** the backend raises a clear error naming the unknown method ID rather than returning data
+- **THEN** `UnsupportedFeatureError` is raised naming the unknown method ID
+
+#### Scenario: multi-volume 7z archive
+
+- **WHEN** a multi-volume 7z archive is opened
+- **THEN** `UnsupportedFeatureError` is raised rather than producing an incorrect member list
 
 ---
 
-### Requirement: Decrypt AES-encrypted 7z via an optional crypto backend
+### Requirement: Decrypt AES-encrypted 7z, honoring per-member passwords
 
 The system SHALL read AES-256-encrypted 7z archives — including header-encrypted
-archives — when a password and the `[crypto]` extra (a cryptography backend) are
-available. The key is derived per the 7z SHA-256 scheme and applied as a decrypt
-stage ahead of decompression. For a header-encrypted archive the encrypted end
-header is decrypted before parsing, so even *listing* requires the password and the
-crypto backend. Without them, the system SHALL raise `EncryptionError`. When the
-archive (or any folder) is encrypted, `ArchiveInfo.is_encrypted` SHALL be `True`.
+archives — when a password and the `[crypto]` extra are available. Decryption uses
+the wrapped crypto backend as a per-folder AES decrypt stage (see
+`compressed-streams`); the key is derived per the 7z SHA-256 scheme and applied
+ahead of decompression. For a header-encrypted archive the encrypted end header is
+decrypted before parsing, so even *listing* requires the password and crypto
+backend; without them the system SHALL raise `EncryptionError` (or
+`PackageNotInstalledError` if the crypto backend is missing). When the archive (or
+any folder) is encrypted, `ArchiveInfo.is_encrypted` SHALL be `True`.
 
-#### Scenario: encrypted 7z read with password and crypto backend
+The system SHALL decrypt each member using the password supplied for that open
+operation — the per-call password when given, otherwise the archive-wide password —
+built per member/folder, so members in folders encrypted with different passwords
+can each be opened within the same archive (no global password state). 7z has no
+password check value, so an incorrect password SHALL surface as an
+encrypted/corrupted failure (`EncryptionError`/`CorruptionError`), not silent
+garbage.
 
-- **WHEN** an AES-encrypted 7z archive is opened with a valid password and `[crypto]` installed
-- **THEN** members decrypt and decompress to their original bytes
+#### Scenario: members with different passwords
+
+- **WHEN** an encrypted 7z archive holds members in folders encrypted with different passwords and each is opened with its matching password
+- **THEN** each member decrypts correctly and verifies its CRC
+
+#### Scenario: wrong password
+
+- **WHEN** an encrypted member is opened with an incorrect password
+- **THEN** decryption fails and surfaces as `EncryptionError`/`CorruptionError`, never incorrect bytes
 
 #### Scenario: header-encrypted 7z opened without a password
 
 - **WHEN** a header-encrypted 7z archive is opened without a password
 - **THEN** the system raises `EncryptionError`, because the end header cannot be decrypted to list members
+
+---
+
+### Requirement: Expose the archive comment
+
+The system SHALL surface the 7z archive comment (from `FILES_INFO`) in
+`ArchiveInfo.comment` when present, rather than discarding it.
+
+#### Scenario: archive with a comment
+
+- **WHEN** a 7z archive stores a comment
+- **THEN** `ArchiveInfo.comment` returns it
 
 ---
 

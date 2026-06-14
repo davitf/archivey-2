@@ -43,7 +43,8 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `error-handling` | The `ArchiveyError` hierarchy and error-translation contract |
 | `logging` | The `archivey` logger hierarchy (cross-cutting; library never configures handlers) |
 | `format-zip` / `format-tar` / `format-single-file-compressors` / `format-7z` / `format-rar` / `format-iso` / `format-directory` | Per-format behavioral contracts |
-| `seekable-decompressor-streams` | Random access inside single compressed streams |
+| `compressed-streams` | Uniform pull-based codec decompressor layer (single-file + 7z/ZIP container codecs + AES stage); format parsers compose it instead of calling codec libs |
+| `seekable-decompressor-streams` | Random access inside single compressed streams (builds on `compressed-streams`) |
 | `testing-contract` | Equivalence matrix, adversarial corpus, round-trip and non-seekable coverage |
 | `cli` | The `archivey` command-line interface |
 | `packaging-and-extras` | Install-time contract: zero-dep core (incl. native 7z read + RAR metadata), extras→capability mapping, Python/OS matrix, `__version__` |
@@ -71,7 +72,7 @@ order-free; this table is the association between the two.
 | Phase | Theme | Primary capabilities advanced |
 |-------|-------|-------------------------------|
 | 1 | Project scaffold + verbatim port from DEV | `packaging-and-extras` (pyproject, extras, env matrix); ports `format-*` backends and `format-detection`. 7z/RAR are native-first (see note), so porting DEV's `py7zr`/`rarfile` read backends is interim-only or deferred. Tooling/migration mechanics are not specced. |
-| 2 | Stream layer reorganization | `seekable-decompressor-streams`, `archive-reading` *(internal streams)* |
+| 2 | Stream layer reorganization | `compressed-streams`, `seekable-decompressor-streams`, `archive-reading` *(internal streams)*. 7z/ZIP container codecs (`pyppmd`/`inflate64`/AES stage) added to `compressed-streams` in Phase 8. |
 | 3 | Base reader interface cleanup | `archive-reading`, `backend-registry` |
 | 4 | `ExtractionHelper` → `ExtractionCoordinator` rewrite | `safe-extraction` (incl. decompression-bomb limits and progress/result reporting) |
 | 5 | Public API alignment to SPEC.md | `archive-data-model`, `access-intent-and-cost`, `error-handling`, `archive-reading` |

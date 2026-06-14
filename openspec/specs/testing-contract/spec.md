@@ -8,7 +8,7 @@ The test suite must verify that all supported formats produce uniform, interchan
 
 ### Requirement: Equivalence matrix across formats
 
-The system SHALL produce identical `Member` objects from ZIP, TAR, 7z, RAR, and ISO sources when reading a canonical directory structure (files, symlinks, nested directories, empty directories, filenames with unicode and spaces). Equivalence is defined as field-by-field equality excluding `sequence`, `original_name`, `compressed_size`, and `extra`. Format-specific limitation flags (`ArchiveFormatFeatures`) encode per-format expected deviations and are used by the assertion helper to limit the comparison to the fields each format can faithfully represent.
+The system SHALL produce identical `Member` objects from ZIP, TAR, 7z, RAR, and ISO sources when reading a canonical directory structure (files, symlinks, nested directories, empty directories, filenames with unicode and spaces). Equivalence is defined as field-by-field equality excluding `sequence`, `original_name`, `compressed_size`, `hashes`, and `extra`. Format-specific limitation flags (`ArchiveFormatFeatures`) encode per-format expected deviations and are used by the assertion helper to limit the comparison to the fields each format can faithfully represent.
 
 #### Scenario: same canonical structure, multiple formats
 
