@@ -46,6 +46,7 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `seekable-decompressor-streams` | Random access inside single compressed streams |
 | `testing-contract` | Equivalence matrix, adversarial corpus, round-trip and non-seekable coverage |
 | `cli` | The `archivey` command-line interface |
+| `packaging-and-extras` | Install-time contract: zero-dep core, extras→format mapping, Python/OS matrix, `__version__` |
 
 ## Implementation order
 
@@ -58,7 +59,7 @@ order-free; this table is the association between the two.
 
 | Phase | Theme | Primary capabilities advanced |
 |-------|-------|-------------------------------|
-| 1 | Project scaffold + verbatim port from DEV | *(infra)* — ports all `format-*` backends and `format-detection` |
+| 1 | Project scaffold + verbatim port from DEV | `packaging-and-extras` (pyproject, extras, env matrix); ports all `format-*` backends and `format-detection`. Tooling/migration mechanics are not specced. |
 | 2 | Stream layer reorganization | `seekable-decompressor-streams`, `archive-reading` *(internal streams)* |
 | 3 | Base reader interface cleanup | `archive-reading`, `backend-registry`, `format-7z`, `format-rar` |
 | 4 | `ExtractionHelper` → `ExtractionCoordinator` rewrite | `safe-extraction` (incl. decompression-bomb limits and progress/result reporting) |
@@ -67,7 +68,7 @@ order-free; this table is the association between the two.
 | 7 | Writing support | `archive-writing` (+ `format-zip` / `format-tar` writers) |
 | 8 | 7z & RAR streaming improvements | `format-7z`, `format-rar` |
 | 9 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` |
-| 10 | Polish, documentation, packaging | `cli` (+ cross-cutting: README, CI, coverage) |
+| 10 | Polish, documentation, packaging | `cli`, `packaging-and-extras` (`__version__`, `list_formats()`) (+ cross-cutting: README, CI, coverage) |
 
 `logging` is cross-cutting and not owned by a single phase — the named-logger
 hierarchy is established in Phase 1 and used by every phase thereafter.
