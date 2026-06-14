@@ -1,8 +1,20 @@
-# RAR Archive Support (via rarfile + system unrar)
+# RAR Archive Support (native metadata parser + system unrar)
 
 ## Purpose
 
-The system reads RAR archives through the `rarfile` library combined with the system `unrar` binary. Because solid RAR archives trigger O(N × archive_size) decompression work under rarfile's default per-file subprocess model, the backend uses a one-shot `unrar x` extraction to a temporary directory to reduce solid-archive access to a single subprocess invocation.
+Archivey parses RAR4 and RAR5 metadata natively — with no `rarfile` Python
+dependency — and delegates the proprietary RAR decompression to the system
+`unrar` binary, which remains a required runtime dependency for reading member
+*data*. Because metadata is parsed natively, members can be listed without
+`unrar`; only reading bytes needs it. RAR is read-only. `rarfile` is used only as
+a cross-validation oracle in the test suite.
+
+> Provenance: native RAR *metadata* parsing (drop `rarfile`, keep `unrar` as the
+> decompressor) and the single `unrar p` pipe-demultiplexer streaming approach
+> come from the `archivey-dev` `rar-native-metadata-reader` exploration and
+> `RarStreamReader`, distilled in COMPARISON.md §3/§4 and ARCHITECTURE.md §5.7.
+> Rolling a full native RAR decompressor is explicitly out of scope: the format
+> is proprietary and the reference implementation is `unrar` itself.
 
 ## Requirements
 
@@ -12,175 +24,162 @@ The system SHALL expose the following properties for the RAR backend:
 
 | Property | Value |
 |----------|-------|
-| Backend dependency | `rarfile` ≥ 4.0 (requires `unrar` binary on PATH) |
-| Listing cost | O(1) — central directory parsed upfront |
+| Read dependency (metadata) | None — native RAR4/RAR5 header parser |
+| Read dependency (data) | system `unrar` binary on PATH |
+| Listing cost | O(1) — headers parsed natively upfront |
 | Access cost | SOLID if solid archive; DIRECT otherwise |
 | Supports write | No — RAR is proprietary; read-only |
-| Requires seek | Yes |
+| Requires seek | Yes (for header parsing) |
 
 #### Scenario: write attempt on a RAR archive
 
 - **WHEN** a caller attempts to create or write a RAR archive
-- **THEN** the system SHALL raise `UnsupportedOperationError`, because RAR write is not supported
+- **THEN** the system SHALL raise `UnsupportedOperationError`
 
 #### Scenario: opening from a non-seekable source
 
 - **WHEN** the source stream does not support seeking
-- **THEN** the backend SHALL reject the open with an appropriate error, because `Requires seek` is `True`
+- **THEN** the backend SHALL reject the open with an appropriate error
 
 ---
 
-### Requirement: Use rarfile pull model for non-solid archives
+### Requirement: Parse RAR4 and RAR5 headers natively
 
-The system SHALL use `rarfile.RarFile.open(name)`, which returns a `RarExtFile` (`RawIOBase`), as the pull-based stream for non-solid archives. For non-solid archives, rarfile uses an internal hack: it extracts just the target member's compressed bytes into a temporary mini-archive and runs `unrar` on that subset. This is O(member_size) per call.
+The system SHALL parse RAR4 and RAR5 archive headers natively to produce the full
+member list and per-member metadata — name, sizes, timestamps, mode, flags, the
+solid flag, link redirect (`file_redir`) information, and encryption flags —
+without the `rarfile` library. Listing is O(1) and decompresses no member data.
 
-#### Scenario: opening a member from a non-solid RAR
+#### Scenario: listing a RAR without the unrar binary present
 
-- **WHEN** `_open_member()` is called on a non-solid RAR archive
-- **THEN** the system SHALL call `rarfile.open(member.original_name)` and return the resulting `RarExtFile` stream directly
-
----
-
-### Requirement: Detect and handle solid-archive limitation
-
-The system SHALL detect solid archives on open. For solid RAR archives, rarfile's default `extractall()` does NOT batch-extract — it calls `open()` once per file internally, spawning a separate `unrar` subprocess for each. Every subprocess re-processes the full archive from the start. Iterating N members of a solid RAR this way results in O(N) subprocess invocations each doing O(archive_size) work, totalling O(N × archive_size) decompression work. This behaviour is prohibited.
-
-#### Scenario: naive per-file extraction on a solid RAR
-
-- **WHEN** a solid RAR archive contains N members and `_open_member()` is called once per member without the one-shot workaround
-- **THEN** each call spawns a separate `unrar` subprocess that re-processes the entire archive — this O(N × archive_size) behaviour SHALL NOT occur
+- **WHEN** a (non-header-encrypted) RAR archive is opened and `unrar` is not on PATH
+- **THEN** the member list and all metadata are still available, because listing is satisfied entirely by the native header parser
 
 ---
 
-### Requirement: Apply one-shot unrar extraction for solid archives
+### Requirement: Require the unrar binary to read member data
 
-The system SHALL detect solid archives on open and, for `_open_member()`, run `unrar x` exactly once to extract all files to a `TemporaryDirectory`, then serve subsequent `_open_member()` calls by opening the pre-extracted files from that directory. The temporary directory persists until `close()`.
+The system SHALL obtain member *data* by invoking the system `unrar` binary. If
+`unrar` is not available on PATH, listing still works but any data read
+(`open()` / `read()` / extraction) SHALL raise a clear error stating that the
+`unrar` binary is required.
 
-```python
-def _open_member(self, member: Member) -> BinaryIO:
-    if not self._is_solid:
-        return self._rf.open(member.original_name)   # rarfile's hack, efficient
-    self._ensure_solid_cache()                        # runs unrar x once, lazy
-    return open(self._solid_cache_dir / member.name, 'rb')
+#### Scenario: reading data without unrar installed
 
-def _ensure_solid_cache(self):
-    if self._solid_cache_dir is not None:
-        return
-    self._solid_cache_dir = Path(tempfile.mkdtemp())
-    setup = rarfile.tool_setup()
-    cmd = [setup._unrar_tool, 'x', '-inul',
-           f'-p{self._password}' if self._password else '-p-',
-           str(self._path), str(self._solid_cache_dir) + os.sep]
-    subprocess.run(cmd, check=True)
-```
-
-`unrar x` (not `e`) is used to preserve relative paths and avoid name collisions. The command is built from rarfile's `tool_setup()` to respect any user-configured tool path. Disk space required equals the uncompressed size of the archive; the temporary directory is cleaned up in `close()`.
-
-#### Scenario: first member access on a solid RAR
-
-- **WHEN** `_open_member()` is called for the first time on a solid RAR archive
-- **THEN** the system SHALL invoke `unrar x -inul <archive> <tmpdir>/` exactly once, extracting all files to a temporary directory
-- **AND** subsequent `_open_member()` calls SHALL open pre-extracted files from that directory without spawning additional subprocesses
-
-#### Scenario: cleanup of solid cache
-
-- **WHEN** `close()` is called on a solid RAR reader
-- **THEN** the temporary directory created by the one-shot extraction SHALL be removed
+- **WHEN** `reader.read(member)` or `reader.open(member)` is called and `unrar` is not on PATH
+- **THEN** the system raises a clear error indicating the `unrar` binary is required to read RAR data
 
 ---
 
-### Requirement: Provide bounded-memory streaming path via _iter_with_data()
+### Requirement: Stream solid archives via a single unrar pipe
 
-The system SHALL override `_iter_with_data()` for solid RAR archives to also run `unrar x` exactly once, but clean up the temporary directory as soon as the `stream_members()` iteration ends (via a `finally` block in the generator) rather than at `close()`. Both `_open_member()` and `_iter_with_data()` run `unrar` exactly once; the distinction is the disk lifetime of the extracted files.
-
-```python
-def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
-    if not self._is_solid:
-        yield from super()._iter_with_data()   # default: open() per member
-        return
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        setup = rarfile.tool_setup()
-        subprocess.run([setup._unrar_tool, 'x', '-inul', ...], check=True)
-        for member in self._iter_members():
-            yield member, open(tmpdir / member.name, 'rb')
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-```
+For solid-archive sequential iteration (`stream_members()`), the system SHALL run
+a single `unrar p -inul <archive>` subprocess and demultiplex its stdout into
+per-member streams using the member sizes from the native header, validating each
+member's CRC32 incrementally. This processes the whole archive in one subprocess —
+O(archive_size) total — rather than spawning one subprocess per member.
 
 #### Scenario: streaming a solid RAR with stream_members()
 
 - **WHEN** `stream_members()` is called on a solid RAR archive
-- **THEN** the system SHALL run `unrar x` exactly once into a temporary directory, yield all members with file handles into that directory, and remove the directory when the iteration is complete (via the `finally` block)
+- **THEN** the system runs exactly one `unrar p` subprocess, demultiplexes its stdout into per-member streams by header-provided sizes, and validates each member's CRC32 as it is read
 
-#### Scenario: disk lifetime difference between _open_member and _iter_with_data
+---
 
-- **WHEN** members are accessed via `ar.open(member)` on a solid RAR
-- **THEN** the extracted files remain on disk until `close()` is called
-- **WHEN** members are accessed via `stream_members()` on a solid RAR
-- **THEN** the extracted files are removed as soon as the iteration loop finishes, not waiting for `close()`
+### Requirement: Random access and non-solid strategy
+
+The system SHALL serve random and non-solid access without the single-pipe
+streaming path:
+
+- **Non-solid archives:** read a member via `unrar` for that member, which is
+  O(member_size).
+- **Solid random access:** decode from the archive start up to the requested
+  member, or extract once with `unrar x` into a temporary directory and serve
+  subsequent reads from disk (cleaned up on `close()`).
+- **`extract_all`:** MAY use a one-shot `unrar x` to a temporary directory.
+
+#### Scenario: random access on a non-solid RAR
+
+- **WHEN** `ar.open(member)` is called on a non-solid RAR archive
+- **THEN** the backend reads just that member's data via `unrar`, doing O(member_size) work
+
+#### Scenario: repeated random access on a solid RAR
+
+- **WHEN** multiple members of a solid RAR are accessed via `ar.open()`
+- **THEN** the backend MAY extract the archive once with `unrar x` into a temporary directory and serve reads from disk, removing the directory on `close()`
 
 ---
 
 ### Requirement: Report the absence of solid block boundary information
 
-The system SHALL acknowledge that rarfile does not expose which files belong to the same solid compression block. The solid/non-solid distinction for RAR is binary per archive — there is no per-block granularity available. `CostReceipt.solid_block_count` SHALL be `None` for RAR archives.
+The system SHALL treat RAR solidity as binary per archive — there is no per-block
+granularity — and SHALL set `CostReceipt.solid_block_count` to `None` for RAR
+archives.
 
 #### Scenario: CostReceipt for a solid RAR
 
 - **WHEN** a solid RAR archive is opened
-- **THEN** `CostReceipt.is_solid` SHALL be `True` and `CostReceipt.solid_block_count` SHALL be `None`, because rarfile does not expose block boundary information
+- **THEN** `CostReceipt.is_solid` is `True` and `CostReceipt.solid_block_count` is `None`
 
 ---
 
 ### Requirement: Handle RAR4 and RAR5 timestamp differences
 
-The system SHALL map timestamps differently depending on the RAR version:
+The system SHALL map timestamps from the native header according to RAR version:
 
-- **RAR4:** stores local wall-clock time → `Member.modified` is a naive `datetime` (no timezone).
-- **RAR5:** stores UTC with sub-second precision → `Member.modified` is a timezone-aware `datetime`.
+- **RAR4:** local wall-clock time → `Member.modified` is a naive `datetime`.
+- **RAR5:** UTC with sub-second precision → `Member.modified` is a timezone-aware `datetime`.
 
 #### Scenario: RAR4 archive timestamp
 
-- **WHEN** a RAR4 archive is opened and a member's modification time is read
-- **THEN** `Member.modified` SHALL be a naive `datetime` representing local wall-clock time
+- **WHEN** a member's modification time is read from a RAR4 archive
+- **THEN** `Member.modified` is a naive `datetime` representing local wall-clock time
 
 #### Scenario: RAR5 archive timestamp
 
-- **WHEN** a RAR5 archive is opened and a member's modification time is read
-- **THEN** `Member.modified` SHALL be a timezone-aware UTC `datetime`
+- **WHEN** a member's modification time is read from a RAR5 archive
+- **THEN** `Member.modified` is a timezone-aware UTC `datetime`
 
 ---
 
-### Requirement: Handle RAR5 link types correctly
+### Requirement: Handle RAR5 link types from native redirect metadata
 
-The system SHALL handle RAR5 link semantics as follows:
+The system SHALL read RAR5 link semantics from the natively parsed `file_redir`
+field:
 
-- **Hardlinks and file-copies:** RAR5 stores these via the `file_redir` field. `rarfile` automatically follows `RAR5_XREDIR_HARD_LINK` and `RAR5_XREDIR_FILE_COPY` redirects inside `open()`, transparently returning the source file's data. No additional handling is required at the backend layer for these.
-- **Symlinks:** RAR5 stores symlinks via `RAR5_XREDIR_UNIX_SYMLINK`, with the link target path as the member's content. The ABC-level link-following (defined in the `ArchiveReader` base class) handles symlinks uniformly across all formats.
+- **Hardlinks and file-copies** (`RAR5_XREDIR_HARD_LINK`, `RAR5_XREDIR_FILE_COPY`):
+  the member is mapped to its redirect target so that reading it returns the
+  target file's data.
+- **Symlinks** (`RAR5_XREDIR_UNIX_SYMLINK`): stored with the link target path as
+  content; resolution is handled by the format-independent link-following layer
+  in the `ArchiveReader` base class.
 
-#### Scenario: opening a RAR5 hardlink or file-copy member
+#### Scenario: reading a RAR5 hardlink or file-copy member
 
-- **WHEN** `open()` is called on a member that is a RAR5 hardlink (`RAR5_XREDIR_HARD_LINK`) or file-copy (`RAR5_XREDIR_FILE_COPY`)
-- **THEN** `rarfile` automatically returns the source file's data, and no additional redirection is needed at the backend layer
+- **WHEN** `read()` is called on a member whose native `file_redir` marks it a hardlink or file-copy
+- **THEN** the backend returns the redirect target's data
 
-#### Scenario: opening a RAR5 symlink member
+#### Scenario: reading a RAR5 symlink member
 
-- **WHEN** `open()` is called on a member that is a RAR5 Unix symlink (`RAR5_XREDIR_UNIX_SYMLINK`)
-- **THEN** the ABC-level link-following layer resolves the target and redirects to the target member's data
+- **WHEN** `read()` is called on a RAR5 Unix symlink member
+- **THEN** the ABC-level link-following layer resolves the target and returns the target member's data
 
 ---
 
-### Requirement: Require a password to list a RAR5 header-encrypted archive
+### Requirement: Header-encrypted RAR5 requires a password and unrar
 
-The system SHALL set `ArchiveInfo.is_encrypted = True` when a RAR5 archive uses header encryption. Listing members of such an archive requires a password; without one, the listing operation fails.
+RAR5 header encryption uses AES, which the standard library cannot perform, so the
+native parser cannot decrypt an encrypted header on its own. The system SHALL,
+for header-encrypted RAR5 archives, require both a password and the `unrar` binary
+even to LIST members, and SHALL set `ArchiveInfo.is_encrypted = True`. Without a
+password, listing SHALL raise `EncryptionError`.
 
 #### Scenario: listing a header-encrypted RAR5 archive without a password
 
-- **WHEN** a RAR5 archive with header encryption is opened without supplying a password
-- **THEN** the system SHALL raise `EncryptionError`, because listing requires decrypting the header
+- **WHEN** a header-encrypted RAR5 archive is opened without a password
+- **THEN** the system raises `EncryptionError`
 
-#### Scenario: ArchiveInfo for a header-encrypted RAR5 archive
+#### Scenario: listing a header-encrypted RAR5 archive with a password
 
-- **WHEN** a RAR5 archive with header encryption is opened (with a valid password)
-- **THEN** `ArchiveInfo.is_encrypted` SHALL be `True`
+- **WHEN** a header-encrypted RAR5 archive is opened with a valid password and `unrar` is available
+- **THEN** the member list is produced (via `unrar`, since native header decryption is not possible) and `ArchiveInfo.is_encrypted` is `True`

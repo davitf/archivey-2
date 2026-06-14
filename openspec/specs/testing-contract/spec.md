@@ -61,6 +61,38 @@ The system SHALL include a round-trip test for every writable format. The test s
 - **WHEN** a canonical file set is written to a TAR archive and then extracted
 - **THEN** the extracted files match the originals in content and in all metadata fields the TAR format can faithfully represent
 
+### Requirement: Cross-validate native readers against reference oracles
+
+The system SHALL validate the native 7-Zip and RAR readers against reference
+implementations used purely as test oracles: `py7zr` and the `7z` CLI for 7-Zip,
+and `rarfile` and the `unrar` CLI for RAR. For a representative corpus of
+archives, the native reader's member metadata and decompressed bytes MUST match
+the oracle's. These oracle libraries are `dev`-group dependencies only and are
+never required at runtime; oracle-backed tests SHALL be skipped (not failed) when
+the oracle library or CLI tool is unavailable in the environment.
+
+The corpus MUST exercise the codecs the native 7z reader claims to support
+(LZMA1, LZMA2, simple BCJ filters, Delta, BZip2, Deflate, STORED) and MUST assert
+that archives using unsupported codecs (e.g. PPMD, BCJ2) raise the documented
+"unsupported codec" error rather than diverging silently from the oracle.
+
+#### Scenario: native 7z reader matches the py7zr oracle
+
+- **WHEN** a 7-Zip archive in the corpus is read by both the native reader and `py7zr`
+- **THEN** member metadata and decompressed bytes are identical between the two
+- **AND** the test is skipped (not failed) if `py7zr` is not installed
+
+#### Scenario: native RAR reader matches the rarfile/unrar oracle
+
+- **WHEN** a RAR archive in the corpus is read by both the native reader and `rarfile`/`unrar`
+- **THEN** member metadata and decompressed bytes are identical between the two
+- **AND** the test is skipped if `rarfile` or the `unrar` binary is unavailable
+
+#### Scenario: unsupported 7z codec is rejected, not guessed
+
+- **WHEN** a 7-Zip archive using PPMD or BCJ2 is read by the native reader
+- **THEN** the documented unsupported-codec error is raised, rather than returning bytes that disagree with the oracle
+
 ### Requirement: Non-seekable stream coverage for every streaming backend
 
 The system SHALL test every backend that supports streaming with a `FakeNonSeekable` wrapper that raises `io.UnsupportedOperation` on all `seek` and `tell` calls. The test verifies that the backend reads and iterates correctly when the source stream cannot be repositioned.

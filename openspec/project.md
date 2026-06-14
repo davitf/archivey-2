@@ -46,7 +46,14 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `seekable-decompressor-streams` | Random access inside single compressed streams |
 | `testing-contract` | Equivalence matrix, adversarial corpus, round-trip and non-seekable coverage |
 | `cli` | The `archivey` command-line interface |
-| `packaging-and-extras` | Install-time contract: zero-dep core, extras→format mapping, Python/OS matrix, `__version__` |
+| `packaging-and-extras` | Install-time contract: zero-dep core (incl. native 7z read + RAR metadata), extras→capability mapping, Python/OS matrix, `__version__` |
+
+**7z/RAR strategy (native-first):** 7z and RAR are read with **native** parsers,
+not `py7zr`/`rarfile`. 7z reading decodes through stdlib `lzma`/`bz2`/`zlib`
+(zero runtime deps; unsupported codecs like PPMD/BCJ2 error explicitly). RAR
+metadata is parsed natively while the external `unrar` binary does the proprietary
+decompression. `py7zr` is kept only for 7z *writing* (`[7z-write]`); `py7zr` and
+`rarfile` otherwise serve only as `dev`-group test oracles (see `testing-contract`).
 
 ## Implementation order
 
@@ -59,14 +66,14 @@ order-free; this table is the association between the two.
 
 | Phase | Theme | Primary capabilities advanced |
 |-------|-------|-------------------------------|
-| 1 | Project scaffold + verbatim port from DEV | `packaging-and-extras` (pyproject, extras, env matrix); ports all `format-*` backends and `format-detection`. Tooling/migration mechanics are not specced. |
+| 1 | Project scaffold + verbatim port from DEV | `packaging-and-extras` (pyproject, extras, env matrix); ports `format-*` backends and `format-detection`. 7z/RAR are native-first (see note), so porting DEV's `py7zr`/`rarfile` read backends is interim-only or deferred. Tooling/migration mechanics are not specced. |
 | 2 | Stream layer reorganization | `seekable-decompressor-streams`, `archive-reading` *(internal streams)* |
-| 3 | Base reader interface cleanup | `archive-reading`, `backend-registry`, `format-7z`, `format-rar` |
+| 3 | Base reader interface cleanup | `archive-reading`, `backend-registry` |
 | 4 | `ExtractionHelper` → `ExtractionCoordinator` rewrite | `safe-extraction` (incl. decompression-bomb limits and progress/result reporting) |
 | 5 | Public API alignment to SPEC.md | `archive-data-model`, `access-intent-and-cost`, `error-handling`, `archive-reading` |
 | 6 | Test infrastructure overhaul | `testing-contract` |
 | 7 | Writing support | `archive-writing` (+ `format-zip` / `format-tar` writers) |
-| 8 | 7z & RAR streaming improvements | `format-7z`, `format-rar` |
+| 8 | Native 7z reader + native RAR metadata parser | `format-7z`, `format-rar` (native-first: drop `py7zr`/`rarfile` from the read path; `unrar` binary stays for RAR data; `py7zr` for 7z write only) |
 | 9 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` |
 | 10 | Polish, documentation, packaging | `cli`, `packaging-and-extras` (`__version__`, `list_formats()`) (+ cross-cutting: README, CI, coverage) |
 
@@ -78,6 +85,12 @@ hierarchy is established in Phase 1 and used by every phase thereafter.
 > They have been folded into `safe-extraction` (both are extraction-time
 > guarantees, now scheduled under Phase 4); the cross-cutting logging concern was
 > split out into the standalone `logging` spec.
+
+> **Open sequencing question (7z/RAR):** because the read path is native-first,
+> Phase 1 must decide whether to (a) port DEV's `py7zr`/`rarfile` read backends as
+> an interim baseline (full 7z/RAR support early, thrown away at Phase 8) or
+> (b) skip them in the baseline and mark 7z/RAR tests `xfail` until the native
+> readers land in Phase 8. To resolve when drafting the Phase 8 change.
 
 ## Deferred / out of scope (v1)
 

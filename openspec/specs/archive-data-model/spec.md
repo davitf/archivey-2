@@ -23,8 +23,8 @@ class ArchiveFormat(Enum):
     BZ2       = "bz2"
     XZ        = "xz"
     ZST       = "zst"
-    SEVEN_Z   = "7z"          # requires [7z] extra
-    RAR       = "rar"         # requires [rar] extra
+    SEVEN_Z   = "7z"          # read: native (core); write: [7z-write] extra
+    RAR       = "rar"         # read: native metadata + system `unrar` for data
     ISO       = "iso"         # requires [iso] extra
     DIRECTORY = "directory"   # plain filesystem directory
 ```

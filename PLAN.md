@@ -12,8 +12,8 @@
 ## What we're keeping from DEV (largely as-is)
 
 - Format backends: ZIP, TAR, single-file compressors, ISO, directory — logic and edge cases are correct and well-tested. Port with interface adjustments only.
-- 7z backend: the thread-queue streaming approach (`StreamingFile`) and per-folder extraction cache — both are good. Port and clean up.
-- RAR backend: the `unrar p` pipe demultiplexer (`RarStreamReader`) and solid-cache approach — port and clean up.
+- 7z backend: **native-first** (Phase 8) — 7z reading uses a native parser over stdlib `lzma`/`bz2`/`zlib`, not `py7zr`. The DEV thread-queue `StreamingFile` approach is interim/reference only; `py7zr` is kept solely for 7z *writing* (`[7z-write]`) and as a test oracle.
+- RAR backend: **native-first** (Phase 8) — RAR metadata is parsed natively (drop `rarfile`); the `unrar p` pipe demultiplexer (`RarStreamReader`) is kept for decompression via the external `unrar` binary. `rarfile` becomes a test oracle only.
 - `ArchiveStream`: lazy-opening + exception translation wrapper — clean design, keep it.
 - `RewindableStreamWrapper` + `RecordableStream` — correct, keep them.
 - `DecompressorStream`, `XzStream`, `LzipStream` — keep, move to better location.
@@ -296,32 +296,59 @@ def build_hardlink_map(members: list[ArchiveMember]) -> dict[int, list[ArchiveMe
 
 ---
 
-## Phase 8: 7z and RAR streaming improvements
+## Phase 8: Native 7z reader + native RAR metadata parser
 
-**Goal:** integrate DEV's best streaming approaches with the new interface.
+**Goal:** make the 7z and RAR **read** paths native, dropping `py7zr`/`rarfile`
+from production. See `openspec/specs/format-7z/spec.md` and
+`openspec/specs/format-rar/spec.md` for the full contracts.
 
-DEV already has two excellent implementations:
-- **7z**: `StreamingFile` with thread+queue — truly streaming, O(queue_bound) memory.
-- **RAR**: `RarStreamReader` with `unrar p` pipe demultiplexer — single subprocess, CRC-validated.
+**Strategy (native-first):** the library backends are never the production read
+path. `py7zr` is retained only for 7z *writing* (`[7z-write]` extra); `py7zr` and
+`rarfile` are otherwise `dev`-group **test oracles** that cross-validate the
+native readers (see `openspec/specs/testing-contract/spec.md`).
+
+**Open sequencing question:** decide whether Phase 1 ported the DEV
+`py7zr`/`rarfile` read backends as an interim baseline (replaced here) or marked
+7z/RAR `xfail` until this phase. Resolve when drafting this change.
 
 ### Tasks
 
-1. **7z `_iter_with_data()` override**: use the thread+queue `StreamingFile` approach from DEV rather than the "extract folder to tmpdir" approach from ARCHITECTURE.md. This gives true streaming with bounded memory without any disk I/O. Verify the per-folder memory release still happens (the queue bound acts as the buffer).
+1. **Native 7z header parser**: parse signature header, packed-streams info,
+   folders + coder chains, substreams, and files info natively (no runtime
+   `py7zr`). Produces the member list and folder→file map in O(1).
 
-2. **RAR `_iter_with_data()` override**: use the `unrar p` pipe demultiplexer approach from DEV. This avoids tmpdir entirely — data flows directly from `unrar` stdout to the caller. Verify CRC checking is retained.
+2. **Native 7z decode**: compose stdlib decompressors — `lzma` `FORMAT_RAW`
+   (LZMA1/LZMA2, simple BCJ filters, Delta), `bz2`, `zlib`, and STORED. True
+   pull streaming for `stream_members()`; decode-from-folder-start (optionally
+   cached) for random `open()`. Raise an explicit error naming unsupported codecs
+   (PPMD, BCJ2) — never silent fallback.
 
-3. **Both backends**: ensure `_open_member()` (for random access) still uses the tmpdir/cache approach — the pipe demultiplexer is sequential-only.
+3. **7z writing via py7zr**: keep writing behind the `[7z-write]` extra; reading
+   must not import `py7zr`.
 
-4. **Tests**:
-   - 7z solid: assert `stream_members()` over a solid archive decompresses each folder exactly once (count `py7zr.SevenZipFile.extract` calls).
-   - RAR solid: assert `stream_members()` spawns exactly one `unrar p` subprocess.
-   - Both: assert `stream_members()` peak memory is bounded (instrument with `tracemalloc`).
-   - Both: `open()` (random access) still works after `stream_members()` returns.
+4. **Native RAR metadata parser**: parse RAR4/RAR5 headers natively (member list,
+   sizes, timestamps, mode, flags, solid flag, `file_redir`, encryption flags) —
+   no `rarfile`. Listing works without `unrar` present.
+
+5. **RAR data via unrar**: solid `stream_members()` uses a single `unrar p -inul`
+   subprocess demultiplexed by header sizes with incremental CRC32 validation;
+   non-solid/random access reads per member; `extract_all` may use one-shot
+   `unrar x`. Header-encrypted RAR5 needs `unrar` + password even to list (no
+   stdlib AES).
+
+6. **Tests (oracle cross-validation)**:
+   - 7z: native reader's metadata + bytes match `py7zr` / `7z` CLI across the
+     supported-codec corpus; PPMD/BCJ2 archives raise the unsupported-codec error.
+   - RAR: native reader's metadata + bytes match `rarfile` / `unrar`.
+   - Solid 7z `stream_members()`: each folder decoded once; bounded peak memory.
+   - Solid RAR `stream_members()`: exactly one `unrar p` subprocess; CRCs validated.
+   - Oracle-backed tests skip (not fail) when the oracle lib/tool is absent.
 
 ### Acceptance criteria
-- 7z solid: one `py7zr.extract()` call per folder during `stream_members()`.
-- RAR solid: one `unrar p` process for the full `stream_members()` pass.
-- `open()` unaffected by whether `stream_members()` has been called.
+- 7z and RAR reads import no third-party library (only stdlib + `unrar` for RAR).
+- Native readers match the oracle outputs across the corpus.
+- Unsupported 7z codecs raise the documented error rather than diverging.
+- Solid RAR `stream_members()` uses one `unrar p` process for the full pass.
 
 ---
 

@@ -1,8 +1,20 @@
-# 7-Zip Archive Support (py7zr)
+# 7-Zip Archive Support (native reader; py7zr for writing)
 
 ## Purpose
 
-Archivey reads and writes 7-Zip archives using the `py7zr` library (optional `[7z]` extra). Because py7zr exposes only a push-based extraction API with no streaming pull, the backend uses lazy per-folder caching to avoid the O(N²) decompression hazard that solid archives would otherwise cause under naive per-file extraction.
+Archivey reads 7-Zip archives with a native, zero-dependency reader: the header
+is parsed natively and decompression is driven through Python's standard library
+— `lzma` in `FORMAT_RAW` mode covers LZMA1, LZMA2, the simple BCJ branch-filter
+family, and Delta, while `bz2` and `zlib` cover BZip2 and Deflate. This yields
+true pull-based streaming with none of the background-thread/queue or per-folder
+spooling that a push-based library backend requires. The `py7zr` library is NOT a
+read dependency; it is used only to provide 7z *writing* (optional `[7z-write]`
+extra) and as a cross-validation oracle in the test suite.
+
+> Provenance: the native-reader direction and its key feasibility finding (stdlib
+> `lzma` `FORMAT_RAW` natively implements LZMA1/LZMA2 + the BCJ family + Delta)
+> come from the `archivey-dev` `sevenzip-native-reader` exploration, distilled in
+> COMPARISON.md §3 and ARCHITECTURE.md §5.6.
 
 ## Requirements
 
@@ -12,16 +24,18 @@ The system SHALL expose the following properties for the 7-Zip backend:
 
 | Property | Value |
 |----------|-------|
-| Backend dependency | `py7zr` ≥ 0.20 |
-| Listing cost | O(1) — header parsed upfront via `sz.list()` |
-| Access cost | SOLID (typically); DIRECT only if no solid blocks |
-| Supports write | Yes (via `py7zr`) |
+| Read dependency | None — native parser + stdlib `lzma`/`bz2`/`zlib` (7z **reading** is part of the zero-dependency core) |
+| Write dependency | `py7zr` (optional `[7z-write]` extra) |
+| Listing cost | O(1) — header parsed natively upfront |
+| Access cost | SOLID when a folder packs multiple files; DIRECT for single-file folders |
+| Supports write | Yes, via `py7zr` (`[7z-write]`) |
 | Requires seek | Yes |
 
 #### Scenario: listing members of a 7z archive
 
 - **WHEN** a caller opens a 7-Zip archive
-- **THEN** the backend reads the header block (fast, at start of file) and the full member list is available in O(1) without decompressing any file data
+- **THEN** the native parser reads the header region and the full member list is available in O(1), decompressing no file data
+- **AND** no third-party library is imported for reading
 
 #### Scenario: opening a 7z archive from a non-seekable source
 
@@ -30,168 +44,137 @@ The system SHALL expose the following properties for the 7-Zip backend:
 
 ---
 
-### Requirement: Handle py7zr push model correctly
+### Requirement: Parse the 7-Zip header natively
 
-The system SHALL accommodate py7zr's push-based extraction model, which provides no `open(name) -> stream` pull API. The only extraction interfaces are `extract(targets=[...], factory=WriterFactory)` and `extractall(factory=WriterFactory)`, which push bytes into `Py7zIO` objects. `reset()` must be called between successive extraction calls. The `Py7zIO` objects supplied to py7zr must be seekable — py7zr calls `seek(0)` after each file as a final rewind (it never reads back), so `BytesIO` and `SpooledTemporaryFile` work; pipes fail.
+The system SHALL parse the 7z structure natively — signature header, packed-streams
+info, the unpacked folders and their coder chains, substreams info, and files info
+— without any third-party library. This produces the full member list and the
+folder→file mapping in O(1), decompressing no file data. Each folder's file count
+and the contiguous layout of files within the folder's decompressed output are
+derived from the substreams info.
 
-#### Scenario: extracting a single member using the push model
+#### Scenario: member list and folder mapping from the header
 
-- **WHEN** the backend needs to open a member for reading
-- **THEN** it uses `sz.extract(targets=[...], factory=WriterFactory)` to push data into a seekable buffer, then calls `sz.reset()` before the next extraction
-
-#### Scenario: providing a non-seekable Py7zIO object
-
-- **WHEN** a non-seekable object (e.g. a pipe) is supplied as the write target
-- **THEN** py7zr fails because it calls `seek(0)` after writing, so the backend must only supply seekable buffers (`BytesIO`, `SpooledTemporaryFile`)
-
----
-
-### Requirement: Avoid the solid-archive O(N²) decompression hazard
-
-The system SHALL NOT call `_open_member()` naively once per file when members share a solid block. Calling `extract(targets=['c.txt'])` on a solid block `[a, b, c]` still decompresses `a` and `b` — `targets` controls data capture, not decompression work. A naive per-file loop across a solid block of N files would trigger O(N) decompression passes per file, yielding O(N²) total decompression work.
-
-#### Scenario: accessing multiple files in the same solid block naively
-
-- **WHEN** N files share a solid compression block and `_open_member()` is called once per file without caching
-- **THEN** each call decompresses the entire block from the start, causing O(N²) total decompression work — this behaviour is prohibited
+- **WHEN** a 7-Zip archive is opened
+- **THEN** the backend produces every member's metadata and the mapping of members to their containing folder purely from the parsed header, without decompressing any folder
 
 ---
 
-### Requirement: Apply lazy per-folder caching in `_open_member()`
+### Requirement: Decode folders natively via stdlib codecs
 
-The system SHALL implement lazy per-folder caching in `_open_member()`: the first time any member from a given solid block (folder) is requested, the backend extracts the entire folder in one pass and caches all members from it. Subsequent requests for members in the same folder are served from the cache in O(1). Cache entries are never evicted; memory grows until `close()`. The `SpooledTemporaryFile` threshold is 64 MiB — buffers up to that size stay in memory; larger ones spill to disk.
+The system SHALL decode each folder's coder chain by composing standard-library
+decompressors: LZMA1/LZMA2, the simple BCJ filters (x86 / ARM / ARMT / PPC /
+SPARC / IA64), and Delta via `lzma` `FORMAT_RAW` filters; BZip2 via `bz2`; Deflate
+via `zlib`; and STORED as a pass-through. Files within a folder are laid out
+contiguously in the decompressed output, so the backend produces a member's stream
+by reading exactly `member.size` bytes, in order, from the folder's decompressed
+byte stream.
 
-The caching strategy gives O(1) decompression passes per solid block regardless of access pattern. For sequential `for member in ar: ar.open(member)`, total decompression cost is O(number_of_solid_blocks), not O(N). Memory peak equals the size of the largest single solid block uncompressed.
+#### Scenario: member compressed with a BCJ + LZMA2 chain
 
-Example access pattern:
-
-```
-first open(a):  → extract_folder(folder_0)  [decompresses a, b, c]  → cache all three
-     open(b):  → cache hit                   [O(1), from SpooledTemporaryFile]
-     open(c):  → cache hit                   [O(1)]
-first open(d):  → extract_folder(folder_1)  [decompresses d, e]
-```
-
-Folder-to-file mapping is available from py7zr internals: each `FileInfo` dict has a `"folder"` key pointing to its `Folder` object; files in the same solid block share the same `Folder` instance (object identity). `SubstreamsInfo.num_unpackstreams_folders[i]` gives the file count per folder.
-
-The implementation of `_open_member()`:
-
-```python
-def _open_member(self, member: Member) -> BinaryIO:
-    name = member.original_name
-    folder = self._file_info_map[name]["folder"]
-
-    if folder not in self._folder_cache:
-        targets = [fi["filename"] for fi in folder.files]
-        class BlockFactory(py7zr.WriterFactory):
-            def create(inner_self, fn):
-                spooled = tempfile.SpooledTemporaryFile(max_size=64 << 20)
-                self._folder_cache[folder][fn] = spooled   # written into permanent cache
-                return _Py7zIOAdapter(spooled)
-        self._folder_cache[folder] = {}
-        self._sz.extract(targets=targets, factory=BlockFactory())
-        self._sz.reset()   # required before next extraction
-
-    buf = self._folder_cache[folder][name]
-    buf.seek(0)
-    return buf
-```
-
-#### Scenario: first access to a member in a previously unseen folder
-
-- **WHEN** `_open_member()` is called for a member whose folder is not yet in `_folder_cache`
-- **THEN** the backend extracts all files in that folder in one `sz.extract()` call, caches every resulting `SpooledTemporaryFile` in `_folder_cache[folder]`, calls `sz.reset()`, and returns the requested buffer seeked to position 0
-
-#### Scenario: subsequent access to a member in a cached folder
-
-- **WHEN** `_open_member()` is called for a member whose folder is already in `_folder_cache`
-- **THEN** the backend retrieves the buffer from the cache, seeks it to position 0, and returns it — no decompression occurs
-
-#### Scenario: folder buffer size above 64 MiB
-
-- **WHEN** a folder's uncompressed data for a single file exceeds 64 MiB
-- **THEN** the `SpooledTemporaryFile` spills to a temporary file on disk rather than holding the data in memory
+- **WHEN** a member lives in a folder coded as BCJ-over-LZMA2
+- **THEN** the backend composes the stdlib `lzma` `FORMAT_RAW` filter chain, decodes the folder, and returns bytes identical to the original file content
 
 ---
 
-### Requirement: Provide bounded-memory sequential iteration via `_iter_with_data()`
+### Requirement: Reject unsupported codecs explicitly
 
-The system SHALL override `_iter_with_data()` to iterate folders one at a time, extracting each folder in a single pass, yielding all its members with their streams, and then releasing that folder's `SpooledTemporaryFile`s before moving to the next folder. This path is used by `stream_members()` and gives bounded memory: peak equals the size of the largest single solid folder.
+The system SHALL raise a clear error that names the codec when a folder uses a
+codec outside the natively supported set — notably **PPMD** and **BCJ2**, which
+are not available through the standard library (BCJ2 is a multi-stream filter not
+implemented by `lzma`). The library MUST NOT silently return incorrect data and
+MUST NOT fall back to a third-party reader.
 
-```python
-def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
-    for folder in self._folders:
-        targets = [fi["filename"] for fi in folder.files]
-        folder_bufs: dict[str, SpooledTemporaryFile] = {}
+#### Scenario: PPMD-compressed member
 
-        class FolderFactory(py7zr.WriterFactory):
-            def create(inner_self, fn):
-                spooled = tempfile.SpooledTemporaryFile(max_size=64 << 20)
-                folder_bufs[fn] = spooled
-                return _Py7zIOAdapter(spooled)
+- **WHEN** a member's folder is compressed with PPMD
+- **THEN** the backend raises an error naming PPMD as an unsupported codec, rather than returning data
 
-        self._sz.extract(targets=targets, factory=FolderFactory())
-        self._sz.reset()
+#### Scenario: BCJ2-filtered member
 
-        for fi in folder.files:
-            member = self._member_map[fi["filename"]]
-            buf = folder_bufs[fi["filename"]]
-            buf.seek(0)
-            yield member, buf
+- **WHEN** a member's folder uses the BCJ2 filter
+- **THEN** the backend raises an error naming BCJ2 as an unsupported codec
 
-        # folder_bufs goes out of scope here → GC releases SpooledTemporaryFiles
-        # Peak memory = size of the largest single folder
-```
+---
 
-`_iter_members()` is pure metadata: it calls `sz.list()`, is O(1), and performs no decompression.
+### Requirement: True pull-based streaming with bounded memory
 
-#### Scenario: streaming all members with `stream_members()`
+The system SHALL provide `stream_members()` as a true pull stream: each folder is
+decoded once, its members yielded in archive order as the decompressor produces
+bytes, with no buffering of the whole folder and no background thread or queue.
+Peak memory is bounded by the decompressor's working set rather than the folder's
+uncompressed size. For random `ar.open()` of a member inside a solid folder, the
+backend decodes the folder from its start; it MAY cache the decoded folder so that
+repeated access to members of the same folder is served without re-decoding.
 
-- **WHEN** a caller uses `stream_members()` to iterate a solid 7-Zip archive
-- **THEN** the backend extracts one folder at a time, yields all members in that folder, then releases the folder's buffers before decompressing the next folder
-- **AND** peak memory at any point equals the uncompressed size of the largest single solid folder
+#### Scenario: streaming a solid 7z archive
 
-#### Scenario: comparing memory profiles of `for m in ar: ar.open(m)` vs `stream_members()`
+- **WHEN** a caller iterates a solid 7-Zip archive with `stream_members()`
+- **THEN** each folder is decoded once and its members are yielded as a pull stream, with peak memory bounded by the decompressor working set, not the folder size
 
-- **WHEN** a caller iterates using `for m in ar: ar.open(m)` on a solid archive
-- **THEN** each accessed folder's cache accumulates until `close()`, so peak memory equals the sum of all solid blocks accessed
-- **WHEN** a caller iterates using `stream_members()`
-- **THEN** peak memory equals the size of the largest single solid block, because buffers are released folder by folder
+#### Scenario: random access into a solid folder
+
+- **WHEN** `ar.open(member)` is called for a member inside a multi-file folder
+- **THEN** the backend decodes the folder from its start to produce the member's bytes, optionally caching the decoded folder for subsequent access
 
 ---
 
 ### Requirement: Report solid block metadata in CostReceipt
 
-The system SHALL populate `CostReceipt` fields for 7-Zip archives as follows: `solid_block_count` is sourced from `archiveinfo().blocks`; `is_solid` is sourced from `archiveinfo().solid`.
+The system SHALL populate `CostReceipt` from the natively parsed header:
+`solid_block_count` is the number of folders, and `is_solid` is `True` when any
+folder packs more than one file.
 
 #### Scenario: reporting cost for a solid 7z archive
 
-- **WHEN** a 7-Zip archive contains multiple solid blocks
-- **THEN** `CostReceipt.is_solid` is `True` and `CostReceipt.solid_block_count` reflects the actual number of solid blocks as reported by `archiveinfo().blocks`
+- **WHEN** a 7-Zip archive contains folders that pack multiple files
+- **THEN** `CostReceipt.is_solid` is `True` and `CostReceipt.solid_block_count` reflects the folder count from the header
 
 #### Scenario: reporting cost for a non-solid 7z archive
 
-- **WHEN** a 7-Zip archive has no solid blocks (each file is independently compressed)
+- **WHEN** every folder packs exactly one file
 - **THEN** `CostReceipt.is_solid` is `False` and `CostReceipt.access_cost` is `DIRECT`
 
 ---
 
 ### Requirement: Map compression chain to CompressionMethod
 
-The system SHALL map 7-Zip codec information to `CompressionMethod` values. Archive-level method names are available from `archiveinfo().method_names` (e.g. `['LZMA2', 'BCJ']`); per-folder codec details are available from `Folder.coders`. These are mapped to `CompressionAlgo` values and stored as a `tuple[CompressionMethod, ...]` on each `Member`, modelling the filter chain (e.g. `(CompressionMethod(BCJ2), CompressionMethod(LZMA2))` for a typical 7z executable entry).
+The system SHALL map each folder's natively parsed coder chain to a
+`tuple[CompressionMethod, ...]` on every `Member`, modelling the filter chain in
+order (e.g. `(CompressionMethod(BCJ), CompressionMethod(LZMA2))`).
 
-#### Scenario: member compressed with a BCJ + LZMA2 filter chain
+#### Scenario: member with a BCJ + LZMA2 filter chain
 
-- **WHEN** a member in a 7-Zip archive uses a BCJ pre-filter followed by LZMA2 compression
-- **THEN** `member.compression` is `(CompressionMethod(BCJ2), CompressionMethod(LZMA2))` (or the applicable BCJ variant), reflecting the full filter chain in order
+- **WHEN** a member's folder uses a BCJ pre-filter followed by LZMA2
+- **THEN** `member.compression` reflects the full chain in order as `CompressionMethod` values
 
 ---
 
 ### Requirement: Represent absent POSIX metadata as None
 
-The system SHALL set `mode`, `uid`, and `gid` to `None` when the 7-Zip archive does not include a POSIX metadata attribute block. 7z stores POSIX metadata in an optional attribute block; if it is absent, these fields must be `None` — not a guessed default.
+The system SHALL set `mode`, `uid`, and `gid` to `None` when the 7-Zip archive
+does not include a POSIX metadata attribute block — never a guessed default.
 
-#### Scenario: 7z archive created on Windows without POSIX attribute block
+#### Scenario: 7z archive created without a POSIX attribute block
 
 - **WHEN** a 7-Zip archive lacks a POSIX metadata attribute block
-- **THEN** `member.mode`, `member.uid`, and `member.gid` are all `None` for every member
+- **THEN** `member.mode`, `member.uid`, and `member.gid` are all `None`
+
+---
+
+### Requirement: Provide 7-Zip writing via py7zr
+
+The system SHALL provide 7-Zip *writing* through `py7zr`, gated behind the
+optional `[7z-write]` extra. Reading MUST NOT depend on `py7zr`. If a 7z write is
+attempted without `[7z-write]` installed, the system SHALL raise a clear error
+indicating the extra is required.
+
+#### Scenario: writing a 7z archive with the extra installed
+
+- **WHEN** `archivey.create(dest, ArchiveFormat.SEVEN_Z)` is called and `[7z-write]` is installed
+- **THEN** the archive is written using `py7zr`
+
+#### Scenario: writing a 7z archive without the extra
+
+- **WHEN** a 7z write is attempted and `[7z-write]` is not installed
+- **THEN** the system raises a clear error indicating the `[7z-write]` extra is required
