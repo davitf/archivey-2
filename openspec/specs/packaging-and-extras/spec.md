@@ -31,7 +31,7 @@ distribution name `archivey`.
 
 - **WHEN** `pip install archivey` is run with no extras
 - **THEN** no third-party runtime packages are installed
-- **AND** ZIP, TAR (all stdlib variants), GZ/BZ2/XZ, directory, and 7-Zip **reading of common codecs** all work, and RAR listing works (the `[7z]` bundle adds PPMd/Deflate64/Zstd/Brotli/AES for 7z; `[rar]` adds encrypted RAR5 headers; RAR data reads need the system `unrar` binary)
+- **AND** ZIP, TAR (all stdlib variants), GZ/BZ2/XZ, directory, and 7-Zip **reading of common codecs** all work, and RAR listing works (the `[7z]` bundle adds PPMd/Deflate64/Zstd/Brotli/AES for 7z; `[rar]` adds encrypted RAR5 headers and Blake2sp verification; without them a member with only a Blake2sp hash still reads, just unverified; RAR data reads need the system `unrar` binary)
 
 #### Scenario: writing 7z requires the [7z-write] extra
 
@@ -50,9 +50,9 @@ compression formats, and the CLI. The mapping is:
 
 | Extra | Pulls in | Enables |
 |-------|----------|---------|
-| *(none)* | stdlib only + native parsers | ZIP, TAR + `tar.gz`/`tar.bz2`/`tar.xz`, GZ, BZ2, XZ, directory, **7z read** (common codecs: LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/STORED) with CRC32 verification, **RAR metadata/listing** with CRC32 + Blake2sp verification (Blake2sp computed natively over stdlib) — RAR member *data* needs the system `unrar` binary |
+| *(none)* | stdlib only + native parsers | ZIP, TAR + `tar.gz`/`tar.bz2`/`tar.xz`, GZ, BZ2, XZ, directory, **7z read** (common codecs: LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/STORED) with CRC32 verification, **RAR metadata/listing** with CRC32 verification (Blake2sp verification needs `[rar]`) — RAR member *data* needs the system `unrar` binary |
 | `[7z]` | `pyppmd`, `inflate64`, `zstandard`, `brotli`, `cryptography` | **all** 7z reading features — PPMd, Deflate64, Zstd, Brotli, and AES-encrypted 7z |
-| `[rar]` | `cryptography` | **all** RAR reading features that need a Python package — header-encrypted RAR5 (member *data* still needs the `unrar` binary) |
+| `[rar]` | `cryptography`, a Blake2sp backend | **all** RAR reading features that need a Python package — header-encrypted RAR5 and Blake2sp checksum verification (member *data* still needs the `unrar` binary) |
 | `[crypto]` | `cryptography` | the AES/crypto backend alone — a subset of `[7z]`/`[rar]`, for callers who want only encryption support |
 | `[7z-write]` | `py7zr` | 7-Zip **writing** (reading is native, no extra) |
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
@@ -67,11 +67,23 @@ so a user does not have to assemble per-codec extras to fully read a format. The
 are supersets of the finer-grained `[crypto]`/`[zstd]` extras, which remain for
 callers who want only those backends. RAR member *data* decompression always needs
 the external `unrar` binary at runtime regardless of extras (see `format-rar`);
-`[rar]` only supplies the Python-side dependency (`cryptography`) for encrypted RAR5
-headers. **Blake2sp** checksum verification is implemented natively over stdlib
-`hashlib`, so it needs no package. The `py7zr` and `rarfile` libraries are otherwise
-used only as test oracles and live in the `dev` dependency group. BCJ2-filtered 7z
-members are not supported by any extra.
+`[rar]` only supplies the Python-side dependencies (`cryptography` and a Blake2sp
+backend); RAR5 member *data* still needs the `unrar` binary.
+
+The bundles are a convenience for getting **complete** support in one install; the
+readers do **not** require them to operate. With optional libs missing, a reader
+still processes the archive and degrades along a single rule: it raises (a
+`PackageNotInstalledError` or `UnsupportedFeatureError`) only when it cannot
+**produce** a member's bytes — a codec or crypto backend that is genuinely absent,
+or an unsupported feature — and it merely **skips** any integrity check it cannot
+**compute** (e.g. a member's Blake2sp hash when the Blake2sp backend is absent),
+emitting an integrity warning rather than failing the read. So a RAR5 archive whose
+members carry only Blake2sp hashes still reads without `[rar]`; the data is just
+returned unverified with a warning.
+
+The `py7zr` and `rarfile` libraries are otherwise used only as test oracles and live
+in the `dev` dependency group. BCJ2-filtered 7z members are not supported by any
+extra.
 
 Installing an extra MUST make its capability available without requiring any other
 extra. The `[all]` extra MUST be equivalent to installing every individual
@@ -93,7 +105,7 @@ are pulled in by `uv sync` (or `pip install --group dev`) for contributors.
 #### Scenario: `[all]` enables every optional capability
 
 - **WHEN** `pip install archivey[all]` is run
-- **THEN** every optional capability (7z PPMd/Deflate64/Zstd/Brotli/AES, encrypted RAR5, 7z write, ISO, ZST, LZ4, CLI) is available
+- **THEN** every optional capability (7z PPMd/Deflate64/Zstd/Brotli/AES, encrypted RAR5 + Blake2sp verification, 7z write, ISO, ZST, LZ4, CLI) is available
 
 #### Scenario: RAR reading requires only the system unrar binary
 

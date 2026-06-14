@@ -144,12 +144,14 @@ Constraints:
   closed after a partial read SHALL NOT verify or raise, because the digest of
   partial content is undefined. The stage therefore applies to the sequential read
   path, not to random-access reads served by `seekable-decompressor-streams`.
-- For a digest algorithm the stage cannot compute (a future or vendor-specific
-  hash with no available implementation), it SHALL emit a warning via the
-  `archivey` integrity logger and skip that algorithm rather than failing the read;
-  algorithms it can compute are still verified. CRC32 and Blake2sp are always
-  computable in the core (Blake2sp is implemented natively over stdlib `hashlib`),
-  so 7z and RAR checksum verification never falls into this skip path.
+- For a digest algorithm the stage cannot compute — because its backend is not
+  installed (e.g. `blake2sp` without the `[rar]` Blake2sp backend) or it is an
+  unknown algorithm — it SHALL emit a warning via the `archivey` integrity logger
+  and skip that algorithm rather than failing the read; algorithms it can compute
+  (always including CRC32, via stdlib) are still verified. This is the verification
+  counterpart of the decode rule: a missing *decode* backend raises (the bytes
+  cannot be produced), but a missing *hash* backend only skips (the bytes are fine,
+  just unverified).
 
 #### Scenario: digest mismatch on full read
 
@@ -163,7 +165,7 @@ Constraints:
 
 #### Scenario: unverifiable algorithm is skipped with a warning
 
-- **WHEN** a member's only expected digest uses an algorithm with no available implementation
+- **WHEN** a member's only expected digest is `blake2sp` and the Blake2sp backend is not installed
 - **THEN** the stage logs an integrity warning and returns the data without raising
 
 ---
