@@ -48,6 +48,37 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `testing-contract` | Equivalence matrix, adversarial corpus, round-trip and non-seekable coverage |
 | `cli` | The `archivey` command-line interface |
 
+## Implementation order
+
+The build sequence is a **selective rewrite** starting from the existing
+`archivey-dev` codebase — see `PLAN.md` (repo root) for the detailed,
+phase-by-phase task list and acceptance criteria. The plan is organized as a
+DEV-migration sequence rather than a build-each-capability sequence, so a phase
+typically advances several capabilities at once. Specs themselves remain
+order-free; this table is the association between the two.
+
+| Phase | Theme | Primary capabilities advanced |
+|-------|-------|-------------------------------|
+| 1 | Project scaffold + verbatim port from DEV | *(infra)* — ports all `format-*` backends and `format-detection` |
+| 2 | Stream layer reorganization | `seekable-decompressor-streams`, `archive-reading` *(internal streams)* |
+| 3 | Base reader interface cleanup | `archive-reading`, `backend-registry`, `format-7z`, `format-rar` |
+| 4 | `ExtractionHelper` → `ExtractionCoordinator` rewrite | `safe-extraction` |
+| 5 | Public API alignment to SPEC.md | `archive-data-model`, `access-intent-and-cost`, `error-handling`, `archive-reading` |
+| 6 | Test infrastructure overhaul | `testing-contract` |
+| 7 | Writing support | `archive-writing` (+ `format-zip` / `format-tar` writers) |
+| 8 | 7z & RAR streaming improvements | `format-7z`, `format-rar` |
+| 9 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` |
+| 10 | Polish, documentation, packaging | `cli` (+ cross-cutting: README, CI, coverage) |
+
+**Gaps where the plan and specs do not yet line up** (to resolve when refining):
+
+- `bomb-protection` is scheduled by no phase. It is a clean-slate safety
+  addition DEV never had; it naturally attaches to Phase 4 (extraction) or
+  warrants a phase of its own.
+- `progress-and-logging` appears only implicitly — DEV already has logging and a
+  tqdm-based progress bar, but the `on_progress` callback and `ExtractionResult`
+  are net-new and would ride along in Phase 4/5.
+
 ## Deferred / out of scope (v1)
 
 - In-place archive modification (append/update).
