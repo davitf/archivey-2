@@ -82,7 +82,8 @@ required but not available on PATH, the system SHALL raise
 For solid-archive sequential iteration (`stream_members()`), the system SHALL run
 a single `unrar p -inul <archive>` subprocess and demultiplex its stdout into
 per-member streams using the member sizes from the native header, validating each
-member's checksum (CRC32 or Blake2sp, per `hashes`) incrementally. This processes
+member's checksum (CRC32 or Blake2sp, per `hashes`) incrementally via the shared
+`compressed-streams` verification stage. This processes
 the whole archive in one subprocess — O(archive_size) total — rather than spawning
 one subprocess per member.
 

@@ -87,9 +87,10 @@ third-party runtime dependency. A coder chain is applied in reverse coder order 
 decoding (e.g. an `AES → LZMA2` coder list means decrypt, then decompress).
 Decoding composes the shared `compressed-streams` backends — the 7z reader does NOT
 call codec libraries (`lzma`, `pyppmd`, `inflate64`, the crypto backend) directly —
-and the reader verifies each member's stored CRC32 (`hashes["crc32"]`) as it is
-read. Other 7z-fork codecs (e.g. Brotli) follow the same optional-package pattern
-through the compressed-streams layer.
+and the reader verifies each member's stored CRC32 (`hashes["crc32"]`) via the
+shared `compressed-streams` verification stage as it is read. Other 7z-fork codecs
+(e.g. Brotli) follow the same optional-package pattern through the compressed-streams
+layer.
 
 #### Scenario: member compressed with a BCJ + LZMA2 chain
 

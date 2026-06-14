@@ -123,6 +123,49 @@ escapes unwrapped.
 
 ---
 
+### Requirement: Verify decompressed output against expected digests
+
+The system SHALL provide a composable verification **stage** that wraps a
+sequential decompressed stream and, given the expected digests from a member's
+`hashes`, computes each algorithm incrementally as bytes are read and verifies the
+results when the stream reaches **clean end-of-stream**, raising `CorruptionError`
+(naming the algorithm) on mismatch. Because expected digests come from
+already-parsed member metadata, the stage is agnostic to whether the source format
+stored them before or after the data.
+
+This stage is distinct from any integrity check a codec performs internally (e.g.
+the gzip trailer CRC or the xz stream check, which the codec backend already
+surfaces as `CorruptionError`/`TruncatedError`); it verifies the *container-supplied*
+digest over the decompressed bytes.
+
+Constraints:
+
+- Verification SHALL run **only on a full sequential read to clean EOF**. A stream
+  closed after a partial read SHALL NOT verify or raise, because the digest of
+  partial content is undefined. The stage therefore applies to the sequential read
+  path, not to random-access reads served by `seekable-decompressor-streams`.
+- For a digest algorithm the stage cannot compute (e.g. `blake2sp` with no
+  implementation available), it SHALL emit a warning via the `archivey` integrity
+  logger and skip that algorithm rather than failing the read; algorithms it can
+  compute (always including CRC32) are still verified.
+
+#### Scenario: digest mismatch on full read
+
+- **WHEN** a member is read to EOF and its decompressed bytes do not match `hashes["crc32"]`
+- **THEN** `CorruptionError` naming the algorithm is raised
+
+#### Scenario: partial read is not verified
+
+- **WHEN** a consumer reads only the first part of a member's stream and abandons it
+- **THEN** no verification occurs and no error is raised
+
+#### Scenario: unverifiable algorithm is skipped with a warning
+
+- **WHEN** a member's only expected digest is `blake2sp` and no Blake2sp implementation is available
+- **THEN** the stage logs an integrity warning and returns the data without raising
+
+---
+
 ### Requirement: Backend dispatch is separable from opening
 
 The system SHALL allow the open function and its exception translator for a given
