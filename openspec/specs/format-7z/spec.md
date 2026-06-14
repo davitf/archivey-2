@@ -74,23 +74,24 @@ provided by small optional packages:
 | BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`–`0x09`, `0x03030103`… | `lzma.FILTER_X86`/`ARM`/… | core |
 | Deflate | `0x040108` | `zlib` (raw) | core |
 | BZip2 | `0x040202` | `bz2` | core |
-| Zstd | `0x04f71101` | `zstandard` | optional `[zstd]` |
+| Zstd | `0x04f71101` | `zstandard` | optional `[7z]` |
+| Brotli | `0x04f71102` | `brotli` | optional `[7z]` |
 | PPMd (var.H) | `0x030401` | `pyppmd` | optional `[7z]` |
 | Deflate64 | `0x040109` | `inflate64` | optional `[7z]` |
-| AES-256 / SHA-256 | `0x06f10701` | crypto backend | optional `[crypto]` |
+| AES-256 / SHA-256 | `0x06f10701` | crypto backend | optional `[7z]` |
 | BCJ2 | `0x0303011B` | — | unsupported (detect & raise) |
 
 Files within a folder are laid out contiguously in the decompressed output, so the
 backend produces a member's stream by reading exactly `member.size` bytes, in
 order, from the folder's decompressed byte stream. The core codec set requires no
-third-party runtime dependency. A coder chain is applied in reverse coder order for
-decoding (e.g. an `AES → LZMA2` coder list means decrypt, then decompress).
-Decoding composes the shared `compressed-streams` backends — the 7z reader does NOT
-call codec libraries (`lzma`, `pyppmd`, `inflate64`, the crypto backend) directly —
-and the reader verifies each member's stored CRC32 (`hashes["crc32"]`) via the
-shared `compressed-streams` verification stage as it is read. Other 7z-fork codecs
-(e.g. Brotli) follow the same optional-package pattern through the compressed-streams
-layer.
+third-party runtime dependency; the `[7z]` bundle adds every optional 7z codec
+(PPMd, Deflate64, Zstd, Brotli) and AES decryption in one install. A coder chain is
+applied in reverse coder order for decoding (e.g. an `AES → LZMA2` coder list means
+decrypt, then decompress). Decoding composes the shared `compressed-streams`
+backends — the 7z reader does NOT call codec libraries (`lzma`, `pyppmd`,
+`inflate64`, the crypto backend) directly — and the reader verifies each member's
+stored CRC32 (`hashes["crc32"]`) via the shared `compressed-streams` verification
+stage as it is read.
 
 #### Scenario: member compressed with a BCJ + LZMA2 chain
 

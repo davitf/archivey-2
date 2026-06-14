@@ -178,8 +178,9 @@ field:
 
 RAR5 header encryption uses AES, which the standard library cannot perform. The
 native parser SHALL derive the AES key and decrypt encrypted headers *itself* via
-the wrapped crypto backend (`[crypto]`, see `compressed-streams`) when a password is
-supplied — it does NOT need the `unrar` binary to list a header-encrypted archive
+the wrapped crypto backend (the `[rar]` bundle, or the shared `[crypto]` extra; see
+`compressed-streams`) when a password is supplied — it does NOT need the `unrar`
+binary to list a header-encrypted archive
 (`unrar` is required only to read member *data*). The system SHALL set
 `ArchiveInfo.is_encrypted = True`. Without a password, listing SHALL raise
 `EncryptionError`; with a password but no crypto backend installed, listing SHALL
@@ -192,7 +193,7 @@ raise `PackageNotInstalledError`.
 
 #### Scenario: header-encrypted RAR5 with a password but no crypto backend
 
-- **WHEN** a header-encrypted RAR5 archive is opened with a password but `[crypto]` is not installed
+- **WHEN** a header-encrypted RAR5 archive is opened with a password but neither `[rar]` nor `[crypto]` (`cryptography`) is installed
 - **THEN** the system raises `PackageNotInstalledError`
 
 #### Scenario: listing a header-encrypted RAR5 archive with a password
