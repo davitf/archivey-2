@@ -198,7 +198,7 @@ raise `PackageNotInstalledError`.
 
 #### Scenario: listing a header-encrypted RAR5 archive with a password
 
-- **WHEN** a header-encrypted RAR5 archive is opened with a valid password and `[crypto]` installed
+- **WHEN** a header-encrypted RAR5 archive is opened with a valid password and `[rar]` (or `[crypto]`) installed
 - **THEN** the member list is produced natively by decrypting the headers (no `unrar` needed for listing) and `ArchiveInfo.is_encrypted` is `True`
 - **AND** reading member *data* still requires the `unrar` binary
 
