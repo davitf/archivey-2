@@ -51,11 +51,17 @@ pulls in exactly the third-party dependency that format requires. The mapping is
 | `[lz4]` | `lz4` | LZ4 (`.tar.lz4`) |
 | `[cli]` | `tqdm` | the `archivey` command-line interface and its progress bar |
 | `[all]` | every optional runtime dependency above | every optional format |
-| `[dev]` | test / lint / type-check tooling | development only (no runtime effect) |
 
 Installing an extra MUST make its format(s) available without requiring any other
 extra. The `[all]` extra MUST be equivalent to installing every individual
-runtime extra.
+runtime extra. This contract is package-manager-agnostic — `pip install
+archivey[7z]` and `uv add archivey --extra 7z` (or `uv pip install`) honor the
+same extras.
+
+Development-only tooling (test / lint / type-check) is NOT a runtime extra. It is
+declared as a PEP 735 `[dependency-groups]` entry (`dev`), so it is never
+installed for end users and is pulled in by `uv sync` (or `pip install
+--group dev`) for contributors.
 
 #### Scenario: installing an extra enables exactly its format
 
