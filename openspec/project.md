@@ -37,12 +37,11 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `archive-writing` | `create()`, the `ArchiveWriter` surface, streaming conversion |
 | `archive-data-model` | `Member`, `ArchiveInfo`, `ArchiveFormat`, `MemberType`, compression types |
 | `access-intent-and-cost` | `Intent` enum and the `CostReceipt` cost surface |
-| `safe-extraction` | `extract()`, extraction policies, the non-bypassable filter contract |
-| `bomb-protection` | Decompression-bomb byte/ratio limits |
+| `safe-extraction` | `extract()`, extraction policies, the non-bypassable filter contract, decompression-bomb limits, and extraction progress/result reporting |
 | `format-detection` | `detect_format()`, magic table, non-seekable peek/replay |
 | `backend-registry` | Backend registration, selection, the `Backend` ABC, optional deps |
 | `error-handling` | The `ArchiveyError` hierarchy and error-translation contract |
-| `progress-and-logging` | Extraction progress/result reporting and logging namespaces |
+| `logging` | The `archivey` logger hierarchy (cross-cutting; library never configures handlers) |
 | `format-zip` / `format-tar` / `format-single-file-compressors` / `format-7z` / `format-rar` / `format-iso` / `format-directory` | Per-format behavioral contracts |
 | `seekable-decompressor-streams` | Random access inside single compressed streams |
 | `testing-contract` | Equivalence matrix, adversarial corpus, round-trip and non-seekable coverage |
@@ -62,7 +61,7 @@ order-free; this table is the association between the two.
 | 1 | Project scaffold + verbatim port from DEV | *(infra)* — ports all `format-*` backends and `format-detection` |
 | 2 | Stream layer reorganization | `seekable-decompressor-streams`, `archive-reading` *(internal streams)* |
 | 3 | Base reader interface cleanup | `archive-reading`, `backend-registry`, `format-7z`, `format-rar` |
-| 4 | `ExtractionHelper` → `ExtractionCoordinator` rewrite | `safe-extraction` |
+| 4 | `ExtractionHelper` → `ExtractionCoordinator` rewrite | `safe-extraction` (incl. decompression-bomb limits and progress/result reporting) |
 | 5 | Public API alignment to SPEC.md | `archive-data-model`, `access-intent-and-cost`, `error-handling`, `archive-reading` |
 | 6 | Test infrastructure overhaul | `testing-contract` |
 | 7 | Writing support | `archive-writing` (+ `format-zip` / `format-tar` writers) |
@@ -70,14 +69,14 @@ order-free; this table is the association between the two.
 | 9 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` |
 | 10 | Polish, documentation, packaging | `cli` (+ cross-cutting: README, CI, coverage) |
 
-**Gaps where the plan and specs do not yet line up** (to resolve when refining):
+`logging` is cross-cutting and not owned by a single phase — the named-logger
+hierarchy is established in Phase 1 and used by every phase thereafter.
 
-- `bomb-protection` is scheduled by no phase. It is a clean-slate safety
-  addition DEV never had; it naturally attaches to Phase 4 (extraction) or
-  warrants a phase of its own.
-- `progress-and-logging` appears only implicitly — DEV already has logging and a
-  tqdm-based progress bar, but the `on_progress` callback and `ExtractionResult`
-  are net-new and would ride along in Phase 4/5.
+> **Note:** decompression-bomb limits and extraction progress/result reporting
+> were previously separate `bomb-protection` and `progress-and-logging` specs.
+> They have been folded into `safe-extraction` (both are extraction-time
+> guarantees, now scheduled under Phase 4); the cross-cutting logging concern was
+> split out into the standalone `logging` spec.
 
 ## Deferred / out of scope (v1)
 

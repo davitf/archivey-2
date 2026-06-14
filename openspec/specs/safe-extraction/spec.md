@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Safe extraction writes archive members to a destination directory on disk while enforcing path-safety constraints and permission transforms that prevent untrusted archives from escaping the destination root or writing hostile filesystem objects. It is the primary interface for callers who want files on disk rather than in-memory data.
+Safe extraction writes archive members to a destination directory on disk while enforcing path-safety constraints and permission transforms that prevent untrusted archives from escaping the destination root or writing hostile filesystem objects. It also enforces decompression-bomb limits and reports per-member progress and outcomes. It is the primary interface for callers who want files on disk rather than in-memory data.
 
 ## Requirements
 
@@ -261,9 +261,153 @@ class OverwritePolicy(Enum):
 
 The system SHALL implement safe extraction in a dedicated `_extraction.py` module (`ExtractionCoordinator`) that is separate from the reader backends and format detection. Both `archivey.extract()` and `ArchiveReader.extract_all()` SHALL delegate to the same `ExtractionCoordinator`, which drives a single unified forward pass via `_iter_with_data()`.
 
-Decompression-bomb byte-limit enforcement is handled by a `BombTracker` instance passed through to each member extraction during this pass. Decompression-bomb limits are defined in the bomb-protection capability; this capability only references that they are applied during extraction.
+Decompression-bomb enforcement (see the bomb-limit requirements below) is handled by a `BombTracker` instance passed through to each member extraction during this pass. Progress callbacks and `ExtractionResult` accumulation also happen inside this single pass.
 
 #### Scenario: streaming and random-access modes use same coordinator
 
 - **WHEN** `extract_all()` is called whether the reader is in streaming or random-access mode
 - **THEN** the same `ExtractionCoordinator.run()` single forward pass is used for both paths
+
+---
+
+### Requirement: Enforce Cumulative Max-Extracted-Bytes Limit
+
+The system SHALL track the total number of bytes written across all members during a single `extract()` or `extract_all()` call and SHALL raise `ExtractionError` when that cumulative total exceeds `max_extracted_bytes`. The default limit is 2 GiB (2 147 483 648 bytes). The caller MAY override this limit by passing `max_extracted_bytes` to `extract()` or `extract_all()`.
+
+The limit is tracked by a `BombTracker` instance constructed once per extraction call. Byte counts are cumulative across all members in the call, not per-member.
+
+```python
+class BombTracker:
+    def __init__(self, max_bytes: int, max_ratio: float):
+        self._max_bytes = max_bytes
+        self._max_ratio = max_ratio
+        self._total_bytes = 0
+
+    def count(self, member: Member, chunk_bytes: int) -> None:
+        self._total_bytes += chunk_bytes
+        if self._total_bytes > self._max_bytes:
+            raise ExtractionError(
+                f"Extraction limit reached: {self._total_bytes} bytes > {self._max_bytes}"
+            )
+        if member.compressed_size and member.compressed_size > 0:
+            ratio = self._total_bytes / member.compressed_size
+            if ratio > self._max_ratio:
+                raise ExtractionError(
+                    f"Decompression ratio {ratio:.0f}:1 exceeds limit {self._max_ratio:.0f}:1"
+                )
+```
+
+The default of 2 GiB is sufficient for most legitimate use cases and prevents gigabyte-class bombs.
+
+#### Scenario: cumulative limit exceeded mid-extraction
+
+- **WHEN** the running total of bytes written across all extracted members exceeds `max_extracted_bytes`
+- **THEN** `ExtractionError` is raised immediately at the chunk boundary where the limit is crossed
+- **AND** extraction halts; no further members are processed
+
+#### Scenario: caller raises the default limit
+
+- **WHEN** `archivey.extract(..., max_extracted_bytes=10 * 2**30)` is called
+- **THEN** the enforced cumulative limit is 10 GiB rather than the default 2 GiB
+
+---
+
+### Requirement: Enforce Per-Member Max Decompression Ratio
+
+The system SHALL raise `ExtractionError` when the decompression ratio for a single member exceeds `max_ratio` during extraction. The default ratio limit is 1000:1. The caller MAY override this by passing `max_ratio` to `extract()` or `extract_all()`.
+
+The ratio for a member is computed as `bytes_written_for_member / member.compressed_size`. The check is only performed when `member.compressed_size` is known and greater than zero. The default of 1000:1 is deliberately generous — typical DEFLATE compresses at 3:1 to 10:1, and even pathological quine-style zip bombs produce outer-layer ratios around 391:1 — so the limit catches only pathological cases without triggering on legitimately highly-compressible data.
+
+#### Scenario: single member exceeds ratio limit
+
+- **WHEN** a single member decompresses to more than `max_ratio` times its compressed size
+- **THEN** `ExtractionError` is raised while processing that member
+
+#### Scenario: ratio check skipped when compressed size is unknown
+
+- **WHEN** `member.compressed_size` is `None` or `0`
+- **THEN** the per-member ratio check is skipped; the cumulative byte limit still applies
+
+#### Scenario: caller lowers the ratio limit
+
+- **WHEN** `archivey.extract(..., max_ratio=100)` is called
+- **THEN** any member decompressing at more than 100:1 raises `ExtractionError`
+
+---
+
+### Requirement: Bomb Protection Scope Limited to Extraction Paths
+
+The system SHALL apply decompression bomb limits only during `extract()` and `extract_all()`. The `read()` and `open()` methods on `ArchiveReader` return raw decompressed data without enforcing any byte or ratio limits, leaving bomb detection entirely to the caller.
+
+#### Scenario: read() returns data without bomb check
+
+- **WHEN** `reader.read(member)` is called on a member with an extreme decompression ratio
+- **THEN** the raw decompressed bytes are returned to the caller with no `ExtractionError` raised by the library
+
+#### Scenario: open() returns a stream without bomb check
+
+- **WHEN** `reader.open(member)` is called
+- **THEN** the returned `BinaryIO` stream delivers decompressed data without enforcing any limit; the caller is responsible for guarding against excessive reads
+
+---
+
+### Requirement: Progress Reporting via on_progress Callback
+
+The system SHALL accept an optional `on_progress` callback on `archivey.extract()` and `ArchiveReader.extract_all()`. The callback, if provided, SHALL be called once per member as that member is processed, receiving an `ExtractionProgress` instance.
+
+```python
+@dataclass
+class ExtractionProgress:
+    member: Member
+    bytes_written: int
+    total_bytes_estimated: int | None   # None if archive has no size info
+    members_done: int
+    members_total: int | None
+```
+
+`total_bytes_estimated` is `None` when the archive format does not provide uncompressed size information. `members_total` is `None` when the total member count cannot be known without a full scan.
+
+#### Scenario: callback invoked per member
+
+- **WHEN** `archivey.extract("archive.zip", "/dest/", on_progress=cb)` is called
+- **THEN** `cb` is invoked once for each member processed, with an `ExtractionProgress` carrying that member, cumulative `bytes_written`, and counters for members completed and total
+
+#### Scenario: total_bytes_estimated is None for formats without size info
+
+- **WHEN** the archive format cannot provide uncompressed sizes (e.g. a GZ stream)
+- **THEN** `ExtractionProgress.total_bytes_estimated` is `None` for every callback invocation
+
+---
+
+### Requirement: Per-Member ExtractionResult with Status
+
+The system SHALL return a `list[ExtractionResult]` from `archivey.extract()` and `ArchiveReader.extract_all()`, with one entry per member processed. Each result SHALL carry the member, the path it was written to (or `None` if not written), and an `ExtractionStatus`.
+
+```python
+@dataclass
+class ExtractionResult:
+    member: Member
+    path: Path | None           # None if skipped
+    status: ExtractionStatus    # EXTRACTED, SKIPPED, REJECTED
+
+class ExtractionStatus(Enum):
+    EXTRACTED = "extracted"
+    SKIPPED   = "skipped"       # due to OverwritePolicy.SKIP
+    REJECTED  = "rejected"      # due to filter rejection; no exception raised if
+                                # on_rejection=OnRejection.WARN (default: RAISE)
+```
+
+#### Scenario: successfully extracted member
+
+- **WHEN** a member is written to disk without error
+- **THEN** its `ExtractionResult` has `status=ExtractionStatus.EXTRACTED` and `path` pointing to the file on disk
+
+#### Scenario: skipped member due to OverwritePolicy.SKIP
+
+- **WHEN** a member's destination path already exists and `OverwritePolicy.SKIP` is active
+- **THEN** the member's `ExtractionResult` has `status=ExtractionStatus.SKIPPED` and `path=None`
+
+#### Scenario: rejected member due to filter
+
+- **WHEN** a member is blocked by a safety filter and the rejection policy is WARN rather than RAISE
+- **THEN** the member's `ExtractionResult` has `status=ExtractionStatus.REJECTED` and `path=None`, and no exception is raised
