@@ -17,6 +17,9 @@ so establishing it first is what makes those phases safely incremental.
 - **uv-based workflow** — adopt `uv` for environment management, locking
   (`uv.lock`), and running tools, while keeping the package fully
   pip-installable (standard metadata, no uv lock-in).
+- **Obtain the DEV source** — clone `davitf/archivey-dev` at a pinned revision
+  into a scratch location; this phase runs in a fresh environment, so acquiring
+  the source is part of the work, not a precondition.
 - **Port `src/archivey/` from DEV verbatim** — gives a compiling, passing
   baseline before any interface edits.
 - **Port test infrastructure** — `sample_archives.py`, `create_archives.py`,
@@ -44,5 +47,7 @@ carries no spec deltas. The capabilities it realizes or touches:
 - **Tooling:** uv for local + CI workflows (`astral-sh/setup-uv`); full CI matrix
   is deferred to Phase 10 per `PLAN.md`.
 - **Risk:** low. This is a verbatim port; acceptance is simply "the DEV tests
-  pass under the new project." The main watch-item is dropping or quarantining
-  tests that depend on DEV-only API that this repo will not carry forward.
+  pass under the new project." Watch-items: (1) the implementing agent must be
+  able to clone `davitf/archivey-dev` from its environment — if it cannot, the
+  phase is blocked at step 1; (2) dropping or quarantining tests that depend on
+  DEV-only API this repo will not carry forward.
