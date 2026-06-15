@@ -24,7 +24,7 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 |------|------------|
 | Python version | 3.11+ |
 | Core dependencies | None (stdlib only) |
-| Optional extras | `[7z]` (py7zr), `[rar]` (rarfile + system `unrar`), `[iso]` (pycdlib), `[zstd]`, `[lz4]`, `[all]` |
+| Optional extras | `[7z]`, `[rar]`, `[crypto]`, `[7z-write]` (py7zr), `[iso]` (pycdlib), `[zstd]`, `[lz4]`, `[cli]`, `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]` — RAR data needs the system `unrar` binary (see `packaging-and-extras`) |
 | OS support | Linux, macOS, Windows |
 | Thread safety | Readers and writers are not thread-safe — one per thread. |
 | Concurrency model | Synchronous API only for v1 (async is a deferred follow-on). |
@@ -62,28 +62,32 @@ only for 7z *writing* (`[7z-write]`); `py7zr` and `rarfile` otherwise serve only
 
 ## Implementation order
 
-The build sequence is a **selective rewrite** starting from the existing
-`archivey-dev` codebase — see `PLAN.md` (repo root) for the detailed,
-phase-by-phase task list and acceptance criteria. The plan is organized as a
-DEV-migration sequence rather than a build-each-capability sequence, so a phase
-typically advances several capabilities at once. Specs themselves remain
-order-free; this table is the association between the two.
+The build sequence is a **clean-slate rewrite** — new code written fresh against
+the specs, with `archivey-dev` as reference-only (leaf format/codec logic is
+ported as isolated units; the spine is written fresh). See `PLAN.md` (repo root)
+for the detailed, phase-by-phase task list, the layered port-vs-rewrite split,
+the frozen-oracle test strategy, and the per-phase acceptance criteria (each
+phase's "done" is defined as a set of covered spec scenarios). Phases are
+feature/layer milestones, so a phase typically advances several capabilities at
+once. Specs themselves remain order-free; this table is the association.
 
 | Phase | Theme | Primary capabilities advanced |
 |-------|-------|-------------------------------|
-| 1 | Project scaffold + verbatim port from DEV | `packaging-and-extras` (pyproject, extras, env matrix); ports `format-*` backends and `format-detection`. 7z/RAR are native-first (see note), so porting DEV's `py7zr`/`rarfile` read backends is interim-only or deferred. Tooling/migration mechanics are not specced. |
-| 2 | Stream layer reorganization | `compressed-streams`, `seekable-decompressor-streams`, `archive-reading` *(internal streams)*. 7z/ZIP container codecs (`pyppmd`/`inflate64`/AES stage) added to `compressed-streams` in Phase 8. |
-| 3 | Base reader interface cleanup | `archive-reading`, `backend-registry` |
-| 4 | `ExtractionHelper` → `ExtractionCoordinator` rewrite | `safe-extraction` (incl. decompression-bomb limits and progress/result reporting) |
-| 5 | Public API alignment to SPEC.md | `archive-data-model`, `access-intent-and-cost`, `error-handling`, `archive-reading` |
-| 6 | Test infrastructure overhaul | `testing-contract` |
-| 7 | Writing support | `archive-writing` (+ `format-zip` / `format-tar` writers) |
-| 8 | Native 7z reader + native RAR metadata parser | `format-7z`, `format-rar` (native-first: drop `py7zr`/`rarfile` from the read path; `unrar` binary stays for RAR data; `py7zr` for 7z write only) |
-| 9 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` |
-| 10 | Polish, documentation, packaging | `cli`, `packaging-and-extras` (`__version__`, `list_formats()`) (+ cross-cutting: README, CI, coverage) |
+| 1 | Scaffold + spine + new test harness | `packaging-and-extras` (pyproject, extras, env matrix, `__version__`); `backend-registry`, `archive-data-model`, `error-handling`, `access-intent-and-cost` (types/contracts written fresh); `logging`; `testing-contract` (framework foundations: declarative corpus, on-demand generation + cache, no committed binaries). DEV cloned as a frozen oracle. |
+| 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams`. (7z/ZIP container codecs `pyppmd`/`inflate64`/AES stage land with Phase 7.) |
+| 3 | Indexed leaf formats | `format-zip`, `format-directory`, `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry` (selection/degradation), `access-intent-and-cost` (CostReceipt values) |
+| 4 | TAR, streaming & safe extraction | `format-tar`, `safe-extraction` (incl. bomb limits + progress/result), `archive-reading` (sequential + `stream_members`) |
+| 5 | Public API finalization & cost surface | `archive-reading`, `archive-data-model`, `access-intent-and-cost`, `error-handling` |
+| 6 | Writing support | `archive-writing` (+ `format-zip` / `format-tar` writers) |
+| 7 | Native 7z reader + native RAR metadata parser | `format-7z`, `format-rar` (native-first: read path imports no third-party lib; `unrar` binary stays for RAR data; `py7zr` for 7z write only); `testing-contract` oracle cross-validation |
+| 8 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` |
+| 9 | CLI | `cli` |
+| 10 | Polish, packaging & oracle retirement | `cli`, `packaging-and-extras` (finalize), full `testing-contract` (corpus complete, frozen DEV oracle deleted) (+ cross-cutting: README, CI, coverage ≥ 90%) |
 
 `logging` is cross-cutting and not owned by a single phase — the named-logger
-hierarchy is established in Phase 1 and used by every phase thereafter.
+hierarchy is established in Phase 1 and used by every phase thereafter. The new
+test suite is built incrementally from Phase 1 and becomes the sole suite in
+Phase 10, when the frozen DEV oracle is deleted.
 
 > **Note:** decompression-bomb limits and extraction progress/result reporting
 > were previously separate `bomb-protection` and `progress-and-logging` specs.
@@ -91,11 +95,11 @@ hierarchy is established in Phase 1 and used by every phase thereafter.
 > guarantees, now scheduled under Phase 4); the cross-cutting logging concern was
 > split out into the standalone `logging` spec.
 
-> **Open sequencing question (7z/RAR):** because the read path is native-first,
-> Phase 1 must decide whether to (a) port DEV's `py7zr`/`rarfile` read backends as
-> an interim baseline (full 7z/RAR support early, thrown away at Phase 8) or
-> (b) skip them in the baseline and mark 7z/RAR tests `xfail` until the native
-> readers land in Phase 8. To resolve when drafting the Phase 8 change.
+> **7z/RAR sequencing (resolved):** under the clean-slate approach we do **not**
+> port DEV's `py7zr`/`rarfile` read backends (they would only be thrown away). 7z
+> and RAR reads are marked `xfail`/`skip` until the native readers land in Phase 7;
+> `py7zr`/`rarfile` enter earlier only as `dev`-group test oracles. Those formats
+> are absent from the equivalence matrix until Phase 7.
 
 ## Deferred / out of scope (v1)
 
