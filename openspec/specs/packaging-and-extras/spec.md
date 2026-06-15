@@ -59,18 +59,30 @@ compression formats, and the CLI. The mapping is:
 | `[zstd]` | `zstandard` | standalone Zstandard (`.zst`, `.tar.zst`) |
 | `[lz4]` | `lz4` | LZ4 (`.tar.lz4`) |
 | `[cli]` | `tqdm` | the `archivey` command-line interface and its progress bar |
-| `[recommended]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[cli]` | the **recommended** full-feature set — one primary backend per capability; what most users want |
+| `[seekable]` | `rapidgzip`, `indexed_bzip2` | faster gzip/bzip2 decompression **and random access (seeking)** into gz/bz2 streams. Native C++ libs: install needs a prebuilt wheel, or a C++17 compiler where no wheel exists |
+| `[recommended-lite]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[cli]` | every format/codec with broadly-wheeled deps; **no build-finicky C++ libs**. Use when `[recommended]` won't install |
+| `[recommended]` | `[recommended-lite]` + `[seekable]` | the **recommended** install — everything in `[recommended-lite]` plus gz/bz2 seeking and speed |
 | `[all]` | `[recommended]` **plus** every alternative/secondary backend | everything, including redundant alternative backends — mainly for testing/benchmarking |
 
-`[recommended]` is the sensible "give me everything useful" install: exactly one
-backend per capability, no redundancy. `[all]` is a superset that additionally pulls
-the **alternative** backends — performance or compatibility variants that duplicate a
-capability already covered (e.g. `rapidgzip`/`indexed_bzip2` for seekable gzip/bzip2,
-`python-xz` as an alternative xz backend, a second zstd library alongside the primary
-one). Those alternatives are each available behind their own extra and exist mainly so
-the test suite and benchmarks can exercise them; **most users should install
-`[recommended]`, not `[all]`**, because the extra alternative libraries add install
-weight without adding capability.
+`[recommended]` is the sensible "give me everything useful" install: every
+format/codec with one primary backend each, plus the `[seekable]` backends that add
+gz/bz2 random access and speed. Almost all of these dependencies are native
+extensions, but the bundled ones ship broad manylinux/musllinux/macOS/Windows wheels
+and install without a compiler on mainstream platforms — **except** `rapidgzip` and
+`indexed_bzip2` (the `[seekable]` libs), which more often lack a wheel and fall back
+to a C++17 source build. `[recommended-lite]` is therefore `[recommended]` minus only
+those two: it keeps every format and codec (`cryptography`, `pyppmd`, `zstandard`,
+`lz4`, …) and just drops gz/bz2 seeking, so it installs reliably where the C++ build
+fails. A user who hits a build error on `[recommended]` can fall back to
+`[recommended-lite]` without losing any format support.
+
+`[all]` is a superset of `[recommended]` that additionally pulls the **alternative**
+backends — performance or compatibility variants that duplicate a capability already
+covered (e.g. `python-xz` as an alternative xz backend, or a second zstd library
+alongside the primary one). Those alternatives are each available behind their own
+extra and exist mainly so the test suite and benchmarks can exercise them; **most
+users should install `[recommended]` (or `[recommended-lite]`), not `[all]`**, because
+the extra alternative libraries add install weight without adding capability.
 
 `[7z]` and `[rar]` are **format bundles**: installing `[7z]` enables every 7z
 reading feature and `[rar]` every RAR reading feature that needs a Python package,
@@ -113,16 +125,23 @@ are pulled in by `uv sync` (or `pip install --group dev`) for contributors.
 - **THEN** `pycdlib` is installed and `.iso` archives become available
 - **AND** no other optional dependency (py7zr, zstandard, lz4) is pulled in
 
-#### Scenario: `[recommended]` enables every capability with one backend each
+#### Scenario: `[recommended]` enables every capability plus gz/bz2 seeking
 
 - **WHEN** `pip install archivey[recommended]` is run
 - **THEN** every optional capability (7z PPMd/Deflate64/Zstd/Brotli/AES, encrypted RAR5 + Blake2sp verification, 7z write, ISO, ZST, LZ4, CLI) is available with one primary backend per capability
-- **AND** no redundant alternative backend (e.g. a second gzip/bzip2/xz/zstd implementation) is pulled in
+- **AND** the `[seekable]` backends (`rapidgzip`, `indexed_bzip2`) are installed, enabling gz/bz2 random access and faster decompression
+- **AND** no redundant alternative backend (e.g. a second xz/zstd implementation) is pulled in
+
+#### Scenario: `[recommended-lite]` keeps every format but drops the C++ seek libs
+
+- **WHEN** `pip install archivey[recommended-lite]` is run (e.g. because `[recommended]` failed to build `rapidgzip`/`indexed_bzip2`)
+- **THEN** every format and codec still works (7z, RAR, ISO, ZST, LZ4, crypto, …) with no native-build risk
+- **AND** the only lost capability is gz/bz2 seeking and the speed boost from the `[seekable]` libs
 
 #### Scenario: `[all]` additionally pulls alternative backends
 
 - **WHEN** `pip install archivey[all]` is run
-- **THEN** everything in `[recommended]` is installed **plus** the alternative/secondary backends (e.g. `rapidgzip`, `indexed_bzip2`, `python-xz`), which add no new capability and are intended for testing and benchmarking
+- **THEN** everything in `[recommended]` is installed **plus** the alternative/secondary backends (e.g. `python-xz`, a second zstd library), which add no new capability and are intended for testing and benchmarking
 
 #### Scenario: RAR reading requires only the system unrar binary
 
