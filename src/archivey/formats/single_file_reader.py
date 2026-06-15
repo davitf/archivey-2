@@ -11,7 +11,6 @@ from archivey.exceptions import (
     ArchiveStreamNotSeekableError,
 )
 from archivey.formats.compressed_streams import get_stream_open_fn
-from archivey.formats.decompressor_stream import DecompressorStream
 from archivey.formats.format_detection import EXTENSION_TO_FORMAT
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.io_helpers import (  # Updated import
@@ -21,6 +20,7 @@ from archivey.internal.io_helpers import (  # Updated import
     read_exact,
     run_with_exception_translation,
 )
+from archivey.internal.streams.decompress import DecompressorStream
 
 # from archivey.internal.utils import open_if_file # Removed
 from archivey.types import (

@@ -29,7 +29,7 @@ else:
         Buffer = bytes
 
 from archivey.exceptions import ArchiveCorruptedError, ArchiveEOFError
-from archivey.internal.io_helpers import ensure_bufferedio
+from archivey.internal.streams.compat import ensure_bufferedio
 
 if TYPE_CHECKING:
     import brotli

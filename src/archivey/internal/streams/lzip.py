@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.exceptions import ArchiveCorruptedError, ArchiveEOFError
-from archivey.formats.decompressor_stream import (
+from archivey.internal.streams.decompress import (
     SeekPoint,
     _SegmentedDecompressorStream,
 )

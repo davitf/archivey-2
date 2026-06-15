@@ -98,13 +98,13 @@ from archivey.exceptions import (
     ArchiveStreamNotSeekableError,
     PackageNotInstalledError,
 )
-from archivey.formats.decompressor_stream import (
+from archivey.internal.io_helpers import ensure_binaryio
+from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
     ZlibDecompressorStream,
 )
-from archivey.formats.lzip_stream import LzipDecompressorStream
-from archivey.formats.xz_stream import XzDecompressorStream
-from archivey.internal.io_helpers import ensure_binaryio
+from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.xz import XzDecompressorStream
 
 logger = logging.getLogger(__name__)
 

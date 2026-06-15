@@ -10,10 +10,10 @@ from tests.archivey.create_archives import create_lzip_member
 
 from archivey.exceptions import ArchiveCorruptedError, ArchiveEOFError
 from archivey.formats.compressed_streams import _translate_lzip_exception
-from archivey.formats.lzip_stream import LzipDecompressorStream, _read_index_backwards
+from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_backwards
 
 if TYPE_CHECKING:
-    from archivey.formats.decompressor_stream import SeekPoint
+    from archivey.internal.streams.decompress import SeekPoint
 
 # ---------------------------------------------------------------------------
 # Helpers
