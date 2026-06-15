@@ -67,8 +67,13 @@ The system SHALL ensure that every instance of `ArchiveyError` (and any subclass
 |---|---|---|
 | `message` | `str` | Human-readable explanation of the error |
 | `source_format` | `ArchiveFormat \| None` | The archive format being processed, if known |
+| `archive_name` | `str \| None` | A name identifying the archive (its path, or a name carried by the source stream such as `BinaryIO.name`), for clearer error messages. `None` when the source is an anonymous stream that carries no name |
 | `member_name` | `str \| None` | The name of the member being processed at the time of the error, if applicable |
 | `__cause__` | `BaseException \| None` | The original exception, preserved via `raise ... from exc` |
+
+`archive_name` is best-effort: it is populated from the path when the archive was
+opened from a path, or from the stream's `name` attribute when present, and is
+otherwise `None` — the library never fabricates one.
 
 #### Scenario: error carries format and member name
 
@@ -86,26 +91,44 @@ The system SHALL ensure that every instance of `ArchiveyError` (and any subclass
 
 The system SHALL preserve the original underlying exception as `__cause__` on every `ArchiveyError` using `raise ArchiveyError(...) from original_exc`. Libraries MUST NOT swallow the original exception. The original traceback MUST be attached and visible through a standard `traceback.print_exc()` call.
 
-Every backend wraps its underlying library's exceptions at the call site using this pattern:
+Exception translation has two separable concerns; neither is scattered as manual
+field-setting across the backends.
 
-```python
-try:
-    raw_member = self._zf.getinfo(name)
-except KeyError as exc:
-    raise ReadError(f"Member '{name}' not found", format=ArchiveFormat.ZIP) from exc
-except zipfile.BadZipFile as exc:
-    raise CorruptionError("ZIP central directory corrupt", format=ArchiveFormat.ZIP) from exc
-```
+1. **Type translation is per-library, not per-format.** Each underlying library has
+   its own exception taxonomy (`zipfile.BadZipFile`, `tarfile.TarError`,
+   `lzma.LZMAError`, the `unrar` process errors, the crypto backend's errors, …), so
+   a small translator *per library* maps those exceptions to the correct
+   `ArchiveyError` subclass (`CorruptionError`, `TruncatedError`, `EncryptionError`,
+   …) by inspecting the exception type/payload. A library shared across formats
+   (e.g. `lzma`, used by both XZ and 7z) is translated once and reused. Translators
+   know nothing about the archive format, path, or member.
 
-For the common case, a `@translate_errors(format)` decorator handles exception wrapping uniformly across backend methods:
+   ```python
+   # Maps one library's exceptions to typed ArchiveyErrors; no format/context.
+   @translate_library_errors(LZMA_TRANSLATOR)
+   def _read_block(self, ...): ...
+   ```
 
-```python
-@translate_errors(ArchiveFormat.ZIP)
-def open_member(self, member: Member) -> BinaryIO:
-    return self._zf.open(member.original_name)
-```
+2. **Context is stamped centrally.** The `ArchiveReader` ABC wraps the public
+   operations (listing, `open()`, `read()`, iteration, extraction) so that when an
+   `ArchiveyError` propagates, the base class fills in `source_format`,
+   `archive_name`, and `member_name` from the context it already holds, then
+   re-raises. Backends therefore do **not** set these fields by hand, which avoids
+   repetitive, error-prone code and keeps the per-library translators context-free.
 
-No internal library exception (e.g. `zipfile.BadZipFile`, `tarfile.TarError`, `py7zr` exceptions) SHALL propagate to the caller unwrapped.
+   ```python
+   # In the ArchiveReader ABC, around each public operation:
+   try:
+       return op()
+   except ArchiveyError as exc:
+       exc.source_format = exc.source_format or self.format
+       exc.archive_name  = exc.archive_name  or self._archive_name
+       exc.member_name   = exc.member_name   or current_member_name
+       raise
+   ```
+
+No internal library exception (e.g. `zipfile.BadZipFile`, `tarfile.TarError`, the
+7z/RAR backend errors) SHALL propagate to the caller unwrapped.
 
 #### Scenario: original exception attached as __cause__
 
@@ -119,5 +142,33 @@ No internal library exception (e.g. `zipfile.BadZipFile`, `tarfile.TarError`, `p
 
 #### Scenario: no bare re-raise or exception swallowing
 
-- **WHEN** an underlying library raises an unexpected exception inside any backend method
+- **WHEN** a decoding library raises an unexpected exception inside any backend method
 - **THEN** it is caught and re-raised as an `ArchiveyError` subclass using `raise ... from exc`; the original exception is never silently discarded
+
+#### Scenario: context filled by the base reader, not the backend
+
+- **WHEN** a per-library translator raises a `CorruptionError` with no `source_format`/`archive_name`/`member_name` set, while reading member `"data/file.txt"` of a 7z archive opened from `"/tmp/a.7z"`
+- **THEN** the `ArchiveReader` ABC stamps `source_format == ArchiveFormat.SEVEN_Z`, `archive_name == "/tmp/a.7z"`, and `member_name == "data/file.txt"` before the error reaches the caller
+
+---
+
+### Requirement: Genuine runtime and I/O errors are not reclassified
+
+The system SHALL translate only exceptions that originate from a decoding library's
+own taxonomy (corrupt/truncated/encrypted data, unsupported coders, …). Failures
+that are unrelated to archive decoding — an `OSError` from the filesystem, a dropped
+network connection or other error from a caller-supplied stream, `KeyboardInterrupt`,
+`MemoryError`, and similar — SHALL propagate **unchanged**, never reclassified as
+`CorruptionError`/`TruncatedError` or any other `ArchiveyError`. The base reader MAY
+stamp context onto an `ArchiveyError` it is already re-raising, but it MUST NOT
+convert an unrelated runtime exception into an `ArchiveyError`.
+
+#### Scenario: filesystem error propagates unwrapped
+
+- **WHEN** a read from the underlying file fails with `OSError` (e.g. an I/O error or a disconnected network mount) partway through reading a member
+- **THEN** the original `OSError` propagates to the caller unchanged, not wrapped as `CorruptionError` or `TruncatedError`
+
+#### Scenario: a truncated/corrupt stream is still an archive error
+
+- **WHEN** the source bytes are fully readable but the decoder reports corrupt or prematurely-ended compressed data
+- **THEN** the error IS translated to `CorruptionError`/`TruncatedError`, because it originates from decoding rather than from the source's I/O

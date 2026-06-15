@@ -8,11 +8,11 @@ Provides a uniform interface for opening and reading archives across all support
 
 ### Requirement: Opening an archive for reading
 
-The system SHALL expose a top-level `archivey.open()` function that accepts a file path, `Path`, or binary stream and returns an `ArchiveReader`.
+The system SHALL expose a top-level `archivey.open_archive()` function that accepts a file path, `Path`, or binary stream and returns an `ArchiveReader`.
 
 ```python
-archivey.open(
-    source: str | Path | BinaryIO,
+archivey.open_archive(
+    source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
     *,
     format: ArchiveFormat | None = None,  # override detection
     intent: Intent = Intent.AUTO,
@@ -21,22 +21,57 @@ archivey.open(
 ) -> ArchiveReader
 ```
 
-The `format` parameter MAY be omitted; when omitted the library performs automatic format detection. The `encoding` parameter is used as a fallback for legacy non-unicode path fields in the archive.
+The `format` parameter MAY be omitted; when omitted the library performs automatic format detection. The `encoding` parameter is used as a fallback for legacy non-unicode path fields in the archive. `source` MAY also be an ordered sequence of files/streams that together form a single multi-volume archive (see the multi-volume requirement below).
 
 #### Scenario: open with auto-detected format
 
-- **WHEN** `archivey.open("archive.tar.gz")` is called with no `format` override
+- **WHEN** `archivey.open_archive("archive.tar.gz")` is called with no `format` override
 - **THEN** the library detects the format from magic bytes and returns an `ArchiveReader` wrapping the appropriate backend
 
 #### Scenario: open with explicit format override
 
-- **WHEN** `archivey.open(source, format=ArchiveFormat.ZIP)` is called
+- **WHEN** `archivey.open_archive(source, format=ArchiveFormat.ZIP)` is called
 - **THEN** the library uses the specified format backend without running detection
 
 #### Scenario: open with password
 
-- **WHEN** `archivey.open(source, password="secret")` is called
+- **WHEN** `archivey.open_archive(source, password="secret")` is called
 - **THEN** the returned `ArchiveReader` uses the provided password for encrypted members
+
+---
+
+### Requirement: Multi-volume and multi-source input
+
+`open_archive()` SHALL accept a multi-volume archive through either of two paths, and
+present it as one logical `ArchiveReader`:
+
+- **From a single path that is part of a volume set** (e.g. `name.7z.001`,
+  `name.part1.rar`, or `name.rar` + `name.r00`…): the library discovers the sibling
+  volumes in their natural order and treats them as one archive.
+- **From an explicit ordered sequence** of files/streams passed as `source`: the
+  library uses them, in the given order, as the volumes of one archive.
+
+Volume joining is format-specific (see `format-7z` and `format-rar`): a 7z set is a
+single byte stream split across parts and is concatenated; a RAR set is a sequence of
+self-describing volumes whose headers are parsed in order and whose
+boundary-spanning members are stitched together. When the set is incomplete or out of
+order, the library SHALL raise `UnsupportedFeatureError` or a truncated/corrupt error
+rather than returning a partial result.
+
+#### Scenario: open a volume set from one of its parts
+
+- **WHEN** `archivey.open_archive("disc.7z.001")` is called and the sibling `.7z.NNN` volumes are present alongside it
+- **THEN** the returned reader exposes the members of the whole multi-volume archive as if it were a single file
+
+#### Scenario: open a volume set from an explicit list
+
+- **WHEN** `archivey.open_archive([vol1, vol2, vol3])` is called with the volumes in order
+- **THEN** the reader treats them as one archive in that order
+
+#### Scenario: incomplete volume set
+
+- **WHEN** a volume is missing from the set
+- **THEN** `open_archive()` (or the first dependent read) raises `UnsupportedFeatureError` or a truncated/corrupt error rather than a partial member list
 
 ---
 
@@ -226,5 +261,5 @@ After `close()` is called, the reader's behavior is undefined; callers MUST NOT 
 
 #### Scenario: context manager releases resources
 
-- **WHEN** `with archivey.open("archive.zip") as ar:` exits (normally or via exception)
+- **WHEN** `with archivey.open_archive("archive.zip") as ar:` exits (normally or via exception)
 - **THEN** all backend resources (file handles, temp directories, caches) are released

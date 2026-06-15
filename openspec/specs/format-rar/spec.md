@@ -118,6 +118,24 @@ streaming path:
 
 ---
 
+### Requirement: Small-member extraction optimization (lower priority)
+
+`unrar` may parse metadata for the whole archive before yielding a single member's
+data, which is wasteful for many small random reads. As an optimization the reader MAY
+adopt the `rarfile` technique of building a temporary single-file RAR that contains
+just the requested member and invoking `unrar` on that smaller archive when the member
+is below a size threshold. This is a **lower-priority, benchmark-gated** optimization:
+it SHALL be adopted only if measurements show a worthwhile speedup, and the size
+threshold SHALL be derived from those benchmarks. Output MUST be byte-identical to the
+direct `unrar` path.
+
+#### Scenario: many small random reads
+
+- **WHEN** numerous small members are read at random from a large RAR and the optimization is enabled
+- **THEN** each read returns bytes identical to the direct `unrar` path, with reduced per-read overhead
+
+---
+
 ### Requirement: Report the absence of solid block boundary information
 
 The system SHALL treat RAR solidity as binary per archive — there is no per-block
@@ -206,16 +224,11 @@ raise `PackageNotInstalledError`.
 
 ### Requirement: Surface unsupported RAR variants and integrity limits
 
-The native parser SHALL raise `UnsupportedFeatureError` for archive shapes it does
-not support — multi-volume RAR sets and legacy RAR2 archives (extract version ≤ 20)
-— rather than mis-parsing them. For RAR5 members that carry only a Blake2sp hash and
-no CRC32, `Member.hashes` SHALL contain a `"blake2sp"` entry (bytes) and no
+The native parser SHALL raise `UnsupportedFeatureError` for legacy RAR2 archives
+(extract version ≤ 20) rather than mis-parsing them. (Multi-volume RAR sets ARE
+supported — see the next requirement.) For RAR5 members that carry only a Blake2sp
+hash and no CRC32, `Member.hashes` SHALL contain a `"blake2sp"` entry (bytes) and no
 `"crc32"` key — never a guessed CRC.
-
-#### Scenario: multi-volume RAR set
-
-- **WHEN** a multi-volume RAR archive is opened
-- **THEN** the system raises `UnsupportedFeatureError` rather than a partial or garbled member list
 
 #### Scenario: legacy RAR2 archive
 
@@ -226,3 +239,39 @@ no CRC32, `Member.hashes` SHALL contain a `"blake2sp"` entry (bytes) and no
 
 - **WHEN** a RAR5 member records a Blake2sp hash but no CRC32
 - **THEN** `member.hashes["blake2sp"]` holds the digest (bytes) and `"crc32"` is absent from `member.hashes`
+
+---
+
+### Requirement: Support multi-volume RAR sets
+
+The system SHALL support multi-volume RAR archives, where one logical archive is split
+across volumes named `name.partN.rar` (RAR5 / newer RAR4) or `name.rar` + `name.r00`,
+`name.r01`, … (older RAR4). The native metadata parser SHALL read the volume headers
+in order and stitch members that span a volume boundary (per the file-continued flags)
+into single logical members. Two entry paths SHALL be accepted (see `archive-reading`
+for the multi-source `open_archive()` contract):
+
+- opening from a path that is part of the set: sibling volumes are discovered in order
+  from the `.partN`/`.rNN` naming and parsed together; for data reads the `unrar`
+  binary is pointed at the first volume and reads the remaining volumes from disk; and
+- `open_archive()` receiving an explicit ordered list of the volume files/streams.
+  Because `unrar` operates on files, data reads from stream sources require the volumes
+  to be materializable for `unrar` (e.g. spilled to a temporary directory).
+
+If a volume is missing or the parts are out of order, the system SHALL raise
+`UnsupportedFeatureError` or a truncated error rather than mis-parsing.
+
+#### Scenario: open a complete multi-volume set from the first part
+
+- **WHEN** `name.part1.rar` of a complete set is opened
+- **THEN** the reader parses headers across all volumes and presents members that span volumes as single logical members
+
+#### Scenario: read a member that spans two volumes
+
+- **WHEN** a member whose data continues across a volume boundary is read
+- **THEN** its content is reassembled across the volumes and returned as one stream
+
+#### Scenario: missing RAR volume
+
+- **WHEN** a volume is absent from the set
+- **THEN** the system raises an error (an `UnsupportedFeatureError` or a truncated error) rather than a partial or garbled result

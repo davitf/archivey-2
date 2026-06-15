@@ -20,7 +20,7 @@ The system SHALL expose the following cost and capability properties for every o
 
 #### Scenario: CostReceipt on open
 
-- **WHEN** a ZIP archive is opened with `archivey.open()`
+- **WHEN** a ZIP archive is opened with `archivey.open_archive()`
 - **THEN** the returned reader's `cost` property reports `ListingCost.O1`, `AccessCost.DIRECT`, and `StreamCapability.SEEKABLE`
 
 #### Scenario: Central directory lookup is O(1)

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The backend registry maps archive formats to the backend classes that can read or write them. Core backends are registered automatically at import time; optional backends register themselves only when their third-party dependency is available. The registry exposes a selection API used internally by `archivey.open()`, `archivey.create()`, and `detect_format()`.
+The backend registry maps archive formats to the backend classes that can read or write them. Core backends are registered automatically at import time; optional backends register themselves only when their third-party dependency is available. The registry exposes a selection API used internally by `archivey.open_archive()`, `archivey.create()`, and `detect_format()`.
 
 ## Requirements
 
@@ -54,7 +54,7 @@ The system SHALL implement each `Backend` subclass as a stateless factory: the c
 
 #### Scenario: two simultaneous readers from the same backend
 
-- **WHEN** `archivey.open("a.zip")` and `archivey.open("b.zip")` are both open at the same time
+- **WHEN** `archivey.open_archive("a.zip")` and `archivey.open_archive("b.zip")` are both open at the same time
 - **THEN** each call returns an independent `ArchiveReader` instance with its own state
 - **AND** operations on one reader do not affect the other
 
@@ -154,7 +154,7 @@ The same pattern applies to Zstandard (`zstandard`, `[zstd]`) and LZ4 (`lz4`, `[
 
 #### Scenario: ISO file opened without pycdlib
 
-- **WHEN** a source file with the ISO 9660 magic is passed to `archivey.open()` and `pycdlib` is not installed
+- **WHEN** a source file with the ISO 9660 magic is passed to `archivey.open_archive()` and `pycdlib` is not installed
 - **THEN** `UnsupportedFormatError` is raised
 - **AND** the error message names `pycdlib` and suggests `pip install archivey[iso]`
 - **AND** no `ImportError` propagates to the caller

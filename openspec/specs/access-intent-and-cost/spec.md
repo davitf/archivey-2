@@ -6,9 +6,9 @@ Allows callers to declare upfront how they intend to access an archive (sequenti
 
 ## Requirements
 
-### Requirement: Declaring access intent at open()
+### Requirement: Declaring access intent at open_archive()
 
-The system SHALL accept an `intent` parameter in `archivey.open()` that the caller uses to declare their intended access pattern. The library uses this declaration to optimize backend initialization and to enforce access constraints.
+The system SHALL accept an `intent` parameter in `archivey.open_archive()` that the caller uses to declare their intended access pattern. The library uses this declaration to optimize backend initialization and to enforce access constraints.
 
 ```python
 class Intent(Enum):
@@ -19,21 +19,21 @@ class Intent(Enum):
 
 - `Intent.AUTO`: the library selects the most appropriate mode for the detected format. Index structures (central directories, 7z headers) are loaded when available.
 - `Intent.SEQUENTIAL`: the caller promises forward-only, single-pass iteration. The library MUST disable index loading where possible, avoiding the upfront cost of scanning or parsing a central directory. Random-access operations (`__getitem__`, `get`, random `extract`) are disabled on sequential readers unless the backend can satisfy them cheaply via an already-loaded in-memory index.
-- `Intent.RANDOM`: the caller requires random member access. The library SHALL fail fast at `open()` time if the format or source cannot support random access (e.g. a non-seekable stream for a format that requires seek).
+- `Intent.RANDOM`: the caller requires random member access. The library SHALL fail fast at `open_archive()` time if the format or source cannot support random access (e.g. a non-seekable stream for a format that requires seek).
 
 #### Scenario: AUTO intent on an indexed format
 
-- **WHEN** `archivey.open("archive.zip", intent=Intent.AUTO)` is called
+- **WHEN** `archivey.open_archive("archive.zip", intent=Intent.AUTO)` is called
 - **THEN** the ZIP central directory is read upfront and random access is available
 
 #### Scenario: SEQUENTIAL intent disables index loading
 
-- **WHEN** `archivey.open("archive.tar.gz", intent=Intent.SEQUENTIAL)` is called
+- **WHEN** `archivey.open_archive("archive.tar.gz", intent=Intent.SEQUENTIAL)` is called
 - **THEN** the library does not attempt to scan the full archive to build an index, and members are yielded as the stream is read
 
 #### Scenario: RANDOM intent fails fast on non-seekable source
 
-- **WHEN** `archivey.open(non_seekable_stream, intent=Intent.RANDOM)` is called on a format that requires seek
+- **WHEN** `archivey.open_archive(non_seekable_stream, intent=Intent.RANDOM)` is called on a format that requires seek
 - **THEN** an appropriate error is raised at open time, before any member data is read
 
 ---

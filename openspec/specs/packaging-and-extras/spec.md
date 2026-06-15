@@ -59,7 +59,18 @@ compression formats, and the CLI. The mapping is:
 | `[zstd]` | `zstandard` | standalone Zstandard (`.zst`, `.tar.zst`) |
 | `[lz4]` | `lz4` | LZ4 (`.tar.lz4`) |
 | `[cli]` | `tqdm` | the `archivey` command-line interface and its progress bar |
-| `[all]` | every optional runtime dependency above | every optional capability |
+| `[recommended]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[cli]` | the **recommended** full-feature set — one primary backend per capability; what most users want |
+| `[all]` | `[recommended]` **plus** every alternative/secondary backend | everything, including redundant alternative backends — mainly for testing/benchmarking |
+
+`[recommended]` is the sensible "give me everything useful" install: exactly one
+backend per capability, no redundancy. `[all]` is a superset that additionally pulls
+the **alternative** backends — performance or compatibility variants that duplicate a
+capability already covered (e.g. `rapidgzip`/`indexed_bzip2` for seekable gzip/bzip2,
+`python-xz` as an alternative xz backend, a second zstd library alongside the primary
+one). Those alternatives are each available behind their own extra and exist mainly so
+the test suite and benchmarks can exercise them; **most users should install
+`[recommended]`, not `[all]`**, because the extra alternative libraries add install
+weight without adding capability.
 
 `[7z]` and `[rar]` are **format bundles**: installing `[7z]` enables every 7z
 reading feature and `[rar]` every RAR reading feature that needs a Python package,
@@ -102,10 +113,16 @@ are pulled in by `uv sync` (or `pip install --group dev`) for contributors.
 - **THEN** `pycdlib` is installed and `.iso` archives become available
 - **AND** no other optional dependency (py7zr, zstandard, lz4) is pulled in
 
-#### Scenario: `[all]` enables every optional capability
+#### Scenario: `[recommended]` enables every capability with one backend each
+
+- **WHEN** `pip install archivey[recommended]` is run
+- **THEN** every optional capability (7z PPMd/Deflate64/Zstd/Brotli/AES, encrypted RAR5 + Blake2sp verification, 7z write, ISO, ZST, LZ4, CLI) is available with one primary backend per capability
+- **AND** no redundant alternative backend (e.g. a second gzip/bzip2/xz/zstd implementation) is pulled in
+
+#### Scenario: `[all]` additionally pulls alternative backends
 
 - **WHEN** `pip install archivey[all]` is run
-- **THEN** every optional capability (7z PPMd/Deflate64/Zstd/Brotli/AES, encrypted RAR5 + Blake2sp verification, 7z write, ISO, ZST, LZ4, CLI) is available
+- **THEN** everything in `[recommended]` is installed **plus** the alternative/secondary backends (e.g. `rapidgzip`, `indexed_bzip2`, `python-xz`), which add no new capability and are intended for testing and benchmarking
 
 #### Scenario: RAR reading requires only the system unrar binary
 

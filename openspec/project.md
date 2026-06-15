@@ -33,7 +33,7 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 
 | Capability | Concern |
 |------------|---------|
-| `archive-reading` | `open()`, the `ArchiveReader` surface, iteration, random/sequential access, link following |
+| `archive-reading` | `open_archive()`, the `ArchiveReader` surface, iteration, random/sequential access, link following |
 | `archive-writing` | `create()`, the `ArchiveWriter` surface, streaming conversion |
 | `archive-data-model` | `Member`, `ArchiveInfo`, `ArchiveFormat`, `MemberType`, compression types |
 | `access-intent-and-cost` | `Intent` enum and the `CostReceipt` cost surface |

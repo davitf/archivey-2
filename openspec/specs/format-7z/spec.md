@@ -116,11 +116,11 @@ The system SHALL raise `UnsupportedFeatureError`, naming the codec, when a folde
 uses a coder with no available backend — notably **BCJ2** (`0x0303011B`), a
 multi-stream filter not implemented by any standard or available package, or any
 newer branch filter absent from the installed liblzma — or an unrecognized method
-ID. The system SHALL also raise `UnsupportedFeatureError` for **multi-volume** 7z
-archives, and SHALL handle 7z **anti-items** without corrupting the member list.
+ID. The system SHALL handle 7z **anti-items** without corrupting the member list.
 The library MUST NOT silently return incorrect data and MUST NOT fall back to a
 third-party reader. (PPMd and Deflate64 are supported via the optional `[7z]`
-extra and are NOT in this category.)
+extra and are NOT in this category; multi-volume 7z is supported by volume-joining,
+see the next requirement, not rejected.)
 
 #### Scenario: BCJ2-filtered member
 
@@ -132,10 +132,39 @@ extra and are NOT in this category.)
 - **WHEN** a folder uses a coder whose method ID is not recognized
 - **THEN** `UnsupportedFeatureError` is raised naming the unknown method ID
 
-#### Scenario: multi-volume 7z archive
+---
 
-- **WHEN** a multi-volume 7z archive is opened
-- **THEN** `UnsupportedFeatureError` is raised rather than producing an incorrect member list
+### Requirement: Support multi-volume 7z by joining split volumes
+
+A multi-volume 7z archive (`name.7z.001`, `name.7z.002`, …) is a single 7z byte
+stream split across fixed-size parts. The system SHALL support it by concatenating
+the volumes, in order, into one logical stream and parsing that stream as a normal
+7z. Two entry paths SHALL be accepted (see `archive-reading` for the multi-source
+`open_archive()` contract):
+
+- opening from a path that is part of the set (e.g. `*.7z.001`): the reader discovers
+  the sibling volumes in numeric order and joins them; and
+- `open_archive()` receiving an explicit ordered list of the volume files/streams.
+
+The join is a thin sequential concatenation; once joined, header parsing and folder
+decoding are identical to a single-file 7z. If a volume is missing or the parts are
+out of order so the stream cannot be reconstructed, the system SHALL raise
+`UnsupportedFeatureError` or a truncated/corrupt error as appropriate.
+
+#### Scenario: open a complete volume set from the first part
+
+- **WHEN** `name.7z.001` of a complete `.7z.NNN` set is opened
+- **THEN** the reader joins the volumes in numeric order and lists and reads members exactly as for a single-file archive
+
+#### Scenario: open from an explicit ordered list of volumes
+
+- **WHEN** `open_archive()` is given the ordered list of volume streams of a multi-volume 7z
+- **THEN** they are concatenated and read as one archive
+
+#### Scenario: missing volume
+
+- **WHEN** a volume is absent from the set so the byte stream cannot be reconstructed
+- **THEN** the system raises an error (an `UnsupportedFeatureError` or a truncated/corrupt error) rather than returning garbage
 
 ---
 

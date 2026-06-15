@@ -226,7 +226,7 @@ Normalization rules applied in order:
 
 ### Requirement: Archive-level metadata (ArchiveInfo)
 
-The system SHALL define an `ArchiveInfo` frozen dataclass that carries archive-level descriptive metadata. It SHALL be available immediately after `open()` without triggering a full member scan.
+The system SHALL define an `ArchiveInfo` frozen dataclass that carries archive-level descriptive metadata. It SHALL be available immediately after `open_archive()` without triggering a full member scan.
 
 ```python
 @dataclass(frozen=True)
