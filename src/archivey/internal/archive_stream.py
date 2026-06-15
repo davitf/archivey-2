@@ -9,6 +9,7 @@ from typing import (
     Callable,
     NoReturn,
     Optional,
+    cast,
 )
 
 from archivey.exceptions import ArchiveError
@@ -66,7 +67,7 @@ class ArchiveStream(io.RawIOBase, BinaryIO):
         self._translate = exception_translator
 
         self._inner: BinaryIO | None = None
-        self._open_fn = open_fn
+        self._open_fn: Callable[[], BinaryIO] | None = open_fn
         self._open_lock = threading.Lock()
 
         self.archive_path = archive_path
@@ -129,14 +130,14 @@ class ArchiveStream(io.RawIOBase, BinaryIO):
         b[: len(data)] = data
         return len(data)
 
-    def readinto(self, b: bytearray | memoryview) -> int:
+    def readinto(self, b: bytearray | memoryview) -> int:  # type: ignore[override]
         # BinaryIO objects don't necessarily have readinto (specifically, XZFile from
         # python-xz doesn't), so we fall back to read() if needed.
         if not hasattr(self._ensure_open(), "readinto"):
             return self._readinto_fallback(b)
 
         try:
-            return self._ensure_open().readinto(b)  # type: ignore[attr-defined]
+            return cast("int", self._ensure_open().readinto(b))  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
             self._translate_exception(e)
 

@@ -10,6 +10,7 @@ from queue import Empty, Queue
 from threading import Lock, Thread
 from typing import (
     TYPE_CHECKING,
+    Any,
     BinaryIO,
     Callable,
     Collection,
@@ -177,7 +178,7 @@ class StreamingFile(BasePy7zIOWriter):
     def __init__(
         self,
         fname: str,
-        files_queue: "Queue[tuple[str, BinaryIO] | None]",
+        files_queue: "Queue[tuple[str, BinaryIO] | Exception | None]",
         max_chunks: int = 64,
         pwd: bytes | str | None = None,
     ):
@@ -198,14 +199,18 @@ class StreamingFile(BasePy7zIOWriter):
         self._data_queue.put(s)
         return len(s)
 
-    def close(self):
+    def close(self) -> None:
         if not self._closed:
             self._data_queue.put(None)
             self._closed = True
 
 
 class StreamingFactory(WriterFactory):
-    def __init__(self, q: Queue, pwd: bytes | str | None = None):
+    def __init__(
+        self,
+        q: "Queue[tuple[str, BinaryIO] | Exception | None]",
+        pwd: bytes | str | None = None,
+    ):
         self._queue = q
 
     def create(self, filename: str) -> Py7zIO:
@@ -216,9 +221,9 @@ class StreamingFactory(WriterFactory):
             item = self._queue.get()
             if item is None:
                 break
-            yield item
+            yield cast("tuple[str, BinaryIO]", item)
 
-    def finish(self):
+    def finish(self) -> None:
         self._queue.put(None)
 
 
@@ -233,7 +238,7 @@ class ExtractFileWriter(BasePy7zIOWriter):
         self.file.write(s)
         return len(s)
 
-    def close(self):
+    def close(self) -> None:
         logger.debug("Closing file writer for %s", self.full_path)
         self.file.close()
 
@@ -247,7 +252,7 @@ class ExtractLinkWriter(BasePy7zIOWriter):
         self.data.extend(s)
         return len(s)
 
-    def close(self):
+    def close(self) -> None:
         self.member.link_target = self.data.decode("utf-8")
 
 
@@ -266,13 +271,13 @@ class ExtractWriterFactory(WriterFactory):
         member = self._extract_filename_to_member.get(filename)
         if member is None:
             logger.error("Member %s not found", filename)
-            return py7zr.io.NullIO()
+            return py7zr.io.NullIO()  # type: ignore[no-untyped-call]
         if member.is_link:
             logger.debug("Extracting link %s", filename)
             return ExtractLinkWriter(member)
         if not member.is_file:
             logger.debug("Ignoring non-file member %s", filename)
-            return py7zr.io.NullIO()
+            return py7zr.io.NullIO()  # type: ignore[no-untyped-call]
 
         full_path = os.path.join(self._path, filename)
         if os.path.lexists(full_path) or full_path in self.outfiles:
@@ -329,7 +334,7 @@ class SevenZipReader(BaseArchiveReader):
         return None
 
     @contextmanager
-    def _temporary_password(self, pwd: bytes | str | None):
+    def _temporary_password(self, pwd: bytes | str | None) -> Iterator[None]:
         """Temporarily set the password for all folders in the archive."""
         if pwd is None or self._archive is None:
             yield
@@ -337,7 +342,7 @@ class SevenZipReader(BaseArchiveReader):
 
         SevenZipReader._password_lock.acquire()
         try:
-            folders = []
+            folders: list[Any] = []
             try:
                 folders = []
                 if (
@@ -476,9 +481,9 @@ class SevenZipReader(BaseArchiveReader):
                 raw_filename=file.filename,
                 # The uncompressed field is wrongly typed in py7zr as list[int].
                 # It's actually an int.
-                file_size=file.uncompressed,  # type: ignore
+                file_size=file.uncompressed,
                 compress_size=file.compressed,
-                mtime_with_tz=py7zr.helpers.filetime_to_dt(file.lastwritetime)
+                mtime_with_tz=py7zr.helpers.filetime_to_dt(file.lastwritetime)  # type: ignore[no-untyped-call]
                 if file.lastwritetime
                 else None,
                 type=file_type,
@@ -593,7 +598,7 @@ class SevenZipReader(BaseArchiveReader):
 
         # TODO: check that all the requested files to extract() were actually
         # extracted exactly once.
-        def extractor():
+        def extractor() -> None:
             try:
                 assert self._archive is not None
                 factory = StreamingFactory(q)
@@ -703,7 +708,7 @@ class SevenZipReader(BaseArchiveReader):
                 # Yield any empty files immediately, as py7zr doesn't actually call any
                 # methods on the PyZ7IO object for them, and so they're not added to the
                 # queue.
-                stream = io.BytesIO(b"")
+                stream: BinaryIO = io.BytesIO(b"")
                 yield filtered_member, stream
                 if close_streams:
                     stream.close()

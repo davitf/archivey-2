@@ -91,9 +91,9 @@ def get_non_corrupted_filename(rarinfo: RarInfo) -> str | None:
         The corrected filename string, or None if decoding fails.
     """
     if not isinstance(rarinfo, Rar3Info):
-        return rarinfo.filename
+        return cast("str | None", rarinfo.filename)
     if not rarinfo.flags & rarfile.RAR_FILE_UNICODE:
-        return rarinfo.filename
+        return cast("str | None", rarinfo.filename)
 
     utf16_str = cast("str | None", rarinfo.filename)
 
@@ -169,9 +169,9 @@ def get_encryption_info(rarinfo: RarInfo) -> RarEncryptionInfo | None:
     # The file_encryption attribute is not publicly defined, but it's there.
     if not isinstance(rarinfo, Rar5Info):
         return None
-    if rarinfo.file_encryption is None:  # type: ignore[attr-defined]
+    if rarinfo.file_encryption is None:
         return None
-    return RarEncryptionInfo(*rarinfo.file_encryption)  # type: ignore[attr-defined]
+    return RarEncryptionInfo(*rarinfo.file_encryption)
 
 
 class PasswordCheckResult(enum.Enum):
@@ -275,7 +275,7 @@ def check_rarinfo_crc(
         not encryption_info
         or not encryption_info.flags & RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS
     ):
-        return computed_crc == rarinfo.CRC
+        return bool(computed_crc == rarinfo.CRC)
 
     if password is None:
         logger.warning("No password specified for checking %s", rarinfo.filename)
@@ -284,7 +284,7 @@ def check_rarinfo_crc(
     converted = convert_crc_to_encrypted(
         computed_crc, password, encryption_info.salt, encryption_info.kdf_count
     )
-    return converted == rarinfo.CRC
+    return bool(converted == rarinfo.CRC)
 
 
 class RarStreamMemberFile(io.RawIOBase, BinaryIO):
@@ -337,7 +337,7 @@ class RarStreamMemberFile(io.RawIOBase, BinaryIO):
 
             return data
 
-    def _check_crc(self):
+    def _check_crc(self) -> None:
         if self._crc_checked:
             return
         self._crc_checked = True
@@ -399,7 +399,7 @@ class RarStreamReader:
         self._lock = threading.Lock()
         self._members = members
 
-    def _open_unrar_stream(self):
+    def _open_unrar_stream(self) -> None:
         try:
             unrar_path = shutil.which("unrar")
             if not unrar_path:
@@ -409,7 +409,13 @@ class RarStreamReader:
 
             # Open an unrar process that outputs the contents of all files in the archive to stdout.
             password_args = ["-p" + bytes_to_str(self._pwd)] if self._pwd else ["-p-"]
-            cmd = [unrar_path, "p", "-inul", *password_args, self.archive_path]
+            cmd: list[str] = [
+                unrar_path,
+                "p",
+                "-inul",
+                *password_args,
+                cast("str", self.archive_path),
+            ]
             logger.debug(
                 "Opening RAR archive %s with command: %s",
                 self.archive_path,
@@ -446,7 +452,7 @@ class RarStreamReader:
 
         return RarStreamMemberFile(member, self._stream, self._lock, pwd=pwd_bytes)
 
-    def close(self):
+    def close(self) -> None:
         self._proc.terminate()
         self._proc.wait()
         self._stream.close()
@@ -511,7 +517,7 @@ class RarReader(BaseArchiveReader):
                 "rarfile package is not installed. Please install it to work with RAR archives."
             )
 
-        def open_rar_file():
+        def open_rar_file() -> Any:
             r = rarfile.RarFile(archive_path, "r", pwd, errors="strict")
             if pwd:
                 r.setpassword(pwd)
@@ -525,7 +531,7 @@ class RarReader(BaseArchiveReader):
 
     def _close_archive(self) -> None:
         """Close the archive and release any resources."""
-        self._archive.close()  # type: ignore
+        self._archive.close()
         self._archive = None
 
     def _get_link_target(
@@ -542,7 +548,7 @@ class RarReader(BaseArchiveReader):
             return None
 
         if info.file_redir:
-            return info.file_redir[2]
+            return cast("str | None", info.file_redir[2])
 
         try:
             data = self._archive.read(info.filename, pwd=bytes_to_str(pwd))
@@ -594,17 +600,17 @@ class RarReader(BaseArchiveReader):
                     )
             return None
 
-        return data.decode("utf-8")
+        return cast("str", data.decode("utf-8"))
 
     def _get_timestamp(self, info: RarInfo) -> datetime.datetime | None:
         if info.mtime is not None:
             # RAR5 stores timestamps in UTC, but RAR4 does not. rarfile already returns
             # mtimes with and without the timezone set correctly.
-            return info.mtime
+            return cast("datetime.datetime | None", info.mtime)
         if info.date_time is not None:
             # For some reason (bug in rarfile?), directories in RAR4 archives have no mtime,
             # but they do have a date_time.
-            return rarfile.to_datetime(info.date_time)
+            return cast("datetime.datetime | None", rarfile.to_datetime(info.date_time))
         return None
 
     def iter_members_for_registration(self) -> Iterator[ArchiveMember]:
@@ -828,6 +834,6 @@ class RarReader(BaseArchiveReader):
     @classmethod
     def is_rar_file(cls, file: BinaryIO | str | os.PathLike[str]) -> bool:
         if rarfile is not None:
-            return rarfile.is_rarfile(file) or rarfile.is_rarfile_sfx(file)
+            return bool(rarfile.is_rarfile(file) or rarfile.is_rarfile_sfx(file))
 
         return False

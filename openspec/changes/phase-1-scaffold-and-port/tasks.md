@@ -59,10 +59,10 @@
 
 ## 5. Verify — acceptance criteria
 
-- [ ] 5.1 `uv run mypy src/` passes under `--strict`.
+- [x] 5.1 `uv run mypy src/` passes under `--strict`.
 - [x] 5.2 `uv run pytest tests/` passes (minus the DEV-only tests from 4.3).
 - [x] 5.3 `uv run ruff check` passes.
-- [ ] 5.4 Packaging sanity (per `packaging-and-extras` spec):
+- [x] 5.4 Packaging sanity (per `packaging-and-extras` spec):
       bare install pulls no third-party runtime deps; each extra installs only
       its own dependency; `uv pip install -e .` and a plain `pip install .` both
       succeed.

@@ -133,7 +133,7 @@ def _get_filtered_member(
                 mode &= ~0o111  # Remove executable bit
                 mode |= 0o600  # Set read/write permissions for owner
             elif for_data and member.is_dir:
-                mode = None
+                mode = None  # type: ignore[assignment]
             if mode != member.mode:
                 new_attrs["mode"] = mode
 

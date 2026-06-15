@@ -130,12 +130,12 @@ def open_gzip_stream(path: str | BinaryIO) -> BinaryIO:
     if not underlying_seekable:
         # GzipFile always returns True for seekable, even if the underlying stream
         # is not seekable.
-        gz.seekable = lambda: False
+        gz.seekable = lambda: False  # type: ignore[method-assign]
 
-        def _unsupported_seek(offset, whence=io.SEEK_SET):
+        def _unsupported_seek(offset: int, whence: int = io.SEEK_SET) -> int:
             raise io.UnsupportedOperation("seek")
 
-        gz.seek = _unsupported_seek
+        gz.seek = _unsupported_seek  # type: ignore[method-assign]
 
     return ensure_binaryio(gz)
 
@@ -182,7 +182,7 @@ def open_rapidgzip_stream(path: str | BinaryIO) -> BinaryIO:
             "rapidgzip package is not installed, required for GZIP archives"
         ) from None  # pragma: no cover -- rapidgzip is installed for main tests
 
-    return rapidgzip.open(path, parallelization=0)
+    return cast("BinaryIO", rapidgzip.open(path, parallelization=0))
 
 
 def _translate_bz2_exception(e: Exception) -> Optional[ArchiveError]:
@@ -230,7 +230,7 @@ def open_indexed_bzip2_stream(path: str | BinaryIO) -> BinaryIO:
             "indexed_bzip2 package is not installed, required for BZIP2 archives"
         ) from None  # pragma: no cover -- indexed_bzip2 is installed for main tests
 
-    return indexed_bzip2.open(path, parallelization=0)
+    return cast("BinaryIO", indexed_bzip2.open(path, parallelization=0))
 
 
 def _translate_lzma_exception(e: Exception) -> Optional[ArchiveError]:
@@ -287,7 +287,7 @@ class ZstandardReopenOnBackwardsSeekIO(io.RawIOBase, BinaryIO):
         super().__init__()
         self._archive_path = archive_path
         self._inner = zstandard.open(archive_path)
-        self._size = None
+        self._size: int | None = None
 
     def _reopen_stream(self) -> None:
         self._inner.close()
@@ -310,10 +310,10 @@ class ZstandardReopenOnBackwardsSeekIO(io.RawIOBase, BinaryIO):
         return False
 
     def read(self, n: int = -1) -> bytes:
-        return self._inner.read(n)
+        return cast("bytes", self._inner.read(n))
 
     def readinto(self, b: Buffer) -> int:
-        return self._inner.readinto(b)  # type: ignore[attr-defined]
+        return cast("int", self._inner.readinto(b))
 
     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
         new_pos: int
@@ -333,11 +333,11 @@ class ZstandardReopenOnBackwardsSeekIO(io.RawIOBase, BinaryIO):
             raise ValueError(f"Invalid whence: {whence}")
 
         try:
-            return self._inner.seek(new_pos)
+            return cast("int", self._inner.seek(new_pos))
         except OSError as e:
             if "cannot seek zstd decompression stream backwards" in str(e):
                 self._reopen_stream()
-                return self._inner.seek(new_pos)
+                return cast("int", self._inner.seek(new_pos))
             raise
 
     def close(self) -> None:
@@ -441,10 +441,10 @@ def _translate_uncompresspy_exception(e: Exception) -> Optional[ArchiveError]:
 
 if uncompresspy is not None:
 
-    class UncompresspyStream(uncompresspy.LZWFile):
+    class UncompresspyStream(uncompresspy.LZWFile):  # type: ignore[misc]
         def __init__(self, path: str | BinaryIO) -> None:
             super().__init__(path)
-            self._total_size = None
+            self._total_size: int | None = None
 
         def _find_total_size(self) -> int:
             if self._total_size is not None:
@@ -474,9 +474,9 @@ if uncompresspy is not None:
             if whence == io.SEEK_END:
                 # Find the end of the stream.
                 total_size = self._find_total_size()
-                return super().seek(total_size + offset)
+                return cast("int", super().seek(total_size + offset))
 
-            return super().seek(offset, whence)
+            return cast("int", super().seek(offset, whence))
 
 
 def open_uncompresspy_stream(path: str | BinaryIO) -> BinaryIO:

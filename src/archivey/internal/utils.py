@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar, overload
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from archivey.types import MemberType
 
@@ -101,14 +101,14 @@ def platform_supports_setting_symlink_permissions() -> bool:
     return os.chmod in os.supports_follow_symlinks
 
 
-def platform_is_windows():
+def platform_is_windows() -> bool:
     return sys.platform.startswith("win")
 
 
 def set_file_mtime(
     full_path: str, mtime: datetime.datetime, file_type: MemberType
 ) -> bool:
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     if file_type == MemberType.HARDLINK:
         return False
     if file_type == MemberType.SYMLINK:

@@ -8,7 +8,7 @@ import sys
 import zlib
 from datetime import datetime
 from importlib.metadata import version as package_version
-from typing import IO, BinaryIO, Callable, Tuple, cast
+from typing import IO, Any, BinaryIO, Callable, Tuple, cast
 
 from tqdm import tqdm
 
@@ -241,7 +241,9 @@ def main(argv: list[str] | None = None) -> None:
         original_open = builtins.open
         target_paths = {os.path.abspath(p) for p in args.files}
 
-        def patched_open(file, mode="r", *oargs, **okwargs):
+        def patched_open(
+            file: Any, mode: str = "r", *oargs: Any, **okwargs: Any
+        ) -> Any:
             path: str | None = None
             if isinstance(file, (str, bytes, os.PathLike)):
                 path = str(os.path.abspath(os.fspath(file)))
@@ -330,7 +332,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
 
     if args.track_io:
-        builtins.open = original_open  # type: ignore[has-type]
+        builtins.open = original_open
 
 
 if __name__ == "__main__":  # pragma: no cover - manual execution

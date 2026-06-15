@@ -195,7 +195,7 @@ def _read_xz_index_backwards(
 
     Raises ArchiveCorruptedError on any structural failure.
     """
-    all_entries: list[_XzBlockBounds] = []
+    all_entries: list[list[_XzBlockBounds]] = []
     compressed_end = file_size
 
     while compressed_end > stop_at:
@@ -285,12 +285,12 @@ def _read_xz_index_backwards(
             )
             block_compressed_start += _round_up_4(unpadded_size)
 
-        all_entries.append(stream_entries)  # type: ignore[arg-type]
+        all_entries.append(stream_entries)
         compressed_end = stream_header_start
 
     # Flatten streams in forward order (we collected them backwards)
     flat: list[_XzBlockBounds] = []
-    for stream_entries in reversed(all_entries):  # type: ignore[arg-type]
+    for stream_entries in reversed(all_entries):
         flat.extend(stream_entries)
 
     # Fill in decompressed_start values

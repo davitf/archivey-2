@@ -153,7 +153,7 @@ class BaseArchiveReader(ArchiveReader):
         if pwd is not None and isinstance(pwd, str):
             self._archive_password: bytes | None = pwd.encode("utf-8")
         else:
-            self._archive_password: bytes | None = pwd
+            self._archive_password = pwd
 
         self._members: list[ArchiveMember] = []
         self._filename_to_members: dict[str, list[ArchiveMember]] = defaultdict(list)
@@ -698,7 +698,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def _extract_pending_files(
         self, path: str, extraction_helper: ExtractionHelper, pwd: bytes | str | None
-    ):
+    ) -> None:
         """
         Extract files that have been identified by the ExtractionHelper.
 
@@ -732,7 +732,7 @@ class BaseArchiveReader(ArchiveReader):
         filter_func: IteratorFilterFunc,
         pwd: bytes | str | None,
         extraction_helper: ExtractionHelper,
-    ):
+    ) -> None:
         # For readers that support random access, register all members first to get
         # a complete list of members that need to be extracted, so that the
         # subclass can extract all files at once (which may be faster).
@@ -752,7 +752,7 @@ class BaseArchiveReader(ArchiveReader):
         filter_func: IteratorFilterFunc,
         pwd: bytes | str | None,
         extraction_helper: ExtractionHelper,
-    ):
+    ) -> None:
         for member, stream in self.iter_members_with_streams(
             filter=filter_func, pwd=pwd
         ):
@@ -904,6 +904,7 @@ class BaseArchiveReader(ArchiveReader):
             stream.close()
 
         extraction_helper.apply_metadata()
+        return None
 
     @abc.abstractmethod
     def _close_archive(self) -> None:

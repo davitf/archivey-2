@@ -14,8 +14,6 @@ from archivey.exceptions import (
 )
 from archivey.formats.compressed_streams import open_stream
 from archivey.internal.base_reader import (
-    ArchiveInfo,
-    ArchiveMember,
     BaseArchiveReader,
 )
 from archivey.internal.io_helpers import (
@@ -25,7 +23,14 @@ from archivey.internal.io_helpers import (
     read_exact,
     run_with_exception_translation,
 )
-from archivey.types import ArchiveFormat, ContainerFormat, MemberType, StreamFormat
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveInfo,
+    ArchiveMember,
+    ContainerFormat,
+    MemberType,
+    StreamFormat,
+)
 
 if TYPE_CHECKING:
     from io import BufferedIOBase
@@ -118,7 +123,7 @@ class TarReader(BaseArchiveReader):
 
         def _open_tar() -> tarfile.TarFile:
             # Fail on any error.
-            return tarfile.open(
+            return tarfile.open(  # type: ignore[call-overload,no-any-return]
                 name=archive_path if isinstance(archive_path, str) else None,
                 fileobj=cast("BinaryIO", self._fileobj),
                 mode=open_mode,

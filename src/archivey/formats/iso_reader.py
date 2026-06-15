@@ -5,7 +5,7 @@ import logging
 import os
 import stat as _stat
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Optional
+from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Optional, cast
 
 if TYPE_CHECKING:
     import pycdlib
@@ -53,9 +53,9 @@ class _PyCdlibStream(io.RawIOBase, BinaryIO):
     def read(self, n: int = -1) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        return self._raw.read(n)
+        return cast("bytes", self._raw.read(n))
 
-    def readinto(self, b: bytearray | memoryview) -> int:
+    def readinto(self, b: bytearray | memoryview) -> int:  # type: ignore[override]
         data = self.read(len(b))
         n = len(data)
         b[:n] = data
@@ -68,13 +68,13 @@ class _PyCdlibStream(io.RawIOBase, BinaryIO):
         return False
 
     def seekable(self) -> bool:
-        return self._raw.seekable()
+        return cast("bool", self._raw.seekable())
 
     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        return self._raw.seek(offset, whence)
+        return cast("int", self._raw.seek(offset, whence))
 
     def tell(self) -> int:
-        return self._raw.tell()
+        return cast("int", self._raw.tell())
 
     def close(self) -> None:
         if not self.closed:
@@ -88,7 +88,7 @@ class _PyCdlibStream(io.RawIOBase, BinaryIO):
         raise io.UnsupportedOperation("write")
 
 
-def _dr_date_to_datetime(d) -> datetime:
+def _dr_date_to_datetime(d: Any) -> datetime:
     """Convert a pycdlib DirectoryRecordDate to a timezone-aware datetime."""
     year = 1900 + d.years_since_1900
     tz = timezone(timedelta(minutes=d.gmtoffset * 15))
@@ -97,7 +97,7 @@ def _dr_date_to_datetime(d) -> datetime:
     )
 
 
-def _safe_dr_date(d) -> Optional[datetime]:
+def _safe_dr_date(d: Any) -> Optional[datetime]:
     """Convert a DirectoryRecordDate, returning None on any error."""
     if d is None:
         return None
@@ -162,7 +162,7 @@ class IsoReader(BaseArchiveReader):
         self._format_info: Optional[ArchiveInfo] = None
 
         try:
-            self._iso = pycdlib.PyCdlib()  # type: ignore[attr-defined]
+            self._iso = pycdlib.PyCdlib()
             if is_stream(archive_path):
                 self._iso.open_fp(archive_path)
             else:
@@ -211,7 +211,9 @@ class IsoReader(BaseArchiveReader):
             return "/" + name
         return dirpath + "/" + name
 
-    def _dr_to_member(self, record, filename: str, full_ns_path: str) -> ArchiveMember:
+    def _dr_to_member(
+        self, record: Any, filename: str, full_ns_path: str
+    ) -> ArchiveMember:
         """Convert a pycdlib DirectoryRecord to ArchiveMember."""
         rr = getattr(record, "rock_ridge", None)
 
@@ -350,7 +352,7 @@ class IsoReader(BaseArchiveReader):
 
         try:
             raw = self._iso.open_file_from_iso(**self._ns(ns_path))
-            raw.__enter__()
+            raw.__enter__()  # type: ignore[no-untyped-call]
             return _PyCdlibStream(raw)
         except pycdlib.pycdlibexception.PyCdlibException as e:
             raise ArchiveCorruptedError(

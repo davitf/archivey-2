@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, cast
 
 from archivey.archive_reader import ArchiveReader
 from archivey.config import ArchiveyConfig, archivey_config, get_archivey_config
@@ -127,7 +127,7 @@ def open_archive(
         streaming = streaming_only
 
     logger.debug(
-        f"open_archive({path_or_stream}, config={config}, streaming={streaming}, pwd={pwd}, format={format})"
+        f"open_archive({path_or_stream}, config={config}, streaming={streaming}, pwd={pwd}, format={format})"  # type: ignore[str-bytes-safe]
     )
 
     if pwd is not None and not isinstance(pwd, (str, bytes)):
@@ -165,7 +165,9 @@ def open_archive(
 
     if format is None:
         with archivey_config(config):
-            format = detect_archive_format(ensure_not_none(stream or path))
+            format = detect_archive_format(
+                cast("BinaryIO | str", ensure_not_none(stream or path))
+            )
 
     if isinstance(format, ContainerFormat):
         format = ArchiveFormat(format, StreamFormat.UNCOMPRESSED)
@@ -272,7 +274,8 @@ def open_compressed_stream(
 
     if format is None:
         format = detect_archive_format(
-            ensure_not_none(stream or path), detect_compressed_tar=False
+            cast("BinaryIO | str", ensure_not_none(stream or path)),
+            detect_compressed_tar=False,
         )
 
     if rewindable_wrapper is not None:
@@ -288,4 +291,6 @@ def open_compressed_stream(
     if config is None:
         config = get_archivey_config()
 
-    return open_stream(format, ensure_not_none(stream or path), config)
+    return open_stream(
+        format, cast("BinaryIO | str", ensure_not_none(stream or path)), config
+    )

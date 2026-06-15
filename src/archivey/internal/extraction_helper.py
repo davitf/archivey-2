@@ -5,7 +5,7 @@ import logging
 import os
 import shutil
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from archivey.config import OverwriteMode
 from archivey.exceptions import (
@@ -28,7 +28,7 @@ def apply_member_metadata(member: ArchiveMember, target_path: str) -> None:
     if member.atime is not None and member.mtime is not None:
         # atime: strip timezone and use as naive local time, consistent with mtime.
         atime_naive = member.atime.replace(tzinfo=None)
-        kwargs: dict[str, bool] = {}
+        kwargs: dict[str, Any] = {}
         if member.type == MemberType.SYMLINK:
             if os.utime not in os.supports_follow_symlinks:
                 atime_naive = None  # type: ignore[assignment]

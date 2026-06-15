@@ -85,6 +85,7 @@ class DecompressorStream(io.RawIOBase, BinaryIO, Generic[DecompressorT]):
 
     def __init__(self, path: "str | BinaryIO | ReadableBinaryStream") -> None:
         super().__init__()
+        self._inner: io.BufferedIOBase
         if isinstance(path, (str, bytes, os.PathLike)):
             self._inner = open(path, "rb")
             self._should_close = True
@@ -224,7 +225,7 @@ class DecompressorStream(io.RawIOBase, BinaryIO, Generic[DecompressorT]):
         return data
 
     def readinto(self, b: Buffer) -> int:
-        mv = memoryview(b).cast("B")  # type: ignore[arg-type]
+        mv = memoryview(b).cast("B")
         data = self.read(len(mv))
         mv[: len(data)] = data
         return len(data)
@@ -455,11 +456,11 @@ class BrotliDecompressorStream(DecompressorStream["brotli.Decompressor"]):
         return brotli.Decompressor()
 
     def _decompress_chunk(self, chunk: bytes) -> bytes:
-        return self._decompressor.process(chunk)
+        return cast("bytes", self._decompressor.process(chunk))
 
     def _flush_decompressor(self) -> bytes:
         # brotli's decompressor doesn't have a flush method.
         return b""
 
     def _is_decompressor_finished(self) -> bool:
-        return self._decompressor.is_finished()
+        return cast("bool", self._decompressor.is_finished())

@@ -20,7 +20,7 @@ class ArchiveError(Exception):
         self.archive_path = archive_path
         self.member_name = member_name
 
-    def __str__(self):
+    def __str__(self) -> str:
         base = super().__str__()
         if self.archive_path:
             base = f"{base} (in {self.archive_path})"

@@ -6,11 +6,15 @@ from typing import IO, TYPE_CHECKING
 from archivey.config import get_archivey_config
 from archivey.formats.compressed_streams import open_stream
 from archivey.internal.io_helpers import (
-    ReadableStreamLikeOrSimilar,
     open_if_file,
     read_exact,
 )
-from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
+from archivey.types import (
+    ArchiveFormat,
+    ContainerFormat,
+    ReadableStreamLikeOrSimilar,
+    StreamFormat,
+)
 
 if TYPE_CHECKING:
     import brotli

@@ -3,7 +3,7 @@ import logging
 import os
 import struct
 from datetime import datetime, timezone
-from typing import BinaryIO, Iterator, Optional
+from typing import Any, BinaryIO, Iterator, Optional
 
 from archivey.exceptions import (
     ArchiveCorruptedError,
@@ -47,7 +47,7 @@ def _read_null_terminated_bytes(f: BinaryIO) -> bytes:
 
 def read_gzip_metadata(
     path: str | BinaryIO, member: ArchiveMember, use_stored_metadata: bool = False
-):
+) -> None:
     """
     Extract metadata from a .gz file without decompressing and update the ArchiveMember:
     - original internal filename (if present) goes into extra field
@@ -60,7 +60,7 @@ def read_gzip_metadata(
     - extra field data
     """
 
-    extra_fields = {}
+    extra_fields: dict[str, Any] = {}
 
     with open_if_file(path) as f:
         # Read the fixed 10-byte GZIP header

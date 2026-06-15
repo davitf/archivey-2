@@ -21,7 +21,8 @@ from typing import (
 
 from archivey.exceptions import ArchiveError
 from archivey.internal.utils import ensure_not_none
-from archivey.types import ReadableBinaryStream, ReadableStreamLikeOrSimilar
+from archivey.types import ReadableBinaryStream as ReadableBinaryStream
+from archivey.types import ReadableStreamLikeOrSimilar
 
 logger = logging.getLogger(__name__)
 
