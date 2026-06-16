@@ -18,7 +18,7 @@ Archivey is a Python library for reading, streaming, and safely extracting archi
 |------|------------|
 | Python version | 3.11+ |
 | Core dependencies | None (stdlib only) |
-| Optional extras | `[7z]`, `[rar]`, `[iso]`, `[zstd]`, `[all]` |
+| Optional extras | `[7z]`, `[rar]`, `[crypto]`, `[7z-write]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`, `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]` (RAR member-data decompression additionally needs the system `unrar` binary) |
 | OS support | Linux, macOS, Windows |
 | Thread safety | Readers are not thread-safe. One reader per thread. Writers are not thread-safe. |
 
@@ -30,13 +30,13 @@ Archivey is a Python library for reading, streaming, and safely extracting archi
 
 ```python
 # Open an archive for reading
-archivey.open(
-    source: str | Path | BinaryIO,
+archivey.open_archive(
+    source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
     *,
     format: ArchiveFormat | None = None,  # override detection
     intent: Intent = Intent.AUTO,
     password: str | bytes | None = None,
-    encoding: str = "utf-8",             # fallback for legacy non-unicode paths
+    encoding: str | None = None,         # None = auto-detect member-name encoding
 ) -> ArchiveReader
 
 # Create a new archive for writing
@@ -49,12 +49,15 @@ archivey.create(
     encoding: str = "utf-8",
 ) -> ArchiveWriter
 
-# One-shot extraction (most common use case)
+# One-shot extraction (most common use case) — extracts ALL members.
+# There is deliberately no `members=` selector: passing pre-fetched members to a
+# one-shot function would force the caller to open the archive, fetch the list, and
+# reopen it here (an anti-pattern). Selective extraction is done on an already-open
+# reader via `reader.extract_all(members=..., filter=...)`.
 archivey.extract(
     source: str | Path | BinaryIO,
     dest: str | Path,
     *,
-    members: Iterable[str | Member] | None = None,  # None = all
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
     format: ArchiveFormat | None = None,
@@ -68,9 +71,17 @@ archivey.detect_format(
 ) -> FormatInfo
 ```
 
+`source` for `open_archive()` may also be an ordered `Sequence[...]` of files/streams
+that together form a single multi-volume archive (the library joins them in order).
+
 ### 3.2 ArchiveReader
 
 ```python
+# Shared selector/filter vocabulary (also used by extract_all):
+MemberSelector = Collection[ArchiveMember | str] | Callable[[ArchiveMember], bool]
+MemberFilter   = Callable[[ArchiveMember], ArchiveMember | None]  # return a (possibly
+                 #   .replace()'d) member, or None to skip
+
 class ArchiveReader:
     # --- Metadata ---
     @property
@@ -81,40 +92,44 @@ class ArchiveReader:
     def format(self) -> ArchiveFormat: ...
 
     # --- Member iteration ---
-    def __iter__(self) -> Iterator[Member]: ...           # sequential, in-order
-    def members(self) -> list[Member]: ...               # materializes all (may trigger scan)
-    def __len__(self) -> int: ...                        # may trigger scan
+    def __iter__(self) -> Iterator[ArchiveMember]: ...    # sequential, in-order
+    def members(self) -> list[ArchiveMember]: ...         # materializes all (may trigger scan)
+    def __len__(self) -> int: ...                         # may trigger scan
     def __contains__(self, name: str) -> bool: ...
 
     # --- Random access (requires seekable source or RANDOM intent) ---
-    def __getitem__(self, name: str) -> Member: ...      # KeyError if absent
-    def get(self, name: str, default=None) -> Member | None: ...
+    def __getitem__(self, name: str) -> ArchiveMember: ...  # KeyError if absent
+    def get(self, name: str, default=None) -> ArchiveMember | None: ...
 
     # --- Data access ---
-    def read(self, member: str | Member) -> bytes: ...
-    def open(self, member: str | Member) -> BinaryIO: ...   # streaming; caller must close
+    def read(self, member: str | ArchiveMember) -> bytes: ...
+    def open(self, member: str | ArchiveMember) -> BinaryIO: ...   # streaming; caller must close
 
     # --- Sequential streaming (bounded memory) ---
-    # Yields (member, stream) pairs in archive order.
-    # For solid archives (7z, RAR), each solid block is decompressed once
-    # and its memory released before the next block starts.
+    # Yields (member, stream) pairs in archive order with bounded memory.
+    # `members` selects which members to yield (collection of members/names, or a
+    # predicate); None = all. `filter` sanitizes/rewrites each selected member
+    # (returning a .replace()'d copy) or returns None to skip it. Streams are opened
+    # lazily, so unselected/skipped members cost nothing.
     # The stream is only valid until the iterator advances; do not hold it across yields.
-    def stream_members(self) -> Iterator[tuple[Member, BinaryIO]]: ...
-
-    # --- Extraction helpers (delegates to archivey.extract internals) ---
-    def extract(
+    # For non-file members the stream is None.
+    def stream_members(
         self,
-        member: str | Member,
-        dest: str | Path,
+        members: MemberSelector | None = None,
         *,
-        policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-        overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-    ) -> Path: ...
+        filter: MemberFilter | None = None,
+    ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]: ...
 
+    # --- Extraction helper (delegates to archivey.extract internals) ---
+    # There is no single-member extract(); extracting one file is extract_all(dest,
+    # members=[name]), which is also strictly better on solid archives (a selected set
+    # costs one pass, vs. re-decompressing per file).
     def extract_all(
         self,
         dest: str | Path,
         *,
+        members: MemberSelector | None = None,  # names/members or predicate; None = all
+        filter: MemberFilter | None = None,      # per-member sanitize/rename; None to skip
         policy: ExtractionPolicy = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
@@ -126,24 +141,24 @@ class ArchiveReader:
     def close(self) -> None: ...
 ```
 
-**Constraint:** calling `__getitem__`, `get`, or random `extract` on a reader opened with `Intent.SEQUENTIAL` raises `UnsupportedOperationError` unless the backend can satisfy it cheaply (e.g. the archive has an in-memory index already loaded).
+**Constraint:** calling `__getitem__`, `get`, or random `extract_all(members=[name])` on a reader opened with `Intent.SEQUENTIAL` raises `UnsupportedOperationError` unless the backend can satisfy it cheaply (e.g. the archive has an in-memory index already loaded). `members()` and `__len__` likewise raise `UnsupportedOperationError` under `Intent.SEQUENTIAL`, since they require materializing all members.
 
 **Two sequential access patterns — different memory profiles:**
 
 | Pattern | Memory profile | When to use |
 |---------|---------------|-------------|
-| `for m in ar: ar.open(m)` | Monotonically growing — each solid block is extracted into a cache that persists until `close()`. Peak = sum of all solid blocks accessed. | Random or mixed access; when you may revisit members. |
-| `for m, f in ar.stream_members()` | Bounded — each solid block is extracted, yielded, then released before the next starts. Peak = largest single solid block. | Sequential one-pass processing: hashing, conversion, scanning. |
+| `for m, f in ar.stream_members()` | Bounded and small — decompression is always streaming; a solid block is decompressed progressively as its members are consumed. Peak ≈ decompressor working state + one in-flight chunk, **not** a whole block. | Sequential one-pass processing: hashing, conversion, scanning. |
+| `for m in ar: ar.open(m)` | Bounded, but re-does work on solid blocks — `open()` on a member inside a solid block re-decompresses that block from its start and skips to the member, emitting a `logging.WARNING`. **No growing decompressed cache is ever held** until `close()`. | Random or mixed access on `DIRECT` formats; acceptable on solid formats only for a few members. |
 
-For formats without solid compression (ZIP, TAR, plain .gz), both patterns are equally efficient — there is no caching in either path.
+Decompression is **always streaming**; the library MUST NOT hold a monotonically-growing cache of decompressed block data released only at `close()`. On a solid archive, repeated `open()` calls trade CPU (re-decompression from the block start) for bounded memory, and emit a `logging.WARNING` via `archivey.backends` advising `stream_members()` for full sequential passes. For formats without solid compression (ZIP, plain `.tar`, single-file `.gz`), both patterns are equally efficient — `open()` seeks directly to the member with no re-decompression.
 
-**Link following:** `open()` and `read()` transparently follow symlinks and hardlinks that point to other members in the same archive. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to `open(reader[member.link_target])`. If the link target is not present in the archive, `ReadError` is raised. If the link target itself is a link, it is followed recursively up to a maximum depth of 8 (beyond which `ReadError` is raised to prevent cycles). This behavior is format-independent and is implemented once in the `ArchiveReader` ABC — it does not rely on format-level link resolution (e.g. rarfile follows RAR5 hardlinks internally; our layer handles the remaining cases).
+**Link following:** `open()` and `read()` transparently follow symlinks and hardlinks that point to other members in the same archive. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to the target member (also exposed, when known, as `member.link_target_member`). **Hardlinks always resolve to an *earlier* member** (the TAR model — a hardlink entry refers back to a previously-seen file), so they can be resolved during a single forward pass. If the link target is not present in the archive, `LinkTargetNotFoundError` is raised. Chains are followed recursively with **cycle detection**: the set of members already visited on the current chain is tracked, and revisiting one raises a `ReadError` reporting the cycle. There is **no fixed depth limit** — an acyclic chain of any length resolves, and only a genuine cycle (or a missing target) fails. This behavior is format-independent and implemented once in the `ArchiveReader` ABC — it does not rely on format-level link resolution (which happens at a lower level for formats that follow links internally).
 
 ### 3.3 ArchiveWriter
 
 ```python
 class ArchiveWriter:
-    def add(
+    def add_file(
         self,
         source: str | Path,
         *,
@@ -173,13 +188,11 @@ class ArchiveWriter:
         compression: CompressionSpec | None = None,
     ) -> None: ...
 
-    def add_member(self, member: Member, data: BinaryIO) -> None: ...
+    def add_member(self, member: ArchiveMember, data: BinaryIO) -> None: ...
 
     def add_members(
         self,
-        reader: ArchiveReader,
-        *,
-        members: Iterable[Member] | None = None,
+        source: ArchiveReader | Iterable[tuple[ArchiveMember, BinaryIO | None]],
     ) -> None: ...
 
     def __enter__(self) -> ArchiveWriter: ...
@@ -187,7 +200,16 @@ class ArchiveWriter:
     def close(self) -> None: ...
 ```
 
-`add_members` is the conversion primitive: it streams data directly from reader to writer without intermediate buffering. The writer may buffer internally per its format requirements (e.g. ZIP local headers need the CRC before writing), but must not buffer the full archive.
+`add_members` is the streaming conversion primitive: it streams data directly from the
+source to the writer without buffering the whole archive. It accepts **either** an
+`ArchiveReader` (whole-archive conversion — it drives `reader.stream_members()`
+internally) **or** an iterable of `(member, stream)` pairs, which is exactly the shape
+`ArchiveReader.stream_members()` yields. That second form keeps selection and
+sanitization on the reader side, so
+`writer.add_members(reader.stream_members(predicate, filter=...))` converts a selected,
+filtered, renamed subset in a single streaming pass **without reopening** the source.
+The writer may buffer internally per its format requirements (e.g. ZIP local headers
+need the CRC before writing), but only on a per-member basis — never the full archive.
 
 ---
 
@@ -195,24 +217,62 @@ class ArchiveWriter:
 
 ### 4.1 ArchiveFormat
 
+A format is modeled as the **composition** of a container (member layout) and an outer
+single-stream codec, not a flat enum. The familiar named formats are predefined
+`(container, stream)` class-vars, so callers keep writing `ArchiveFormat.TAR_GZ` while the
+model underneath lets `tar × {gzip, bzip2, xz, zstd, lz4, …}` be expressed without a
+combinatorial enum.
+
 ```python
-class ArchiveFormat(Enum):
-    ZIP       = "zip"
-    TAR       = "tar"         # bare .tar
-    TAR_GZ    = "tar.gz"
-    TAR_BZ2   = "tar.bz2"
-    TAR_XZ    = "tar.xz"
-    TAR_ZST   = "tar.zst"    # requires [zstd] extra
-    TAR_LZ4   = "tar.lz4"    # requires [lz4] extra
-    GZ        = "gz"          # single-file gzip
-    BZ2       = "bz2"
-    XZ        = "xz"
-    ZST       = "zst"
-    SEVEN_Z   = "7z"          # requires [7z] extra
-    RAR       = "rar"         # requires [rar] extra
-    ISO       = "iso"         # requires [iso] extra
-    DIRECTORY = "directory"   # plain filesystem directory
+class ContainerFormat(StrEnum):
+    ZIP        = "zip"
+    TAR        = "tar"
+    RAR        = "rar"
+    SEVEN_Z    = "7z"
+    ISO        = "iso"
+    DIRECTORY  = "directory"   # plain filesystem directory
+    RAW_STREAM = "raw_stream"  # a bare single-file compressed stream (no container)
+    UNKNOWN    = "unknown"
+
+class StreamFormat(StrEnum):
+    UNCOMPRESSED = "uncompressed"
+    GZIP         = "gz"
+    BZIP2        = "bz2"
+    XZ           = "xz"
+    ZSTD         = "zst"     # requires [zstd] extra
+    LZ4          = "lz4"     # requires [lz4] extra
+    # extensible: new outer codecs are added here (lzip, brotli, …)
+
+@dataclass(frozen=True)
+class ArchiveFormat:
+    container: ContainerFormat
+    stream: StreamFormat
+
+    def file_extension(self) -> str: ...   # e.g. ("tar","gz") -> "tar.gz"
+
+    # Predefined named instances (class vars):
+    ZIP       = ArchiveFormat(ContainerFormat.ZIP,        StreamFormat.UNCOMPRESSED)
+    TAR       = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.UNCOMPRESSED)
+    TAR_GZ    = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.GZIP)
+    TAR_BZ2   = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.BZIP2)
+    TAR_XZ    = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.XZ)
+    TAR_ZST   = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.ZSTD)   # [zstd]
+    TAR_LZ4   = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.LZ4)    # [lz4]
+    GZ        = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
+    BZ2       = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
+    XZ        = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)
+    ZST       = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)   # [zstd]
+    SEVEN_Z   = ArchiveFormat(ContainerFormat.SEVEN_Z,    StreamFormat.UNCOMPRESSED)  # read native; write [7z-write]
+    RAR       = ArchiveFormat(ContainerFormat.RAR,        StreamFormat.UNCOMPRESSED)  # native metadata + system `unrar`
+    ISO       = ArchiveFormat(ContainerFormat.ISO,        StreamFormat.UNCOMPRESSED)  # [iso]
+    DIRECTORY = ArchiveFormat(ContainerFormat.DIRECTORY,  StreamFormat.UNCOMPRESSED)
+    UNKNOWN   = ArchiveFormat(ContainerFormat.UNKNOWN,    StreamFormat.UNCOMPRESSED)
 ```
+
+Because `ArchiveFormat` is `frozen=True` it stays hashable and usable as a dict key.
+Equality is **compositional**: the predefined class-vars compare equal to any
+structurally equal pair, so
+`ArchiveFormat.TAR_GZ == ArchiveFormat(ContainerFormat.TAR, StreamFormat.GZIP)`.
 
 ### 4.2 MemberType
 
@@ -237,11 +297,15 @@ class CompressionAlgo(Enum):
     LZMA2    = "lzma2"
     ZSTD     = "zstd"
     LZ4      = "lz4"
+    BROTLI   = "brotli"
     PPMD     = "ppmd"
     BCJ      = "bcj"           # x86 executable filter
     BCJ2     = "bcj2"
     DELTA    = "delta"
     UNKNOWN  = "unknown"       # unrecognized codec ID
+    # This enum is extensible: new codecs are appended as formats are supported. A
+    # codec Archivey does not recognize maps to UNKNOWN (never an exception), so
+    # callers SHOULD treat the set as open-ended.
 
 @dataclass(frozen=True)
 class CompressionMethod:
@@ -252,21 +316,37 @@ class CompressionMethod:
 
 A `tuple[CompressionMethod, ...]` models a filter chain (e.g., `(CompressionMethod(BCJ2), CompressionMethod(LZMA2))` for a typical 7z executable entry).
 
-### 4.4 Member
+### 4.4 ArchiveMember
+
+`ArchiveMember` is **mutable** (not frozen). Several fields are genuinely unknown when a
+member is first yielded and only become known once its data has been read — the final
+`size`/CRC of a gzip stream or a ZIP data-descriptor entry, or a `link_target` stored in
+(or encrypted within) the member's *data* rather than its header. The library fills these
+fields **in place** as it streams, so the `ArchiveMember` a caller already holds gains its
+late values without a re-fetch (required for `Intent.SEQUENTIAL`, where the member list
+cannot be materialized and re-read).
+
+Because the object is mutable, the contract is: **callers MUST treat an `ArchiveMember`
+as read-only** — the library is the only writer. A caller or filter that needs an altered
+member calls `.replace(**kwargs)`, which returns a **copy** and never mutates the
+original. As a consequence, `ArchiveMember` is **unhashable** (a mutable value object must
+not be a dict key or set element); callers key by `member.name` or `member.member_id`.
 
 ```python
-@dataclass(frozen=True)
-class Member:
+@dataclass
+class ArchiveMember:
     # --- Type ---
     type: MemberType
 
     # --- Identity ---
-    sequence: int                           # 0-based position in source archive
     name: str                               # normalized: forward slashes; trailing / for dirs; no leading /
-    original_name: str                      # verbatim bytes decoded with archive encoding
+    raw_name: bytes | None                  # verbatim name bytes as stored, before decode/normalize;
+                                            #   None if the format stores no separate raw form. Kept as
+                                            #   bytes so a wrong encoding guess can never garble it and
+                                            #   the name can be re-decoded losslessly.
 
     # --- Sizes (None if format cannot provide) ---
-    size: int | None                        # uncompressed size in bytes
+    size: int | None                        # uncompressed size in bytes (may be filled after reading)
     compressed_size: int | None
 
     # --- Timestamps ---
@@ -283,7 +363,11 @@ class Member:
     gname: str | None
 
     # --- Link semantics ---
-    link_target: str | None                 # SYMLINK or HARDLINK target path (not normalized)
+    link_target: str | None                 # SYMLINK/HARDLINK target path as stored (not normalized);
+                                            #   may be None until filled while streaming
+    link_target_member: "ArchiveMember | None"  # the resolved target member within this same archive,
+                                            #   or None when unknown, not yet resolved (streaming),
+                                            #   or absent from the archive
 
     # --- Compression ---
     compression: tuple[CompressionMethod, ...] = ()
@@ -293,22 +377,42 @@ class Member:
     is_sparse: bool = False                 # TAR sparse files; extraction as regular file
 
     # --- Integrity ---
-    crc32: int | None = None
+    # Per-algorithm digests, keyed by lowercase algorithm name. CRC32 values are ints
+    # ("crc32"); cryptographic/other digests are raw bytes ("blake2sp", "sha256", ...).
+    # Empty when the format records no integrity data. A format MUST NOT report one
+    # algorithm's value under another's key. Excluded from __eq__.
+    hashes: Mapping[str, int | bytes] = field(default_factory=dict, compare=False)
 
     # --- Format-specific overflow ---
     # Keys are namespaced: "zip.extra_fields", "tar.pax_headers", "iso.rock_ridge", etc.
-    # Excluded from __hash__ and __eq__: format-specific extras don't affect logical identity.
-    extra: dict[str, Any] = field(default_factory=dict, hash=False, compare=False)
+    # Excluded from __eq__: format-specific extras don't affect logical identity.
+    extra: dict[str, Any] = field(default_factory=dict, compare=False)
+
+    @property
+    def member_id(self) -> int: ...         # stable 0-based position in the source archive,
+                                            #   assigned at registration; identity for de-dup/ordering
+
+    def replace(self, **kwargs: Any) -> "ArchiveMember":
+        """Return a *copy* with the given fields changed; never mutates self.
+        Filters use this to sanitize/rename a member without touching the original."""
 ```
 
-**Normalization rules for `name`:**
+There is **no `crc32` field** — integrity lives in `hashes` (e.g. `member.hashes.get("crc32")`);
+`hashes` and `extra` are excluded from `__eq__`. The object is **not hashable**.
+
+**Normalization rules for `name`** (applied in order):
 1. Replace all `\` with `/`.
 2. Strip leading `/` and `./`.
 3. Collapse `//` and `foo/../bar` sequences.
 4. Append `/` for directories if not present.
 5. Never produce an empty string — root dir becomes `"."`.
 
-If normalization would change the meaning of the path (e.g. collapse produces a different logical path), the original is still preserved in `original_name` and a warning is emitted via the standard `logging` module under logger `archivey.normalization`.
+`name` is produced by decoding the stored bytes (using the format's internal encoding
+signal where present, otherwise the resolved/auto-detected `encoding`) and then applying
+the rules above. `raw_name` holds the **verbatim bytes as stored**, before any decode or
+normalization, so the name can be re-decoded losslessly under a different encoding; it is
+`None` only when the format exposes no separate raw form. When normalization changes the
+logical path, a warning is emitted via the `archivey.normalization` logger.
 
 ### 4.5 ArchiveInfo
 
@@ -325,41 +429,97 @@ class ArchiveInfo:
     cost: CostReceipt
 ```
 
+`is_solid` is the canonical solidity flag: the archive is **solid** when decompressing one
+member may require decompressing other members before it (members share a compression
+stream / solid block). It lives here on `ArchiveInfo`; the embedded `CostReceipt` does
+**not** repeat it (it carries `access_cost` and `solid_block_count` instead).
+
 ### 4.6 CostReceipt
+
+The receipt describes three **independent** axes plus a solid-block count.
 
 ```python
 class ListingCost(Enum):
-    O1  = "o1"   # central directory / index present; O(1) regardless of archive size
-    ON  = "on"   # no index; must scan entire stream to enumerate members
+    """How expensive it is to ENUMERATE all members (list names + metadata)."""
+    INDEXED                = "indexed"                # an index / central directory is present;
+                                                      #   listing is O(1) regardless of archive size
+    REQUIRES_SCANNING      = "requires_scanning"      # no index, but members can be enumerated by
+                                                      #   seeking/scanning header-to-header without
+                                                      #   decompressing payload (e.g. uncompressed tar,
+                                                      #   or a RAR with no quick-open record)
+    REQUIRES_DECOMPRESSION = "requires_decompression" # the stream must be decompressed to reach the
+                                                      #   member headers (e.g. a compressed tar)
 
 class AccessCost(Enum):
-    DIRECT = "direct"   # random access to any member without reading others
-    SOLID  = "solid"    # decompressing member N requires decompressing members 0..N-1
+    """How expensive it is to READ one member's data, given the FORMAT layout."""
+    DIRECT = "direct"   # any member can be read without touching other members
+    SOLID  = "solid"    # reading member N may require decompressing earlier members in its block
 
 class StreamCapability(Enum):
-    SEEKABLE     = "seekable"       # source supports arbitrary seeking
-    REPLAY_ONLY  = "replay_only"    # non-seekable; rewinding is impossible
+    """A property of the underlying SOURCE bytes, independent of the format layout."""
+    SEEKABLE     = "seekable"      # the source supports arbitrary seek(); positions can be revisited
+    FORWARD_ONLY = "forward_only"  # non-seekable source (pipe/socket): it cannot be rewound at all.
+                                   #   Re-reading any earlier position requires a brand-new stream.
 
 @dataclass(frozen=True)
 class CostReceipt:
     listing_cost: ListingCost
     access_cost: AccessCost
     stream_capability: StreamCapability
-    is_solid: bool
-    solid_block_count: int | None   # 7z: number of solid blocks (each requires one pass)
+    solid_block_count: int | None   # number of distinct solid blocks (each one decompress pass),
+                                    #   or None when not applicable / unknown. is_solid lives on
+                                    #   ArchiveInfo, not here, to avoid duplicating the flag.
     notes: tuple[str, ...] = ()     # human-readable caveats
 ```
+
+**The three axes are orthogonal and MUST NOT be conflated:**
+
+- `stream_capability` is about the **source byte stream** — can the raw bytes be
+  `seek()`ed? A file on disk is `SEEKABLE`; a socket or pipe is `FORWARD_ONLY`. A
+  `FORWARD_ONLY` source cannot be rewound at all — not even to re-read an earlier member.
+- `access_cost` is about the **format layout** — is member N's data independent
+  (`DIRECT`) or entangled with earlier members in a shared compression stream (`SOLID`)?
+  "Rewinding a decompressed stream costs a re-decompress from the block start" belongs
+  here — it is a consequence of `SOLID` (and `ArchiveInfo.is_solid`), *not* of source
+  seekability.
+- `listing_cost` is about **enumeration** — getting names+metadata for all members.
+
+They compose. Examples:
+
+- **ZIP** on a file: `INDEXED` + `DIRECT` + `SEEKABLE`.
+- **plain `.tar`** on a file: `REQUIRES_SCANNING` + `DIRECT` + `SEEKABLE`.
+- **plain `.tar`** on a pipe: `REQUIRES_SCANNING` + `DIRECT` + `FORWARD_ONLY`.
+- **`.tar.gz`** on a file: `REQUIRES_DECOMPRESSION` + `SOLID` + `SEEKABLE` (the *source*
+  seeks, even though random member access still costs a re-decompress).
+- **7z** solid: `INDEXED` + `SOLID` + `SEEKABLE`, with `solid_block_count` = number of
+  solid folders.
 
 ### 4.7 FormatInfo (detection result)
 
 ```python
+class DetectionConfidence(Enum):
+    CERTAIN  = "certain"    # exact magic-byte match at the expected offset
+    PROBABLE = "probable"   # structural/content probe (inner-tar probe, SFX signature scan)
+    GUESS    = "guess"      # file extension only, no content confirmation
+
 @dataclass(frozen=True)
 class FormatInfo:
     format: ArchiveFormat
-    confidence: float               # 0.0–1.0; magic match = 1.0; extension-only = 0.3
-    detected_by: str                # "magic", "extension", "content_probe"
-    encoding_hint: str | None       # suggested encoding for legacy path fields
+    confidence: DetectionConfidence
+    detected_by: str                # "magic", "extension", "content_probe", "sfx_scan"
+    encoding_hint: str | None       # suggested encoding for member-name fields, from
+                                    #   FORMAT-LEVEL signals only (UTF-8 bit, code-page,
+                                    #   BOM) — never a member scan; None if no signal
+    payload_offset: int = 0         # byte offset of the archive payload; nonzero for SFX
+                                    #   archives behind an executable stub (is-SFX == > 0)
 ```
+
+`confidence` is an enum, not a float, because detection has a few discrete outcomes
+(exact magic, structural probe, extension guess), not a continuous score. `encoding_hint`
+is derived only from **format-level signals** detection can see cheaply; it is `None` when
+the format exposes no such signal, in which case `open_archive()` falls back to its own
+auto-detection/`encoding` handling. `payload_offset > 0` is the SFX indicator; there is no
+separate boolean.
 
 ---
 
@@ -373,6 +533,18 @@ class Intent(Enum):
     SEQUENTIAL = "sequential" # caller promises forward-only iteration; disables index loading
     RANDOM     = "random"     # caller needs random access; library fails fast if impossible
 ```
+
+- `AUTO`: selects the most appropriate mode for the detected format. Indexes (central
+  directories, 7z headers) are loaded when available. For seekable single-stream formats,
+  seek points (the index that makes random access into a compressed stream affordable) are
+  **not** built up front — the library builds them **lazily**, only if the caller actually
+  `seek()`s and only when the backend judges it worthwhile.
+- `SEQUENTIAL`: caller promises forward-only, single-pass iteration; index loading is
+  disabled where possible.
+- `RANDOM`: caller requires random access; the library fails fast at `open_archive()` if
+  the format/source cannot support it. It also signals that random access is expected, so
+  the backend MAY **proactively** build seek points for compressed single-stream formats
+  rather than deferring them.
 
 ### 5.2 ExtractionPolicy
 
@@ -396,6 +568,17 @@ Policy semantics (see §7 for full filter contract):
 | Ownership (uid/gid) strip | yes | no | no |
 | Permission normalize to 644/755 | yes | no | no |
 
+**Relationship to Python's `tarfile` filters.** These policies parallel `tarfile`'s named
+filters (`data`, `tar`, `fully_trusted`) so callers can transfer that mental model, but the
+names differ deliberately because Archivey applies them uniformly across **all** formats,
+not just TAR, and the per-bit transforms are Archivey's own:
+
+| `ExtractionPolicy` | Closest `tarfile` filter | Notable differences |
+|---|---|---|
+| `STRICT` (default) | `data` | Like `data` (blocks unsafe paths/links/special files), and additionally strips execute bits and normalizes permissions to 644/755. Archivey's default; `tarfile`'s default varies by Python version. |
+| `STANDARD` | `tar` | Like `tar` (strips setuid/setgid/sticky and group/other-write intent), but Archivey still drops uid/gid and keeps the universal path-safety checks that `tarfile`'s `tar` filter does not all guarantee. |
+| `TRUSTED` | `fully_trusted` | Applies stored mode and (as root) uid/gid. Unlike `fully_trusted`, Archivey **still enforces** the non-bypassable universal path/symlink/special-file constraints. |
+
 ### 5.3 OverwritePolicy
 
 ```python
@@ -413,25 +596,48 @@ class OverwritePolicy(Enum):
 ArchiveyError(Exception)
 ├── OpenError                   # cannot open / parse the archive header
 │   ├── FormatDetectionError    # could not detect format
-│   └── UnsupportedFormatError  # format detected but no backend available
+│   ├── UnsupportedFormatError  # format detected but no backend available
+│   └── StreamNotSeekableError  # source is non-seekable but this format/backend needs seek
 ├── ReadError                   # error reading a member
 │   ├── CorruptionError         # CRC mismatch, bad data block
 │   ├── TruncatedError          # unexpected EOF
-│   └── EncryptionError         # password required or wrong password
+│   ├── EncryptionError         # password required or wrong password
+│   └── LinkTargetNotFoundError # a symlink/hardlink target is absent from the archive
 ├── WriteError                  # error writing an archive
 ├── ExtractionError             # error extracting a member to disk
 │   └── FilterRejectionError    # safety filter blocked the member
 │       ├── PathTraversalError  # ../ or absolute path
 │       ├── SymlinkEscapeError  # symlink resolves outside dest
 │       └── SpecialFileError    # device node, FIFO, socket
-└── UnsupportedOperationError   # e.g. random access on sequential reader
+├── UnsupportedFeatureError     # recognized but unhandled feature/variant/codec
+│                               #   (e.g. multi-volume, RAR2, BCJ2, unknown coder)
+├── PackageNotInstalledError    # a required optional package or external tool is
+│                               #   absent (codec backend, crypto backend, unrar)
+└── UnsupportedOperationError   # API misuse: operation not valid for this reader's mode
+                                #   (e.g. random access on a sequential reader)
 ```
+
+`UnsupportedFeatureError` and `PackageNotInstalledError` may be raised at open or read
+time, so they are top-level `ArchiveyError` subtypes rather than nested under
+`OpenError`/`ReadError`. `StreamNotSeekableError` is an **open-time** failure (the source
+cannot `seek()` but the chosen format/backend needs one), so it is a subclass of
+`OpenError` — **not** `UnsupportedOperationError`.
+
+**`UnsupportedOperationError` vs `UnsupportedFeatureError` — a deliberate split:**
+- `UnsupportedOperationError` = **API misuse**: the caller asked for something this
+  reader's *mode* does not permit (random access on an `Intent.SEQUENTIAL` reader, writing
+  through a read-only RAR backend, using a closed reader). It is not caused by the
+  archive's contents; the fix is always on the caller's side.
+- `UnsupportedFeatureError` = a **valid archive with a feature Archivey does not
+  implement** (RAR2, BCJ2, an unknown coder, multi-volume): nothing the caller does
+  changes it.
 
 **Requirement:** every `ArchiveyError` must carry:
 - `message: str` — human-readable explanation
 - `source_format: ArchiveFormat | None`
+- `archive_name: str | None` — a name identifying the archive (its path, or a `BinaryIO.name`); `None` for an anonymous stream
 - `member_name: str | None` — the member being processed, if applicable
-- `__cause__` — the original exception (preserved via `raise ... from ...` or `raise ... from exc` pattern)
+- `__cause__` — the original exception (preserved via `raise ... from exc`)
 
 The original traceback must be attached and surfaced by default `traceback.print_exc()` calls. Libraries must never swallow the original exception.
 
@@ -485,10 +691,10 @@ These limits apply only during `extract` / `extract_all`. `read()` and `open()` 
 
 1. Read up to `DETECTION_LIMIT` bytes (default 4 096 bytes) from the source.
 2. Match against the magic-byte table (exact offsets, no heuristics).
-3. On a match: return `FormatInfo(confidence=1.0, detected_by="magic")`.
-4. On no match: attempt extension-based guess if source is a `Path`; return `confidence=0.3, detected_by="extension"`.
+3. On a match: return `FormatInfo(confidence=DetectionConfidence.CERTAIN, detected_by="magic")`.
+4. On no match: attempt extension-based guess if source is a `Path`; return `confidence=DetectionConfidence.GUESS, detected_by="extension"`.
 5. On conflict between magic and extension: magic wins; a `logging.WARNING` is emitted.
-6. The first `DETECTION_LIMIT` bytes are **never** discarded — seekable streams are `seek(0)`'d back; non-seekable streams use a `PeekableStream` wrapper that replays the buffered bytes transparently.
+6. The bytes read during detection are **never** discarded — seekable streams are `seek(0)`'d back; for non-seekable streams `open_archive()` (not `detect_format()`) supplies a `PeekableStream` wrapper that replays the buffered bytes transparently.
 
 ### 8.2 Magic byte table
 
@@ -510,10 +716,24 @@ These limits apply only during `extract` / `extract_all`. `read()` and `open()` 
 
 ### 8.3 Non-seekable stream handling
 
+Wrapping a non-seekable source is the **opener's** responsibility, not
+`detect_format()`'s, so one wrapper is shared by detection and the backend rather than
+detection consuming bytes the caller can no longer reach. `detect_format()` itself
+consumes nothing: it inspects bytes through `peek()`.
+
+- For **paths and seekable streams**: detection reads via `peek`/`read` and restores the
+  position with `seek(0)`; no wrapper is needed.
+- For **non-seekable streams**: `open_archive()` SHALL wrap the source in a
+  `PeekableStream` **before** running detection and pass that *same* `PeekableStream` to
+  both detection and the backend. (A standalone `detect_format()` on a raw non-seekable
+  stream the caller intends to keep reading must be given a `PeekableStream` by the caller,
+  since an unwrapped non-seekable stream would lose the peeked prefix; `open_archive()`
+  does this internally so high-level callers never wrap by hand.)
+
 `PeekableStream` wraps a non-seekable binary stream:
-- Buffers the first `DETECTION_LIMIT` bytes in memory.
+- Buffers the first `DETECTION_LIMIT` bytes in memory (4 096 by default; 32 774 when ISO detection is triggered).
 - Exposes a `.peek(n)` method returning buffered bytes without consuming them.
-- After format detection, the stream is transparently rewound (the backend reads from the buffer, then from the underlying stream once the buffer is exhausted).
+- Reads drain from the buffer first, then fall through to the underlying stream once the buffer is exhausted, so the backend reads the peeked bytes followed by the rest with no data loss.
 - `PeekableStream` is a `BinaryIO`-compatible object passed through to the backend.
 
 ---
@@ -522,53 +742,82 @@ These limits apply only during `extract` / `extract_all`. `read()` and `open()` 
 
 ### 9.1 Registration
 
-Backends register themselves via `archivey.backends.register(BackendClass)`. Core backends are registered at import time. Optional backends register themselves inside their `try/except ImportError` guard.
+Reading and writing are separate concerns (7z reading is native while writing needs
+`py7zr`; RAR has a reader but no writer), so read and write backends live in **separate
+registries**. Read backends register via `archivey.backends.register_reader(BackendClass)`
+and write backends via `register_writer(BackendClass)`. Core backends register at import
+time; optional, library-backed backends register inside a `try/except ImportError` guard
+so an absent dependency simply makes the format unavailable (it never appears in
+`list_formats()`/`list_writable_formats()`) rather than crashing the import. The native 7z
+and RAR *readers* are always registered (no import guard); RAR member-data reads
+additionally require the system `unrar` binary at runtime.
+
+**Detection owns matching.** `detect_format()` is the single authority for *which format*
+a source is — it owns the central magic table and special-case probes (SFX scan, inner-TAR
+probe, ISO window). Read backends declare their `MAGIC`/`EXTENSIONS` as **data** that the
+detector aggregates; backends have no per-backend `detect(peek)` logic. The registry then
+maps the detected `ArchiveFormat` to a registered backend.
 
 ```python
 # Internal API
 class BackendRegistry:
-    def register(self, backend_cls: type[Backend]) -> None: ...
-    def detect_backend(self, peek: bytes, path: Path | None, intent: Intent) -> type[Backend]: ...
-    def get_writer_backend(self, format: ArchiveFormat) -> type[Backend]: ...
-    def list_formats(self) -> list[ArchiveFormat]: ...  # only available formats
+    # read side
+    def register_reader(self, backend_cls: type[ReadBackend]) -> None: ...
+    def reader_for_format(self, format: ArchiveFormat) -> type[ReadBackend]: ...
+    # write side (separate registry of write backends)
+    def register_writer(self, backend_cls: type[WriteBackend]) -> None: ...
+    def writer_for_format(self, format: ArchiveFormat) -> type[WriteBackend]: ...
+    # availability
+    def list_formats(self) -> list[ArchiveFormat]: ...          # readable formats available now
+    def list_writable_formats(self) -> list[ArchiveFormat]: ...
 ```
 
-### 9.2 Backend ABC
+If detection yields a format with no registered (available) read backend, the system
+raises `UnsupportedFormatError` with an install hint. A format with no registered write
+backend is unwritable: `create()` raises `UnsupportedOperationError` (for native-read-only
+RAR) or `UnsupportedFormatError` with an install hint (for 7z without `[7z-write]`).
+
+### 9.2 ReadBackend / WriteBackend ABCs
+
+Two abstract base classes — `ReadBackend` and `WriteBackend` — rather than one `Backend`
+with an optional write method. A format may have a reader, a writer, both, or (RAR) only a
+reader.
 
 ```python
-class Backend(ABC):
-    FORMAT: ArchiveFormat              # primary format
-    FORMATS: tuple[ArchiveFormat, ...]  # all formats this backend handles
-    EXTENSIONS: tuple[str, ...]
-    MAGIC: bytes
-    MAGIC_OFFSET: int = 0
-    REQUIRES_SEEK: bool = False        # if True, non-seekable streams are rejected
-    SUPPORTS_WRITE: bool = False
-    OPTIONAL_DEPENDENCY: str | None = None  # e.g. "py7zr"
-
-    @classmethod
-    def detect(cls, peek: bytes) -> bool:
-        """Return True if peek bytes match this format's magic."""
-        ...
+class ReadBackend(ABC):
+    FORMATS: tuple[ArchiveFormat, ...]      # formats this backend reads
+    EXTENSIONS: tuple[str, ...]             # declared as data for the detector
+    MAGIC: tuple[tuple[int, bytes], ...]    # (offset, bytes) pairs, consumed by the detector
+    REQUIRES_SEEK: bool = False             # if True, non-seekable sources are rejected
+    OPTIONAL_DEPENDENCY: str | None = None  # e.g. "pycdlib"
 
     @abstractmethod
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: Path | BinaryIO,            # a PeekableStream for non-seekable sources
         intent: Intent,
         password: bytes | None,
-        encoding: str,
+        encoding: str | None,
     ) -> ArchiveReader: ...
 
+class WriteBackend(ABC):
+    FORMATS: tuple[ArchiveFormat, ...]      # formats this backend writes
+    OPTIONAL_DEPENDENCY: str | None = None  # e.g. "py7zr" for 7z write
+
+    @abstractmethod
     def open_write(
         self,
         dest: Path | BinaryIO,
         compression: CompressionSpec | None,
         password: bytes | None,
-        encoding: str,
-    ) -> ArchiveWriter:
-        raise UnsupportedOperationError(f"{self.FORMAT} write not supported")
+        encoding: str | None,
+    ) -> ArchiveWriter: ...
 ```
+
+Each backend is a **stateless factory**: it holds no per-archive state, so multiple readers
+can be open simultaneously from one backend class. When a `REQUIRES_SEEK` backend is given a
+non-seekable source, `open_read()` raises `StreamNotSeekableError` (a subclass of
+`OpenError`).
 
 ---
 
@@ -631,79 +880,60 @@ These are presented as a one-member archive. The single member's name is inferre
 
 Member `size` is `None` for GZ (size field is mod-2³² unreliable for >4 GiB); available for BZ2 only after full decompression.
 
-### 10.4 7-Zip (requires `[7z]` extra → `py7zr`)
+### 10.4 7-Zip (native read; write requires `[7z-write]` → `py7zr`)
 
 | Property | Value |
 |----------|-------|
-| Backend dependency | `py7zr` ≥ 0.20 |
-| Listing cost | O(1) — header parsed upfront via `sz.list()` |
+| Backend dependency | **Native** header parser + stdlib `lzma`/`bz2`/`zlib`. PPMd/Deflate64 via `[7z]`; AES decryption via `[crypto]`. |
+| Listing cost | INDEXED — the header block is parsed upfront |
 | Access cost | SOLID (typically); DIRECT only if no solid blocks |
-| Supports write | Yes (via `py7zr`) |
+| Supports write | `[7z-write]` (via `py7zr`) |
 | Requires seek | Yes |
 
-**py7zr push model — no streaming pull.** `py7zr` has no `open(name) -> stream`. The only extraction APIs are `extract(targets=[...], factory=WriterFactory)` and `extractall(factory=WriterFactory)`, which push bytes into `Py7zIO` objects. `reset()` must be called between extractions. The `Py7zIO` objects must be seekable — `py7zr` calls `seek(0)` after each file (as a final rewind; it never reads back), so `BytesIO` and `SpooledTemporaryFile` work; pipes fail.
+7z **reading is native** — a native header parser plus the standard library's
+`lzma`/`bz2`/`zlib` for the common codecs (zero-dependency core). PPMd and Deflate64 are
+available through the `[7z]` extra; AES decryption through `[crypto]`; the BCJ2 coder is
+**detected and rejected** with `UnsupportedFeatureError` rather than mis-decoded. `py7zr` is
+used **only for 7z writing** (`[7z-write]`) and as a test oracle — never for reading.
 
-**Solid archive limitation.** Calling `extract(targets=['c.txt'])` on a solid block `[a, b, c]` still decompresses `a` and `b` — `targets` controls data capture, not decompression work. Therefore calling `_open_member()` naively for each file in a solid block would trigger O(block_files) decompression passes per file = O(N²) total.
+Reading is **streaming**: a solid folder is decompressed progressively, yielding members as
+the decompressed stream is consumed, so peak memory is the decompressor working state plus
+one in-flight chunk — there is **no** per-folder `SpooledTemporaryFile` cache and no
+growing decompressed cache held until `close()`. `solid_block_count` is the number of solid
+folders; `is_solid` reflects whether members share folders. Per-folder codec info is mapped
+to `CompressionAlgo` values; 7z POSIX metadata lives in an optional attribute block (absent
+→ `mode`/`uid`/`gid` are `None`). Deeper internals are specified in `format-7z/spec.md`.
 
-**Lazy per-folder caching.** The backend works around this by extracting an entire solid block the first time any member from it is requested, then caching all members:
-
-```
-first open(a):  → extract_folder(folder_0)  [decompresses a, b, c]  → cache all three
-     open(b):  → cache hit                   [O(1), from SpooledTemporaryFile]
-     open(c):  → cache hit                   [O(1)]
-first open(d):  → extract_folder(folder_1)  [decompresses d, e]
-```
-
-This gives O(1) decompression passes per solid block regardless of access pattern. For sequential `for member in ar: ar.open(member)`, total decompression cost is O(number_of_solid_blocks), not O(N). Memory peak = size of the largest single solid block uncompressed (spilled to disk via `SpooledTemporaryFile` above 64 MiB threshold).
-
-Folder-to-file mapping is available from py7zr internals: each `FileInfo` dict has a `"folder"` key pointing to its `Folder` object; files in the same solid block share the same `Folder` instance. `SubstreamsInfo.num_unpackstreams_folders[i]` gives the file count per folder.
-
-**`_open_member()` — lazy folder cache:** check `_folder_cache[folder]`; on miss, call `sz.extract(targets=all_files_in_folder, factory=SpooledFactory()); sz.reset()`; on hit, `buf.seek(0); return buf`. Cache entries are never evicted — memory grows until `close()`.
-
-**`_iter_with_data()` — bounded memory path:** iterates folders one at a time. Extracts one folder, yields all its members with streams, then drops the folder's `SpooledTemporaryFile`s before moving to the next folder. Used by `stream_members()`.
-
-**Solid blocks in CostReceipt:** `solid_block_count` from `archiveinfo().blocks`. `is_solid` from `archiveinfo().solid`.
-
-**Compression chain:** `archiveinfo().method_names` (e.g. `['LZMA2', 'BCJ']`) is archive-level; per-folder codec info is available from `Folder.coders`. Mapped to `CompressionAlgo` values.
-
-**POSIX metadata:** 7z stores POSIX metadata in an optional attribute block. If absent, `mode`, `uid`, `gid` are `None`.
-
-### 10.5 RAR (requires `[rar]` extra → `rarfile` + system `unrar`)
+### 10.5 RAR (native metadata read; member data via system `unrar`)
 
 | Property | Value |
 |----------|-------|
-| Backend dependency | `rarfile` ≥ 4.0 (requires `unrar` binary on PATH) |
-| Listing cost | O(1) — central directory parsed upfront |
+| Backend dependency | **Native** RAR3/RAR5 metadata parser + the external `unrar` binary for member-data decompression. Encrypted RAR5 headers decrypted via `[crypto]`. |
+| Listing cost | INDEXED — metadata parsed upfront (REQUIRES_SCANNING when no quick-open record) |
 | Access cost | SOLID if solid archive; DIRECT otherwise |
 | Supports write | No — RAR is proprietary; read-only |
 | Requires seek | Yes |
 
-**rarfile pull model.** `rarfile.RarFile.open(name)` returns a `RarExtFile` (`RawIOBase`) — a true pull-based stream. For non-solid archives, `rarfile` uses the "hack": it extracts just the target member's compressed bytes into a temp mini-archive and runs `unrar` on that. This is O(member_size) per call.
+RAR **metadata is read by a native RAR3/RAR5 parser** (no `rarfile`); encrypted RAR5
+headers are decrypted natively via `[crypto]`, so **listing** works without any external
+tool. Member-**data** decompression is delegated to the external `unrar` binary; a data read
+without `unrar` raises a clear `PackageNotInstalledError` naming the missing tool. `rarfile`
+is only a test oracle.
 
-**Solid archive limitation.** For solid archives, the hack is disabled (`_must_disable_hack()` returns `True`). Every `open()` call runs `unrar` on the full archive from the start. Critically, **`rarfile.extractall()` does not batch-extract** — it calls `open()` once per file internally, spawning a separate `unrar` subprocess for each. Iterating N members of a solid RAR is O(N) subprocess invocations, each processing the full archive — O(N × archive_size) total decompression work.
-
-**Solid RAR workaround — one-shot extraction.** The backend detects solid archives on open and runs the external tool once to extract everything to a `TemporaryDirectory`:
-
-```python
-# subprocess.run(['unrar', 'e', '-inul', archive_path, tmpdir + '/'])
-#   → one invocation, all files extracted, O(archive_size) total work
-```
-
-`_open_member()` for solid archives returns `open(tmpdir / member_relative_path, 'rb')`. The `TemporaryDirectory` is cleaned up in `close()`. Disk space required = uncompressed archive size.
-
-**Non-solid RAR:** uses `rarfile.open()` directly (the hack path, per-file subprocess, O(member_size)).
-
-**No solid block boundary API.** rarfile does not expose which files belong to the same compression block. The solid/non-solid split is binary per archive, not per block.
-
-**`_iter_with_data()` — solid RAR bounded path:** same one-shot `unrar x` extraction as `_open_member()` uses, but the tmpdir cleanup happens at the end of `stream_members()` iteration rather than at `close()`. For `_open_member()`, the cache persists; for `_iter_with_data()`, disk is freed as soon as the caller finishes iterating. In practice both paths run `unrar` once, so the distinction is about disk lifetime, not subprocess count.
+Solid-archive member access **streams**: the decompressed stream is consumed progressively,
+with bounded memory, the same way `stream_members()` works for other solid formats — no
+one-shot `unrar`-to-tempdir extraction and no per-file subprocess fan-out. Deeper internals
+(volume joining, RAR3 vs RAR5 details) are in `format-rar/spec.md`.
 
 **RAR4 vs RAR5 timestamp handling:**
 - RAR4: stores local wall-clock time → naive `datetime`.
 - RAR5: stores UTC with sub-second precision → timezone-aware `datetime`.
 
-**Link handling:** RAR5 stores hardlinks and file-copies via the `file_redir` field. `rarfile` automatically follows `RAR5_XREDIR_HARD_LINK` and `RAR5_XREDIR_FILE_COPY` redirects inside `open()`, transparently returning the source file's data. Symlinks (`RAR5_XREDIR_UNIX_SYMLINK`) are stored with the link target path as the content; the ABC-level link-following described in §3.2 handles these uniformly across formats.
+**Link handling:** RAR5 stores hardlinks/file-copies and symlinks via the redirect field.
+The ABC-level link-following described in §3.2 resolves all of these uniformly across
+formats; the native parser surfaces the link type and target.
 
-**Header encryption (RAR5):** `ArchiveInfo.is_encrypted = True`; listing requires password.
+**Header encryption (RAR5):** `ArchiveInfo.is_encrypted = True`; listing requires the password.
 
 ### 10.6 ISO 9660 (requires `[iso]` extra → `pycdlib`)
 
@@ -719,7 +949,7 @@ Folder-to-file mapping is available from py7zr internals: each `FileInfo` dict h
 
 ### 10.7 Directory
 
-A plain filesystem directory is treated as a zero-cost pseudo-archive: `ListingCost.O1`, `AccessCost.DIRECT`, fully seekable. Useful for conversion pipelines where the "source" is an existing directory.
+A plain filesystem directory is treated as a zero-cost pseudo-archive: `ListingCost.INDEXED`, `AccessCost.DIRECT`, fully seekable. Useful for conversion pipelines where the "source" is an existing directory.
 
 ---
 
@@ -727,27 +957,49 @@ A plain filesystem directory is treated as a zero-cost pseudo-archive: `ListingC
 
 ### 11.1 CompressionSpec
 
+The `algo` field is **nullable** (`None` = let the backend choose the algorithm appropriate
+for the format and level), and `level` accepts either a numeric value **or** a
+format-agnostic `CompressionLevel` enum, so callers can ask for relative effort without
+knowing a format's numeric scale.
+
 ```python
+class CompressionLevel(Enum):
+    STORE   = "store"     # no compression
+    FAST    = "fast"      # fastest meaningful compression
+    DEFAULT = "default"   # the backend's balanced default
+    MAX     = "max"       # maximum compression the algorithm offers
+
 @dataclass
 class CompressionSpec:
-    algo: CompressionAlgo = CompressionAlgo.DEFLATE
-    level: int | None = None   # None = library default
+    algo: CompressionAlgo | None = None                 # None = backend auto-selects
+    level: int | CompressionLevel = CompressionLevel.DEFAULT
 
 # Convenience constants:
-CompressionSpec.STORED    = CompressionSpec(algo=CompressionAlgo.STORED)
-CompressionSpec.DEFLATE   = CompressionSpec(algo=CompressionAlgo.DEFLATE, level=6)
-CompressionSpec.DEFLATE_MAX = CompressionSpec(algo=CompressionAlgo.DEFLATE, level=9)
-CompressionSpec.LZMA      = CompressionSpec(algo=CompressionAlgo.LZMA2, level=6)
+CompressionSpec.STORED      = CompressionSpec(algo=CompressionAlgo.STORED)
+CompressionSpec.DEFLATE     = CompressionSpec(algo=CompressionAlgo.DEFLATE, level=6)
+CompressionSpec.DEFLATE_MAX = CompressionSpec(algo=CompressionAlgo.DEFLATE, level=CompressionLevel.MAX)
+CompressionSpec.LZMA        = CompressionSpec(algo=CompressionAlgo.LZMA2, level=CompressionLevel.DEFAULT)
 ```
+
+**Resolution table** (how `(algo, level)` is resolved by the backend). `compression=None` at
+`create()`/`add_*` is equivalent to `CompressionSpec(algo=None, level=DEFAULT)`.
+
+| `algo` | `level` | Behavior |
+|--------|---------|----------|
+| `None` | `STORE`/`FAST`/`DEFAULT`/`MAX` | Backend **chooses the algorithm** appropriate for the format and requested effort (a higher level MAY select a different algorithm), then applies that effort. `STORE` selects `STORED`. |
+| `None` | numeric `int` | Backend uses the format's **default algorithm** at the given numeric level. |
+| set | `STORE` | Resolves to `STORED`; the explicit `algo` is overridden and a `logging.WARNING` notes the contradiction. |
+| set | `FAST`/`DEFAULT`/`MAX` | Uses that algorithm, mapping the symbolic level to that algorithm's nearest concrete level. |
+| set | numeric `int` | Uses that algorithm at that numeric level. Out-of-range raises `ValueError` (no silent clamp). |
 
 ### 11.2 Conversion semantics
 
 `writer.add_members(reader)` must:
-1. Iterate `reader` sequentially (respecting `AccessCost.SOLID` naturally).
-2. For each member, call `reader.open(member)` and stream the result into `writer.add_stream(...)`.
-3. Translate the `Member` metadata (name, mode, timestamps) directly — no re-encoding.
+1. Drive `reader.stream_members()` (consuming the source sequentially, respecting solid-archive bounded-memory semantics).
+2. For each yielded `(member, stream)` pair, pipe the data stream into the writer.
+3. Translate the `ArchiveMember` metadata (name, mode, timestamps) directly — no re-encoding.
 4. Skip members with types unsupported by the target format, emitting `logging.WARNING`.
-5. Not buffer the entire member data in memory; use a configurable chunk size (default: 1 MiB).
+5. Not buffer the full archive in memory; pipe at a configurable chunk size (default: 1 MiB).
 
 ---
 
@@ -756,7 +1008,7 @@ CompressionSpec.LZMA      = CompressionSpec(algo=CompressionAlgo.LZMA2, level=6)
 ```python
 @dataclass
 class ExtractionProgress:
-    member: Member
+    member: ArchiveMember
     bytes_written: int
     total_bytes_estimated: int | None   # None if archive has no size info
     members_done: int
@@ -764,7 +1016,7 @@ class ExtractionProgress:
 
 @dataclass
 class ExtractionResult:
-    member: Member
+    member: ArchiveMember
     path: Path | None           # None if skipped
     status: ExtractionStatus    # EXTRACTED, SKIPPED, REJECTED
 
@@ -793,7 +1045,7 @@ The library never configures handlers or levels — that is left entirely to the
 
 ### 14.1 Equivalence matrix
 
-The test suite must demonstrate that extracting a canonical directory structure (files, symlinks, nested dirs, empty dirs, filenames with unicode and spaces) produces **identical** `Member` objects from ZIP, TAR, 7z, RAR, and ISO sources (modulo documented format limitations). Equivalence is defined as field-by-field equality excluding `sequence`, `original_name`, `compressed_size`, and `extra`.
+The test suite must demonstrate that extracting a canonical directory structure (files, symlinks, nested dirs, empty dirs, filenames with unicode and spaces) produces **identical** `ArchiveMember` objects from ZIP, TAR, 7z, RAR, and ISO sources (modulo documented format limitations). Equivalence is defined as field-by-field equality excluding `raw_name`, `compressed_size`, `hashes`, and `extra`.
 
 ### 14.2 Adversarial corpus
 
@@ -829,7 +1081,7 @@ import archivey
 archivey.extract("untrusted.zip", "/safe/output/")
 
 # Inspect members before deciding to extract
-with archivey.open("archive.tar.gz") as ar:
+with archivey.open_archive("archive.tar.gz") as ar:
     print(ar.info)                      # format, solid, cost receipt
     for member in ar:
         print(member.name, member.size, member.type)
@@ -837,13 +1089,13 @@ with archivey.open("archive.tar.gz") as ar:
 
 ### 15.2 Computing file hashes without writing to disk
 
-Use `stream_members()` — it yields `(member, stream)` pairs in a single pass with bounded memory. Each solid block is decompressed once and released before the next starts.
+Use `stream_members()` — it yields `(member, stream)` pairs in a single pass with bounded memory. Decompression is streaming: a solid block is decompressed progressively as its members are consumed, so peak memory is the decompressor state plus one in-flight chunk.
 
 ```python
 import archivey
 import hashlib
 
-with archivey.open("archive.7z") as ar:
+with archivey.open_archive("archive.7z") as ar:
     for member, f in ar.stream_members():
         if member.type != archivey.MemberType.FILE:
             continue
@@ -855,14 +1107,14 @@ with archivey.open("archive.7z") as ar:
 
 The same pattern works for any per-file sequential processing: MIME-type sniffing, line counting, full-text indexing, virus scanning.
 
-`ar.open(member)` in a `for member in ar` loop also works and is correct, but for solid archives it holds all previously-extracted block data in memory until `close()`. Use `open()` when you need random access or may revisit members; use `stream_members()` when you're doing a single sequential pass.
+`ar.open(member)` in a `for member in ar` loop also works and is correct, but on a solid archive each `open()` re-decompresses the member's block from its start (emitting a `logging.WARNING`) — no growing cache is held, but the CPU cost adds up. Use `open()` when you need random access or may revisit members; use `stream_members()` when you're doing a single sequential pass.
 
 ### 15.3 Opening a symlink or hardlink
 
 `open()` and `read()` transparently follow links that point to other members in the same archive, regardless of format. This mirrors `tarfile.extractfile()` behavior.
 
 ```python
-with archivey.open("archive.tar") as ar:
+with archivey.open_archive("archive.tar") as ar:
     # Suppose the archive contains:
     #   data/v1.0/report.txt  (regular file)
     #   data/latest           (symlink -> v1.0/report.txt)
@@ -874,30 +1126,28 @@ with archivey.open("archive.tar") as ar:
     content_c = ar.read("data/also-latest")   # follows hardlink
     assert content_a == content_b == content_c
 
-    # The Member object itself still reflects the link type:
+    # The ArchiveMember object itself still reflects the link type:
     link_member = ar["data/latest"]
     assert link_member.type == archivey.MemberType.SYMLINK
     assert link_member.link_target == "v1.0/report.txt"
 ```
 
-If a link's target is not present in the archive (e.g. an external symlink), `open()` raises `ReadError`.
+If a link's target is not present in the archive (e.g. an external symlink), `open()` raises `LinkTargetNotFoundError`. Link chains are followed recursively with cycle detection (a revisited member raises `ReadError`); there is no fixed depth limit.
 
 ### 15.4 Format conversion (streaming, no intermediate file)
 
 ```python
 import archivey
 
-# Convert tar.gz to zip — add_members() uses stream_members() internally
-with archivey.open("input.tar.gz") as reader, \
+# Convert tar.gz to zip — add_members() drives stream_members() internally
+with archivey.open_archive("input.tar.gz") as reader, \
      archivey.create("output.zip") as writer:
     writer.add_members(reader)
 
-# Filter during conversion — explicit stream_members() loop:
-with archivey.open("input.tar.gz") as reader, \
+# Select + filter during conversion in one streaming pass, no reopen:
+with archivey.open_archive("input.tar.gz") as reader, \
      archivey.create("output.zip") as writer:
-    for member, stream in reader.stream_members():
-        if member.name.endswith(".py"):
-            writer.add_stream(stream, name=member.name, modified=member.modified)
+    writer.add_members(reader.stream_members(lambda m: m.name.endswith(".py")))
 ```
 
 `add_members()` internally calls `reader.stream_members()`, so it gets the bounded-memory path for solid archives automatically.
@@ -908,10 +1158,10 @@ with archivey.open("input.tar.gz") as reader, \
 import archivey
 from archivey import AccessCost
 
-with archivey.open("mystery.7z") as ar:
+with archivey.open_archive("mystery.7z") as ar:
     if ar.cost.access_cost == AccessCost.SOLID:
         # Solid archive: use stream_members() for bounded memory.
-        # Random access via open() works but cache grows until close().
+        # Random access via open() works but re-decompresses each member's block.
         print(f"Solid: {ar.cost.solid_block_count} block(s). Using stream_members().")
         for member, stream in ar.stream_members():
             process(member, stream)
@@ -936,7 +1186,7 @@ with archivey.create("report.zip") as writer:
         writer.add_stream(f, name="data/large.bin", size=os.path.getsize("large_data.bin"))
 
     # From the filesystem (recursively)
-    writer.add("src/", name="source/")
+    writer.add_file("src/", name="source/")
 ```
 
 ---
@@ -946,7 +1196,7 @@ with archivey.create("report.zip") as writer:
 These were considered and deliberately excluded from v1:
 
 - **In-place modification:** Archive append/update is architecturally incompatible with ZIP and 7z and adds significant complexity. Omitted.
-- **Encryption write for 7z/RAR:** RAR write is proprietary; 7z encryption via `py7zr` may be added as `[7z]` extra feature.
+- **Encryption write for 7z/RAR:** RAR write is proprietary; 7z encryption write via `py7zr` may be added as a `[7z-write]` feature.
 - **Native sparse file extraction:** Sparse file support in TAR is detected and flagged but extracted as dense files to avoid cross-platform filesystem complexity.
 - **NTFS junction recreation on non-Windows:** Junction points are presented as `MemberType.SYMLINK` with `extra["zip.is_junction"] = True` but recreated only on Windows.
 - **Multi-volume archives:** `ArchiveInfo.is_multivolume = True` is reported, but joining volumes is left to the caller.
