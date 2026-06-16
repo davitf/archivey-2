@@ -13,7 +13,7 @@ The system SHALL expose the following cost and capability properties for every o
 | Property | Value |
 |----------|-------|
 | Backend dependency | `tarfile` (stdlib) |
-| Listing cost | O(N) — no central directory; must scan entire stream to enumerate members |
+| Listing cost | No central directory: `REQUIRES_DECOMPRESSION` for compressed tars (must inflate to reach headers), `REQUIRES_SCANNING` for plain `.tar` (walk 512-byte headers, no decompress) |
 | Access cost | SOLID for `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`; DIRECT for plain `.tar` |
 | Supports write | Yes |
 | Requires seek | No (streaming mode) |
@@ -21,16 +21,16 @@ The system SHALL expose the following cost and capability properties for every o
 #### Scenario: CostReceipt for compressed TAR
 
 - **WHEN** an archive with format `TAR_GZ`, `TAR_BZ2`, `TAR_XZ`, or `TAR_ZST` is opened
-- **THEN** `cost.access_cost` is `AccessCost.SOLID` and `cost.listing_cost` is `ListingCost.ON`
+- **THEN** `cost.access_cost` is `AccessCost.SOLID` and `cost.listing_cost` is `ListingCost.REQUIRES_DECOMPRESSION`
 
 #### Scenario: CostReceipt for plain TAR
 
 - **WHEN** an archive with format `TAR` (plain, uncompressed) is opened
-- **THEN** `cost.access_cost` is `AccessCost.DIRECT` and `cost.listing_cost` is `ListingCost.ON`
+- **THEN** `cost.access_cost` is `AccessCost.DIRECT` and `cost.listing_cost` is `ListingCost.REQUIRES_SCANNING`
 
-### Requirement: Map TAR member metadata to the unified Member model
+### Requirement: Map TAR member metadata to the unified ArchiveMember model
 
-The system SHALL map each `TarInfo` entry to a `Member` dataclass using the following field rules:
+The system SHALL map each `TarInfo` entry to a `ArchiveMember` dataclass using the following field rules:
 
 - `mode`: from `TarInfo.mode` (lower 12 bits).
 - `modified`: from `TarInfo.mtime` (Unix timestamp), interpreted as UTC and returned as a timezone-aware `datetime`.

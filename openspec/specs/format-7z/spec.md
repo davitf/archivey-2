@@ -260,7 +260,7 @@ folder packs more than one file.
 ### Requirement: Map compression chain to CompressionMethod
 
 The system SHALL map each folder's natively parsed coder chain to a
-`tuple[CompressionMethod, ...]` on every `Member`, modelling the filter chain in
+`tuple[CompressionMethod, ...]` on every `ArchiveMember`, modelling the filter chain in
 order (e.g. `(CompressionMethod(BCJ), CompressionMethod(LZMA2))`).
 
 #### Scenario: member with a BCJ + LZMA2 filter chain

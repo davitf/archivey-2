@@ -74,13 +74,13 @@ The system SHALL surface member metadata according to the capabilities of the se
 
 - **WHEN** the Joliet namespace is active
 - **THEN** member names preserve case and support up to 64 UCS-2 characters
-- **AND** `Member.mode`, `Member.uid`, and `Member.gid` SHALL be `None`, because Joliet carries no POSIX metadata
+- **AND** `ArchiveMember.mode`, `ArchiveMember.uid`, and `ArchiveMember.gid` SHALL be `None`, because Joliet carries no POSIX metadata
 
 #### Scenario: filename fidelity under plain ISO 9660
 
 - **WHEN** the plain ISO 9660 namespace is active
 - **THEN** member names are upper-case and truncated to 8.3 format (level 1 interoperability)
-- **AND** `Member.mode`, `Member.uid`, and `Member.gid` SHALL be `None`, because plain ISO 9660 carries no POSIX metadata
+- **AND** `ArchiveMember.mode`, `ArchiveMember.uid`, and `ArchiveMember.gid` SHALL be `None`, because plain ISO 9660 carries no POSIX metadata
 
 ---
 

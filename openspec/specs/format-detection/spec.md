@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Archivey can identify the archive format of a source (file path or binary stream) without fully opening it. Detection returns a `FormatInfo` dataclass carrying the detected format, a confidence score, and an encoding hint. Detection never consumes or discards bytes from the source.
+Archivey can identify the archive format of a source (file path or binary stream) without fully opening it. Detection returns a `FormatInfo` dataclass carrying the detected format, a confidence level, and an encoding hint. Detection never consumes or discards bytes from the source.
 
 ## Requirements
 
@@ -19,25 +19,39 @@ archivey.detect_format(
 The return value SHALL be a frozen dataclass:
 
 ```python
+class DetectionConfidence(Enum):
+    CERTAIN  = "certain"    # exact magic-byte match at the expected offset
+    PROBABLE = "probable"   # structural/content probe (inner-tar probe, SFX signature scan)
+    GUESS    = "guess"      # file extension only, no content confirmation
+
 @dataclass(frozen=True)
 class FormatInfo:
     format: ArchiveFormat
-    confidence: float               # 0.0–1.0; magic match = 1.0; extension-only = 0.3
-    detected_by: str                # "magic", "extension", "content_probe"
-    encoding_hint: str | None       # suggested encoding for legacy path fields
+    confidence: DetectionConfidence
+    detected_by: str                # "magic", "extension", "content_probe", "sfx_scan"
+    encoding_hint: str | None       # see below; None when the format gives no signal
     payload_offset: int = 0         # byte offset of the archive payload; nonzero for
-                                    # SFX archives behind an executable stub
+                                    # SFX archives behind an executable stub (is-SFX == payload_offset > 0)
 ```
+
+`confidence` is an enum rather than a float because detection has a few discrete
+outcomes (exact magic, structural probe, extension guess), not a continuous score.
+`encoding_hint` is a **suggested encoding for member-name fields**, derived only from
+**format-level signals** that detection can see cheaply — e.g. a ZIP UTF-8
+general-purpose-bit, a code-page field, or a BOM — **not** from scanning member entries
+(detection does not enumerate members). It is `None` when the format exposes no such
+signal, in which case `open_archive()` falls back to its own auto-detection/`encoding`
+handling. `payload_offset > 0` is the SFX indicator; there is no separate boolean.
 
 #### Scenario: magic byte match
 
 - **WHEN** the source's leading bytes match a known magic pattern
-- **THEN** `detect_format()` returns a `FormatInfo` with `confidence=1.0` and `detected_by="magic"`
+- **THEN** `detect_format()` returns a `FormatInfo` with `confidence=DetectionConfidence.CERTAIN` and `detected_by="magic"`
 
 #### Scenario: extension-only fallback
 
 - **WHEN** the source is a `Path` and no magic byte match is found
-- **THEN** `detect_format()` returns a `FormatInfo` with `confidence=0.3` and `detected_by="extension"`
+- **THEN** `detect_format()` returns a `FormatInfo` with `confidence=DetectionConfidence.GUESS` and `detected_by="extension"`
 
 ---
 
@@ -47,8 +61,8 @@ The system SHALL execute format detection using the following algorithm:
 
 1. Read up to `DETECTION_LIMIT` bytes (default 4 096 bytes) from the source.
 2. Match the bytes against the magic-byte table (exact offsets, no heuristics).
-3. On a match: return `FormatInfo(confidence=1.0, detected_by="magic")`.
-4. On no match: attempt extension-based guess if source is a `Path`; return `confidence=0.3, detected_by="extension"`.
+3. On a match: return `FormatInfo(confidence=DetectionConfidence.CERTAIN, detected_by="magic")`.
+4. On no match: attempt extension-based guess if source is a `Path`; return `confidence=DetectionConfidence.GUESS, detected_by="extension"`.
 
 #### Scenario: unrecognised bytes with no path available
 
@@ -64,7 +78,7 @@ The system SHALL prefer the magic-byte result over the file-extension result whe
 #### Scenario: mismatched extension and magic
 
 - **WHEN** a file named `archive.tar.gz` opens with the 7-Zip magic header `37 7A BC AF 27 1C`
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.SEVEN_Z, confidence=1.0, detected_by="magic")`
+- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.SEVEN_Z, confidence=DetectionConfidence.CERTAIN, detected_by="magic")`
 - **AND** a `logging.WARNING` is emitted noting the conflict between magic and extension
 
 ---
@@ -90,12 +104,12 @@ The system SHALL recognise the following formats by inspecting bytes at the spec
 #### Scenario: ZIP standard local file header
 
 - **WHEN** the source begins with bytes `50 4B 03 04`
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.ZIP, confidence=1.0, detected_by="magic")`
+- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.ZIP, confidence=DetectionConfidence.CERTAIN, detected_by="magic")`
 
 #### Scenario: TAR with ustar signature
 
 - **WHEN** the source has bytes `75 73 74 61 72` at offset 257 and the stream is at least 512 bytes long
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.TAR, confidence=1.0, detected_by="magic")`
+- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.TAR, confidence=DetectionConfidence.CERTAIN, detected_by="magic")`
 
 ---
 
@@ -165,7 +179,7 @@ matches at all, per the general detection algorithm.
 
 - **WHEN** the source is a path with extension `.iso` and the stream is at least 32 774 bytes
 - **AND** the bytes `43 44 30 30 31` appear at offset 32 769
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.ISO, confidence=1.0, detected_by="magic")`
+- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.ISO, confidence=DetectionConfidence.CERTAIN, detected_by="magic")`
 
 #### Scenario: stream too short for ISO is ruled out, not rejected
 

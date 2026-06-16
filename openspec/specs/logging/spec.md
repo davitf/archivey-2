@@ -15,7 +15,7 @@ The named child loggers are:
 | Logger | Events |
 |---|---|
 | `archivey.detection` | Format detection events |
-| `archivey.normalization` | Path normalization changes (warnings when `name` differs from `original_name`) |
+| `archivey.normalization` | Path normalization changes (warnings when `name` differs from `raw_name`) |
 | `archivey.extraction` | Extraction events and filter decisions |
 | `archivey.backends.*` | Backend-specific debug messages |
 
@@ -31,5 +31,5 @@ The named child loggers are:
 
 #### Scenario: path normalization change logged
 
-- **WHEN** normalizing a member's `name` changes its logical meaning compared to `original_name`
+- **WHEN** normalizing a member's `name` changes its logical meaning compared to `raw_name`
 - **THEN** a warning is emitted via `archivey.normalization`

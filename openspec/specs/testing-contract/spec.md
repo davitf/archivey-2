@@ -2,18 +2,18 @@
 
 ## Purpose
 
-The test suite must verify that all supported formats produce uniform, interchangeable `Member` objects; that adversarial archives are rejected safely; that every writable format round-trips without data loss; and that every streaming backend operates correctly on non-seekable inputs.
+The test suite must verify that all supported formats produce uniform, interchangeable `ArchiveMember` objects; that adversarial archives are rejected safely; that every writable format round-trips without data loss; and that every streaming backend operates correctly on non-seekable inputs.
 
 ## Requirements
 
 ### Requirement: Equivalence matrix across formats
 
-The system SHALL produce identical `Member` objects from ZIP, TAR, 7z, RAR, and ISO sources when reading a canonical directory structure (files, symlinks, nested directories, empty directories, filenames with unicode and spaces). Equivalence is defined as field-by-field equality excluding `sequence`, `original_name`, `compressed_size`, `hashes`, and `extra`. Format-specific limitation flags (`ArchiveFormatFeatures`) encode per-format expected deviations and are used by the assertion helper to limit the comparison to the fields each format can faithfully represent.
+The system SHALL produce identical `ArchiveMember` objects from ZIP, TAR, 7z, RAR, and ISO sources when reading a canonical directory structure (files, symlinks, nested directories, empty directories, filenames with unicode and spaces). Equivalence is defined as field-by-field equality excluding `sequence`, `raw_name`, `compressed_size`, `hashes`, and `extra`. Format-specific limitation flags (`ArchiveFormatFeatures`) encode per-format expected deviations and are used by the assertion helper to limit the comparison to the fields each format can faithfully represent.
 
 #### Scenario: same canonical structure, multiple formats
 
 - **WHEN** the same canonical directory structure is archived into ZIP, TAR, 7z, RAR, and ISO
-- **THEN** the `Member` objects produced by reading each archive are equal on all fields except `sequence`, `original_name`, `compressed_size`, and `extra`
+- **THEN** the `ArchiveMember` objects produced by reading each archive are equal on all fields except `sequence`, `raw_name`, `compressed_size`, and `extra`
 - **AND** any per-format field limitations are captured in `ArchiveFormatFeatures` flags rather than silently excluded from the comparison
 
 ### Requirement: Adversarial corpus coverage

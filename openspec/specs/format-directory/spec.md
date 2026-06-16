@@ -8,15 +8,15 @@ A plain filesystem directory is presented as a zero-cost pseudo-archive through 
 
 ### Requirement: Present a filesystem directory as a zero-cost pseudo-archive
 
-The system SHALL open a plain filesystem directory as an `ArchiveReader` with `ArchiveFormat.DIRECTORY`. All files and subdirectories under the given path are enumerated as `Member` objects, preserving their filesystem metadata (mode, timestamps, uid, gid). The directory reader is fully seekable and supports direct random access to any member.
+The system SHALL open a plain filesystem directory as an `ArchiveReader` with `ArchiveFormat.DIRECTORY`. All files and subdirectories under the given path are enumerated as `ArchiveMember` objects, preserving their filesystem metadata (mode, timestamps, uid, gid). The directory reader is fully seekable and supports direct random access to any member.
 
 #### Scenario: Directory opened as ArchiveReader
 
 - **WHEN** `archivey.open_archive(some_directory_path)` is called and the path is a directory
 - **THEN** the returned reader has `format == ArchiveFormat.DIRECTORY`
-- **AND** iterating the reader yields one `Member` per file and subdirectory found under the path
+- **AND** iterating the reader yields one `ArchiveMember` per file and subdirectory found under the path
 
-#### Scenario: Member metadata reflects filesystem state
+#### Scenario: ArchiveMember metadata reflects filesystem state
 
 - **WHEN** a directory is opened as an archive
 - **THEN** each member's `mode`, `modified`, `uid`, `gid`, `uname`, and `gname` fields are populated from the corresponding filesystem attributes of the underlying path
@@ -36,7 +36,7 @@ The system SHALL expose the following cost and capability properties for every o
 #### Scenario: CostReceipt on open
 
 - **WHEN** a directory path is opened with `archivey.open_archive()`
-- **THEN** `cost.listing_cost` is `ListingCost.O1`, `cost.access_cost` is `AccessCost.DIRECT`, and `cost.stream_capability` is `StreamCapability.SEEKABLE`
+- **THEN** `cost.listing_cost` is `ListingCost.INDEXED`, `cost.access_cost` is `AccessCost.DIRECT`, and `cost.stream_capability` is `StreamCapability.SEEKABLE`
 
 ### Requirement: Support use in conversion pipelines
 

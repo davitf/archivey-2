@@ -17,9 +17,9 @@ class Intent(Enum):
     RANDOM     = "random"     # caller needs random access; library fails fast if impossible
 ```
 
-- `Intent.AUTO`: the library selects the most appropriate mode for the detected format. Index structures (central directories, 7z headers) are loaded when available.
+- `Intent.AUTO`: the library selects the most appropriate mode for the detected format. Index structures (central directories, 7z headers) are loaded when available. For seekable single-stream formats, seek points (the index that makes random access into a compressed stream affordable) are **not** built up front; the library builds them **lazily** — only if the caller actually `seek()`s, and only when the backend judges it worthwhile.
 - `Intent.SEQUENTIAL`: the caller promises forward-only, single-pass iteration. The library MUST disable index loading where possible, avoiding the upfront cost of scanning or parsing a central directory. Random-access operations (`__getitem__`, `get`, random `extract`) are disabled on sequential readers unless the backend can satisfy them cheaply via an already-loaded in-memory index.
-- `Intent.RANDOM`: the caller requires random member access. The library SHALL fail fast at `open_archive()` time if the format or source cannot support random access (e.g. a non-seekable stream for a format that requires seek).
+- `Intent.RANDOM`: the caller requires random member access. The library SHALL fail fast at `open_archive()` time if the format or source cannot support random access (e.g. a non-seekable stream for a format that requires seek). It also signals that random access is expected, so the backend MAY **proactively** build seek points for compressed single-stream formats rather than deferring them.
 
 #### Scenario: AUTO intent on an indexed format
 
@@ -64,61 +64,89 @@ Additionally, `members()` and `__len__` (which require materializing all members
 
 ### Requirement: Exposing a CostReceipt describing access costs
 
-The system SHALL compute and expose a `CostReceipt` for every opened archive, available via `ar.cost` and embedded in `ar.info.cost`. The receipt SHALL be computed during `open_read()` before any heavy I/O and SHALL describe:
-
-- **listing cost**: whether enumerating all members is O(1) (index present) or O(N) (full stream scan required);
-- **access cost**: whether reading a member requires decompressing only that member (DIRECT) or also all preceding members in the same solid block (SOLID);
-- **stream capability**: whether the source supports arbitrary seeking or is replay-only;
-- **solid-block count**: for solid archives, the number of distinct solid blocks that must each be decompressed separately.
+The system SHALL compute and expose a `CostReceipt` for every opened archive, available via `ar.cost` and embedded in `ar.info.cost`. The receipt SHALL be computed during `open_read()` before any heavy I/O. It is the most subtle part of the API, so each field is defined precisely below; the receipt describes three **independent** axes plus a solid-block count.
 
 ```python
 class ListingCost(Enum):
-    O1  = "o1"   # central directory / index present; O(1) regardless of archive size
-    ON  = "on"   # no index; must scan entire stream to enumerate members
+    """How expensive it is to ENUMERATE all members (list names + metadata)."""
+    INDEXED               = "indexed"               # an index / central directory is present;
+                                                    #   listing is O(1) regardless of archive size
+    REQUIRES_SCANNING     = "requires_scanning"     # no index, but members can be enumerated by
+                                                    #   seeking/scanning header-to-header without
+                                                    #   decompressing payload (e.g. uncompressed tar,
+                                                    #   or a RAR with no quick-open record)
+    REQUIRES_DECOMPRESSION = "requires_decompression" # the stream must be decompressed to reach the
+                                                    #   member headers (e.g. a compressed tar)
 
 class AccessCost(Enum):
-    DIRECT = "direct"   # random access to any member without reading others
-    SOLID  = "solid"    # decompressing member N requires decompressing members 0..N-1
+    """How expensive it is to READ one member's data, given the FORMAT layout."""
+    DIRECT = "direct"   # any member can be read without touching other members
+    SOLID  = "solid"    # reading member N may require decompressing earlier members in its block
 
 class StreamCapability(Enum):
-    SEEKABLE     = "seekable"       # source supports arbitrary seeking
-    REPLAY_ONLY  = "replay_only"    # non-seekable; rewinding is impossible
+    """A property of the underlying SOURCE bytes, independent of the format layout."""
+    SEEKABLE     = "seekable"      # the source supports arbitrary seek(); positions can be revisited
+    FORWARD_ONLY = "forward_only"  # non-seekable source (pipe/socket): it cannot be rewound at all.
+                                   #   Re-reading any earlier position requires a brand-new stream.
 
 @dataclass(frozen=True)
 class CostReceipt:
     listing_cost: ListingCost
     access_cost: AccessCost
     stream_capability: StreamCapability
-    is_solid: bool
-    solid_block_count: int | None   # 7z: number of solid blocks (each requires one pass)
+    solid_block_count: int | None   # number of distinct solid blocks (each one decompress pass),
+                                    #   or None when not applicable / unknown. is_solid lives on
+                                    #   ArchiveInfo, not here, to avoid duplicating the flag.
     notes: tuple[str, ...] = ()     # human-readable caveats
 ```
 
-Each backend computes its `CostReceipt` in `open_read()`. Examples:
+**The three axes are orthogonal and MUST NOT be conflated:**
 
-- **ZIP**: `ListingCost.O1` (EOCD parsed), `AccessCost.DIRECT` (per-member offsets in central directory), `StreamCapability.SEEKABLE`.
-- **TAR.GZ**: `ListingCost.ON` (no central directory), `AccessCost.SOLID` (single gzip stream), `StreamCapability.SEEKABLE` or `REPLAY_ONLY` depending on source.
-- **7z**: `ListingCost.O1` (header block at start), `AccessCost.SOLID` if multiple members share a solid folder, `solid_block_count` from `archiveinfo().blocks`.
+- `stream_capability` is about the **source byte stream** — can the raw bytes be
+  `seek()`ed? A file on disk is `SEEKABLE`; a socket or pipe is `FORWARD_ONLY`. A
+  `FORWARD_ONLY` source cannot be rewound at all — not even to re-read an earlier
+  member — so anything requiring a revisit needs a fresh stream.
+- `access_cost` is about the **format layout** — is member N's data independent
+  (`DIRECT`) or entangled with earlier members in a shared compression stream
+  (`SOLID`)? This is where "rewinding a decompressed stream costs a re-decompress from
+  the block start" belongs — it is a consequence of `SOLID` (and of `ArchiveInfo.is_solid`),
+  *not* of source seekability.
+- `listing_cost` is about **enumeration** — getting names+metadata for all members.
+
+They compose. Examples:
+
+- **ZIP** on a file: `INDEXED` (EOCD/central directory) + `DIRECT` (per-member offsets) + `SEEKABLE`.
+- **plain `.tar`** on a file: `REQUIRES_SCANNING` (walk 512-byte headers, no decompress) + `DIRECT` + `SEEKABLE`.
+- **plain `.tar`** on a pipe: `REQUIRES_SCANNING` + `DIRECT` + `FORWARD_ONLY` (one forward pass only).
+- **`.tar.gz`** on a file: `REQUIRES_DECOMPRESSION` (must inflate to reach headers) + `SOLID` (single gzip stream) + `SEEKABLE` (the *source* seeks, even though random member access still costs a re-decompress).
+- **7z** solid: `INDEXED` (header block at start) + `SOLID` (members share folders) + `SEEKABLE`, with `solid_block_count` = number of solid folders.
 
 #### Scenario: CostReceipt available immediately after open
 
 - **WHEN** an archive is opened successfully
 - **THEN** `ar.cost` is populated without requiring a separate scan or read of member data
 
-#### Scenario: ZIP reports O1 listing cost
+#### Scenario: ZIP reports INDEXED listing cost and DIRECT access
 
 - **WHEN** a ZIP archive is opened
-- **THEN** `ar.cost.listing_cost == ListingCost.O1`
+- **THEN** `ar.cost.listing_cost == ListingCost.INDEXED`
 - **AND** `ar.cost.access_cost == AccessCost.DIRECT`
 
-#### Scenario: TAR.GZ reports ON listing cost and SOLID access
+#### Scenario: compressed tar requires decompression to list and is SOLID
 
 - **WHEN** a `.tar.gz` archive is opened
-- **THEN** `ar.cost.listing_cost == ListingCost.ON`
+- **THEN** `ar.cost.listing_cost == ListingCost.REQUIRES_DECOMPRESSION`
 - **AND** `ar.cost.access_cost == AccessCost.SOLID`
+
+#### Scenario: stream capability reflects the source, not the format
+
+- **WHEN** the same plain `.tar` is opened once from a seekable file and once from a non-seekable pipe
+- **THEN** `ar.cost.stream_capability` is `SEEKABLE` in the first case and `FORWARD_ONLY` in the second
+- **AND** `ar.cost.access_cost` is `DIRECT` in both, because it describes the format layout, not the source
 
 #### Scenario: solid 7z exposes block count
 
 - **WHEN** a solid 7z archive with multiple solid folders is opened
-- **THEN** `ar.cost.is_solid == True`
+- **THEN** `ar.info.is_solid == True`
+- **AND** `ar.cost.access_cost == AccessCost.SOLID`
 - **AND** `ar.cost.solid_block_count` equals the number of distinct solid blocks in the archive

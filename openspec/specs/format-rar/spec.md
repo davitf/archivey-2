@@ -153,18 +153,18 @@ archives.
 
 The system SHALL map timestamps from the native header according to RAR version:
 
-- **RAR4:** local wall-clock time → `Member.modified` is a naive `datetime`.
-- **RAR5:** UTC with sub-second precision → `Member.modified` is a timezone-aware `datetime`.
+- **RAR4:** local wall-clock time → `ArchiveMember.modified` is a naive `datetime`.
+- **RAR5:** UTC with sub-second precision → `ArchiveMember.modified` is a timezone-aware `datetime`.
 
 #### Scenario: RAR4 archive timestamp
 
 - **WHEN** a member's modification time is read from a RAR4 archive
-- **THEN** `Member.modified` is a naive `datetime` representing local wall-clock time
+- **THEN** `ArchiveMember.modified` is a naive `datetime` representing local wall-clock time
 
 #### Scenario: RAR5 archive timestamp
 
 - **WHEN** a member's modification time is read from a RAR5 archive
-- **THEN** `Member.modified` is a timezone-aware UTC `datetime`
+- **THEN** `ArchiveMember.modified` is a timezone-aware UTC `datetime`
 
 ---
 
@@ -227,7 +227,7 @@ raise `PackageNotInstalledError`.
 The native parser SHALL raise `UnsupportedFeatureError` for legacy RAR2 archives
 (extract version ≤ 20) rather than mis-parsing them. (Multi-volume RAR sets ARE
 supported — see the next requirement.) For RAR5 members that carry only a Blake2sp
-hash and no CRC32, `Member.hashes` SHALL contain a `"blake2sp"` entry (bytes) and no
+hash and no CRC32, `ArchiveMember.hashes` SHALL contain a `"blake2sp"` entry (bytes) and no
 `"crc32"` key — never a guessed CRC.
 
 #### Scenario: legacy RAR2 archive

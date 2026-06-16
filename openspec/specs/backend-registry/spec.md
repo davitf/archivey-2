@@ -22,18 +22,21 @@ try:
 except ImportError:
     _PYCDLIB_AVAILABLE = False
 
-class IsoBackend(Backend):
+class IsoReadBackend(ReadBackend):
+    FORMATS = (ArchiveFormat.ISO,)
+    EXTENSIONS = (".iso",)
+    MAGIC = ((32769, b"CD001"),)          # declared as data; the detector matches it
     OPTIONAL_DEPENDENCY = "pycdlib"
-    FORMAT = ArchiveFormat.ISO
+    def open_read(self, source, intent, password, encoding) -> ArchiveReader: ...
 
-    @classmethod
-    def detect(cls, peek: bytes) -> bool:
-        if not _PYCDLIB_AVAILABLE:
-            return False   # don't claim the format if we can't handle it
-        return peek[32769:32774] == b'CD001'
+if _PYCDLIB_AVAILABLE:
+    archivey.backends.register_reader(IsoReadBackend)   # only registered when usable
 ```
 
-Backends register themselves by calling `archivey.backends.register(BackendClass)`.
+Read backends register via `archivey.backends.register_reader(BackendClass)` and write
+backends via `register_writer(BackendClass)`. An optional backend is registered only
+inside its successful-import guard, so an unavailable format never appears in
+`list_formats()`/`list_writable_formats()`.
 
 #### Scenario: core backend available without extras
 
@@ -50,7 +53,7 @@ Backends register themselves by calling `archivey.backends.register(BackendClass
 
 ### Requirement: Backend is a stateless factory
 
-The system SHALL implement each `Backend` subclass as a stateless factory: the class holds no per-archive state. All archive state lives in the `ArchiveReader` or `ArchiveWriter` instance returned by `open_read()` or `open_write()`. This allows multiple readers to be open simultaneously from the same backend class and simplifies testing by making it possible to mock `Backend.open_read()` to return a fake reader.
+The system SHALL implement each `ReadBackend`/`WriteBackend` subclass as a stateless factory: the class holds no per-archive state. All archive state lives in the `ArchiveReader` or `ArchiveWriter` instance returned by `open_read()` or `open_write()`. This allows multiple readers to be open simultaneously from the same backend class and simplifies testing by making it possible to mock `ReadBackend.open_read()` to return a fake reader.
 
 #### Scenario: two simultaneous readers from the same backend
 
@@ -60,82 +63,112 @@ The system SHALL implement each `Backend` subclass as a stateless factory: the c
 
 ---
 
-### Requirement: Backend selection by peek bytes, path, and intent
+### Requirement: Detection owns matching; the registry selects a backend by format
 
-The system SHALL select a backend by calling `BackendRegistry.detect_backend(peek, path, intent)`. The registry iterates registered backends in registration order and returns the first whose `detect(peek)` method returns `True`. If no backend matches the peek bytes and a path is available, the registry may fall back to extension-based matching. If no backend can be found, the system SHALL raise `UnsupportedFormatError`.
+The system SHALL keep **format detection** and **backend selection** as two separate
+steps, rather than having each backend re-run byte matching:
 
-The internal registry API is:
+1. `detect_format()` (the `format-detection` capability) is the single authority for
+   *which format* a source is. It owns the central magic table and all special-case
+   probes (SFX stub scan, inner-TAR probe, ISO extended window). The per-format magic it
+   matches against is **declared as data** by each read backend (`MAGIC`/`MAGIC_OFFSET`/
+   `EXTENSIONS`) and aggregated by the detector — backends do not each re-implement
+   matching logic. Detection inspects bytes through the shared `PeekableStream` (it is
+   passed the peekable/seekable source, not a fixed-size `bytes` snapshot, so probes that
+   need a larger or decompressed window can request more), and consumes nothing.
+2. The registry then maps the detected `ArchiveFormat` to a registered backend.
 
 ```python
 class BackendRegistry:
-    def register(self, backend_cls: type[Backend]) -> None: ...
-    def detect_backend(self, peek: bytes, path: Path | None, intent: Intent) -> type[Backend]: ...
-    def get_writer_backend(self, format: ArchiveFormat) -> type[Backend]: ...
-    def list_formats(self) -> list[ArchiveFormat]: ...  # only available formats
+    # read side
+    def register_reader(self, backend_cls: type[ReadBackend]) -> None: ...
+    def reader_for_format(self, format: ArchiveFormat) -> type[ReadBackend]: ...
+    # write side (separate registry of write backends)
+    def register_writer(self, backend_cls: type[WriteBackend]) -> None: ...
+    def writer_for_format(self, format: ArchiveFormat) -> type[WriteBackend]: ...
+    # availability
+    def list_formats(self) -> list[ArchiveFormat]: ...      # readable formats available now
+    def list_writable_formats(self) -> list[ArchiveFormat]: ...
 ```
 
-#### Scenario: backend selected by magic bytes
+If detection yields a format with no registered (available) read backend, the system
+SHALL raise `UnsupportedFormatError` with the install hint (see graceful degradation).
+If detection itself finds no format, it raises `FormatDetectionError` (see
+`format-detection`).
 
-- **WHEN** `detect_backend()` is called with peek bytes matching the 7-Zip magic (`37 7A BC AF 27 1C`)
-- **THEN** `SevenZBackend` is returned (the native 7z reader is always registered)
+#### Scenario: format mapped to its read backend
 
-#### Scenario: no backend matches
+- **WHEN** `detect_format()` reports `ArchiveFormat.SEVEN_Z` and `reader_for_format(ArchiveFormat.SEVEN_Z)` is called
+- **THEN** the native `SevenZReadBackend` is returned (it is always registered)
 
-- **WHEN** `detect_backend()` is called with peek bytes that match no registered backend and no recognisable extension
-- **THEN** the system raises `UnsupportedFormatError`
+#### Scenario: detected format has no available backend
+
+- **WHEN** detection yields a format whose backend's optional dependency is not installed
+- **THEN** `reader_for_format()` raises `UnsupportedFormatError` naming the missing package and install hint
+
+#### Scenario: source matches no format
+
+- **WHEN** detection matches no magic and no recognisable extension
+- **THEN** `detect_format()` raises `FormatDetectionError` and no backend lookup occurs
 
 ---
 
-### Requirement: Backend ABC contract
+### Requirement: Separate ReadBackend and WriteBackend ABCs
 
-The system SHALL define a `Backend` abstract base class that every backend must subclass. Backends declare their capabilities via class-level attributes and implement the abstract methods below.
+Reading and writing are different concerns with different state, lifecycles, and even
+availability (7z reading is native while writing needs `py7zr`; RAR has no writer at
+all), so the system SHALL define **two** abstract base classes — `ReadBackend` and
+`WriteBackend` — rather than one `Backend` with an optional write method. A format may
+have a read backend, a write backend, both, or (RAR) only a reader. They are registered
+in separate registries.
 
 ```python
-class Backend(ABC):
-    FORMAT: ArchiveFormat              # primary format
-    FORMATS: tuple[ArchiveFormat, ...]  # all formats this backend handles
-    EXTENSIONS: tuple[str, ...]
-    MAGIC: bytes
-    MAGIC_OFFSET: int = 0
-    REQUIRES_SEEK: bool = False        # if True, non-seekable streams are rejected
-    SUPPORTS_WRITE: bool = False
+class ReadBackend(ABC):
+    FORMATS: tuple[ArchiveFormat, ...]      # formats this backend reads
+    EXTENSIONS: tuple[str, ...]             # declared as data for the detector
+    MAGIC: tuple[tuple[int, bytes], ...]    # (offset, bytes) pairs, consumed by the detector
+    REQUIRES_SEEK: bool = False             # if True, non-seekable sources are rejected
     OPTIONAL_DEPENDENCY: str | None = None  # e.g. "pycdlib"
-
-    @classmethod
-    def detect(cls, peek: bytes) -> bool:
-        """Return True if peek bytes match this format's magic."""
-        ...
 
     @abstractmethod
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: Path | BinaryIO,            # a PeekableStream for non-seekable sources
         intent: Intent,
         password: bytes | None,
-        encoding: str,
+        encoding: str | None,
     ) -> ArchiveReader: ...
 
+class WriteBackend(ABC):
+    FORMATS: tuple[ArchiveFormat, ...]      # formats this backend writes
+    OPTIONAL_DEPENDENCY: str | None = None  # e.g. "py7zr" for 7z write
+
+    @abstractmethod
     def open_write(
         self,
         dest: Path | BinaryIO,
         compression: CompressionSpec | None,
         password: bytes | None,
-        encoding: str,
-    ) -> ArchiveWriter:
-        raise UnsupportedOperationError(f"{self.FORMAT} write not supported")
+        encoding: str | None,
+    ) -> ArchiveWriter: ...
 ```
 
-`open_read()` is abstract and must be implemented by every backend. `open_write()` has a default implementation that raises `UnsupportedOperationError`; backends that support writing override it.
+`ReadBackend` declares its magic/extensions as **data** for the central detector (it has
+no `detect(peek)` logic method — matching is centralized; see the detection/selection
+requirement). `WriteBackend` is looked up by format via `writer_for_format()`; a format
+with no registered write backend is unwritable and the attempt raises
+`UnsupportedOperationError` (for native-read-only RAR) or `UnsupportedFormatError` with an
+install hint (for 7z without `[7z-write]`).
 
-#### Scenario: backend with SUPPORTS_WRITE=False called for writing
+#### Scenario: format with no write backend
 
-- **WHEN** `open_write()` is called on a backend whose `SUPPORTS_WRITE` is `False`
+- **WHEN** `archivey.create()` is called for a format that has a read backend but no registered write backend (e.g. RAR)
 - **THEN** `UnsupportedOperationError` is raised with a message naming the format
 
-#### Scenario: backend with REQUIRES_SEEK=True given a non-seekable stream
+#### Scenario: read backend with REQUIRES_SEEK given a non-seekable stream
 
-- **WHEN** `open_read()` is called on a backend whose `REQUIRES_SEEK` is `True` and the source stream does not support `seek()`
-- **THEN** the system raises `OpenError` (or a subclass) indicating that a seekable source is required
+- **WHEN** `open_read()` is invoked for a backend whose `REQUIRES_SEEK` is `True` and the source does not support `seek()`
+- **THEN** the system raises `StreamNotSeekableError` (a subclass of `OpenError`) indicating a seekable source is required
 
 ---
 
@@ -143,7 +176,7 @@ class Backend(ABC):
 
 The system SHALL degrade gracefully when an optional backend dependency is missing: the format is simply unavailable rather than causing an import crash. When a file of that format is subsequently opened, the system SHALL raise `UnsupportedFormatError` with a human-readable message that names the missing package and the install command.
 
-When an ISO file is detected but `pycdlib` is not installed, `BackendRegistry.detect_backend()` raises `UnsupportedFormatError` with a message of the form:
+When an ISO file is detected but `pycdlib` is not installed, `reader_for_format()` raises `UnsupportedFormatError` with a message of the form:
 
 > "ISO 9660 format detected but backend is not installed. Run: pip install archivey[iso]"
 

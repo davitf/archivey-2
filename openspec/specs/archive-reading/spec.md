@@ -17,11 +17,19 @@ archivey.open_archive(
     format: ArchiveFormat | None = None,  # override detection
     intent: Intent = Intent.AUTO,
     password: str | bytes | None = None,
-    encoding: str = "utf-8",             # fallback for legacy non-unicode paths
+    encoding: str | None = None,         # None = auto-detect member-name encoding
 ) -> ArchiveReader
 ```
 
-The `format` parameter MAY be omitted; when omitted the library performs automatic format detection. The `encoding` parameter is used as a fallback for legacy non-unicode path fields in the archive. `source` MAY also be an ordered sequence of files/streams that together form a single multi-volume archive (see the multi-volume requirement below).
+The `format` parameter MAY be omitted; when omitted the library performs automatic
+format detection. `encoding` defaults to `None`, meaning the library auto-detects the
+encoding of member-name fields: it uses the **format's internal signal** when present
+(e.g. the ZIP UTF-8 general-purpose-bit, RAR5 UTF-8 names, tar PAX UTF-8 records), and
+otherwise detects from the raw name bytes. A caller MAY pass an explicit `encoding` as a
+last-resort override when the format records none and detection is unreliable; the
+verbatim bytes are always preserved in `ArchiveMember.raw_name` so names can be
+re-decoded losslessly. `source` MAY also be an ordered sequence of files/streams that
+together form a single multi-volume archive (see the multi-volume requirement below).
 
 #### Scenario: open with auto-detected format
 
@@ -90,7 +98,7 @@ def cost(self) -> CostReceipt: ...
 def format(self) -> ArchiveFormat: ...
 ```
 
-`info` returns an `ArchiveInfo` dataclass (format, version, solid flag, member count, comment, encryption, multivolume status, and cost). `cost` returns a `CostReceipt` describing the listing cost, access cost, stream capability, and solid block count. `format` returns the `ArchiveFormat` enum value for the open archive.
+`info` returns an `ArchiveInfo` dataclass (format, version, solid flag, member count, comment, encryption, multivolume status, and cost). `cost` returns a `CostReceipt` describing the listing cost, access cost, stream capability, and solid block count. `format` returns the `ArchiveFormat` `(container, stream)` value for the open archive.
 
 #### Scenario: access info after open
 
@@ -104,20 +112,20 @@ def format(self) -> ArchiveFormat: ...
 The system SHALL support iterating all members in archive order via `__iter__`, and MAY materialize the full member list via `members()` or `__len__`.
 
 ```python
-def __iter__(self) -> Iterator[Member]: ...     # sequential, in-order
-def members(self) -> list[Member]: ...          # materializes all (may trigger scan)
+def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
+def members(self) -> list[ArchiveMember]: ...          # materializes all (may trigger scan)
 def __len__(self) -> int: ...                   # may trigger scan
 def __contains__(self, name: str) -> bool: ...
 ```
 
-`__iter__` MUST yield `Member` objects one at a time without loading all members into memory. `members()` and `__len__` MAY trigger a full scan for streaming formats that have no central directory. After the member list has been materialized once, subsequent `__iter__` calls MUST return from the cache rather than re-reading the archive.
+`__iter__` MUST yield `ArchiveMember` objects one at a time without loading all members into memory. `members()` and `__len__` MAY trigger a full scan for streaming formats that have no central directory. After the member list has been materialized once, subsequent `__iter__` calls MUST return from the cache rather than re-reading the archive.
 
 When opened with `Intent.SEQUENTIAL`, calling `members()` or `__len__` SHALL raise `UnsupportedOperationError` because those methods require materializing all members.
 
 #### Scenario: forward iteration
 
 - **WHEN** `for member in ar` is executed
-- **THEN** the reader yields `Member` objects in archive order without buffering all of them in memory
+- **THEN** the reader yields `ArchiveMember` objects in archive order without buffering all of them in memory
 
 #### Scenario: materialization on sequential intent
 
@@ -131,8 +139,8 @@ When opened with `Intent.SEQUENTIAL`, calling `members()` or `__len__` SHALL rai
 The system SHALL support dictionary-style lookup of members by normalized name, subject to an intent constraint.
 
 ```python
-def __getitem__(self, name: str) -> Member: ...    # KeyError if absent
-def get(self, name: str, default=None) -> Member | None: ...
+def __getitem__(self, name: str) -> ArchiveMember: ...    # KeyError if absent
+def get(self, name: str, default=None) -> ArchiveMember | None: ...
 ```
 
 Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Intent.SEQUENTIAL` SHALL raise `UnsupportedOperationError` unless the backend can satisfy it cheaply (e.g. the archive has an in-memory index already loaded).
@@ -140,7 +148,7 @@ Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Inten
 #### Scenario: successful key lookup
 
 - **WHEN** `ar["path/to/file.txt"]` is called and the member exists
-- **THEN** the corresponding `Member` object is returned
+- **THEN** the corresponding `ArchiveMember` object is returned
 
 #### Scenario: missing key lookup
 
@@ -159,11 +167,11 @@ Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Inten
 The system SHALL provide two data-access methods: `read()` which returns the full member content as `bytes`, and `open()` which returns a streaming `BinaryIO` that the caller is responsible for closing.
 
 ```python
-def read(self, member: str | Member) -> bytes: ...
-def open(self, member: str | Member) -> BinaryIO: ...   # streaming; caller must close
+def read(self, member: str | ArchiveMember) -> bytes: ...
+def open(self, member: str | ArchiveMember) -> BinaryIO: ...   # streaming; caller must close
 ```
 
-Both methods accept either a member name string or a `Member` object.
+Both methods accept either a member name string or an `ArchiveMember` object.
 
 #### Scenario: reading member as bytes
 
@@ -179,26 +187,59 @@ Both methods accept either a member name string or a `Member` object.
 
 ### Requirement: Bounded-memory sequential streaming via stream_members
 
-The system SHALL provide `stream_members()` which yields `(member, stream)` pairs in archive order with bounded memory: each solid block is decompressed once and its memory released before the next block starts. The yielded stream is only valid until the iterator advances; callers MUST NOT hold it across yields.
+The system SHALL provide `stream_members()` which yields `(member, stream)` pairs in archive order with bounded memory. Decompression is **always streaming**: a solid block is decompressed progressively as its members are consumed, never buffered whole in advance, so peak memory is the decompressor's working state plus one member's in-flight chunk — not a whole block. The yielded stream is only valid until the iterator advances; callers MUST NOT hold it across yields. For non-file members the stream is `None`.
 
 ```python
-def stream_members(self) -> Iterator[tuple[Member, BinaryIO]]: ...
+# Shared vocabulary (also used by extract_all):
+MemberSelector = Collection[ArchiveMember | str] | Callable[[ArchiveMember], bool]
+MemberFilter   = Callable[[ArchiveMember], ArchiveMember | None]  # return a (possibly
+                 #   .replace()'d) member, or None to skip
+
+def stream_members(
+    self,
+    members: MemberSelector | None = None,
+    *,
+    filter: MemberFilter | None = None,
+) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]: ...
 ```
+
+`members` **selects** which members to yield — a collection of members/names, or a
+predicate `Callable[[ArchiveMember], bool]`; `None` yields all. `filter` **sanitizes or
+rewrites** each selected member, returning a possibly-modified copy (via `.replace()`)
+or `None` to skip it. The two parameters mirror `extract_all()` so the same selectors
+and filters work in both places. Streams are opened lazily, so unselected/skipped
+members cost nothing.
 
 **Two sequential access patterns — different memory profiles:**
 
 | Pattern | Memory profile | When to use |
 |---------|---------------|-------------|
-| `for m in ar: ar.open(m)` | Monotonically growing — each solid block is extracted into a cache that persists until `close()`. Peak = sum of all solid blocks accessed. | Random or mixed access; when you may revisit members. |
-| `for m, f in ar.stream_members()` | Bounded — each solid block is extracted, yielded, then released before the next starts. Peak = largest single solid block. | Sequential one-pass processing: hashing, conversion, scanning. |
+| `for m, f in ar.stream_members()` | Bounded and small — streaming decompression; peak ≈ decompressor state + one in-flight chunk. | Sequential one-pass processing: hashing, conversion, scanning. |
+| `for m in ar: ar.open(m)` | Bounded, but re-does work on solid blocks — `open()` on a solid member re-decompresses its block from the block start and skips to the member, logging a warning. No growing cache is ever held. | Random or mixed access on `DIRECT` formats; acceptable on solid formats only for a few members. |
 
-For formats without solid compression (ZIP, TAR, plain .gz), both patterns are equally efficient — there is no caching in either path.
+The library MUST NOT hold a growing cache of decompressed block data that is released
+only at `close()`. On a solid archive, repeated `open()` calls trade CPU (re-decompression)
+for bounded memory, and SHOULD emit a `logging.WARNING` via `archivey.backends` advising
+`stream_members()` for full sequential passes. For formats without solid compression
+(ZIP, plain `.tar`, single-file `.gz`), both patterns are equally efficient — `open()`
+seeks directly to the member with no re-decompression.
 
 #### Scenario: streaming a solid archive
 
 - **WHEN** `ar.stream_members()` is called on a solid archive (e.g. 7z)
-- **THEN** each solid block is decompressed exactly once, yielded, and its memory released before the next block is started
-- **AND** peak memory equals the size of the largest single solid block
+- **THEN** each solid block is decompressed progressively as its members are consumed and released as the iterator advances, never buffered whole in advance
+- **AND** peak memory is the decompressor working state plus one in-flight chunk, not a whole solid block
+
+#### Scenario: selecting and filtering members while streaming
+
+- **WHEN** `ar.stream_members(lambda m: m.name.endswith(".txt"), filter=ExtractionFilter.DATA)` is called
+- **THEN** only `.txt` members are yielded, each passed through the `DATA` sanitizer, and streams for unselected members are never opened
+
+#### Scenario: random open on a solid member re-decompresses with a warning
+
+- **WHEN** `ar.open(member)` is called for a member inside a solid block
+- **THEN** the block is re-decompressed from its start and skipped to the member (no persistent decompressed cache is retained)
+- **AND** a `logging.WARNING` is emitted suggesting `stream_members()` for sequential passes
 
 #### Scenario: stream is invalid after advance
 
@@ -209,41 +250,55 @@ For formats without solid compression (ZIP, TAR, plain .gz), both patterns are e
 
 ### Requirement: Transparent link following
 
-The system SHALL transparently follow symlinks and hardlinks in `open()` and `read()`. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to `open(reader[member.link_target])`. This behavior is format-independent and is implemented once in the `ArchiveReader` ABC.
+The system SHALL transparently follow symlinks and hardlinks in `open()` and `read()`. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to the target member. This behavior is format-independent and is implemented once in the `ArchiveReader` ABC. The resolved target, when known, is also exposed as `member.link_target_member`.
 
-If the link target is not present in the archive, `ReadError` SHALL be raised. If the link target is itself a link, it SHALL be followed recursively up to a maximum depth of 8; beyond this depth `ReadError` SHALL be raised to prevent cycles.
+**Hardlinks** SHALL always resolve to an **earlier** member (this is the TAR model, in
+which a hardlink entry refers back to a previously-seen file); the library relies on
+this ordering so a hardlink can always be resolved during a single forward pass.
+
+If the link target is not present in the archive, `LinkTargetNotFoundError` (a
+`ReadError`/member error) SHALL be raised. Chains SHALL be followed recursively with
+**cycle detection** — the set of members already visited on the current chain is
+tracked, and if a member is revisited the library raises a `ReadError` reporting the
+cycle. There is no fixed depth limit; an acyclic chain of any length resolves, and only
+an actual cycle (or a missing target) fails.
 
 ```python
 # ABC implementation (ARCHITECTURE.md §2.3)
-def open(self, member: str | Member, _depth: int = 0) -> BinaryIO:
+def open(self, member: str | ArchiveMember, _seen: frozenset[int] = frozenset()) -> BinaryIO:
     if isinstance(member, str):
         member = self[member]
     if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
-        if _depth > 8:
-            raise ReadError("Symlink chain too deep (possible cycle)")
-        target = self.get(member.link_target)
+        if member.member_id in _seen:
+            raise ReadError(f"Link cycle detected at '{member.name}'")
+        target = member.link_target_member or self.get(member.link_target)
         if target is None:
-            raise ReadError(f"Link target '{member.link_target}' not in archive")
-        return self.open(target, _depth=_depth + 1)
+            raise LinkTargetNotFoundError(f"Link target '{member.link_target}' not in archive")
+        return self.open(target, _seen=_seen | {member.member_id})
     return self._open_member(member)
 ```
 
-This does not rely on format-level link resolution; format-level resolution (e.g. rarfile following RAR5 hardlinks internally) happens at a lower level.
+This does not rely on format-level link resolution; format-level resolution (e.g. a RAR5 reader following hardlinks internally) happens at a lower level.
 
 #### Scenario: reading via a symlink member
 
 - **WHEN** `ar.read("data/latest")` is called and `"data/latest"` is a `SYMLINK` pointing to `"data/v1.0/report.txt"`
 - **THEN** the content of `"data/v1.0/report.txt"` is returned transparently
 
+#### Scenario: hardlink resolves to an earlier member
+
+- **WHEN** a `HARDLINK` member is read and its target is an earlier member in archive order
+- **THEN** the earlier member's content is returned, resolved in a single forward pass
+
 #### Scenario: link target not in archive
 
 - **WHEN** `ar.open(link_member)` is called and `link_member.link_target` is absent from the archive
-- **THEN** `ReadError` is raised
+- **THEN** `LinkTargetNotFoundError` is raised
 
-#### Scenario: link cycle or depth exceeded
+#### Scenario: link cycle detected
 
-- **WHEN** following links recursively exceeds depth 8
-- **THEN** `ReadError` is raised
+- **WHEN** following a link chain revisits a member already seen on that chain
+- **THEN** `ReadError` is raised reporting the cycle (no fixed depth limit is used; only genuine cycles fail)
 
 ---
 

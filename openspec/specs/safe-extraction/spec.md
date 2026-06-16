@@ -8,14 +8,13 @@ Safe extraction writes archive members to a destination directory on disk while 
 
 ### Requirement: One-Shot Extraction API
 
-The system SHALL expose a top-level `archivey.extract()` function that opens an archive, applies safety checks, and writes all (or a selected subset of) members to a destination directory in a single call.
+The system SHALL expose a top-level `archivey.extract()` function that opens an archive, applies safety checks, and writes **all** members to a destination directory in a single call. It deliberately has **no** member-selection parameter: selecting a subset requires the member list, which would force the caller to open the archive first and reopen it here — an anti-pattern. Subset extraction is done through `ArchiveReader.extract_all(members=..., filter=...)` on an already-open reader.
 
 ```python
 archivey.extract(
     source: str | Path | BinaryIO,
     dest: str | Path,
     *,
-    members: Iterable[str | Member] | None = None,  # None = all
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
     format: ArchiveFormat | None = None,
@@ -32,50 +31,51 @@ The default policy is `ExtractionPolicy.STRICT` and the default overwrite behavi
 - **THEN** all members are extracted to `/safe/output/` under `ExtractionPolicy.STRICT` and `OverwritePolicy.ERROR`
 - **AND** a `list[ExtractionResult]` describing each member's outcome is returned
 
-#### Scenario: extract a named subset of members
+#### Scenario: subset extraction goes through an open reader
 
-- **WHEN** `members` is provided as a non-`None` iterable of names or `Member` objects
-- **THEN** only those members are extracted; all others are skipped
+- **WHEN** a caller wants only some members
+- **THEN** they open the archive and call `reader.extract_all(dest, members=...)` rather than passing members to the top-level function (which would require reopening)
 
 ---
 
-### Requirement: Per-Reader Extract and Extract-All Helpers
+### Requirement: Per-Reader Extract-All Helper
 
-The system SHALL provide `extract()` and `extract_all()` instance methods on `ArchiveReader` that delegate to the same extraction internals as `archivey.extract()`.
+The system SHALL provide a single `extract_all()` instance method on `ArchiveReader` that delegates to the same extraction internals as `archivey.extract()`. There is **no** single-member `reader.extract()`: extracting one file is expressed as `extract_all(members=[name])`, which is also strictly better for solid archives (selecting a set of files costs one pass, whereas one-at-a-time extraction would re-decompress per file).
 
 ```python
 class ArchiveReader:
-    def extract(
-        self,
-        member: str | Member,
-        dest: str | Path,
-        *,
-        policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-        overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-    ) -> Path: ...
-
     def extract_all(
         self,
         dest: str | Path,
         *,
+        members: MemberSelector | None = None,  # names/members or predicate; None = all
+        filter: MemberFilter | None = None,      # per-member sanitize/rename; None to skip a member
         policy: ExtractionPolicy = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
     ) -> list[ExtractionResult]: ...
 ```
 
-Both methods accept the same `ExtractionPolicy` and `OverwritePolicy` options as the top-level function.
-
-#### Scenario: per-member extraction from an open reader
-
-- **WHEN** `reader.extract(member, dest)` is called
-- **THEN** exactly that one member is written to `dest` after passing universal and policy checks
-- **AND** the returned `Path` points to the extracted file on disk
+`members` selects which members to extract (a collection of names/`ArchiveMember`s, or a
+`Callable[[ArchiveMember], bool]` predicate); `None` extracts all. `filter` runs **after**
+the universal safety checks and the `policy` transform, letting the caller rename or
+further sanitize each member (returning a `.replace()`d copy) or skip it (returning
+`None`). `policy` and `overwrite` carry the same meaning as on the top-level function.
 
 #### Scenario: extract all via reader
 
 - **WHEN** `reader.extract_all(dest)` is called
 - **THEN** all members are extracted and a `list[ExtractionResult]` is returned, with the same safety guarantees as `archivey.extract()`
+
+#### Scenario: extract a selected subset in one pass
+
+- **WHEN** `reader.extract_all(dest, members=["a.txt", "b.txt"])` is called on a solid archive
+- **THEN** only those members are extracted, in a single decompression pass over the archive
+
+#### Scenario: single-file extraction via selector
+
+- **WHEN** a caller wants just one file
+- **THEN** they call `reader.extract_all(dest, members=[name])`; there is no separate single-member `extract()` method
 
 ---
 
@@ -173,7 +173,7 @@ The system SHALL support hardlinks (as found in TAR archives) through a strategy
 
 ### Requirement: Policy-Specific Metadata Transforms
 
-The system SHALL apply policy-specific permission and ownership transforms to a new (immutable) copy of the `Member` after universal checks pass. The transform corresponding to the active `ExtractionPolicy` is selected from `POLICY_TRANSFORMS` in `_filters.py` and applied before any I/O.
+The system SHALL apply policy-specific permission and ownership transforms to a new (immutable) copy of the `ArchiveMember` after universal checks pass. The transform corresponding to the active `ExtractionPolicy` is selected from `POLICY_TRANSFORMS` in `_filters.py` and applied before any I/O.
 
 ```python
 class ExtractionPolicy(Enum):
@@ -181,6 +181,17 @@ class ExtractionPolicy(Enum):
     STANDARD = "standard"  # moderate trust; e.g. your own older archives
     TRUSTED  = "trusted"   # bypass permission/ownership checks; path safety still enforced
 ```
+
+**Relationship to Python's `tarfile` filters.** These policies parallel the named
+filters in `tarfile` (`data`, `tar`, `fully_trusted`) so callers can transfer that
+mental model, but the names differ deliberately because Archivey applies them uniformly
+across **all** formats, not just TAR, and the per-bit transforms are Archivey's own:
+
+| `ExtractionPolicy` | Closest `tarfile` filter | Notable differences |
+|---|---|---|
+| `STRICT` (default) | `data` | Like `data` (blocks unsafe paths/links/special files), and additionally strips execute bits and normalizes permissions to 644/755. Archivey's default; `tarfile`'s default varies by Python version. |
+| `STANDARD` | `tar` | Like `tar` (strips setuid/setgid/sticky and group/other-write intent), but Archivey still drops uid/gid and keeps the universal path-safety checks that `tarfile`'s `tar` filter does not all guarantee. |
+| `TRUSTED` | `fully_trusted` | Applies stored mode and (as root) uid/gid. Unlike `fully_trusted`, Archivey **still enforces** the non-bypassable universal path/symlink/special-file constraints above. |
 
 The transforms per policy are:
 
@@ -283,7 +294,7 @@ class BombTracker:
         self._max_ratio = max_ratio
         self._total_bytes = 0
 
-    def count(self, member: Member, chunk_bytes: int) -> None:
+    def count(self, member: ArchiveMember, chunk_bytes: int) -> None:
         self._total_bytes += chunk_bytes
         if self._total_bytes > self._max_bytes:
             raise ExtractionError(
@@ -312,7 +323,7 @@ The default of 2 GiB is sufficient for most legitimate use cases and prevents gi
 
 ---
 
-### Requirement: Enforce Per-Member Max Decompression Ratio
+### Requirement: Enforce Per-ArchiveMember Max Decompression Ratio
 
 The system SHALL raise `ExtractionError` when the decompression ratio for a single member exceeds `max_ratio` during extraction. The default ratio limit is 1000:1. The caller MAY override this by passing `max_ratio` to `extract()` or `extract_all()`.
 
@@ -358,7 +369,7 @@ The system SHALL accept an optional `on_progress` callback on `archivey.extract(
 ```python
 @dataclass
 class ExtractionProgress:
-    member: Member
+    member: ArchiveMember
     bytes_written: int
     total_bytes_estimated: int | None   # None if archive has no size info
     members_done: int
@@ -379,14 +390,14 @@ class ExtractionProgress:
 
 ---
 
-### Requirement: Per-Member ExtractionResult with Status
+### Requirement: Per-ArchiveMember ExtractionResult with Status
 
 The system SHALL return a `list[ExtractionResult]` from `archivey.extract()` and `ArchiveReader.extract_all()`, with one entry per member processed. Each result SHALL carry the member, the path it was written to (or `None` if not written), and an `ExtractionStatus`.
 
 ```python
 @dataclass
 class ExtractionResult:
-    member: Member
+    member: ArchiveMember
     path: Path | None           # None if skipped
     status: ExtractionStatus    # EXTRACTED, SKIPPED, REJECTED
 

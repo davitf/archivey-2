@@ -14,11 +14,13 @@ The system SHALL define all library exceptions as subclasses of `ArchiveyError`,
 ArchiveyError(Exception)
 ├── OpenError                   # cannot open / parse the archive header
 │   ├── FormatDetectionError    # could not detect format
-│   └── UnsupportedFormatError  # format detected but no backend available
+│   ├── UnsupportedFormatError  # format detected but no backend available
+│   └── StreamNotSeekableError  # source is non-seekable but this format/backend needs seek
 ├── ReadError                   # error reading a member
 │   ├── CorruptionError         # CRC mismatch, bad data block
 │   ├── TruncatedError          # unexpected EOF
-│   └── EncryptionError         # password required or wrong password
+│   ├── EncryptionError         # password required or wrong password
+│   └── LinkTargetNotFoundError # a symlink/hardlink target is absent from the archive
 ├── WriteError                  # error writing an archive
 ├── ExtractionError             # error extracting a member to disk
 │   └── FilterRejectionError    # safety filter blocked the member
@@ -29,13 +31,31 @@ ArchiveyError(Exception)
 │                               #   (e.g. multi-volume, RAR2, BCJ2, unknown coder)
 ├── PackageNotInstalledError    # a required optional package or external tool is
 │                               #   absent (codec backend, crypto backend, unrar)
-└── UnsupportedOperationError   # e.g. random access on sequential reader
+└── UnsupportedOperationError   # API misuse: operation not valid for this reader's mode
+                                #   (e.g. random access on a sequential reader)
 ```
 
 `UnsupportedFeatureError` and `PackageNotInstalledError` may be raised at open or
 read time (e.g. listing a multi-volume archive, or reading a member whose codec
 package is missing), so they are top-level `ArchiveyError` subtypes rather than
 nested under `OpenError`/`ReadError`.
+
+`StreamNotSeekableError` is an **open-time** failure: the source cannot `seek()` but the
+chosen format/backend requires a seekable source (e.g. opening a ZIP from a pipe with
+`Intent.RANDOM`). It is a subclass of `OpenError` (it is about the source/format being
+incompatible at open), **not** `UnsupportedOperationError`.
+
+**`UnsupportedOperationError` vs `UnsupportedFeatureError` — a deliberate split:**
+
+- `UnsupportedOperationError` signals **API misuse**: the caller asked for something this
+  reader's *mode* does not permit — random access (`__getitem__`, `get`, materialization)
+  on an `Intent.SEQUENTIAL` reader, writing through a read-only RAR backend, or using a
+  closed reader. It is not caused by the archive's contents; choosing a different
+  intent/usage avoids it. It can therefore occur in normal use when the wrong access mode
+  was selected, but the fix is always on the caller's side.
+- `UnsupportedFeatureError` signals a **valid archive with a feature Archivey does not
+  implement** (RAR2, BCJ2, an unknown coder, multi-volume): nothing the caller does
+  changes it; the archive itself needs an unsupported capability.
 
 #### Scenario: catch all library errors with a single clause
 

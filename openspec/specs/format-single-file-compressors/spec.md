@@ -8,14 +8,14 @@ Single-file compressors (GZ, BZ2, XZ, ZST) are presented as a one-member pseudo-
 
 ### Requirement: Present a single-file compressor as a one-member archive
 
-The system SHALL present any GZ, BZ2, XZ, or ZST source as an archive containing exactly one `Member` of type `MemberType.FILE`. No directory members are synthesized. The member's name is inferred by stripping the compression extension from the source filename (e.g., `data.txt.gz` → `data.txt`). If no filename is available (e.g., the source is an anonymous stream), the member name defaults to `"data"`.
+The system SHALL present any GZ, BZ2, XZ, or ZST source as an archive containing exactly one `ArchiveMember` of type `MemberType.FILE`. No directory members are synthesized. The member's name is inferred by stripping the compression extension from the source filename (e.g., `data.txt.gz` → `data.txt`). If no filename is available (e.g., the source is an anonymous stream), the member name defaults to `"data"`.
 
-#### Scenario: Member name inferred from filename
+#### Scenario: ArchiveMember name inferred from filename
 
 - **WHEN** a single-file compressor archive is opened from a path such as `data.txt.gz`
 - **THEN** the single member's `name` is `"data.txt"` (the compression extension `.gz` is stripped)
 
-#### Scenario: Member name defaults when no filename is available
+#### Scenario: ArchiveMember name defaults when no filename is available
 
 - **WHEN** a single-file compressor archive is opened from a non-seekable stream with no associated filename
 - **THEN** the single member's `name` is `"data"`
@@ -23,7 +23,7 @@ The system SHALL present any GZ, BZ2, XZ, or ZST source as an archive containing
 #### Scenario: Exactly one member is present
 
 - **WHEN** any GZ, BZ2, XZ, or ZST source is opened
-- **THEN** iterating the reader yields exactly one `Member`
+- **THEN** iterating the reader yields exactly one `ArchiveMember`
 
 ### Requirement: Surface the gzip stored filename in `raw_filename`
 
@@ -69,7 +69,7 @@ corresponding (non-SOLID) access cost and `seekable` flag.
 #### Scenario: CostReceipt on open with the default backend
 
 - **WHEN** a GZ, BZ2, XZ, or ZST archive is opened with the default (non-seeking) backend
-- **THEN** `cost.listing_cost` is `ListingCost.O1` and `cost.access_cost` is `AccessCost.SOLID`
+- **THEN** `cost.listing_cost` is `ListingCost.INDEXED` and `cost.access_cost` is `AccessCost.SOLID`
 
 #### Scenario: seek-capable backend lowers the access cost
 

@@ -21,16 +21,16 @@ The system SHALL expose the following cost and capability properties for every o
 #### Scenario: CostReceipt on open
 
 - **WHEN** a ZIP archive is opened with `archivey.open_archive()`
-- **THEN** the returned reader's `cost` property reports `ListingCost.O1`, `AccessCost.DIRECT`, and `StreamCapability.SEEKABLE`
+- **THEN** the returned reader's `cost` property reports `ListingCost.INDEXED`, `AccessCost.DIRECT`, and `StreamCapability.SEEKABLE`
 
 #### Scenario: Central directory lookup is O(1)
 
 - **WHEN** `reader["some/member.txt"]` is called on a ZIP reader
 - **THEN** the lookup is satisfied via the in-memory `NameToInfo` dict with no additional I/O
 
-### Requirement: Map ZIP member metadata to the unified Member model
+### Requirement: Map ZIP member metadata to the unified ArchiveMember model
 
-The system SHALL map each `ZipInfo` entry to a `Member` dataclass using the following field rules:
+The system SHALL map each `ZipInfo` entry to a `ArchiveMember` dataclass using the following field rules:
 
 - `mode`: parsed from `external_attr >> 16`. If `external_attr == 0` and `create_system != 3` (Unix), `mode` is set to `None`.
 - `modified`: from the `date_time` tuple, constructed as a naive `datetime` (no TZ; DOS format has 2-second granularity). If the ZIP64 extra field contains an NT timestamp, use that as a timezone-aware UTC `datetime` instead.
