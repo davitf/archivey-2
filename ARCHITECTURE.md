@@ -8,10 +8,10 @@
 
 ```
 src/archivey/
-├── __init__.py            # Public API re-exports: open(), create(), extract(), detect_format()
+├── __init__.py            # Public API re-exports: open_archive(), create(), extract(), detect_format()
 ├── py.typed               # PEP 561 marker
 │
-├── _types.py              # All public types (Member, ArchiveInfo, CostReceipt, all enums)
+├── _types.py              # All public types (ArchiveMember, ArchiveInfo, CostReceipt, all enums)
 ├── _errors.py             # Exception hierarchy
 ├── _reader.py             # ArchiveReader ABC + default method implementations
 ├── _writer.py             # ArchiveWriter ABC
@@ -21,14 +21,14 @@ src/archivey/
 ├── _progress.py           # ExtractionProgress, ExtractionResult
 │
 └── backends/
-    ├── __init__.py        # BackendRegistry singleton + register()
-    ├── _base.py           # Backend ABC
+    ├── __init__.py        # BackendRegistry singleton + register_reader()/register_writer()
+    ├── _base.py           # ReadBackend / WriteBackend ABCs
     ├── _zip.py            # ZIP (zipfile stdlib)
     ├── _tar.py            # TAR all variants (tarfile stdlib)
     ├── _single.py         # GZ, BZ2, XZ single-file compressors
     ├── _dir.py            # Directory pseudo-backend
-    ├── _7z.py             # 7-Zip (py7zr, optional)
-    ├── _rar.py            # RAR (rarfile + unrar, optional)
+    ├── _7z.py             # 7-Zip — native reader (stdlib lzma/bz2/zlib); py7zr only for writing
+    ├── _rar.py            # RAR — native metadata parser + system `unrar` for data (read-only)
     └── _iso.py            # ISO 9660 (pycdlib, optional)
 
 tests/
@@ -59,26 +59,66 @@ tests/
 
 ## 2. Key Design Decisions
 
-### 2.1 Frozen dataclasses for Member
+### 2.1 Mutable ArchiveMember filled in place while streaming
 
-`Member` is a `@dataclass(frozen=True)`. This is deliberate:
+→ see SPEC.md §4.4 / openspec `archive-data-model`
 
-- **Thread safety:** immutable objects can be freely shared across threads without locks.
-- **Hashability:** allows `set[Member]` and use as dict keys (useful in equivalence tests).
-- **Accidental mutation prevention:** backends build a Member once; callers cannot corrupt it.
+`ArchiveMember` is a **mutable** stdlib `@dataclass` (deliberately *not* frozen). The
+reason is that several fields are genuinely unknown when a member is first yielded and
+only become known once its data has been read:
 
-Trade-off: construction requires all fields up-front. For formats that stream metadata incrementally (e.g. TAR without pre-reading), this means accumulating fields before constructing the object. This is acceptable because the `Member` represents completed metadata, not an in-flight parse state.
+- the final `size`/CRC of a gzip stream or a ZIP data-descriptor entry, and
+- a `link_target` that is stored in (or encrypted within) the member's **data** rather
+  than its header.
 
-For large archives, the backend yields `Member` objects one at a time via a generator — we never build a `list[Member]` unless the caller calls `.members()`. This keeps peak memory O(1) during sequential iteration.
+The library fills these fields **in place** on the same object the caller already holds,
+so late values appear without a re-fetch. This is required for `Intent.SEQUENTIAL`, where
+the member list cannot be materialized and re-read — the library cannot hand back a fresh
+object, so it must complete the one in flight.
 
-### 2.2 Backend as a pure factory, not a stateful reader
+**Contract — callers treat members as read-only.** The library is the *only* writer. A
+caller (or an extraction/iteration filter) that needs an altered member calls
+`member.replace(**kwargs)`, which returns a **copy** with the changes applied and never
+mutates the original.
 
-The `Backend` class is a stateless factory. `open_read()` returns an `ArchiveReader` instance that holds all state. This separation allows:
+**Consequence — `ArchiveMember` is unhashable.** A mutable value object must not be a
+`set` element or dict key, so callers key by `member.name` or `member.member_id` instead.
+Equivalence tests compare members by `==` over name-keyed lists (the `hashes` and `extra`
+fields are excluded from `__eq__`). The old "frozen ⇒ hashability / thread-safety"
+rationale no longer applies: thread-safety is moot because readers are one-per-thread, and
+hashability is replaced by name/`member_id` keying.
+
+For large archives, the backend yields `ArchiveMember` objects one at a time via a
+generator — we never build a `list[ArchiveMember]` unless the caller calls `.members()`.
+This keeps peak memory O(1) during sequential iteration.
+
+### 2.2 Backends as pure factories: ReadBackend / WriteBackend split
+
+→ see SPEC.md §9 / openspec `backend-registry`
+
+Reading and writing are different concerns with different state, lifecycles, and even
+availability (7z reading is native while writing needs `py7zr`; RAR has no writer at all),
+so there are **two** abstract base classes — `ReadBackend` and `WriteBackend` — rather than
+one `Backend` with an optional write method. A format may have a reader, a writer, both, or
+(RAR) only a reader. They live in **separate registries**: `register_reader()` /
+`reader_for_format()` and `register_writer()` / `writer_for_format()`.
+
+Each `ReadBackend`/`WriteBackend` subclass is a **stateless factory**: the class holds no
+per-archive state. `open_read()` returns an `ArchiveReader` (and `open_write()` an
+`ArchiveWriter`) that holds all state. This separation allows:
 - Multiple readers open simultaneously from the same backend class.
-- Easy testing: mock `Backend.open_read()` to return a fake reader.
+- Easy testing: mock `ReadBackend.open_read()` to return a fake reader.
 - Clean registration: backends register their class, not instances.
 
+A `ReadBackend` declares its magic and extensions as **data**
+(`MAGIC`/`MAGIC_OFFSET`/`EXTENSIONS`) — it has **no** `detect(peek)` method. Byte matching
+is centralized in `detect_format()` (the detector aggregates each backend's declared magic
+table); selection is then a pure `reader_for_format(detected_format)` lookup. Backends do
+not re-run byte matching. Backend selection by format and detection are two distinct steps.
+
 ### 2.3 Single ArchiveReader ABC for all backends
+
+→ see SPEC.md §3.2 / openspec `archive-reading`
 
 Rather than having backend-specific reader classes be the public API, all backends return objects that implement the `ArchiveReader` ABC. The ABC provides default implementations for methods like `extract()` and `extract_all()` that delegate to the `_extraction.py` module — backends only need to implement iteration and raw data access.
 
@@ -102,22 +142,23 @@ _SUPPORTS_RANDOM_ACCESS: bool = True
 # The ABC reads this to decide whether to allow open() and extract().
 
 _MEMBER_LIST_UPFRONT: bool = True
-# Set to True if the format has a central directory (ZIP, 7z) so get_members() is cheap.
-# Set to False for streaming formats (TAR) where listing requires reading the whole archive.
+# Set to True if the format has a central directory / header index (ZIP, 7z) so
+# members() is cheap. Set to False for streaming formats (TAR) where listing requires
+# reading the whole archive.
 
 # --- Required abstract methods ---
 
 @abstractmethod
-def _iter_members(self) -> Iterator[Member]: ...
-# Yield Member objects in archive order, metadata only.
+def _iter_members(self) -> Iterator[ArchiveMember]: ...
+# Yield ArchiveMember objects in archive order, metadata only.
 # Called once by the base class to populate the member registry.
-# Store any backend-specific data needed by _open_member in member.raw_info.
+# Store any backend-specific data needed by _open_member in member.extra.
 
 @abstractmethod
-def _open_member(self, member: Member) -> BinaryIO: ...
+def _open_member(self, member: ArchiveMember) -> BinaryIO: ...
 # Return a raw data stream for member. No link following.
-# May use internal caching (e.g. 7z folder cache).
-# Called only for members where member.is_file is True.
+# A solid backend re-decodes the block from its start (no persistent cache).
+# Called only for file members.
 
 @abstractmethod
 def _close_archive(self) -> None: ...
@@ -125,48 +166,64 @@ def _close_archive(self) -> None: ...
 
 # --- Optional overrides ---
 
-def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
+def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
     # Default: naive — calls _open_member() per file member.
     # Correct for non-solid formats (ZIP, TAR, GZ): no extra cost.
-    # Solid-archive backends MUST override for bounded memory:
-    #   SevenZReader: folder by folder, release before moving to next.
-    #   RarReader (solid): single unrar pass, tmpdir freed in finally.
+    # Solid-archive backends MUST override for bounded streaming memory:
+    #   SevenZReader: decode each folder once, yield its members as the
+    #     decompressor produces bytes; peak ≈ decompressor state + one chunk.
+    #   RarReader (solid): single `unrar p` pipe demultiplexed per member.
     for member in self._iter_members():
-        if member.is_file:
+        if member.type == MemberType.FILE:
             yield member, self._open_member(member)
         else:
             yield member, None
 ```
 
-`open()` and `read()` in the ABC add link-following on top of `_open_member()`:
+`open()` and `read()` in the ABC add link-following on top of `_open_member()`. Chains are
+followed recursively with **cycle detection** via a visited member-id set (there is no
+fixed depth limit); a missing target raises `LinkTargetNotFoundError`; hardlinks always
+resolve to an **earlier** member (the TAR model), so they resolve in a single forward pass:
 ```python
-def open(self, member: str | Member, _depth: int = 0) -> BinaryIO:
+def open(self, member: str | ArchiveMember,
+         _seen: frozenset[int] = frozenset()) -> BinaryIO:
     if isinstance(member, str):
         member = self[member]
     if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
-        if _depth > 8:
-            raise ReadError("Symlink chain too deep (possible cycle)")
-        target = self.get(member.link_target)
+        if member.member_id in _seen:
+            raise ReadError(f"Link cycle detected at '{member.name}'")
+        target = member.link_target_member or self.get(member.link_target)
         if target is None:
-            raise ReadError(f"Link target '{member.link_target}' not in archive")
-        return self.open(target, _depth=_depth + 1)
+            raise LinkTargetNotFoundError(
+                f"Link target '{member.link_target}' not in archive")
+        return self.open(target, _seen=_seen | {member.member_id})
     return self._open_member(member)
 
-def stream_members(self) -> Iterator[tuple[Member, BinaryIO]]:
-    return self._iter_with_data()
+def stream_members(
+    self,
+    members: MemberSelector | None = None,   # collection of members/names or predicate
+    *,
+    filter: MemberFilter | None = None,       # returns a .replace()'d copy, or None to skip
+) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
+    # `members` SELECTS which members to yield; `filter` SANITIZES/REWRITES each
+    # selected member. Streams are opened lazily, so unselected/skipped members
+    # cost nothing. Mirrors extract_all()'s selector/filter vocabulary.
+    ...
 ```
 
-`add_members()` in `ArchiveWriter` calls `reader.stream_members()` so conversions always take the bounded-memory path.
+`add_members()` in `ArchiveWriter` calls `reader.stream_members()` so conversions always take the bounded-memory streaming path.
 
 Everything else (`__iter__`, `__getitem__`, `read`, `open`, `stream_members`, `extract`, `extract_all`, `members`) is implemented once in the ABC.
 
 ### 2.4 Lazy member materialization
 
+→ see SPEC.md §3.2 / openspec `archive-reading`, `access-intent-and-cost`
+
 `__iter__` calls `_iter_members()` directly — a generator that never loads all members.
 
 `members()` and `__len__` force materialization:
 ```python
-def members(self) -> list[Member]:
+def members(self) -> list[ArchiveMember]:
     if self._members_cache is None:
         self._members_cache = list(self._iter_members())
     return self._members_cache
@@ -177,6 +234,8 @@ After materialization, `__iter__` returns `iter(self._members_cache)` for effici
 **Sequential intent guard:** if `intent == Intent.SEQUENTIAL`, materialization is forbidden. Calling `.members()` or `__len__` raises `UnsupportedOperationError` with a clear message.
 
 ### 2.5 PeekableStream for non-seekable sources
+
+→ see SPEC.md §8.3 / openspec `format-detection`
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -192,9 +251,19 @@ After materialization, `__iter__` returns `iter(self._members_cache)` for effici
 
 `PeekableStream` is only constructed when `source` is non-seekable. It wraps the stream, buffers the first `DETECTION_LIMIT` bytes (4 KiB by default, 32 KiB for ISO), exposes a `peek(n: int) -> bytes` method, and then presents itself as a regular `BinaryIO` to the backend. Reads drain from the buffer first, then fall through to the underlying stream.
 
+**The opener owns the wrapping.** For a non-seekable source, `open_archive()` constructs
+the `PeekableStream` **before** running detection and passes the **same** wrapper to both
+detection and the backend. `detect_format()` itself never wraps or consumes the source: it
+inspects bytes through `PeekableStream.peek(n)` (or, for paths and seekable streams, reads
+and then `seek(0)`s back), so the peeked prefix is always still available to the backend.
+The standalone `detect_format()` returns only a `FormatInfo`; a caller invoking it directly
+on a raw non-seekable stream it intends to keep reading must pass a `PeekableStream` itself.
+
 This is a standard "read-ahead buffer" pattern — the key property is that the backend never knows or cares whether the source was originally seekable.
 
 ### 2.6 Extraction as a separate, composable module
+
+→ see SPEC.md §7 / openspec `safe-extraction`
 
 `_extraction.py` implements the safe extraction coordinator. It has no deferred/pending state; both streaming and random-access extraction use the same unified forward pass driven by `_iter_with_data()`.
 
@@ -205,10 +274,10 @@ class ExtractionCoordinator:
 
     def run(
         self,
-        members: Iterable[Member],
-        open_fn: Callable[[Member], BinaryIO],
-        hardlink_sources: dict[int, Member],  # member_id → source member (pre-built)
-    ) -> dict[Path, Member]:
+        members: Iterable[ArchiveMember],
+        open_fn: Callable[[ArchiveMember], BinaryIO],
+        hardlink_sources: dict[int, ArchiveMember],  # member_id → source member (pre-built)
+    ) -> dict[Path, ArchiveMember]:
         """Single forward pass. Works identically in streaming and random-access mode."""
 ```
 
@@ -216,12 +285,14 @@ The `hardlink_sources` map is built before the pass starts by scanning the full 
 
 During the pass:
 - **FILE / DIR / SYMLINK**: write immediately. Record `member_id → extracted_path`.
-- **HARDLINK**: if source `extracted_path` is already recorded, `os.link` it; otherwise `shutil.copy2`. In streaming mode, TAR guarantees target precedes link — if the source was filtered out, that's an explicit error with a clear message. In random-access mode, if the source wasn't selected by the filter, it's added to the extraction set implicitly (marked "data needed, discard after linking").
+- **HARDLINK**: a hardlink target always **precedes** the link in archive order (the TAR model), so if its `extracted_path` is already recorded, `os.link` it; otherwise `shutil.copy2`. In streaming mode, TAR guarantees the target precedes the link — if the source was filtered out, that's an explicit error with a clear message. In random-access mode, if the source wasn't selected by the filter, it's added to the extraction set implicitly (marked "data needed, discard after linking").
 - After the pass: apply mtime/permissions to all extracted paths (best-effort, single `os.utime` / `os.chmod` loop).
 
 This replaces the previous `ExtractionHelper` class and its pending/deferred state machine. No move-vs-link signaling. No `can_move_file` flag. No `pending_target_members_by_source_id` dict.
 
 ### 2.7 Symlinks: single-pass with post-creation check
+
+→ see SPEC.md §7 / openspec `safe-extraction`
 
 Symlinks don't need a second pass. They are written in archive order as encountered. After creating each symlink:
 
@@ -239,6 +310,8 @@ The one edge case is a symlink whose target is a *later* member in the same arch
 
 ### 2.8 Test architecture
 
+→ see SPEC.md §14 / openspec `testing-contract`
+
 Tests are split into two tiers:
 
 **Tier 1 — generated-on-demand** (the vast majority): archive content is declared as Python `ArchiveContents` / `FileInfo` specs, generated at test time into a per-session cache directory (keyed by a hash of the spec + creation parameters), and never committed to the repo. The `conftest.py` fixture handles generation and caching transparently.
@@ -250,7 +323,7 @@ def test_read_basic(sample_archive: SampleArchive, archivey_config):
         assert ar.get_members() == sample_archive.contents.expected_members()
 ```
 
-The `sample_archive.contents` object is both the generation spec and the ground truth — no JSON needed for generated archives. Format-specific feature flags (`ArchiveFormatFeatures`) tell the assertion helper which fields to compare (e.g. rounded mtimes for `zipfile`-generated ZIPs, no dir entries for py7zr).
+The `sample_archive.contents` object is both the generation spec and the ground truth — no JSON needed for generated archives. Format-specific feature flags (`ArchiveFormatFeatures`) tell the assertion helper which fields to compare (e.g. rounded mtimes for `zipfile`-generated ZIPs, no dir entries for `py7zr`-generated 7z fixtures).
 
 **Tier 2 — committed fixtures with JSON sidecars** (a small set, committed to `tests/fixtures/`):
 
@@ -269,103 +342,162 @@ The `sample_archive.contents` object is both the generation spec and the ground 
 }
 ```
 
-**Cross-tool verification**: For any archive parseable by `7z l -slt` or `unrar lt`, CI can run these and compare the output against the parsed `Member` fields. This is implemented as an optional pytest plugin (`--verify-with-7z`) so it doesn't require tool installation in all environments.
+**Cross-tool verification**: For any archive parseable by `7z l -slt` or `unrar lt`, CI can run these and compare the output against the parsed `ArchiveMember` fields. This is implemented as an optional pytest plugin (`--verify-with-7z`) so it doesn't require tool installation in all environments.
 
 ### 2.10 Filters as pure transform functions
+
+→ see SPEC.md §7 / openspec `safe-extraction`
 
 ```python
 # _filters.py
 
-def check_universal(member: Member) -> None:
+def check_universal(member: ArchiveMember) -> None:
     """Raises FilterRejectionError if member violates universal constraints."""
 
-def transform_strict(member: Member) -> Member:
-    """Returns a new Member with permissions adjusted for STRICT policy."""
+def transform_strict(member: ArchiveMember) -> ArchiveMember:
+    """Returns a member.replace()'d copy with permissions adjusted for STRICT policy."""
 
-def transform_standard(member: Member) -> Member:
-    """Returns a new Member with permissions adjusted for STANDARD policy."""
+def transform_standard(member: ArchiveMember) -> ArchiveMember:
+    """Returns a member.replace()'d copy with permissions adjusted for STANDARD policy."""
 
-POLICY_TRANSFORMS: dict[ExtractionPolicy, Callable[[Member], Member]] = {
+POLICY_TRANSFORMS: dict[ExtractionPolicy, Callable[[ArchiveMember], ArchiveMember]] = {
     ExtractionPolicy.STRICT:   transform_strict,
     ExtractionPolicy.STANDARD: transform_standard,
     ExtractionPolicy.TRUSTED:  lambda m: m,  # identity
 }
 ```
 
-`check_universal` always runs first. Policy transforms always run second. The result is a new (immutable) `Member` with adjusted permissions — no mutation.
+The pipeline order is fixed: **`check_universal` first** (rejects illegal members),
+**the policy transform second** (returns a sanitized copy), then an **optional user
+filter last** (a `Callable[[ArchiveMember], ArchiveMember | None]` that returns a modified
+member or `None` to skip it). Because `ArchiveMember` is mutable but caller-read-only,
+every transform produces its edited member via `member.replace(...)` (copy-on-edit) — it
+**never** mutates the member in place and never constructs a frozen replacement. The
+original member the caller holds is left untouched.
 
-### 2.11 Error wrapping pattern
+### 2.11 Error wrapping: per-library translators + central context stamping
 
-Every backend wraps its library's exceptions at the call site, preserving the chain:
+→ see SPEC.md §6 / openspec `error-handling`
+
+Exception translation has **two separable concerns**, neither scattered as manual
+field-setting across the backends.
+
+**1. Type translation is per-library, not per-format.** Each underlying library has its
+own exception taxonomy (`zipfile.BadZipFile`, `tarfile.TarError`, `lzma.LZMAError`, the
+`unrar` process errors, the crypto backend's errors, …). A small translator **per library**
+maps those exceptions to the correct typed `ArchiveyError` subclass (`CorruptionError`,
+`TruncatedError`, `EncryptionError`, …) by inspecting the exception type/payload. A library
+shared across formats (e.g. `lzma`, used by both XZ and the native 7z reader) is translated
+once and reused. Translators know nothing about the format, archive path, or member:
 
 ```python
+# Maps one library's exceptions to typed ArchiveyErrors; sets no context fields.
+@translate_library_errors(LZMA_TRANSLATOR)
+def _read_block(self, ...): ...
+```
+
+**2. Context is stamped centrally.** The `ArchiveReader` ABC wraps the public operations
+(listing, `open()`, `read()`, iteration, extraction) so that when an `ArchiveyError`
+propagates, the base class fills in `source_format`, `archive_name`, and `member_name` from
+context it already holds, then re-raises. Backends never set these fields by hand:
+
+```python
+# In the ArchiveReader ABC, around each public operation:
 try:
-    raw_member = self._zf.getinfo(name)
-except KeyError as exc:
-    raise ReadError(f"Member '{name}' not found", format=ArchiveFormat.ZIP) from exc
-except zipfile.BadZipFile as exc:
-    raise CorruptionError("ZIP central directory corrupt", format=ArchiveFormat.ZIP) from exc
+    return op()
+except ArchiveyError as exc:
+    exc.source_format = exc.source_format or self.format
+    exc.archive_name  = exc.archive_name  or self._archive_name
+    exc.member_name   = exc.member_name   or current_member_name
+    raise
 ```
 
 This pattern means:
 - `except ArchiveyError` catches all library errors uniformly.
-- `except Exception` still shows the original traceback via `__cause__`.
+- `except Exception` still shows the original traceback via `__cause__` (`raise … from exc`).
 - No internal library exception leaks to the caller.
 
-A `@translate_errors(format)` decorator handles the common case:
-
-```python
-@translate_errors(ArchiveFormat.ZIP)
-def open_member(self, member: Member) -> BinaryIO:
-    return self._zf.open(member.original_name)
-```
+**Genuine non-decoding errors propagate unchanged.** Only exceptions originating from a
+decoding library's own taxonomy are translated. An `OSError` from the filesystem or a
+caller-supplied stream, `KeyboardInterrupt`, and `MemoryError` propagate **unchanged** —
+the base reader may stamp context onto an `ArchiveyError` it is already re-raising, but it
+MUST NOT convert an unrelated runtime exception into an `ArchiveyError`.
 
 ### 2.12 Cost Receipt computation
 
-Each backend computes its `CostReceipt` in `open_read()`, **before** any heavy I/O:
+→ see SPEC.md §4.6 / openspec `access-intent-and-cost`
+
+Each backend computes its `CostReceipt` in `open_read()`, **before** any heavy I/O. The
+three axes are orthogonal: `listing_cost` (enumeration), `access_cost` (format layout), and
+`stream_capability` (a property of the source bytes). `is_solid` lives on `ArchiveInfo`, not
+on the receipt; the receipt carries `access_cost` and `solid_block_count` instead.
 
 ```
 ZIP backend:
   → reads central directory (already required to open the ZIP)
-  → ListingCost.O1 (EOCD parsed)
+  → ListingCost.INDEXED (EOCD / central directory parsed)
   → AccessCost.DIRECT (each member has an offset in central dir)
   → StreamCapability.SEEKABLE (zipfile required seek)
 
 TAR.GZ backend:
-  → ListingCost.ON (no central dir; must stream)
+  → ListingCost.REQUIRES_DECOMPRESSION (must inflate to reach member headers)
   → AccessCost.SOLID (gzip is a single stream)
-  → StreamCapability.SEEKABLE or REPLAY_ONLY depending on source
+  → StreamCapability.SEEKABLE or FORWARD_ONLY depending on the source bytes
+    (a file seeks; a pipe is forward-only — this is a SOURCE property, not the layout)
 
-7z backend (py7zr):
-  → reads header block (fast, at start of file)
-  → ListingCost.O1
-  → AccessCost.SOLID if folder_count > 0 with multiple members per folder
-  → solid_block_count = len(archive.solid_units)
+plain .tar backend:
+  → ListingCost.REQUIRES_SCANNING (walk 512-byte headers, no decompress)
+  → AccessCost.DIRECT
+  → StreamCapability.SEEKABLE on a file, FORWARD_ONLY on a pipe
+
+7z backend (native):
+  → reads the header block natively (fast, at start of file)
+  → ListingCost.INDEXED
+  → AccessCost.SOLID if any folder packs more than one file, else DIRECT
+  → solid_block_count = folder count (from the parsed header)
+  → ArchiveInfo.is_solid = True when any folder packs > 1 file
 ```
 
 ### 2.13 Optional dependencies and graceful degradation
 
+→ see SPEC.md §9.1 / openspec `backend-registry`, `packaging-and-extras`
+
+A library-backed optional read backend registers itself only inside a successful-import
+guard, declaring its magic/extensions as **data** (no `detect(peek)` method). If the
+dependency is absent the guard catches the `ImportError` and the format simply never
+appears in `list_formats()` — import never crashes:
+
 ```python
-# backends/_7z.py
+# backends/_iso.py
 try:
-    import py7zr
-    _PY7ZR_AVAILABLE = True
+    import pycdlib
+    _PYCDLIB_AVAILABLE = True
 except ImportError:
-    _PY7ZR_AVAILABLE = False
+    _PYCDLIB_AVAILABLE = False
 
-class SevenZBackend(Backend):
-    OPTIONAL_DEPENDENCY = "py7zr"
-    FORMAT = ArchiveFormat.SEVEN_Z
+class IsoReadBackend(ReadBackend):
+    FORMATS = (ArchiveFormat.ISO,)
+    EXTENSIONS = (".iso",)
+    MAGIC = ((32769, b"CD001"),)          # declared as data; the central detector matches it
+    OPTIONAL_DEPENDENCY = "pycdlib"
+    def open_read(self, source, intent, password, encoding) -> ArchiveReader: ...
 
-    @classmethod
-    def detect(cls, peek: bytes) -> bool:
-        if not _PY7ZR_AVAILABLE:
-            return False   # don't claim the format if we can't handle it
-        return peek[:6] == b'7z\xbc\xaf\x27\x1c'
+if _PYCDLIB_AVAILABLE:
+    archivey.backends.register_reader(IsoReadBackend)   # only registered when usable
 ```
 
-When a 7z file is detected but `py7zr` is not installed, `BackendRegistry.detect_backend()` raises `UnsupportedFormatError` with the message:
-> "7-Zip format detected but backend is not installed. Run: pip install archivey[7z]"
+When an ISO file is detected but `pycdlib` is not installed, `reader_for_format()` raises
+`UnsupportedFormatError` with the message:
+> "ISO 9660 format detected but backend is not installed. Run: pip install archivey[iso]"
+
+**7z and RAR reading degrade differently because they are native** (no import guard, always
+registered):
+- **7z reading** is native (stdlib `lzma`/`bz2`/`zlib`); only 7z *writing* is gated on
+  `py7zr` (`[7z-write]`). A 7z write without the extra raises `UnsupportedOperationError`
+  naming `[7z-write]`.
+- **RAR reading** parses metadata natively; reading member *data* needs the external `unrar`
+  binary, checked at read time — a data read without `unrar` raises `PackageNotInstalledError`
+  naming the missing tool, while *listing* works without it.
 
 ---
 
@@ -374,17 +506,17 @@ When a 7z file is detected but `py7zr` is not installed, `BackendRegistry.detect
 ### 3.1 Opening an archive
 
 ```
-archivey.open("file.zip")
-  │
+archivey.open_archive("file.zip")
+  │  (opener wraps a non-seekable source in PeekableStream, shared below)
   ▼
 _detection.py: detect_format()
-  │  peek first 4KiB
+  │  peek first 4KiB (via the shared PeekableStream / seekable rewind)
   │  match magic bytes → ArchiveFormat.ZIP
   ▼
-BackendRegistry.detect_backend()
-  │  find ZipBackend
+BackendRegistry.reader_for_format(ArchiveFormat.ZIP)
+  │  find ZipReadBackend
   ▼
-ZipBackend.open_read(source, intent, ...)
+ZipReadBackend.open_read(source, intent, ...)
   │  zipfile.ZipFile(source)  ← reads EOCD, central directory
   │  build CostReceipt
   │  build ArchiveInfo
@@ -398,7 +530,7 @@ ZipReader (ArchiveReader)
 ### 3.2 Sequential iteration
 
 ```
-with archivey.open("archive.tar.gz") as ar:
+with archivey.open_archive("archive.tar.gz") as ar:
     for member in ar:
         data = ar.read(member)
         ↑
@@ -406,12 +538,12 @@ with archivey.open("archive.tar.gz") as ar:
 ArchiveReader.__iter__()
   └─► TarReader._iter_members()
         │  tarfile.TarFile.next() — reads one header block
-        │  maps TarInfo → Member (frozen dataclass)
-        └─► yield Member
+        │  maps TarInfo → ArchiveMember (mutable dataclass)
+        └─► yield ArchiveMember
 
 ArchiveReader.read(member)
   └─► TarReader._open_member(member)
-        │  tarfile.TarFile.extractfile(member.original_name)
+        │  tarfile.TarFile.extractfile(...)
         └─► returns BinaryIO  →  .read()
 ```
 
@@ -421,28 +553,29 @@ ArchiveReader.read(member)
 archivey.extract("untrusted.zip", "/safe/dest", policy=STRICT)
   │
   ▼
-archivey.open() → ZipReader
+archivey.open_archive() → ZipReader
   │
   ▼
 _extraction.extract_all(reader, dest, policy=STRICT, ...)
   │
-  ├─► for member in reader:
+  ├─► for member, stream in reader.stream_members(members, filter=...):
+  │     # filter order: check_universal → policy transform → optional user filter
   │     _filters.check_universal(member)    ← path traversal, absolute path, null byte
-  │     safe_member = POLICY_TRANSFORMS[STRICT](member)   ← strip exe bits, uid/gid
-  │     extract_member(safe_member, reader._open_member, dest, ...)
+  │     safe_member = POLICY_TRANSFORMS[STRICT](member)   ← .replace(...) copy: strip exe bits, uid/gid
+  │     extract_member(safe_member, stream, dest, ...)
   │           │
   │           ├─► handle overwrite policy
   │           ├─► mkdir parents
   │           ├─► copy chunks + BombTracker.count()
   │           └─► set mtime (best-effort)
   │
-  └─► second pass: create symlinks + verify resolution
+  └─► symlinks created in-pass with post-creation escape verification (§2.7)
 ```
 
 ### 3.4 Conversion pipeline
 
 ```
-with archivey.open("input.tar.gz") as reader, \
+with archivey.open_archive("input.tar.gz") as reader, \
      archivey.create("output.zip") as writer:
     writer.add_members(reader)
          │
@@ -466,9 +599,11 @@ Memory usage: one member at a time, one chunk (1 MiB) at a time. No intermediate
 
 ### 4.1 Defense in depth for path traversal
 
+→ see SPEC.md §7.1 / openspec `safe-extraction`
+
 Three independent layers:
 
-1. **`check_universal()` on the Member** (before any I/O): purely string-based check on `member.name` after normalization. Rejects `..` components, absolute paths, null bytes.
+1. **`check_universal()` on the ArchiveMember** (before any I/O): purely string-based check on `member.name` after normalization. Rejects `..` components, absolute paths, null bytes.
 
 2. **Pre-extraction path computation**: `dest / member.name` is computed and checked with `.resolve()` — verifies the resolved absolute path starts with `dest.resolve()`.
 
@@ -481,6 +616,8 @@ This three-layer approach catches:
 
 ### 4.2 Bomb detection architecture
 
+→ see SPEC.md §7.3 / openspec `safe-extraction`
+
 ```python
 class BombTracker:
     def __init__(self, max_bytes: int, max_ratio: float):
@@ -488,7 +625,7 @@ class BombTracker:
         self._max_ratio = max_ratio
         self._total_bytes = 0
 
-    def count(self, member: Member, chunk_bytes: int) -> None:
+    def count(self, member: ArchiveMember, chunk_bytes: int) -> None:
         self._total_bytes += chunk_bytes
         if self._total_bytes > self._max_bytes:
             raise ExtractionError(
@@ -510,6 +647,8 @@ class BombTracker:
 
 ### 5.1 zipfile vs third-party ZIP library
 
+→ see SPEC.md §10.1 / openspec `format-zip`
+
 **Decision:** use stdlib `zipfile` for the core ZIP backend.
 
 **Considered:** `zipfile38`, `python-libarchive-c`, `zipstream-new`.
@@ -518,23 +657,43 @@ class BombTracker:
 
 **If needed later:** an optional `[fast]` extra with `python-libarchive-c` could be added as a drop-in replacement backend.
 
-### 5.2 Frozen dataclass vs attrs/pydantic for Member
+### 5.2 Mutable stdlib dataclass vs attrs/pydantic for ArchiveMember
 
-**Decision:** `@dataclass(frozen=True)` from stdlib.
+→ see SPEC.md §4.4 / openspec `archive-data-model`
 
-**Considered:** `attrs`, `pydantic`.
+**Decision:** a **mutable** stdlib `@dataclass` with a `.replace()` copy-on-edit method.
 
-**Rationale:** `pydantic` adds validation (good) but is a heavy dependency and adds runtime overhead for every member construction. `attrs` is cleaner but also a dependency. Since Archivey aims for zero core dependencies, stdlib dataclass is the correct choice. Validation happens in the backend before construction, not on the model itself.
+**Considered:** `attrs`, `pydantic`; and a frozen stdlib dataclass.
+
+**Rationale (no heavy deps):** `pydantic` adds validation (good) but is a heavy dependency
+and adds runtime overhead for every member construction; `attrs` is cleaner but also a
+dependency. Since Archivey aims for zero core dependencies, stdlib `dataclass` is the
+correct choice. Validation happens in the backend before/while building the member, not on
+the model itself.
+
+**Rationale (mutable, not frozen — reversed from an earlier draft):** the model must be
+**mutable** so the library can fill late-known fields (final `size`/CRC for gzip and ZIP
+data-descriptor entries, a `link_target` stored in the member's data) **in place** during a
+single streaming pass — required for `Intent.SEQUENTIAL`, where the member cannot be
+re-materialized and re-fetched (see §2.1). The contract makes this safe: callers treat
+members as read-only, the library is the only writer, and any caller/filter edit goes
+through `member.replace(...)`, which returns a copy. The cost is that `ArchiveMember` is
+**unhashable** (a mutable value object), so callers key by `name`/`member_id` rather than
+using members as set/dict keys.
 
 ### 5.3 Sync-only API
 
+→ see SPEC.md §2 (Target Environment)
+
 **Decision:** v1 is synchronous only.
 
-**Rationale:** the main backend libraries (`zipfile`, `tarfile`, `py7zr`, `rarfile`) are all blocking/synchronous. An async API on top of blocking I/O is worse than no async API — it gives the illusion of async without the benefit. If async is needed, the pattern is `asyncio.to_thread(archivey.extract, ...)`.
+**Rationale:** the underlying machinery (`zipfile`, `tarfile`, the native 7z/RAR readers, stdlib `lzma`/`bz2`/`zlib`, the `unrar` subprocess) is all blocking/synchronous. An async API on top of blocking I/O is worse than no async API — it gives the illusion of async without the benefit. If async is needed, the pattern is `asyncio.to_thread(archivey.extract, ...)`.
 
 A future `archivey.asyncio` module using async generators is a clean add-on.
 
 ### 5.4 No appending / in-place modification
+
+→ see SPEC.md §11 / openspec `archive-writing`
 
 **Decision:** write is create-only; no in-place modify.
 
@@ -542,62 +701,97 @@ A future `archivey.asyncio` module using async generators is a clean add-on.
 
 ### 5.5 Decompression bomb limits: defaults
 
+→ see SPEC.md §7.3 / openspec `safe-extraction`
+
 `max_extracted_bytes=2 GiB`, `max_ratio=1000`:
 - 2 GiB is enough for most legitimate use cases and prevents gigabyte-class bombs.
 - 1000:1 is extremely generous (typical DEFLATE is 3:1 to 10:1; text compresses to maybe 20:1). Even 42.zip's outer layer reaches ~391:1. This catches pathological ratios while not triggering on legitimate very-compressible data.
 - Both are caller-configurable via `extract(..., max_extracted_bytes=..., max_ratio=...)`.
 
-### 5.6 py7zr wrapper vs custom streaming 7z reader
+### 5.6 Native streaming 7z reader vs py7zr wrapper
 
-**Decision (v1):** use `py7zr` with lazy per-folder caching.
+→ see SPEC.md §10.4 / openspec `format-7z`
 
-**The limitation:** py7zr is a push-based API with no streaming pull. The caching approach buffers each solid block (in memory or spooled to disk). For archives with very large solid blocks, peak memory/disk could be significant.
+**Decision (v2):** a **native** streaming 7z reader — native header parse plus stdlib
+`lzma`/`bz2`/`zlib` for decompression. `py7zr` is NOT a read dependency; 7z *reading* is
+part of the zero-dependency core. `py7zr` is used only for 7z **writing** (optional
+`[7z-write]` extra) and as a cross-validation oracle in the test suite.
 
-**The alternative — custom streaming reader.** A custom 7z reader could give true pull-based streaming with no per-block buffering:
+**Why native is feasible.** The 7z header (signature header, packed-streams info, folders
+and coder chains, substreams info, files info) is parsed directly, yielding the full member
+list and the folder→file mapping in O(1) with no decompression. The decompressed bytes of a
+folder are byte-contiguous — files are laid out sequentially and sizes are known from the
+header — so the reader produces a member's stream by reading exactly `member.size` bytes, in
+order, from the folder's decompressed output:
 
 ```
-fold the compressed folder stream → lzma.LZMADecompressor → 
-  read exactly file_0.uncompressed_size bytes → yield as file_0 stream →
-  read exactly file_1.uncompressed_size bytes → yield as file_1 stream →
+compressed folder stream → coder chain (reverse order) → pull decompressor →
+  read exactly file_0.size bytes → yield as file_0 stream →
+  read exactly file_1.size bytes → yield as file_1 stream →
   ...
 ```
 
-This is architecturally feasible because:
-- py7zr's `archiveinfo.py` header parser (1156 lines) is self-contained and importable directly.
-- LZMA2 is implemented via Python's stdlib `lzma.LZMADecompressor` inside py7zr.
-- The BCJ filter is a C extension (`bcj` package) — still a dependency, but a small one.
-- The decompressed stream per folder is byte-contiguous: files are laid out sequentially in the decompressed output, and sizes are known from the header.
+**Codec coverage.** stdlib `lzma` in `FORMAT_RAW` mode natively implements LZMA1/LZMA2, the
+simple BCJ branch-filter family, and Delta; `bz2` and `zlib` cover BZip2 and Deflate. These
+are the core, zero-dependency codecs. The optional `[7z]` extra adds PPMd (`pyppmd`),
+Deflate64 (`inflate64`), Zstd, and Brotli; AES decryption comes from the crypto backend
+(`[crypto]`). **BCJ2** (a multi-stream filter) is **detected and rejected** with
+`UnsupportedFeatureError` — never garbage output and never a fallback to a third-party
+reader.
 
-The main implementation challenges: correctly driving `lzma.LZMADecompressor` in streaming mode across chunk boundaries, and handling all codec IDs (LZMA2, LZMA1, Deflate, BZip2, Delta, BCJ variants). The latter is manageable since py7zr already maps codec IDs to decompressor chains.
+**Streaming, not caching.** Decoding is true pull-based streaming: a folder is decoded once
+and its members are yielded as the decompressor produces bytes, with peak memory bounded by
+the decompressor's working set — no per-folder `SpooledTemporaryFile` cache. (This replaces
+the earlier "py7zr + lazy per-folder caching for v1, native in Phase 2" plan — native is the
+v2 plan.) Random `ar.open()` of a member inside a solid folder re-decodes the folder from
+its start (it MAY cache the decoded folder for repeated access to the same folder).
 
-**Recommendation:** Implement the caching approach for v1 (1–2 days of work). Mark the custom streaming reader as a Phase 2 item under a `[7z-native]` extra — it replaces the py7zr backend with a streaming one, behind the same `ArchiveReader` ABC.
+### 5.7 Native RAR metadata parsing + system unrar vs rarfile wrapper
 
-### 5.7 rarfile wrapper vs custom unrar invocation
+→ see SPEC.md §10.5 / openspec `format-rar`
 
-**Decision (v1):** use `rarfile` for listing/metadata, but bypass its extraction for solid archives by invoking `unrar x` directly.
+**Decision (v2):** parse RAR4/RAR5 metadata **natively** (no `rarfile` dependency) and
+delegate the proprietary RAR decompression to the system `unrar` binary, which remains the
+required runtime dependency for reading member *data*. RAR is read-only. `rarfile` is used
+only as a cross-validation oracle in the test suite.
 
-**Rationale:** rarfile's `extractall()` spawns N subprocesses for N files. Running `unrar x archive.rar destdir/` once is strictly better for solid archives and requires only one extra `subprocess.run` call. rarfile's tool-detection machinery (`tool_setup()`) is reused to locate the correct binary.
+**Rationale.** Because metadata is parsed natively, members can be **listed without
+`unrar`** — only reading bytes needs it. For solid sequential iteration the reader runs a
+single `unrar p -inul <archive>` subprocess and demultiplexes its stdout into per-member
+streams using the header-provided sizes (O(archive_size) total, one subprocess — not one
+per member), validating each member's CRC32/Blake2sp incrementally. Stored (uncompressed,
+unencrypted) members are served directly as raw bytes without `unrar`. RAR5 header
+encryption is decrypted **natively** via the crypto backend (`[rar]`/`[crypto]`), so even a
+header-encrypted archive can be listed without `unrar`.
 
-**The alternative — `python-libarchive-c`.** Investigated; libarchive's RAR backend explicitly does not support solid archives. Not viable.
-
-**Rolling a RAR reader** is not practical: the RAR format is proprietary and documented only through reverse engineering. The reference implementation is the `unrar` tool itself.
+**Rolling a full native RAR decompressor is out of scope:** the RAR format is proprietary
+and documented only through reverse engineering; the reference implementation is the `unrar`
+tool itself, which is why it stays the decompressor for member data.
 
 ---
 
 ## 6. Dependency Matrix
 
-| Extra | Package | Version floor | Purpose |
-|-------|---------|---------------|---------|
+| Extra | Package / tool | Version floor | Purpose |
+|-------|----------------|---------------|---------|
 | (core) | zipfile | stdlib | ZIP read/write |
 | (core) | tarfile | stdlib | TAR read/write |
-| (core) | gzip, bz2, lzma | stdlib | single-file compressors |
-| `[7z]` | `py7zr` | ≥0.20 | 7-Zip read/write |
-| `[rar]` | `rarfile` | ≥4.0 | RAR read (+ `unrar` binary) |
+| (core) | gzip, bz2, lzma, zlib | stdlib | single-file compressors |
+| (core) | native parser + stdlib `lzma`/`bz2`/`zlib` | stdlib | **7z reading** (LZMA1/LZMA2/BCJ/Delta/Deflate/BZip2) |
+| (core) | native RAR4/RAR5 metadata parser | stdlib | **RAR listing** (no `unrar` needed to list) |
+| (system) | `unrar` binary on PATH | — | RAR member **data** reads (decompressor) |
+| `[7z]` | `pyppmd`, `inflate64`, `zstandard`, `brotli` | — | optional 7z codecs: PPMd, Deflate64, Zstd, Brotli |
+| `[7z-write]` | `py7zr` | ≥0.20 | 7-Zip **writing** only (reading is native) |
+| `[crypto]` | `cryptography` | — | AES decryption (7z AES, RAR5 header encryption) |
 | `[iso]` | `pycdlib` | ≥1.14 | ISO 9660 read |
-| `[zstd]` | `zstandard` | ≥0.21 | Zstandard .zst and .tar.zst |
+| `[zstd]` | `zstandard` | ≥0.21 | Zstandard `.zst` and `.tar.zst` |
+| `[lz4]` | `lz4` | — | LZ4 `.lz4` and `.tar.lz4` |
+| `[seekable]` | `rapidgzip`, `indexed_bzip2` | — | fast seekable random access into gzip/bzip2 streams |
 | `[all]` | all above | — | Everything |
 
-Dev/test extras: `pytest`, `pytest-cov`, `mypy`, `ruff`, `hypothesis`.
+Dev/test extras: `pytest`, `pytest-cov`, `mypy`, `ruff`, `hypothesis`. The dev group also
+pins `py7zr` and `rarfile` purely as **cross-validation oracles** — they are not runtime
+read dependencies (7z/RAR reading is native).
 
 ---
 
@@ -605,127 +799,76 @@ Dev/test extras: `pytest`, `pytest-cov`, `mypy`, `ruff`, `hypothesis`.
 
 ### 7.1 ZIP central directory caching
 
-`zipfile.ZipFile` reads the central directory on `__init__`. The ZIP backend does not re-read it. Member name lookup is `O(1)` via an internal dict (`self._zf.NameToInfo`).
+→ see SPEC.md §10.1 / openspec `format-zip`
+
+`zipfile.ZipFile` reads the central directory on `__init__`. The ZIP backend does not re-read it. Member-name lookup is `O(1)` (the ZIP central-directory name index) via an internal dict (`self._zf.NameToInfo`).
 
 ### 7.2 TAR sequential read
+
+→ see SPEC.md §10.2 / openspec `format-tar`
 
 TAR backends in streaming mode (`r|gz`) read blocks of 512 bytes and yield `TarInfo` objects. They never seek backward. The Python `tarfile` module handles this internally; the backend just iterates.
 
 For random access on a compressed TAR (`.tar.gz` etc.), there is no efficient option — the backend materializes a sorted list of `(offset, TarInfo)` tuples by doing a full streaming scan once, then uses those offsets for subsequent random access (requiring seeking in the decompressed stream — only possible for plain `.tar` without compression wrapper). For compressed TARs, random access requires decompressing from the start each time — this is reported via `AccessCost.SOLID`.
 
-### 7.3 7z backend — lazy per-folder caching
+### 7.3 7z backend — native streaming folder decode
 
-py7zr's push model (`extract(factory=...)`) and the solid block problem are handled entirely inside `SevenZReader._open_member()` via lazy per-folder caching. The public API (`for member in ar: ar.open(member)`) requires no changes.
+→ see SPEC.md §10.4 / openspec `format-7z`
 
-**Folder-to-file mapping** (confirmed via py7zr internals):
-- Each `FileInfo` dict has a `"folder"` key → reference to the `Folder` object it belongs to.
-- Files in the same solid block share the same `Folder` instance (object identity, not an index).
-- `SubstreamsInfo.num_unpackstreams_folders[i]` gives file count per folder.
+The 7z backend is native: the header is parsed natively and decompression is driven through
+stdlib `lzma`/`bz2`/`zlib` (plus optional `[7z]`/`[crypto]` codecs). There is **no**
+`SpooledTemporaryFile` per-folder cache and no push-model background thread/queue.
 
-**`_open_member()` — lazy folder cache (monotonic memory):**
-```python
-def _open_member(self, member: Member) -> BinaryIO:
-    name = member.original_name
-    folder = self._file_info_map[name]["folder"]
+**Folder-to-file mapping** comes from the natively parsed header: each member knows its
+containing folder, and the substreams info gives the file count per folder and the
+contiguous layout of files within the folder's decompressed output.
 
-    if folder not in self._folder_cache:
-        targets = [fi["filename"] for fi in folder.files]
-        class BlockFactory(py7zr.WriterFactory):
-            def create(inner_self, fn):
-                spooled = tempfile.SpooledTemporaryFile(max_size=64 << 20)
-                self._folder_cache[folder][fn] = spooled   # written into permanent cache
-                return _Py7zIOAdapter(spooled)
-        self._folder_cache[folder] = {}
-        self._sz.extract(targets=targets, factory=BlockFactory())
-        self._sz.reset()   # required before next extraction
+**`_iter_with_data()` / `stream_members()` — progressive folder decode, bounded memory.** A
+solid folder is decoded **once** and its members are yielded **in order as the decompressor
+produces bytes** — the reader reads exactly `member.size` bytes per member from the folder's
+decompressed stream, yields that member's stream, then advances. Peak memory is the
+decompressor's working state plus one in-flight chunk, **not** the whole folder. The CRC32
+(`hashes["crc32"]`) is verified incrementally as bytes are read; a mismatch raises
+`CorruptionError`.
 
-    buf = self._folder_cache[folder][name]
-    buf.seek(0)
-    return buf
-```
+**`_open_member()` — random access into a solid folder.** A random `ar.open()` for a member
+inside a solid folder **re-decodes the folder from its start** and skips to the member,
+emitting a `logging.WARNING` advising `stream_members()` for full sequential passes. The
+library MUST NOT hold a growing cache of decoded block data released only at `close()`; it
+MAY cache a single decoded folder for repeated access to members of that same folder. For
+single-file folders (`AccessCost.DIRECT`) there is no re-decode penalty.
 
-First `open()` for any member in a folder pays O(folder_decompression). All subsequent calls to the same folder are O(1). Cache entries accumulate until `close()` — memory grows with the number of distinct folders accessed.
+**`_iter_members()`** is pure metadata from the parsed header — O(1), no decompression.
 
-**`_iter_with_data()` — folder-by-folder, bounded memory:**
-```python
-def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
-    for folder in self._folders:
-        targets = [fi["filename"] for fi in folder.files]
-        folder_bufs: dict[str, SpooledTemporaryFile] = {}
+**Coder chains** are applied in reverse coder order (e.g. `AES → LZMA2` means decrypt, then
+decompress). **BCJ2** is detected and rejected with `UnsupportedFeatureError`.
 
-        class FolderFactory(py7zr.WriterFactory):
-            def create(inner_self, fn):
-                spooled = tempfile.SpooledTemporaryFile(max_size=64 << 20)
-                folder_bufs[fn] = spooled
-                return _Py7zIOAdapter(spooled)
+### 7.4 RAR backend — native metadata + streamed unrar
 
-        self._sz.extract(targets=targets, factory=FolderFactory())
-        self._sz.reset()
+→ see SPEC.md §10.5 / openspec `format-rar`
 
-        for fi in folder.files:
-            member = self._member_map[fi["filename"]]
-            buf = folder_bufs[fi["filename"]]
-            buf.seek(0)
-            yield member, buf
+Metadata is parsed natively (RAR4/RAR5), so listing needs no `unrar`. Member **data** comes
+from the system `unrar` binary.
 
-        # folder_bufs goes out of scope here → GC releases SpooledTemporaryFiles
-        # Peak memory = size of the largest single folder
-```
+- **Solid sequential iteration** (`stream_members()`): a **single** `unrar p -inul <archive>`
+  subprocess is run and its stdout is **demultiplexed** into per-member streams using the
+  header-provided sizes — O(archive_size) total, one subprocess, not one per member. Each
+  member's checksum (CRC32 or Blake2sp, per `hashes`) is validated incrementally as it is
+  read.
+- **Stored members** (uncompressed, unencrypted) are served directly as raw bytes without
+  invoking `unrar`.
+- **Non-solid random access** reads just that member's data via `unrar` — O(member_size).
+- **Solid random access** MAY extract once with `unrar x` into a temporary directory and
+  serve subsequent reads from disk, cleaned up on `close()`.
 
-**`_Py7zIOAdapter`** adapts `SpooledTemporaryFile` to the `Py7zIO` interface. Must be seekable — py7zr calls `seek(0)` after writing as a final rewind; it never reads back.
-
-**`_iter_members()`** is pure metadata: calls `sz.list()`, O(1), no decompression.
-
-### 7.4 RAR backend — one-shot extraction for solid archives
-
-rarfile has a critical limitation: `extractall()` does **not** run `unrar` once for all files — it calls `open()` per file, spawning a separate subprocess each time. For solid archives, each subprocess re-processes the full archive. This is O(N) subprocess invocations, each doing O(archive_size) work.
-
-**`_open_member()` — solid cache persists until `close()`:**
-```python
-def _open_member(self, member: Member) -> BinaryIO:
-    if not self._is_solid:
-        return self._rf.open(member.original_name)   # rarfile's hack, efficient
-    self._ensure_solid_cache()                        # runs unrar x once, lazy
-    return open(self._solid_cache_dir / member.name, 'rb')
-
-def _ensure_solid_cache(self):
-    if self._solid_cache_dir is not None:
-        return
-    self._solid_cache_dir = Path(tempfile.mkdtemp())
-    setup = rarfile.tool_setup()
-    cmd = [setup._unrar_tool, 'x', '-inul',
-           f'-p{self._password}' if self._password else '-p-',
-           str(self._path), str(self._solid_cache_dir) + os.sep]
-    subprocess.run(cmd, check=True)
-```
-
-(`x` preserves relative paths; `e` flattens — we need `x` to avoid name collisions.)
-
-`_solid_cache_dir` is cleaned up in `close()`. Disk persists for the archive's lifetime.
-
-**`_iter_with_data()` — solid RAR, disk freed early:**
-```python
-def _iter_with_data(self) -> Iterator[tuple[Member, BinaryIO]]:
-    if not self._is_solid:
-        yield from super()._iter_with_data()   # default: open() per member
-        return
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        setup = rarfile.tool_setup()
-        subprocess.run([setup._unrar_tool, 'x', '-inul', ...], check=True)
-        for member in self._iter_members():
-            yield member, open(tmpdir / member.name, 'rb')
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-```
-
-Both paths run `unrar` exactly once. The distinction is lifetime: `_open_member()`'s cache persists until `close()`; `_iter_with_data()`'s tmpdir is cleaned up when the `stream_members()` loop ends (via the `finally` block in the generator, triggered by `close()` on the iterator).
-
-**`unrar e` vs `unrar x`:** `e` flattens to a single directory; `x` preserves paths. We use `x` to avoid name collisions. The command is built from rarfile's `tool_setup()` to respect any user-configured tool path.
-
-**Non-solid RAR:** rarfile's per-file hack is used. For files under 20 MiB, it creates a mini-archive with just the target's compressed data and runs `unrar` on that — O(member_size) per call.
+A lower-priority, benchmark-gated optimization MAY build a temporary single-file RAR for a
+small member and run `unrar` on that smaller archive; it is adopted only if measured to help
+and MUST be byte-identical to the direct `unrar` path. If `unrar` is required but absent from
+PATH, the reader raises `PackageNotInstalledError` naming `unrar`.
 
 ### 7.5 Chunk size for extraction
+
+→ see SPEC.md §7 / openspec `safe-extraction`
 
 Default chunk size is 1 MiB (1 048 576 bytes). This is a balance between:
 - Too small: excessive system call overhead.
@@ -737,15 +880,21 @@ The chunk size is passed through to `shutil.copyfileobj(src, dst, length=CHUNK_S
 
 ## 8. Link-Following in ArchiveReader
 
-Three archive formats handle links differently at the library level:
+→ see SPEC.md §3.2 / openspec `archive-reading`
+
+Archive formats handle links differently at the library level:
 
 | Format | hardlink `open()` | symlink `open()` |
 |--------|------------------|-----------------|
 | TAR | tarfile follows automatically — `extractfile()` returns data of linked file | tarfile follows automatically |
-| RAR5 | rarfile follows `RAR5_XREDIR_HARD_LINK` and `FILE_COPY` automatically | rarfile returns target path as bytes (link not followed) |
+| RAR5 | native `file_redir` maps `RAR5_XREDIR_HARD_LINK` / `FILE_COPY` to the target member | symlink stored with the target path as content (resolved by the ABC layer) |
 | ZIP | no hardlink concept | symlink stored as regular file with target path as content |
 | 7z | no hardlink concept | symlink stored with metadata; content is target path |
 
-The ABC layer adds uniform link-following on top, catching the ZIP/7z/RAR symlink cases. Backends that already follow links internally (TAR hardlinks, RAR5 hardlinks) do so at a lower level — the ABC-level check is a no-op for those (the result is already the target's data, not the link path).
+The ABC layer adds uniform link-following on top, catching the ZIP/7z/RAR symlink cases. Backends that already follow links internally (TAR hardlinks, RAR5 hardlinks/file-copies) do so at a lower level — the ABC-level check is a no-op for those (the result is already the target's data, not the link path).
 
-The `_depth` guard (`max=8`) in the ABC `open()` prevents symlink cycles within the archive from causing infinite recursion.
+Cycle handling in the ABC `open()` uses **cycle detection via a visited member-id set**
+(passed down the recursive resolution) rather than a fixed depth cap: an acyclic link chain
+of any length resolves, and only an actual cycle raises a `ReadError`. A missing target
+raises `LinkTargetNotFoundError`. Hardlink targets are always **earlier** members (the TAR
+model), so a hardlink resolves during a single forward pass.
