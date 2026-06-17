@@ -62,8 +62,115 @@ class ArchiveWriter(ABC):
     """Abstract base for archive writers. Defined here as a placeholder."""
 
 
-class BaseArchiveReader(ABC):
-    """Abstract base class for all archive readers."""
+class ArchiveReader(ABC):
+    """The public, read-only interface to an open archive.
+
+    This is the type returned by :func:`archivey.open_archive` and the one programs
+    should annotate against. It declares **only** the public contract; the concrete
+    machinery (and the internal hooks format backends implement) lives in the
+    ``BaseArchiveReader`` helper, which every real reader extends. Implements the
+    context-manager protocol, so use it in a ``with`` block.
+    """
+
+    @property
+    @abstractmethod
+    def format(self) -> ArchiveFormat:
+        """The detected ``(container, stream)`` format of the open archive."""
+        ...
+
+    @property
+    @abstractmethod
+    def info(self) -> ArchiveInfo:
+        """Archive-level metadata (format, solidity, counts, encryption, cost)."""
+        ...
+
+    @property
+    @abstractmethod
+    def cost(self) -> CostReceipt:
+        """The listing/access cost receipt for this archive (see ``access-intent-and-cost``)."""
+        ...
+
+    @abstractmethod
+    def __iter__(self) -> Iterator[ArchiveMember]:
+        """Iterate members in archive order (served from cache once materialized)."""
+        ...
+
+    @abstractmethod
+    def members(self) -> list[ArchiveMember]:
+        """All members as a list. May trigger a scan; raises ``UnsupportedOperationError``
+        on a ``SEQUENTIAL`` reader that has no upfront index."""
+        ...
+
+    @abstractmethod
+    def __len__(self) -> int:
+        """Member count (same constraints as :meth:`members`)."""
+        ...
+
+    @abstractmethod
+    def __contains__(self, name: object) -> bool:
+        """Whether a member with the given name exists."""
+        ...
+
+    @abstractmethod
+    def __getitem__(self, name: str) -> ArchiveMember:
+        """Look up a member by name; raises ``KeyError`` if absent."""
+        ...
+
+    @abstractmethod
+    def get(
+        self, name: str, default: ArchiveMember | None = None
+    ) -> ArchiveMember | None:
+        """Look up a member by name, returning ``default`` if absent."""
+        ...
+
+    @abstractmethod
+    def open(self, member: str | ArchiveMember) -> BinaryIO:
+        """Open a member as a binary stream, following symlinks/hardlinks. The caller
+        is responsible for closing the returned stream."""
+        ...
+
+    @abstractmethod
+    def read(self, member: str | ArchiveMember) -> bytes:
+        """Read a member's full contents as ``bytes`` (unbounded — prefer :meth:`open`
+        or :meth:`stream_members` for anything not known to be small)."""
+        ...
+
+    @abstractmethod
+    def stream_members(
+        self, members: MemberSelector = None
+    ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
+        """Yield ``(member, stream)`` pairs in archive order with bounded memory.
+        ``members`` is an optional selector predicate (no transform). The yielded stream
+        is valid only until the iterator advances; it is ``None`` for non-file members."""
+        ...
+
+    @abstractmethod
+    def extract_all(self, dest: str | Path) -> None:
+        """Extract all members to ``dest`` (safe-by-default; see ``safe-extraction``)."""
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release resources held by the reader. Idempotent; using a reader after
+        ``close()`` is undefined."""
+        ...
+
+    @abstractmethod
+    def __enter__(self) -> "ArchiveReader": ...
+
+    @abstractmethod
+    def __exit__(self, *args: object) -> None: ...
+
+
+class BaseArchiveReader(ArchiveReader):
+    """Internal helper base for all format readers.
+
+    Implements the public :class:`ArchiveReader` surface (iteration, lookup, link
+    following, lifecycle) in terms of four primitives a backend must provide —
+    :meth:`_iter_members`, :meth:`_open_member`, :meth:`_get_archive_info`,
+    :meth:`_close_archive` — plus the optional :meth:`_iter_with_data` override for
+    streaming/solid backends. Format backends extend **this**, not ``ArchiveReader``.
+    """
 
     _SUPPORTS_RANDOM_ACCESS: bool = True
     _MEMBER_LIST_UPFRONT: bool = True
@@ -306,7 +413,3 @@ class BaseArchiveReader(ABC):
             exc.archive_name = self._archive_name
         if exc.member_name is None and member_name is not None:
             exc.member_name = member_name
-
-
-# ArchiveReader is the public alias for BaseArchiveReader
-ArchiveReader = BaseArchiveReader

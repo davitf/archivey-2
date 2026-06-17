@@ -7,7 +7,7 @@ from typing import BinaryIO
 
 from archivey.internal.errors import FormatDetectionError
 from archivey.internal.intent import Intent
-from archivey.internal.reader import BaseArchiveReader
+from archivey.internal.reader import ArchiveReader
 from archivey.internal.registry import get_registry
 from archivey.internal.types import ArchiveFormat
 
@@ -19,7 +19,7 @@ def open_archive(
     intent: Intent = Intent.AUTO,
     password: bytes | str | None = None,
     encoding: str | None = None,
-) -> BaseArchiveReader:
+) -> ArchiveReader:
     """Open an archive for reading.
 
     If source is a directory path, opens it as a directory pseudo-archive.
