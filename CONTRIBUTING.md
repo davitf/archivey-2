@@ -49,6 +49,20 @@ without it those tests skip cleanly.
   decisions, format quirks, and edge cases (these archives are full of them).
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
+- **Type-checker suppressions must be justified, and are a last resort.** A bare
+  `# type: ignore` that hides a *fixable* error is not allowed — it lets a real bug
+  through and silently rots. Before suppressing, fix the type model (e.g. declaring the
+  named `ArchiveFormat` instances as `ClassVar`s removed ~20 `# type: ignore`s *and* the
+  errors they were masking). When a suppression is genuinely unavoidable (a checker bug,
+  or a third-party stub gap), it MUST:
+  - be **specific** — pin the rule, e.g. `# type: ignore[attr-defined]` /
+    `# pyrefly: ignore[...]` / `# ty: ignore[...]`, never a blanket `# type: ignore`; and
+  - carry an **inline reason** on the same line or just above, saying *why* it's needed
+    and ideally linking the upstream issue.
+
+  An unjustified or non-specific suppression should be treated as a review blocker. The
+  library is kept clean on **both** Pyrefly and ty precisely so neither checker's blind
+  spot can hide an error the other would catch — don't defeat that with a suppression.
 - **Exception translation is specific.** All errors caused by archive problems must
   surface as `ArchiveyError` subclasses, via each reader's per-library translator:
   - Map *known* third-party exceptions to the right `ArchiveyError`
