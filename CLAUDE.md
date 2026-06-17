@@ -14,6 +14,7 @@ library: read, stream, and safely extract ZIP / TAR / RAR / 7z / ISO / directory
 - `openspec/project.md` — cross-cutting context: capability map, the phase →
   capability implementation-order table, and key strategy notes.
 - `openspec/changes/<change>/` — in-flight change proposals (proposal/tasks).
+- `IDEAS.md` — speculative future/backlog ideas (not committed, not in `PLAN.md`).
 
 ## Reference repository: `archivey-dev`
 

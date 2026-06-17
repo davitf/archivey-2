@@ -103,9 +103,15 @@ Phase 10, when the frozen DEV oracle is deleted.
 
 ## Deferred / out of scope (v1)
 
+These are **decided** deferrals (a conscious "not for v1"):
+
 - In-place archive modification (append/update).
 - Encryption write for 7z/RAR.
 - Native sparse-file extraction (detected and flagged, extracted dense).
 - NTFS junction recreation on non-Windows.
 - Joining multi-volume archives (reported via `is_multivolume`, joining left to caller).
 - Async API.
+
+For looser, **speculative** "might do later" ideas (native streaming ZIP, libarchive
+backend, pathlib/fsspec navigation, subprocess decompressors, …) see `IDEAS.md` at the
+repo root.
