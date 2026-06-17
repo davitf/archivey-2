@@ -462,7 +462,9 @@ class ExtractionResult:
     member: ArchiveMember
     path: Path | None            # the written path, or None if not written
     status: ExtractionStatus
-    error: ArchiveyError | None = None   # the failure, for FAILED/REJECTED under OnError.CONTINUE
+    error: ArchiveyError | OSError | None = None   # the failure, for FAILED/REJECTED under
+                                         # OnError.CONTINUE; an OSError when the failure is a
+                                         # filesystem read/write error on this member
 
 class ExtractionStatus(Enum):
     EXTRACTED = "extracted"
@@ -507,10 +509,15 @@ class OnError(Enum):
     CONTINUE = "continue"  # best-effort: record the failure, clean up, proceed to the next member
 ```
 
-A per-member failure is any `ArchiveyError` raised while processing one member: a
-`FilterRejectionError` (universal/policy safety check), a data error
-(`CorruptionError`/`TruncatedError`/`EncryptionError`), the per-member ratio
-`ExtractionError`, or a write error to that member's path.
+A per-member failure is an error raised while processing one member. It is usually an
+`ArchiveyError` — a `FilterRejectionError` (universal/policy safety check), a data error
+(`CorruptionError`/`TruncatedError`/`EncryptionError`), or the per-member ratio
+`ExtractionError` — but it **also includes a plain filesystem `OSError`** raised while
+reading this member's bytes out of the source archive or writing its output file to disk
+(a permission error, a name the OS rejects, an I/O error on the destination, etc.). Those
+filesystem errors are *not* translated into `ArchiveyError`s; they are caught at the
+extraction-coordinator level and recorded (or, under `STOP`, re-raised) as-is — which is
+why `ExtractionResult.error` is typed `ArchiveyError | OSError`.
 
 - **`OnError.STOP` (default):** the first per-member failure is raised immediately;
   already-extracted members remain on disk, the failing member's partial output is
@@ -533,8 +540,11 @@ kinds.
   raises `ExtractionError` and halts even under `CONTINUE` (continuing would defeat the
   guard). (The *per-member* ratio limit is a per-member failure and is skippable under
   `CONTINUE`.)
-- `KeyboardInterrupt`, `MemoryError`, and other non-`ArchiveyError` exceptions propagate
-  unchanged and are never swallowed by `CONTINUE`.
+- `KeyboardInterrupt`, `MemoryError`, and any exception that is neither an `ArchiveyError`
+  nor a per-member filesystem `OSError` (a programming error such as `TypeError`, a
+  `SystemExit`, …) propagate unchanged and are never swallowed by `CONTINUE`. The carve-out
+  is deliberate: a per-member filesystem `OSError` (above) *is* caught under `CONTINUE`,
+  whereas an unexpected non-IO exception signals a bug and must surface.
 
 #### Scenario: STOP halts on the first failure
 
@@ -550,3 +560,8 @@ kinds.
 
 - **WHEN** the cumulative `max_extracted_bytes` limit is exceeded during a `CONTINUE` extraction
 - **THEN** `ExtractionError` is raised and extraction halts regardless of `on_error`
+
+#### Scenario: filesystem write error is a per-member failure
+
+- **WHEN** writing a member's output file fails with an `OSError` (e.g. a permission error or an I/O error on the destination)
+- **THEN** under `OnError.CONTINUE` the partial file is removed, the member's `ExtractionResult` has `status=FAILED` and `error` set to the `OSError`, and extraction proceeds; under `OnError.STOP` the `OSError` is raised directly

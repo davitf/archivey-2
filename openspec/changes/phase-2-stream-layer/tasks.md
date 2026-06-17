@@ -1,6 +1,7 @@
 # Tasks — Phase 2: Stream layer (compressed + seekable)
 
-> Run tools through uv: `uv run pytest`, `uv run mypy`, `uv run ruff`.
+> Run tools through uv: `uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
+> `uv run ruff`.
 > Prerequisite: Phase 1 complete (spine + harness green).
 > Clean-slate: build the package fresh; no `io_helpers.py` shim, no method-swap.
 
@@ -8,23 +9,41 @@
 
 > **DEV source map** (port-as-unit references; pin commit `730275b…`): the primitives
 > are scattered, not all in `io_helpers.py` —
-> `RecordableStream`, `SlicingStream`, `BinaryIOWrapper` → `internal/io_helpers.py`;
-> `RewindableStreamWrapper`, `is_seekable`/`is_stream`/`is_filename`/`ensure_binaryio`/
-> `ensure_bufferedio`/`fix_stream_start_position` → `core.py`;
+> `SlicingStream`, `BinaryIOWrapper` → `internal/io_helpers.py`;
+> `is_seekable`/`is_stream`/`is_filename`/`ensure_binaryio`/`ensure_bufferedio`/
+> `fix_stream_start_position` → `core.py`;
 > `read_exact` → `formats/single_file_reader.py`;
 > `DecompressorStream` → `formats/decompressor_stream.py`;
 > `XzStream` → `formats/xz_stream.py`; `LzipStream` → `formats/lzip_stream.py`.
 > Treat these as references to rewrite cleanly into the new layout, not files to copy.
+>
+> **Out of scope here:** DEV's `RecordableStream` / `RewindableStreamWrapper` (the
+> detection peek/rewind primitive, used only inside the opener) are **not** ported into
+> this phase — they are replaced by `PeekableStream`, built with `format-detection` in
+> **Phase 3**.
 
 - [ ] 1.1 Create `src/archivey/internal/streams/` (with `__init__.py`).
-- [ ] 1.2 `detect.py` — port `RecordableStream`, `RewindableStreamWrapper`.
-- [ ] 1.3 `slice.py` — port `SlicingStream`.
-- [ ] 1.4 `compat.py` — port `is_seekable`, `is_stream`, `is_filename`,
+- [ ] 1.2 `slice.py` — port `SlicingStream`. (The detection peek/rewind primitive —
+      DEV's `RecordableStream`/`RewindableStreamWrapper` — is **not** built here; it
+      becomes `PeekableStream` in Phase 3 with `format-detection`.)
+- [ ] 1.3 `compat.py` — port `is_seekable`, `is_stream`, `is_filename`,
       `ensure_binaryio`, `ensure_bufferedio`, `fix_stream_start_position`,
       `read_exact`; write a **simplified `BinaryIOWrapper`** fresh (plain delegation
       + `readinto` fallback; **no** `self.read = self._raw.read`).
-- [ ] 1.5 Port the decompressor streams as `decompress.py` / `xz.py` / `lzip.py`;
+- [ ] 1.4 Port the decompressor streams as `decompress.py` / `xz.py` / `lzip.py`;
       leave `archive_stream.py` where it is.
+- [ ] 1.5 **Exhaustive primitive/helper tests** — these streams and helpers are the
+      building blocks every later format depends on, so test them hard *as units*, not
+      just via the codec layer. First **mine DEV's stream tests** (pinned `730275b…`,
+      e.g. `tests/test_io*.py` / stream-helper tests) and carry over every scenario that
+      still applies, then add the corner cases the new layout introduces. Cover at least:
+      short/zero-length reads and `read(0)`; `read()`-to-EOF vs sized reads; `readinto`
+      (incl. the fallback path in the simplified `BinaryIOWrapper`); reads spanning the
+      a slice boundary; `seek`/`tell` on seekable wrappers and `StreamNotSeekableError`
+      on non-seekable ones; `SlicingStream` bounds (start/length, reads past the slice end,
+      empty slice); `ensure_binaryio`/
+      `fix_stream_start_position` on already-positioned streams; truncated/empty input;
+      double `close()` / use-after-close; and large-member reads (the perf path in 5.6).
 
 ## 2. compressed-streams codec layer
 
@@ -60,7 +79,7 @@
 - [ ] 5.2 All of `seekable-decompressor-streams`.
 
 **Gates**
-- [ ] 5.3 `uv run mypy src/` clean under `--strict`.
+- [ ] 5.3 `uv run pyrefly check` and `uv run ty check` both clean (strict).
 - [ ] 5.4 `uv run ruff check` clean.
 - [ ] 5.5 New stream tests green; frozen oracle no worse.
 - [ ] 5.6 (If a perf regression is suspected) benchmark the simplified

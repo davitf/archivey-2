@@ -9,11 +9,15 @@ library: read, stream, and safely extract ZIP / TAR / RAR / 7z / ISO / directory
 - `SPEC.md`, `ARCHITECTURE.md`, `COMPARISON.md`, `PLAN.md` — the original prose
   design docs (reference). `PLAN.md` is the phased implementation roadmap.
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs
-  (OpenSpec format: requirements + WHEN/THEN scenarios). When specs and the prose
-  docs disagree, the specs win.
+  (OpenSpec format: requirements + WHEN/THEN scenarios). The specs are authoritative,
+  but when they disagree with the prose docs (or with each other), **pause and surface
+  the discrepancy to the maintainer** rather than silently picking a winner — the
+  conflict often signals a decision that hasn't been made yet.
 - `openspec/project.md` — cross-cutting context: capability map, the phase →
   capability implementation-order table, and key strategy notes.
 - `openspec/changes/<change>/` — in-flight change proposals (proposal/tasks).
+- `CONTRIBUTING.md` — coding/testing standards (type-checking, exception translation,
+  behaviour-focused tests, red-green TDD, the pause-and-ask-on-discrepancies rule).
 - `IDEAS.md` — speculative future/backlog ideas (not committed, not in `PLAN.md`).
 
 ## Reference repository: `archivey-dev`
@@ -59,5 +63,10 @@ See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,
 ## Conventions
 
 - Python 3.11+, zero-dependency core, sync-only API for v1.
-- Tooling via `uv`: `uv sync`, `uv run mypy`, `uv run pytest`, `uv run ruff`.
-  The package stays pip-installable (standard PEP 621 metadata, `hatchling`).
+- Tooling via `uv`: `uv sync`, `uv run pyrefly check`, `uv run ty check`,
+  `uv run pytest`, `uv run ruff`. Type-checking is **Pyrefly + ty** (the library stays
+  clean on both); mypy is not used. The package stays pip-installable (standard PEP 621
+  metadata, `hatchling`).
+- See `CONTRIBUTING.md` for coding/testing standards (incl. behaviour-focused tests and
+  the rule to **pause and ask the maintainer on spec/design discrepancies** rather than
+  silently resolving them).

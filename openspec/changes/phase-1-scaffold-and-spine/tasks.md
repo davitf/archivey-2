@@ -1,6 +1,7 @@
 # Tasks — Phase 1: Project scaffold, spine, and test harness
 
-> Run tools through uv: `uv sync`, `uv run mypy`, `uv run pytest`, `uv run ruff`.
+> Run tools through uv: `uv sync`, `uv run pyrefly check`, `uv run ty check`,
+> `uv run pytest`, `uv run ruff`. (Type-checking is Pyrefly + ty; no mypy.)
 > The package stays pip-installable; uv is the workflow, not a dependency.
 >
 > Clean-slate: the spine is written **fresh** to `ARCHITECTURE.md` / `SPEC.md`;
@@ -30,12 +31,36 @@
       `7z`, `rar`, `crypto`, `7z-write`, `iso`, `zstd`, `lz4`, `cli`, `seekable`,
       `recommended-lite`, `recommended`, `all` (the spec's table is the source of
       truth for each extra's dependency list and the union definitions).
-- [ ] 2.4 `[dependency-groups]` `dev` (PEP 735): pytest, mypy, ruff, coverage, the
-      archive-generation libs, **and the test oracles `py7zr` + `rarfile`**.
-- [ ] 2.5 Tool config: `[tool.mypy]` `strict = true`, `python_version = "3.11"`;
-      `[tool.ruff]`; `[tool.coverage]`.
+- [ ] 2.4 `[dependency-groups]` `dev` (PEP 735): pytest, **pyrefly**, **ty**, ruff,
+      coverage (`pytest-cov`, report-only — no gate), the archive-generation libs,
+      **and the test oracles `py7zr` + `rarfile`**.
+- [ ] 2.5 Tool config: `[tool.pyrefly]` and `[tool.ty]` (both strict, `python_version
+      = "3.11"`; the library must be clean on **both** type checkers); `[tool.ruff]`;
+      `[tool.coverage]` (report only, **no `fail_under` gate**).
 - [ ] 2.6 `.python-version` (`3.11`) and any `[tool.uv]` settings.
 - [ ] 2.7 Generate and commit `uv.lock`.
+
+## 2b. Continuous integration (env matrix)
+
+> Stand the CI workflow up **now** (it grows with each phase) rather than at the end —
+> a green matrix is part of "Phase 1 done". Keep it deliberately smaller than DEV's
+> ~18 tox envs: a **reduced ~10-job matrix** (decided), exercising every supported
+> Python, the no-deps core install, and the OS-specific path/symlink/junction behaviour.
+
+- [ ] 2b.1 GitHub Actions workflow (`.github/workflows/ci.yml`) running, per job,
+      `uv run ruff check`, `uv run pyrefly check`, `uv run ty check`, and
+      `uv run pytest` (with `pytest-cov` producing a **report only**, never failing the
+      build). Use `uv` for env setup; cache the uv environment keyed on `uv.lock`.
+- [ ] 2b.2 Matrix (~10 jobs):
+      - **Linux** × Python `{3.11, 3.12, 3.13}` × install `{core-only (no extras),
+        [all]}` = 6 jobs — `core-only` asserts the zero-dep core imports and runs with
+        no third-party packages; `[all]` runs the full suite (extras present; `unrar`
+        installed for RAR-data tests).
+      - **macOS** + **Windows** × Python `{3.11 (min), 3.13 (max)}`, `[all]` = 4 jobs —
+        the cross-platform surface (path normalisation, symlinks, junctions, no-`unrar`
+        skips) where behaviour genuinely differs by OS.
+- [ ] 2b.3 Mark RAR/7z read tests `xfail`/`skip` until Phase 7 so the matrix is green
+      from Phase 1; allow RAR-data tests to skip cleanly where `unrar` is absent.
 
 ## 3. Package layout & logging
 
@@ -141,11 +166,12 @@
       end-to-end against a real backend.
 
 **Gates**
-- [ ] 6.5 `uv run mypy src/` clean under `--strict`.
+- [ ] 6.5 `uv run pyrefly check` and `uv run ty check` both clean (strict).
 - [ ] 6.6 `uv run ruff check` clean.
 - [ ] 6.7 `uv run pytest tests/` green (mostly skips at this stage).
 - [ ] 6.8 `git status` clean after a test run (no new binary files).
 - [ ] 6.9 `archivey.__version__` resolves via `importlib.metadata`.
+- [ ] 6.10 The CI matrix (§2b) is green on all jobs (coverage reported, not gated).
 
 ## 7. Deferred (not in this phase)
 
@@ -153,5 +179,6 @@
 - Codec/detection-dependent leaf backends (ZIP/single-file/ISO) — Phase 3 (the
   directory backend lands here in Phase 1).
 - Native 7z/RAR readers — Phase 7.
-- CI matrix + coverage gating — Phase 10.
+- CI matrix is stood up **here** (§2b) and grows each phase; final tuning in Phase 10.
+  Coverage is **reported, never gated** (decided — no `fail_under`).
 - Deleting `tests/_dev_oracle/` — Phase 10.

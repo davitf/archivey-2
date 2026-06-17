@@ -17,8 +17,6 @@ simplified `BinaryIOWrapper` is written with straightforward delegation (no
 ## What Changes
 
 - **`src/archivey/internal/streams/`**, with focused modules:
-  - `detect.py` — `RecordableStream`, `RewindableStreamWrapper` (ported;
-    format-detection only).
   - `slice.py` — `SlicingStream` (ported).
   - `compat.py` — `is_seekable`, `is_stream`, `is_filename`, `ensure_binaryio`,
     `ensure_bufferedio`, `fix_stream_start_position`, `read_exact` (ported), plus a
@@ -26,6 +24,13 @@ simplified `BinaryIOWrapper` is written with straightforward delegation (no
     fallback).
   - `decompress.py` / `xz.py` / `lzip.py` — the ported `DecompressorStream`,
     `XzStream`, `LzipStream`. `archive_stream.py` stays as-is (clean and focused).
+
+  > **Not built here:** the detection peek/rewind primitive (DEV's
+  > `RecordableStream` + `RewindableStreamWrapper`) is **subsumed by `PeekableStream`**,
+  > which the opener constructs for non-seekable sources and which lands with
+  > `format-detection` in **Phase 3** — not in this stream layer. (DEV used those two
+  > only inside the opener; in v2 the seekable path simply `seek(0)`s and the
+  > non-seekable path is wrapped in `PeekableStream`.)
 - **`compressed-streams` codec layer** — one default backend per codec; a single
   wrapped AES crypto stage reachable **only** through the wrapper; a missing
   optional backend raises `PackageNotInstalledError`; decompression errors are

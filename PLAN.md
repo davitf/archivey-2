@@ -7,7 +7,7 @@
 > it wholesale as a baseline.
 > **No backwards-compatibility requirement** with DEV's public API.
 >
-> Each phase ends mergeable, `mypy --strict`-clean, `ruff`-clean, with the named
+> Each phase ends mergeable, `pyrefly`- and `ty`-clean (strict), `ruff`-clean, with the named
 > new tests green. **"Done" for a phase = the listed spec scenarios are covered by
 > passing tests in the new suite** — not "the diff looks finished."
 
@@ -20,10 +20,11 @@ Port-vs-rewrite is decided by **layer**, not file-by-file:
 - **Port as whole units** (clean port, interface-only edits) — the *leaf* logic
   that is correct and hard to re-derive: format backends' decode/parse (ZIP, TAR
   + all variants, single-file compressors, ISO, directory), format-detection
-  heuristics, and the stream primitives (`ArchiveStream`,
-  `RewindableStreamWrapper`/`RecordableStream`, `DecompressorStream`, `XzStream`,
-  `LzipStream`). Pull these from DEV as units and adapt only their interface to
-  the new ABC. Rewriting them from memory is pure downside risk — lost edge cases.
+  heuristics, and the stream primitives (`ArchiveStream`, `SlicingStream`,
+  `DecompressorStream`, `XzStream`, `LzipStream`). Pull these from DEV as units and
+  adapt only their interface to the new ABC. Rewriting them from memory is pure downside
+  risk — lost edge cases. (DEV's `RewindableStreamWrapper`/`RecordableStream` are *not*
+  ported as-is — they are folded into the new `PeekableStream`; see the detection phase.)
 - **Write fresh against SPEC/ARCHITECTURE** (never copy-then-delete) — the
   *spine*: the public API, the `BaseArchiveReader` ABC, the backend registry,
   `ExtractionCoordinator`, and the `internal/streams/` package layout. These are
@@ -102,8 +103,8 @@ All codec/detection-dependent formats stay unwired until Phases 2–3.
    `0.2.0.dev0`, Python `>=3.11`; extras exactly per `packaging-and-extras/spec.md`
    (`[7z]`, `[rar]`, `[crypto]`, `[7z-write]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`,
    `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]`); `dev`
-   `[dependency-groups]` for tooling + oracles (`py7zr`, `rarfile`); `mypy`
-   strict, `ruff`, `coverage`.
+   `[dependency-groups]` for tooling + oracles (`py7zr`, `rarfile`); `pyrefly` + `ty`
+   (strict, both kept clean — no mypy), `ruff`, `coverage` (report only, no gate).
 2. **Package layout:** `src/archivey/` with `internal/`, `formats/`, the public
    `__init__.py`. Establish the `archivey` **logger hierarchy** (no handlers).
 3. **Spine, written fresh to the target contract** (types/ABCs in place even with
@@ -132,6 +133,11 @@ All codec/detection-dependent formats stay unwired until Phases 2–3.
    serves data via `read`/`open`, follows in-directory symlinks, reports
    `INDEXED`/`DIRECT`/`SEEKABLE` cost. Needs no codec layer (Phase 2) or magic
    detection (Phase 3), so it validates the ABC end-to-end now.
+6. **CI workflow** (`.github/workflows/ci.yml`), stood up now and grown each phase — a
+   **reduced ~10-job matrix** (vs DEV's ~18): Linux × `{3.11,3.12,3.13}` ×
+   `{core-only, [all]}` (6), plus macOS + Windows on min/max Python with `[all]` (4);
+   each job runs ruff + Pyrefly + ty + pytest (coverage report only). uv-cached on
+   `uv.lock`; 7z/RAR read tests `xfail` until Phase 7.
 
 ### Tests added
 Harness self-tests (corpus round-trips through generation+cache); `__version__`
@@ -149,8 +155,9 @@ exposure; logging emits nothing by default; **`format-directory` end-to-end**
 - `testing-contract`: framework stands up (matrix harness importable; oracle hooks
   wired but skipped when libs absent).
 
-**Gates:** `mypy --strict` clean; `ruff` clean; `pytest` green (mostly skips);
-`git status` clean after a test run (no new binaries).
+**Gates:** `pyrefly` + `ty` clean (strict); `ruff` clean; `pytest` green (mostly skips);
+the CI matrix green on all jobs (coverage reported, not gated); `git status` clean after
+a test run (no new binaries).
 
 ---
 
@@ -162,11 +169,13 @@ fresh with the good DEV primitives ported in.
 **Entry criteria:** Phase 1 green.
 
 ### Tasks
-1. **`internal/streams/`**: `detect.py` (`RecordableStream`, `RewindableStreamWrapper`),
-   `slice.py` (`SlicingStream`), `compat.py` (`is_seekable`/`ensure_binaryio`/…
+1. **`internal/streams/`**: `slice.py` (`SlicingStream`), `compat.py`
+   (`is_seekable`/`ensure_binaryio`/…
    plus a **simplified `BinaryIOWrapper`** — straightforward delegation, **no**
    `self.read = self._raw.read` method-swap), and ported `decompress.py`/`xz.py`/
-   `lzip.py`. Keep `archive_stream.py`.
+   `lzip.py`. Keep `archive_stream.py`. (The detection peek/rewind primitive —
+   DEV's `RecordableStream`/`RewindableStreamWrapper` — is **not** built here; it becomes
+   `PeekableStream` in Phase 3 with `format-detection`.)
 2. **`compressed-streams`**: the uniform pull-based codec layer — one default
    backend per codec, a single wrapped crypto (AES) stage, missing-backend →
    `PackageNotInstalledError`, decompression-error translation, optional
@@ -183,7 +192,7 @@ scenarios (XZ/lzip seeking, accelerator present/absent).
 
 ### Acceptance — spec scenarios covered
 All of `compressed-streams` and `seekable-decompressor-streams`.
-**Gates:** mypy/ruff clean; new stream tests green; frozen oracle no worse.
+**Gates:** Pyrefly + ty + ruff clean; new stream tests green; frozen oracle no worse.
 
 ---
 
@@ -216,7 +225,7 @@ seeded; non-seekable ZIP spooling. Retire matching frozen-oracle coverage.
 (all read), `format-iso` (all), `format-detection` (ZIP/TAR magic, gzip-wrapping,
 SFX, ISO extended peek, never-consumes-bytes), `backend-registry` (selection +
 degradation).
-**Gates:** mypy/ruff clean; named tests green.
+**Gates:** Pyrefly + ty + ruff clean; named tests green.
 
 ---
 
@@ -254,7 +263,7 @@ policies, overwrite, bomb limits, progress/result); `archive-reading` sequential
 after advance*), `format-detection` (*gzip wrapping a tar/single file*),
 `testing-contract` (*path traversal member*, *zip bomb extraction*, *non-seekable
 TAR.GZ source*).
-**Gates:** mypy/ruff clean; streaming extraction verified on a non-seekable TAR;
+**Gates:** Pyrefly + ty + ruff clean; streaming extraction verified on a non-seekable TAR;
 no `pending_*` attributes anywhere.
 
 ---
@@ -283,7 +292,7 @@ no `pending_*` attributes anywhere.
 ### Acceptance — spec scenarios covered
 All of `archive-reading`, `archive-data-model`, `access-intent-and-cost`,
 `error-handling`.
-**Gates:** `mypy --strict` clean; public API matches `SPEC.md §2–§7`; CostReceipt
+**Gates:** `pyrefly` + `ty` clean (strict); public API matches `SPEC.md §2–§7`; CostReceipt
 correct for every format implemented so far.
 
 ---
@@ -306,7 +315,7 @@ size); `TarWriter`; `create_archive()`; `CompressionSpec` model.
 ### Acceptance — spec scenarios covered
 All of `archive-writing`; `testing-contract` (*ZIP round-trip*, *TAR round-trip*);
 `format-zip` (*streaming write via data descriptor*).
-**Gates:** mypy/ruff clean; no full-archive buffering during stream conversion.
+**Gates:** Pyrefly + ty + ruff clean; no full-archive buffering during stream conversion.
 
 ---
 
@@ -358,7 +367,7 @@ magic in detection.
 
 ### Acceptance — spec scenarios covered
 ZST/LZ4 paths of `format-single-file-compressors`, `format-tar`, `format-detection`.
-**Gates:** mypy/ruff clean; tests skip cleanly without the extras.
+**Gates:** Pyrefly + ty + ruff clean; tests skip cleanly without the extras.
 
 ---
 
@@ -369,7 +378,7 @@ behind `[cli]`.
 
 ### Tests added & acceptance
 All of `cli` (incl. *CLI installed without the `[cli]` extra*).
-**Gates:** mypy/ruff clean.
+**Gates:** Pyrefly + ty + ruff clean.
 
 ---
 
@@ -379,8 +388,11 @@ All of `cli` (incl. *CLI installed without the `[cli]` extra*).
 
 ### Tasks
 1. README, Google-style docstrings (`mkdocstrings`), `list_formats()`, CHANGELOG.
-2. CI matrix (3.11–3.13; ubuntu + windows), generated-archive cache per Python
-   version; coverage `fail_under = 90`.
+2. **Final CI tuning** — the matrix was stood up in Phase 1 (reduced ~10-job: Linux ×
+   `{3.11,3.12,3.13}` × `{core-only, [all]}`; macOS + Windows on min/max Python with
+   `[all]`); here, confirm the generated-archive cache works per Python version and the
+   full corpus generates from scratch. Coverage stays **report-only — no `fail_under`
+   gate** (decided).
 3. **Complete the adversarial corpus** and confirm **every spec scenario across
    all capabilities is covered** by the new suite; then **delete
    `tests/_dev_oracle/`**. The frozen oracle is gone; DEV is reference-only.
@@ -389,8 +401,9 @@ All of `cli` (incl. *CLI installed without the `[cli]` extra*).
 `packaging-and-extras` (finalized — extras→capability, env matrix, version),
 `cli`, and the full `testing-contract` (equivalence matrix across all formats,
 adversarial corpus, round-trip, non-seekable coverage, oracle cross-validation).
-**Gates:** coverage ≥ 90%; CI green on a fresh checkout (all archives generated
-from scratch); `tests/_dev_oracle/` removed; no committed generated binaries.
+**Gates:** CI matrix green on a fresh checkout (all archives generated from scratch;
+coverage **reported, not gated**); `tests/_dev_oracle/` removed; no committed generated
+binaries.
 
 ---
 

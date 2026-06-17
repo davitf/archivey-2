@@ -199,7 +199,7 @@ From CSP, add: the **adversarial corpus** as a named first-class suite (zip bomb
 - **Python floor:** DEV supports 3.10 (with `backports-strenum`); CSP said 3.11. v2: **3.11+** — drops two backport deps; 3.10 is EOL October 2026 anyway.
 - **Free-threaded Python:** DEV already maintains an `optional-freethreaded` extra and thread-safety locks (`_registration_lock`, class-level password lock). Preserve this — it's rare foresight, and the thread+queue 7z reader depends on it being right.
 - **Core deps:** v2 target = zero hard deps (drop tqdm/typing-extensions/backports). Extras: `[7z]`, `[rar]`, `[iso]`, per-codec extras, `[cli]` (tqdm), `[all]`.
-- **Tooling:** DEV uses ruff + pyright + pytest-parallel + tox + mkdocs-material; CSP suggested mypy. Keep DEV's stack (pyright is fine; no reason to churn).
+- **Tooling:** DEV uses ruff + pyright + pytest-parallel + tox + mkdocs-material; CSP suggested mypy. v2 keeps ruff + pytest + mkdocs but **type-checks with Pyrefly + ty** (kept clean on both; no mypy, no pyright) and runs a **reduced ~10-job GitHub Actions matrix** in place of DEV's ~18 tox envs (see `PLAN.md` Phase 1 / `openspec/changes/phase-1…`).
 
 ### 4.12 Things only one side thought of (keep all)
 

@@ -24,7 +24,13 @@ cloned as a **frozen test oracle**, not copied as a baseline.
   (`[7z]`, `[rar]`, `[crypto]`, `[7z-write]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`,
   `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]`); a `dev`
   `[dependency-groups]` entry for tooling **and the `py7zr`/`rarfile` oracles**.
-  uv workflow; package stays pip-installable.
+  uv workflow; package stays pip-installable. Type-checking is **Pyrefly + ty** (both
+  kept clean; no mypy); coverage is **reported, not gated**.
+- **CI workflow** (`.github/workflows/ci.yml`) — stood up now, not deferred to the end:
+  a **reduced ~10-job matrix** (smaller than DEV's ~18 tox envs) — Linux × Python
+  `{3.11,3.12,3.13}` × `{core-only, [all]}`, plus macOS + Windows on min/max Python with
+  `[all]` — running ruff + Pyrefly + ty + pytest per job. It grows with each phase; a
+  green matrix is part of "Phase 1 done".
 - **Package layout** — `src/archivey/{internal,formats}/` + public `__init__.py` +
   `py.typed`; establish the `archivey` **logger hierarchy** (no handlers).
 - **Spine, written fresh** (types/ABCs in place; the directory backend below is the only one wired):

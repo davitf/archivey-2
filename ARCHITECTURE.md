@@ -837,7 +837,9 @@ tool itself, which is why it stays the decompressor for member data.
 | `[seekable]` | `rapidgzip`, `indexed_bzip2` | — | fast seekable random access into gzip/bzip2 streams |
 | `[all]` | all above | — | Everything |
 
-Dev/test extras: `pytest`, `pytest-cov`, `mypy`, `ruff`, `hypothesis`. The dev group also
+Dev/test extras: `pytest`, `pytest-cov` (coverage **report only — no gate**), `pyrefly`,
+`ty` (type-checking is Pyrefly + ty; the library is kept clean on both, no mypy), `ruff`,
+`hypothesis`. The dev group also
 pins `py7zr` and `rarfile` purely as **cross-validation oracles** — they are not runtime
 read dependencies (7z/RAR reading is native).
 

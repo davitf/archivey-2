@@ -82,7 +82,7 @@ once. Specs themselves remain order-free; this table is the association.
 | 7 | Native 7z reader + native RAR metadata parser | `format-7z`, `format-rar` (native-first: read path imports no third-party lib; `unrar` binary stays for RAR data; `py7zr` for 7z write only); `testing-contract` oracle cross-validation |
 | 8 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` |
 | 9 | CLI | `cli` |
-| 10 | Polish, packaging & oracle retirement | `cli`, `packaging-and-extras` (finalize), full `testing-contract` (corpus complete, frozen DEV oracle deleted) (+ cross-cutting: README, CI, coverage ≥ 90%) |
+| 10 | Polish, packaging & oracle retirement | `cli`, `packaging-and-extras` (finalize), full `testing-contract` (corpus complete, frozen DEV oracle deleted) (+ cross-cutting: README, final CI tuning — the matrix is stood up in Phase 1; coverage is reported, **not** gated) |
 
 `logging` is cross-cutting and not owned by a single phase — the named-logger
 hierarchy is established in Phase 1 and used by every phase thereafter. The new
@@ -109,8 +109,11 @@ These are **decided** deferrals (a conscious "not for v1"):
 - Encryption write for 7z/RAR.
 - Native sparse-file extraction (detected and flagged, extracted dense).
 - NTFS junction recreation on non-Windows.
-- Joining multi-volume archives (reported via `is_multivolume`, joining left to caller).
 - Async API.
+
+Multi-volume **joining** is **no longer deferred**: `format-rar` and `format-7z` now
+specify reading a split set as one logical archive (RAR volume stitching; 7z volume
+concatenation). See those specs.
 
 For looser, **speculative** "might do later" ideas (native streaming ZIP, libarchive
 backend, pathlib/fsspec navigation, subprocess decompressors, …) see `IDEAS.md` at the

@@ -618,9 +618,14 @@ class OnError(Enum):
                            #   (with the error) in the result list, and proceed
 ```
 
-Under `OnError.CONTINUE` the returned `list[ExtractionResult]` is the report (no
-aggregate exception is raised); the cumulative `max_extracted_bytes` bomb limit and
-`KeyboardInterrupt`/`MemoryError` always halt regardless. See §7 / `safe-extraction`.
+A per-member failure is usually an `ArchiveyError`, but it **also includes a plain
+filesystem `OSError`** raised while reading the member's bytes out of the source or writing
+its output file (hence `ExtractionResult.error: ArchiveyError | OSError`); such `OSError`s
+are caught/recorded under `CONTINUE`, not propagated. Under `OnError.CONTINUE` the returned
+`list[ExtractionResult]` is the report (no aggregate exception is raised); the cumulative
+`max_extracted_bytes` bomb limit and `KeyboardInterrupt`/`MemoryError` (and any other
+non-`ArchiveyError`/non-`OSError` exception) always halt regardless. See §7 /
+`safe-extraction`.
 
 ---
 
@@ -1069,7 +1074,9 @@ class ExtractionResult:
     member: ArchiveMember
     path: Path | None            # the written path, or None if not written
     status: ExtractionStatus
-    error: ArchiveyError | None = None   # the failure, for FAILED/REJECTED under OnError.CONTINUE
+    error: ArchiveyError | OSError | None = None   # the failure, for FAILED/REJECTED under
+                                         # OnError.CONTINUE; an OSError when it is a
+                                         # filesystem read/write error on this member
 
 class ExtractionStatus(Enum):
     EXTRACTED = "extracted"
@@ -1259,5 +1266,6 @@ These were considered and deliberately excluded from v1:
 - **Encryption write for 7z/RAR:** RAR write is proprietary; 7z encryption write via `py7zr` may be added as a `[7z-write]` feature.
 - **Native sparse file extraction:** Sparse file support in TAR is detected and flagged but extracted as dense files to avoid cross-platform filesystem complexity.
 - **NTFS junction recreation on non-Windows:** Junction points are presented as `MemberType.SYMLINK` with `extra["zip.is_junction"] = True` but recreated only on Windows.
-- **Multi-volume archives:** `ArchiveInfo.is_multivolume = True` is reported, but joining volumes is left to the caller.
 - **Async API:** A purely synchronous API is specified for v1. An async wrapper layer is a natural follow-on.
+
+(Multi-volume **joining** is *not* deferred — `format-rar` and `format-7z` specify reading a split set as one logical archive; `ArchiveInfo.is_multivolume` still reports the status. See §3.1 and those format specs.)
