@@ -36,10 +36,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux: every supported Python, both as a clean zero-dep core and full [all].
+          # Linux: full [all] on every supported Python; clean zero-dep core on min+max
+          # only (the core path barely varies across point releases — min/max is enough).
           - { os: ubuntu-latest, python-version: "3.11", install: core-only }
-          - { os: ubuntu-latest, python-version: "3.12", install: core-only }
-          - { os: ubuntu-latest, python-version: "3.13", install: core-only }
           - { os: ubuntu-latest, python-version: "3.14", install: core-only }
           - { os: ubuntu-latest, python-version: "3.11", install: all }
           - { os: ubuntu-latest, python-version: "3.12", install: all }
@@ -72,6 +71,14 @@ jobs:
       - name: Assert zero-dependency core
         if: matrix.install == 'core-only'
         run: uv run --no-sync python tests/check_zero_dep_core.py
+
+      # Run the full suite against the zero-dep core too. pytest (+pytest-cov) is
+      # layered in ephemerally with --with so the optional FORMAT libraries stay
+      # absent; tests that need an optional lib must skip/xfail cleanly (see the
+      # `requires` helper in tests/conftest.py), which is exactly what this leg proves.
+      - name: Run tests (core-only)
+        if: matrix.install == 'core-only'
+        run: uv run --no-sync --with pytest --with pytest-cov pytest tests/ -q
 
       # ---- [all]: full extras + dev group; run the whole suite.
       - name: Install all extras + dev group

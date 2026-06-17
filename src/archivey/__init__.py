@@ -41,7 +41,7 @@ from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
-    CompressionAlgo,
+    CompressionAlgorithm,
     CompressionMethod,
     ContainerFormat,
     CreateSystem,
@@ -59,7 +59,7 @@ __all__ = [
     "ArchiveMember",
     "ArchiveInfo",
     "MemberType",
-    "CompressionAlgo",
+    "CompressionAlgorithm",
     "CompressionMethod",
     "CreateSystem",
     "Intent",
@@ -87,3 +87,7 @@ __all__ = [
     "PackageNotInstalledError",
     "UnsupportedOperationError",
 ]
+
+# Keep the importlib.metadata helpers out of the public `archivey` namespace
+# (so `__all__` stays the single, hand-curated description of the public API).
+del PackageNotFoundError, version

@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Mapping
 
 if TYPE_CHECKING:
     from archivey.internal.intent import CostReceipt
-
-logger = logging.getLogger("archivey.normalization")
 
 
 class ContainerFormat(str, Enum):
@@ -59,45 +56,56 @@ class ArchiveFormat:
     UNKNOWN: ClassVar[ArchiveFormat]
 
     def file_extension(self) -> str:
+        """The on-disk file extension for this format, without a leading dot.
+
+        Used for extension-based naming and detection — e.g. choosing the output
+        filename when converting between formats, or matching by extension in the
+        detector. Examples: ``ZIP`` -> ``"zip"``, ``TAR_GZ`` -> ``"tar.gz"``,
+        ``GZ`` -> ``"gz"``. Formats with no on-disk file representation
+        (``DIRECTORY``, ``UNKNOWN``) return ``""``.
+        """
+        if self.container in (ContainerFormat.DIRECTORY, ContainerFormat.UNKNOWN):
+            return ""
+        if self.container == ContainerFormat.RAW_STREAM:
+            # A bare single-file compressed stream (no container): the extension is
+            # just the codec's own — GZ -> "gz", not "raw_stream.gz".
+            return self.stream.value
         if self.stream == StreamFormat.UNCOMPRESSED:
             return self.container.value
         return f"{self.container.value}.{self.stream.value}"
 
     def __repr__(self) -> str:
-        # Return the named instance name if available
-        for name, val in _FORMAT_INSTANCES.items():
-            if val == self:
-                return f"ArchiveFormat.{name}"
+        name = _FORMAT_NAMES.get(self)
+        if name is not None:
+            return f"ArchiveFormat.{name}"
         return f"ArchiveFormat({self.container!r}, {self.stream!r})"
 
 
-# Registry of named format instances
-_FORMAT_INSTANCES: dict[str, ArchiveFormat] = {}
+# Predefined named instances, assigned as class attributes.
+ArchiveFormat.ZIP = ArchiveFormat(ContainerFormat.ZIP, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.TAR = ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.TAR_GZ = ArchiveFormat(ContainerFormat.TAR, StreamFormat.GZIP)
+ArchiveFormat.TAR_BZ2 = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP2)
+ArchiveFormat.TAR_XZ = ArchiveFormat(ContainerFormat.TAR, StreamFormat.XZ)
+ArchiveFormat.TAR_ZST = ArchiveFormat(ContainerFormat.TAR, StreamFormat.ZSTD)
+ArchiveFormat.TAR_LZ4 = ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZ4)
+ArchiveFormat.GZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
+ArchiveFormat.BZ2 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
+ArchiveFormat.XZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)
+ArchiveFormat.ZST = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)
+ArchiveFormat.SEVEN_Z = ArchiveFormat(ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DIRECTORY = ArchiveFormat(ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.UNKNOWN = ArchiveFormat(ContainerFormat.UNKNOWN, StreamFormat.UNCOMPRESSED)
 
-
-def _add_format(name: str, container: ContainerFormat, stream: StreamFormat) -> ArchiveFormat:
-    fmt = ArchiveFormat(container, stream)
-    _FORMAT_INSTANCES[name] = fmt
-    return fmt
-
-
-# Predefined named instances assigned as class attributes
-ArchiveFormat.ZIP = _add_format("ZIP", ContainerFormat.ZIP, StreamFormat.UNCOMPRESSED)
-ArchiveFormat.TAR = _add_format("TAR", ContainerFormat.TAR, StreamFormat.UNCOMPRESSED)
-ArchiveFormat.TAR_GZ = _add_format("TAR_GZ", ContainerFormat.TAR, StreamFormat.GZIP)
-ArchiveFormat.TAR_BZ2 = _add_format("TAR_BZ2", ContainerFormat.TAR, StreamFormat.BZIP2)
-ArchiveFormat.TAR_XZ = _add_format("TAR_XZ", ContainerFormat.TAR, StreamFormat.XZ)
-ArchiveFormat.TAR_ZST = _add_format("TAR_ZST", ContainerFormat.TAR, StreamFormat.ZSTD)
-ArchiveFormat.TAR_LZ4 = _add_format("TAR_LZ4", ContainerFormat.TAR, StreamFormat.LZ4)
-ArchiveFormat.GZ = _add_format("GZ", ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
-ArchiveFormat.BZ2 = _add_format("BZ2", ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
-ArchiveFormat.XZ = _add_format("XZ", ContainerFormat.RAW_STREAM, StreamFormat.XZ)
-ArchiveFormat.ZST = _add_format("ZST", ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)
-ArchiveFormat.SEVEN_Z = _add_format("SEVEN_Z", ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED)
-ArchiveFormat.RAR = _add_format("RAR", ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
-ArchiveFormat.ISO = _add_format("ISO", ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
-ArchiveFormat.DIRECTORY = _add_format("DIRECTORY", ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED)
-ArchiveFormat.UNKNOWN = _add_format("UNKNOWN", ContainerFormat.UNKNOWN, StreamFormat.UNCOMPRESSED)
+# Reverse map (instance -> attribute name) for __repr__, derived by introspecting the
+# class attributes above so the names live in exactly one place.
+_FORMAT_NAMES: dict[ArchiveFormat, str] = {
+    value: name
+    for name, value in vars(ArchiveFormat).items()
+    if isinstance(value, ArchiveFormat)
+}
 
 
 class MemberType(Enum):
@@ -108,7 +116,11 @@ class MemberType(Enum):
     OTHER = "other"
 
 
-class CompressionAlgo(Enum):
+class CompressionAlgorithm(Enum):
+    """A compression/filter codec. Extensible: codecs Archivey does not recognize
+    map to ``UNKNOWN`` rather than raising, so callers should treat the set as
+    open-ended."""
+
     STORED = "stored"
     DEFLATE = "deflate"
     DEFLATE64 = "deflate64"
@@ -119,17 +131,21 @@ class CompressionAlgo(Enum):
     LZ4 = "lz4"
     BROTLI = "brotli"
     PPMD = "ppmd"
-    BCJ = "bcj"
+    BCJ = "bcj"  # x86 executable filter
     BCJ2 = "bcj2"
     DELTA = "delta"
-    UNKNOWN = "unknown"
+    UNKNOWN = "unknown"  # unrecognized codec ID
 
 
 @dataclass(frozen=True)
 class CompressionMethod:
-    algo: CompressionAlgo
-    level: int | None = None
-    properties: bytes | None = None
+    """A single codec in a member's compression chain. Members store a
+    ``tuple[CompressionMethod, ...]`` to model multi-codec filter chains (e.g. a 7z
+    ``(BCJ2, LZMA2)`` chain)."""
+
+    algo: CompressionAlgorithm
+    level: int | None = None  # compression level, if the format records it
+    properties: bytes | None = None  # raw codec properties blob, if any
 
 
 class CreateSystem(Enum):
@@ -158,51 +174,10 @@ class CreateSystem(Enum):
     UNKNOWN = 255
 
 
-def _normalize_name(
-    raw_bytes: bytes | None,
-    decoded: str,
-    member_type: MemberType,
-    encoding: str = "utf-8",
-) -> str:
-    """Normalize archive member name per spec rules. Emits warning if name changed."""
-    name = decoded
-
-    # 1. Replace backslashes with forward slashes
-    name = name.replace("\\", "/")
-
-    # 2. Strip leading / and ./
-    while name.startswith("/") or name.startswith("./"):
-        if name.startswith("/"):
-            name = name[1:]
-        elif name.startswith("./"):
-            name = name[2:]
-
-    # 3. Collapse // and foo/../bar sequences
-    parts = name.split("/")
-    normalized_parts: list[str] = []
-    for part in parts:
-        if part == "..":
-            if normalized_parts:
-                normalized_parts.pop()
-        elif part in (".", ""):
-            pass
-        else:
-            normalized_parts.append(part)
-
-    name = "/".join(normalized_parts)
-
-    # 4. Append / for directory members
-    if member_type == MemberType.DIRECTORY and not name.endswith("/"):
-        name = name + "/"
-
-    # 5. Never produce empty string - root dir becomes "."
-    if not name or name == "/":
-        name = "."
-
-    if name != decoded:
-        logger.warning("Member name normalized: %r -> %r", decoded, name)
-
-    return name
+# Key in ArchiveMember.extra marking a member as a Windows NTFS junction. Junctions
+# are a cross-format concept (ZIP, 7z and RAR can all carry them), so this key is
+# deliberately NOT namespaced under a single format like "zip.".
+EXTRA_IS_JUNCTION = "is_junction"
 
 
 @dataclass
@@ -293,24 +268,23 @@ class ArchiveMember:
 
     @property
     def is_junction(self) -> bool:
-        return self.type == MemberType.SYMLINK and bool(self.extra.get("zip.is_junction"))
+        return self.type == MemberType.SYMLINK and bool(self.extra.get(EXTRA_IS_JUNCTION))
 
     def replace(self, **kwargs: Any) -> "ArchiveMember":
         """Return a copy with the given fields changed; never mutates self."""
-        from dataclasses import replace as dc_replace
-
-        return dc_replace(self, **kwargs)
+        return replace(self, **kwargs)
 
 
 @dataclass(frozen=True)
 class ArchiveInfo:
-    """Archive-level metadata."""
+    """Archive-level metadata, available immediately after ``open_archive()`` without
+    a full member scan."""
 
     format: ArchiveFormat
-    format_version: str | None
-    is_solid: bool
-    member_count: int | None
-    comment: str | None
-    is_encrypted: bool
+    format_version: str | None  # e.g. "4.5" for ZIP, "5" for RAR5; None if unknown
+    is_solid: bool  # decompressing one member may require decompressing earlier ones
+    member_count: int | None  # None when a count would require scanning the whole archive
+    comment: str | None  # archive-level comment, if the format records one
+    is_encrypted: bool  # header-level encryption (7z, RAR5), not per-member encryption
     is_multivolume: bool
-    cost: "CostReceipt"
+    cost: "CostReceipt"  # listing/access cost receipt (see access-intent-and-cost)

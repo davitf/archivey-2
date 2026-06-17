@@ -39,92 +39,68 @@ class DirectoryReader(BaseArchiveReader):
     ) -> None:
         super().__init__(ArchiveFormat.DIRECTORY, intent, archive_name)
         self._root = root
+        # uid/gid -> name caches: most entries in a tree share an owner/group, and
+        # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
+        self._uname_cache: dict[int, str | None] = {}
+        self._gname_cache: dict[int, str | None] = {}
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
-        for dirpath, dirnames, filenames in os.walk(self._root, followlinks=False):
-            rel_dirpath = os.path.relpath(dirpath, self._root)
-            if rel_dirpath == ".":
-                rel_dirpath = ""
+        yield from self._scan(self._root, "")
 
-            # Sort for deterministic order
-            dirnames.sort()
-            filenames_sorted = sorted(filenames)
+    def _scan(self, directory: Path, rel_prefix: str) -> Iterator[ArchiveMember]:
+        # os.scandir yields DirEntry objects whose stat() is cached, so we avoid a
+        # separate os.stat()/os.lstat() syscall per entry.
+        try:
+            with os.scandir(directory) as it:
+                entries = sorted(it, key=lambda e: e.name)
+        except OSError:
+            return
 
-            # Yield directory entry (skip root itself)
-            if rel_dirpath:
-                dir_stat = os.stat(dirpath)
-                yield self._stat_to_member(
-                    rel_dirpath + "/",
-                    dirpath,
-                    dir_stat,
-                    MemberType.DIRECTORY,
-                    None,
+        for entry in entries:
+            rel_path = rel_prefix + entry.name
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+
+            if entry.is_symlink():
+                yield self._make_member(
+                    rel_path, st, MemberType.SYMLINK, os.readlink(entry.path)
                 )
+            elif entry.is_dir(follow_symlinks=False):
+                yield self._make_member(rel_path + "/", st, MemberType.DIRECTORY, None)
+                # Recurse, keeping members in a stable parent-before-children order.
+                yield from self._scan(Path(entry.path), rel_path + "/")
+            elif entry.is_file(follow_symlinks=False):
+                yield self._make_member(rel_path, st, MemberType.FILE, None)
+            else:
+                yield self._make_member(rel_path, st, MemberType.OTHER, None)
 
-            for name in filenames_sorted:
-                full_path = os.path.join(dirpath, name)
-                rel_path = os.path.join(rel_dirpath, name) if rel_dirpath else name
-                try:
-                    entry_stat = os.lstat(full_path)
-                except OSError:
-                    continue
-
-                if stat.S_ISLNK(entry_stat.st_mode):
-                    link_target = os.readlink(full_path)
-                    yield self._stat_to_member(
-                        rel_path,
-                        full_path,
-                        entry_stat,
-                        MemberType.SYMLINK,
-                        link_target,
-                    )
-                elif stat.S_ISREG(entry_stat.st_mode):
-                    yield self._stat_to_member(
-                        rel_path,
-                        full_path,
-                        entry_stat,
-                        MemberType.FILE,
-                        None,
-                    )
-                else:
-                    yield self._stat_to_member(
-                        rel_path,
-                        full_path,
-                        entry_stat,
-                        MemberType.OTHER,
-                        None,
-                    )
-
-    def _stat_to_member(
+    def _make_member(
         self,
-        rel_path: str,
-        full_path: str,
+        name: str,
         st: os.stat_result,
         member_type: MemberType,
         link_target: str | None,
     ) -> ArchiveMember:
-        # Use forward slashes
-        name = rel_path.replace(os.sep, "/")
-
-        # Timestamps: use mtime as modified
+        # `name` is already built with "/" separators from the scan, so no path
+        # rewriting is needed here.
         modified = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+        accessed = datetime.fromtimestamp(st.st_atime, tz=timezone.utc)
+        # st_birthtime is the true creation time but only exists on some platforms
+        # (macOS/BSD, Windows, recent Linux); st_ctime is metadata-change time on
+        # Unix, NOT creation, so we never use it for `created`. Hence the getattr.
+        birthtime = getattr(st, "st_birthtime", None)
+        created = (
+            datetime.fromtimestamp(birthtime, tz=timezone.utc)
+            if birthtime is not None
+            else None
+        )
 
-        uid: int | None = getattr(st, "st_uid", None)
-        gid: int | None = getattr(st, "st_gid", None)
-
-        # Try to get uname/gname on Unix
-        uname: str | None = None
-        gname: str | None = None
-        try:
-            import grp
-            import pwd
-
-            if uid is not None:
-                uname = pwd.getpwuid(uid).pw_name
-            if gid is not None:
-                gname = grp.getgrgid(gid).gr_name
-        except (ImportError, KeyError):
-            pass
+        # os.stat_result always defines st_uid/st_gid (both 0 on Windows), so no
+        # getattr guard is needed.
+        uid = st.st_uid
+        gid = st.st_gid
 
         size = st.st_size if member_type == MemberType.FILE else None
 
@@ -135,13 +111,35 @@ class DirectoryReader(BaseArchiveReader):
             size=size,
             compressed_size=size,  # no compression
             modified=modified,
+            accessed=accessed,
+            created=created,
             mode=stat.S_IMODE(st.st_mode),
             uid=uid,
             gid=gid,
-            uname=uname,
-            gname=gname,
+            uname=self._lookup_uname(uid),
+            gname=self._lookup_gname(gid),
             link_target=link_target,
         )
+
+    def _lookup_uname(self, uid: int) -> str | None:
+        if uid not in self._uname_cache:
+            try:
+                import pwd
+
+                self._uname_cache[uid] = pwd.getpwuid(uid).pw_name
+            except (ImportError, KeyError):
+                self._uname_cache[uid] = None
+        return self._uname_cache[uid]
+
+    def _lookup_gname(self, gid: int) -> str | None:
+        if gid not in self._gname_cache:
+            try:
+                import grp
+
+                self._gname_cache[gid] = grp.getgrgid(gid).gr_name
+            except (ImportError, KeyError):
+                self._gname_cache[gid] = None
+        return self._gname_cache[gid]
 
     def _open_member(self, member: ArchiveMember) -> BinaryIO:
         full_path = self._root / member.name

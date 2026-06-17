@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -12,6 +13,26 @@ ARCHIVEY_TEST_CACHE = os.environ.get(
     "ARCHIVEY_TEST_CACHE",
     str(Path(__file__).parent.parent / ".pytest_cache" / "archivey-archives"),
 )
+
+
+def requires(*packages: str) -> pytest.MarkDecorator:
+    """Skip a test (or parametrization) when an optional package is not importable.
+
+    This is what lets the whole suite run in the `core-only` CI leg: tests that need
+    an optional format library are skipped cleanly there rather than erroring, while
+    they run normally in the `[all]` leg. Use it as a decorator::
+
+        @requires("zstandard")
+        def test_zstd_stream(): ...
+
+    Tests asserting the *degradation* behavior (a missing lib raising
+    PackageNotInstalledError) should instead run unconditionally and assert that error.
+    """
+    missing = [p for p in packages if importlib.util.find_spec(p) is None]
+    return pytest.mark.skipif(
+        bool(missing),
+        reason=f"requires optional package(s): {', '.join(missing)}",
+    )
 
 
 @pytest.fixture
