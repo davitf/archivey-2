@@ -118,7 +118,10 @@ framework — all green, with no formats wired yet.
    written atomically (temp file + `os.replace`) so parallel tox / CI-matrix runs don't
    collide and so it cleans up with standard test workflows — **not** `$XDG_CACHE_HOME`,
    which is unset on Windows runners. Entries keyed by
-   `hash(spec + creation_params + lib versions)`; `tests/fixtures/` with a
+   `hash(spec + creation_params + lib versions + generator-code version)` — the last
+   term (the archivey version, or a hash of the generation modules) so that fixing a
+   generator bug locally always invalidates stale cached archives instead of silently
+   reusing them; `tests/fixtures/` with a
    JSON sidecar per committed archive; **no generated binaries committed**; flat
    `tests/` layout. Clone DEV's suite into `tests/_dev_oracle/` as the frozen gate.
 
@@ -391,7 +394,8 @@ from scratch); `tests/_dev_oracle/` removed; no committed generated binaries.
   7z does not. `ExtractionCoordinator` is explicit per mode.
 - **`BinaryIOWrapper` simplification:** benchmark the removed method-swap on a
   large-member read before committing to plain delegation.
-- **Generated-archive cache invalidation:** key on archivey + library versions,
-  not just the spec hash, to avoid stale archives after upgrades.
+- **Generated-archive cache invalidation:** key on archivey + library versions **and
+  the generator-code version** (not just the spec hash), so neither a dependency upgrade
+  nor a local fix to the generation code can serve a stale cached archive.
 - **Oracle availability:** every oracle-backed test must *skip* (not fail) when the
   oracle lib/tool is absent, so CI without `unrar`/`7z` stays green.
