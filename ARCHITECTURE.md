@@ -202,12 +202,17 @@ def open(self, member: str | ArchiveMember,
 def stream_members(
     self,
     members: MemberSelector | None = None,   # collection of members/names or predicate
-    *,
-    filter: MemberFilter | None = None,       # returns a .replace()'d copy, or None to skip
 ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
-    # `members` SELECTS which members to yield; `filter` SANITIZES/REWRITES each
-    # selected member. Streams are opened lazily, so unselected/skipped members
-    # cost nothing. Mirrors extract_all()'s selector/filter vocabulary.
+    # `members` SELECTS which members to yield. There is intentionally NO transform
+    # `filter` here: this generator yields the ORIGINAL mutable ArchiveMember so the
+    # backend can keep filling late-bound fields (final size/CRC, data-stored
+    # link_target) in place on the object the caller holds. A MemberFilter returns a
+    # .replace() COPY; applying it here would yield that copy while the backend went on
+    # updating the original — the caller's object would never see the late values.
+    # Transformation therefore lives at the sinks that consume the stream:
+    # extract_all() and writer.add_members() (each applies it on a transient copy while
+    # the original supplies accurate limits/metadata). Streams are opened lazily, so
+    # unselected members cost nothing.
     ...
 ```
 
@@ -285,7 +290,7 @@ The `hardlink_sources` map is built before the pass starts by scanning the full 
 
 During the pass:
 - **FILE / DIR / SYMLINK**: write immediately. Record `member_id → extracted_path`.
-- **HARDLINK**: a hardlink target always **precedes** the link in archive order (the TAR model), so if its `extracted_path` is already recorded, `os.link` it; otherwise `shutil.copy2`. In streaming mode, TAR guarantees the target precedes the link — if the source was filtered out, that's an explicit error with a clear message. In random-access mode, if the source wasn't selected by the filter, it's added to the extraction set implicitly (marked "data needed, discard after linking").
+- **HARDLINK**: a hardlink target always **precedes** the link in archive order (the TAR model), so if its `extracted_path` is already recorded, `os.link` it; otherwise `shutil.copy2`. In streaming mode, TAR guarantees the target precedes the link — if the source was filtered out, that's an explicit error with a clear message. In random-access mode, if the source was **not** selected by the `members`/`filter`, the coordinator must **not** materialize it at its own final path (that would leak a file the caller excluded). Instead it writes the source's content to the **first selected link's** path and `os.link`s any further selected links to it; the unselected source name is never created. (Equivalently, an implementation may stage the content in a hidden temp inside `dest` — e.g. `dest/.archivey-tmp-<id>` — link the selected targets to it, then unlink the temp.) If no link to the source is selected either, its data is not extracted at all.
 - After the pass: apply mtime/permissions to all extracted paths (best-effort, single `os.utime` / `os.chmod` loop).
 
 This replaces the previous `ExtractionHelper` class and its pending/deferred state machine. No move-vs-link signaling. No `can_move_file` flag. No `pending_target_members_by_source_id` dict.
@@ -298,13 +303,17 @@ Symlinks don't need a second pass. They are written in archive order as encounte
 
 ```
 os.symlink(link_target, dest_path)
-resolved = (dest_path.parent / link_target).resolve()
-if not resolved.is_relative_to(dest.resolve()):
+try:
+    resolved = (dest_path.parent / link_target).resolve()
+    escaped = not resolved.is_relative_to(dest.resolve())
+except (OSError, RuntimeError):        # ELOOP / symlink loop / too many levels
+    escaped = True                     # an unresolvable link is treated as an escape
+if escaped:
     dest_path.unlink()
-    raise FilterRejectionError(...)
+    raise SymlinkEscapeError(...)
 ```
 
-This is simpler than deferred creation and catches escapes immediately rather than at the end of the run. It is safe because symlink creation is atomic on POSIX; the escape check happens before any follow-through reads.
+This is simpler than deferred creation and catches escapes immediately rather than at the end of the run. It is safe because symlink creation is atomic on POSIX; the escape check happens before any follow-through reads. The `try/except` is essential: an adversarial cyclic-symlink archive (`a → b`, `b → a`) makes the OS reject the resolution with `ELOOP` (`OSError`, or `RuntimeError` on some platforms/versions), so the guard maps that to a safe `SymlinkEscapeError` rejection instead of letting an uncaught OS error abort the extractor.
 
 The one edge case is a symlink whose target is a *later* member in the same archive (rare in practice). In streaming mode, this is treated the same as an escaped symlink — rejected with a clear error. In random-access mode, the check is deferred until all members are written (same final verification). The default `DATA` extraction filter already rejects most such patterns.
 
@@ -373,7 +382,18 @@ filter last** (a `Callable[[ArchiveMember], ArchiveMember | None]` that returns 
 member or `None` to skip it). Because `ArchiveMember` is mutable but caller-read-only,
 every transform produces its edited member via `member.replace(...)` (copy-on-edit) — it
 **never** mutates the member in place and never constructs a frozen replacement. The
-original member the caller holds is left untouched.
+original member the reader yields is left untouched.
+
+**Original vs. transient copy — who sees what.** The coordinator builds exactly one
+transient copy per member: `check_universal` runs on the original, then the policy
+transform and the user filter produce the copy. The **copy** supplies the on-disk
+*identity* — `name`, `mode`, timestamps, hence the destination path and the OS file
+handle — and is discarded once the file is written. The **original** is what the
+coordinator hands to `BombTracker.start_member()` and records in the `ExtractionResult`,
+so the ratio check and reported metadata use accurate source values, including late-bound
+`size`/CRC the backend fills in place as the data streams (a copy taken before reading
+would never receive them). This is exactly why `stream_members()` yields originals and the
+transform filter lives here, not in the reader's generator.
 
 ### 2.11 Error wrapping: per-library translators + central context stamping
 
@@ -558,11 +578,12 @@ archivey.open_archive() → ZipReader
   ▼
 _extraction.extract_all(reader, dest, policy=STRICT, ...)
   │
-  ├─► for member, stream in reader.stream_members(members, filter=...):
-  │     # filter order: check_universal → policy transform → optional user filter
-  │     _filters.check_universal(member)    ← path traversal, absolute path, null byte
-  │     safe_member = POLICY_TRANSFORMS[STRICT](member)   ← .replace(...) copy: strip exe bits, uid/gid
-  │     extract_member(safe_member, stream, dest, ...)
+  ├─► for member, stream in reader.stream_members(members):   # selector only; yields ORIGINAL
+  │     # transform pipeline (coordinator-side): check_universal → policy transform → user filter
+  │     _filters.check_universal(member)    ← path traversal, absolute path, null byte (on original)
+  │     safe_member = user_filter(POLICY_TRANSFORMS[STRICT](member))  ← .replace(...) transient copy
+  │     bomb.start_member(member)           ← ORIGINAL drives ratio/result (accurate late-bound size)
+  │     extract_member(safe_member, stream, dest, ...)   ← copy supplies name/mode/path
   │           │
   │           ├─► handle overwrite policy
   │           ├─► mkdir parents
@@ -620,26 +641,43 @@ This three-layer approach catches:
 
 ```python
 class BombTracker:
-    def __init__(self, max_bytes: int, max_ratio: float):
+    def __init__(self, max_bytes: int, max_ratio: float,
+                 ratio_activation_threshold: int = 5 * 2**20):  # 5 MiB
         self._max_bytes = max_bytes
         self._max_ratio = max_ratio
-        self._total_bytes = 0
+        self._ratio_floor = ratio_activation_threshold
+        self._total_bytes = 0          # cumulative across all members
+        self._member_bytes = 0         # output of the current member
+        self._member = None            # the ORIGINAL member (not a filter copy)
 
-    def count(self, member: ArchiveMember, chunk_bytes: int) -> None:
+    def start_member(self, member: ArchiveMember) -> None:
+        self._member = member
+        self._member_bytes = 0
+
+    def count(self, chunk_bytes: int) -> None:
         self._total_bytes += chunk_bytes
+        self._member_bytes += chunk_bytes
         if self._total_bytes > self._max_bytes:
             raise ExtractionError(
                 f"Extraction limit reached: {self._total_bytes} bytes > {self._max_bytes}"
             )
-        if member.compressed_size and member.compressed_size > 0:
-            ratio = self._total_bytes / member.compressed_size
+        # Ratio is per-member output / compressed_size, and only after the member's
+        # output passes the activation floor — so a tiny but highly-compressible
+        # legitimate file (10 B → 15 KiB = 1500:1) can't trip a false positive.
+        cs = self._member.compressed_size if self._member else None
+        if self._member_bytes > self._ratio_floor and cs and cs > 0:
+            ratio = self._member_bytes / cs
             if ratio > self._max_ratio:
                 raise ExtractionError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit {self._max_ratio:.0f}:1"
                 )
 ```
 
-`BombTracker` is constructed once per `extract_all()` call and passed through to each member extraction. Total bytes are cumulative across all members.
+`BombTracker` is constructed once per `extract_all()` call. The cumulative `max_bytes`
+limit spans all members; the per-member ratio is evaluated against each member's own
+output and only after that output crosses `ratio_activation_threshold` (default 5 MiB).
+The coordinator calls `start_member()` with the **original** member so `compressed_size`
+and late-bound fields are accurate.
 
 ---
 

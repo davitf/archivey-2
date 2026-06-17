@@ -138,20 +138,30 @@ The system SHALL provide `add_members()` as a streaming conversion primitive tha
 def add_members(
     self,
     source: ArchiveReader | Iterable[tuple[ArchiveMember, BinaryIO | None]],
+    *,
+    filter: MemberFilter | None = None,   # transform/rename/skip, applied writer-side
 ) -> None: ...
 
 # whole archive:
 writer.add_members(reader)
-# selected/filtered/renamed, in one streaming pass, no reopen:
-writer.add_members(reader.stream_members(lambda m: m.name.endswith(".py"),
-                                         filter=my_sanitizer))
+# select on the reader, transform/rename on the writer — one streaming pass, no reopen:
+writer.add_members(reader.stream_members(lambda m: m.name.endswith(".py")),
+                   filter=my_sanitizer)
 ```
 
-Accepting the `(member, stream)` iterable (rather than a separate `add_members_from_iter`)
-keeps selection and sanitization on the reader side via `stream_members(...)`, and avoids
-the anti-pattern of passing a list of members back into the writer (which would force a
-reopen). When given an `ArchiveReader`, `add_members()` drives `reader.stream_members()`
-internally.
+Selection happens on the reader side (`stream_members(members=...)`), which yields the
+**original** mutable members. Transformation (`filter`) happens here on the writer side:
+`add_members()` applies it to a transient `.replace()` copy used for the written entry's
+identity, while the original is what streams through — so a `filter` that renames does not
+detach the member from the backend's in-place late-bound updates (the same
+original-vs-copy rule the extraction coordinator uses). A `filter` returning `None` skips
+the member. Accepting the `(member, stream)` iterable (rather than a separate
+`add_members_from_iter`) avoids the anti-pattern of passing a list of members back into the
+writer (which would force a reopen). When given an `ArchiveReader`, `add_members()` drives
+`reader.stream_members()` internally.
+
+`MemberFilter` is `Callable[[ArchiveMember], ArchiveMember | None]` (shared with
+`extract_all`; see `archive-reading`).
 
 `add_members()` MUST:
 1. Consume the source sequentially (a reader via `stream_members()`), respecting solid-archive bounded-memory semantics.
@@ -167,8 +177,8 @@ internally.
 
 #### Scenario: selected/filtered conversion in one pass
 
-- **WHEN** `writer.add_members(reader.stream_members(predicate, filter=sanitizer))` is called
-- **THEN** only the selected, sanitized members are written, in a single streaming pass, without reopening the source archive
+- **WHEN** `writer.add_members(reader.stream_members(predicate), filter=sanitizer)` is called
+- **THEN** only the selected members are written, each transformed by `sanitizer` on a writer-side copy, in a single streaming pass, without reopening the source archive
 
 #### Scenario: unsupported member type is skipped
 
@@ -221,6 +231,21 @@ at `create()`/`add_*` is equivalent to `CompressionSpec(algo=None, level=DEFAULT
 | set | numeric `int` | Uses that algorithm at that numeric level. If the value is outside the algorithm's valid range, the backend raises `ValueError` (it does **not** silently clamp). |
 
 Convenience constants SHALL be available as class attributes on `CompressionSpec`.
+
+**Fail fast on an unavailable codec — never silently fall back.** When the caller names an
+explicit `algo` whose backend is not installed (e.g. `algo=CompressionAlgo.ZSTD` without the
+`[zstd]` extra, or a `[7z]`-only codec for a 7z write), `create()` (or the first `add_*` that
+would use it) SHALL raise immediately — `PackageNotInstalledError` when a package/tool is
+missing, or `UnsupportedFeatureError` when the target format cannot represent the codec at
+all. It MUST NOT substitute a different algorithm or silently degrade to the format default;
+that would produce an archive the caller did not ask for. (This only applies to an
+**explicit** `algo`. With `algo=None` the backend is *choosing* the algorithm and SHALL pick
+one that is actually available.)
+
+#### Scenario: explicit codec without its extra fails fast
+
+- **WHEN** `archivey.create(dest, fmt, compression=CompressionSpec(algo=CompressionAlgo.ZSTD))` is called and the `[zstd]` extra is not installed
+- **THEN** `PackageNotInstalledError` is raised naming the missing package; no archive is written and no fallback codec is substituted
 
 #### Scenario: auto algorithm at a symbolic level
 

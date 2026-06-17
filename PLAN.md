@@ -113,8 +113,12 @@ framework — all green, with no formats wired yet.
    `CostReceipt` types).
 4. **New declarative test framework:** port the corpus (`sample_archives.py`,
    `ArchiveContents`, `FileInfo`, `ArchiveCreationInfo`) cleaned; `conftest.py`
-   parametrization; **generate-on-demand + cache** to `$XDG_CACHE_HOME/archivey-tests/`
-   keyed by `hash(spec + creation_params + lib versions)`; `tests/fixtures/` with a
+   parametrization; **generate-on-demand + cache** to a **project-local** dir
+   (`.pytest_cache/archivey-archives/`, overridable via an `ARCHIVEY_TEST_CACHE` env var),
+   written atomically (temp file + `os.replace`) so parallel tox / CI-matrix runs don't
+   collide and so it cleans up with standard test workflows — **not** `$XDG_CACHE_HOME`,
+   which is unset on Windows runners. Entries keyed by
+   `hash(spec + creation_params + lib versions)`; `tests/fixtures/` with a
    JSON sidecar per committed archive; **no generated binaries committed**; flat
    `tests/` layout. Clone DEV's suite into `tests/_dev_oracle/` as the frozen gate.
 

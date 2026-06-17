@@ -173,6 +173,15 @@ def open(self, member: str | ArchiveMember) -> BinaryIO: ...   # streaming; call
 
 Both methods accept either a member name string or an `ArchiveMember` object.
 
+**Memory profile — `read()` is unbounded.** `read(member)` materializes the member's
+**entire decompressed payload in memory at once** and returns it as a single `bytes`
+object. It is intended for small members — configuration files, manifests, small assets —
+whose full content comfortably fits in RAM. For large or untrusted members, callers MUST
+use `open()` (a streaming `BinaryIO` read in bounded chunks) or `stream_members()` (bounded
+sequential iteration) instead; neither buffers the whole payload. `read()` also performs no
+decompression-bomb checks (see `safe-extraction`), so a hostile member can expand without
+limit — another reason to prefer `open()`/`stream_members()` for anything not known to be small.
+
 #### Scenario: reading member as bytes
 
 - **WHEN** `ar.read("readme.txt")` is called
@@ -190,25 +199,32 @@ Both methods accept either a member name string or an `ArchiveMember` object.
 The system SHALL provide `stream_members()` which yields `(member, stream)` pairs in archive order with bounded memory. Decompression is **always streaming**: a solid block is decompressed progressively as its members are consumed, never buffered whole in advance, so peak memory is the decompressor's working state plus one member's in-flight chunk — not a whole block. The yielded stream is only valid until the iterator advances; callers MUST NOT hold it across yields. For non-file members the stream is `None`.
 
 ```python
-# Shared vocabulary (also used by extract_all):
+# Shared vocabulary:
 MemberSelector = Collection[ArchiveMember | str] | Callable[[ArchiveMember], bool]
-MemberFilter   = Callable[[ArchiveMember], ArchiveMember | None]  # return a (possibly
-                 #   .replace()'d) member, or None to skip
+MemberFilter   = Callable[[ArchiveMember], ArchiveMember | None]  # transform/sanitize:
+                 #   return a (possibly .replace()'d) member, or None to skip. Used by the
+                 #   EXTRACTION/WRITING sinks (extract_all, add_members), NOT here.
 
 def stream_members(
     self,
     members: MemberSelector | None = None,
-    *,
-    filter: MemberFilter | None = None,
 ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]: ...
 ```
 
 `members` **selects** which members to yield — a collection of members/names, or a
-predicate `Callable[[ArchiveMember], bool]`; `None` yields all. `filter` **sanitizes or
-rewrites** each selected member, returning a possibly-modified copy (via `.replace()`)
-or `None` to skip it. The two parameters mirror `extract_all()` so the same selectors
-and filters work in both places. Streams are opened lazily, so unselected/skipped
-members cost nothing.
+predicate `Callable[[ArchiveMember], bool]`; `None` yields all. Streams are opened lazily,
+so unselected members cost nothing.
+
+`stream_members()` deliberately takes **only the selector**, not a transform/sanitize
+`MemberFilter`. It is a pure generator that yields the **original, mutable**
+`ArchiveMember` so the backend can keep filling late-bound fields (final `size`/CRC, a
+`link_target` stored in the member's data) in place on the object the caller holds. A
+`MemberFilter` returns a `.replace()` **copy**; applying it here would yield that copy
+while the backend went on updating the original, so the caller's object would never see
+the late values. Transformation therefore lives at the sinks that consume the stream —
+`extract_all()` (applies it on a transient copy; see `safe-extraction`) and the writer's
+`add_members()` — where the original is still available for accurate limits/metadata. A
+caller streaming directly can of course apply its own transform per item in the loop.
 
 **Two sequential access patterns — different memory profiles:**
 
@@ -230,10 +246,15 @@ seeks directly to the member with no re-decompression.
 - **THEN** each solid block is decompressed progressively as its members are consumed and released as the iterator advances, never buffered whole in advance
 - **AND** peak memory is the decompressor working state plus one in-flight chunk, not a whole solid block
 
-#### Scenario: selecting and filtering members while streaming
+#### Scenario: selecting members while streaming
 
-- **WHEN** `ar.stream_members(lambda m: m.name.endswith(".txt"), filter=ExtractionFilter.DATA)` is called
-- **THEN** only `.txt` members are yielded, each passed through the `DATA` sanitizer, and streams for unselected members are never opened
+- **WHEN** `ar.stream_members(lambda m: m.name.endswith(".txt"))` is called
+- **THEN** only `.txt` members are yielded as original mutable `ArchiveMember` objects, and streams for unselected members are never opened
+
+#### Scenario: late-bound field visible on a streamed member
+
+- **WHEN** a caller iterates `ar.stream_members()`, fully reads a member's stream, then inspects that same member object
+- **THEN** any field the backend completed while reading (e.g. `size`/CRC) is now visible on it, because `stream_members()` yields the original object rather than a pre-read copy
 
 #### Scenario: random open on a solid member re-decompresses with a warning
 

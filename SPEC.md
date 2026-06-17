@@ -102,22 +102,23 @@ class ArchiveReader:
     def get(self, name: str, default=None) -> ArchiveMember | None: ...
 
     # --- Data access ---
-    def read(self, member: str | ArchiveMember) -> bytes: ...
+    def read(self, member: str | ArchiveMember) -> bytes: ...   # WARNING: loads the whole
+                                                                # decompressed payload into RAM
     def open(self, member: str | ArchiveMember) -> BinaryIO: ...   # streaming; caller must close
 
     # --- Sequential streaming (bounded memory) ---
     # Yields (member, stream) pairs in archive order with bounded memory.
     # `members` selects which members to yield (collection of members/names, or a
-    # predicate); None = all. `filter` sanitizes/rewrites each selected member
-    # (returning a .replace()'d copy) or returns None to skip it. Streams are opened
-    # lazily, so unselected/skipped members cost nothing.
+    # predicate); None = all. There is intentionally NO transform `filter` here:
+    # stream_members yields the ORIGINAL mutable member so the backend can keep
+    # filling late-bound fields (final size/CRC, data-stored link_target) in place.
+    # Transformation lives at the sinks (extract_all / writer.add_members). Streams
+    # are opened lazily, so unselected members cost nothing.
     # The stream is only valid until the iterator advances; do not hold it across yields.
     # For non-file members the stream is None.
     def stream_members(
         self,
         members: MemberSelector | None = None,
-        *,
-        filter: MemberFilter | None = None,
     ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]: ...
 
     # --- Extraction helper (delegates to archivey.extract internals) ---
@@ -151,6 +152,8 @@ class ArchiveReader:
 | `for m in ar: ar.open(m)` | Bounded, but re-does work on solid blocks — `open()` on a member inside a solid block re-decompresses that block from its start and skips to the member, emitting a `logging.WARNING`. **No growing decompressed cache is ever held** until `close()`. | Random or mixed access on `DIRECT` formats; acceptable on solid formats only for a few members. |
 
 Decompression is **always streaming**; the library MUST NOT hold a monotonically-growing cache of decompressed block data released only at `close()`. On a solid archive, repeated `open()` calls trade CPU (re-decompression from the block start) for bounded memory, and emit a `logging.WARNING` via `archivey.backends` advising `stream_members()` for full sequential passes. For formats without solid compression (ZIP, plain `.tar`, single-file `.gz`), both patterns are equally efficient — `open()` seeks directly to the member with no re-decompression.
+
+**`read()` is the unbounded option — use it only for small members.** Unlike `open()` and `stream_members()`, `read(member)` materializes the member's **entire decompressed payload in memory at once** and returns it as `bytes`. It is for small, known-bounded members (config files, manifests, small assets). For large or untrusted members, use `open()` (chunked streaming) or `stream_members()` (bounded sequential) — neither buffers the whole payload — and note `read()` performs no decompression-bomb check, so a hostile member can expand without limit.
 
 **Link following:** `open()` and `read()` transparently follow symlinks and hardlinks that point to other members in the same archive. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to the target member (also exposed, when known, as `member.link_target_member`). **Hardlinks always resolve to an *earlier* member** (the TAR model — a hardlink entry refers back to a previously-seen file), so they can be resolved during a single forward pass. If the link target is not present in the archive, `LinkTargetNotFoundError` is raised. Chains are followed recursively with **cycle detection**: the set of members already visited on the current chain is tracked, and revisiting one raises a `ReadError` reporting the cycle. There is **no fixed depth limit** — an acyclic chain of any length resolves, and only a genuine cycle (or a missing target) fails. This behavior is format-independent and implemented once in the `ArchiveReader` ABC — it does not rely on format-level link resolution (which happens at a lower level for formats that follow links internally).
 
@@ -193,6 +196,8 @@ class ArchiveWriter:
     def add_members(
         self,
         source: ArchiveReader | Iterable[tuple[ArchiveMember, BinaryIO | None]],
+        *,
+        filter: MemberFilter | None = None,   # transform/rename/skip, applied writer-side
     ) -> None: ...
 
     def __enter__(self) -> ArchiveWriter: ...
@@ -204,10 +209,14 @@ class ArchiveWriter:
 source to the writer without buffering the whole archive. It accepts **either** an
 `ArchiveReader` (whole-archive conversion — it drives `reader.stream_members()`
 internally) **or** an iterable of `(member, stream)` pairs, which is exactly the shape
-`ArchiveReader.stream_members()` yields. That second form keeps selection and
-sanitization on the reader side, so
-`writer.add_members(reader.stream_members(predicate, filter=...))` converts a selected,
-filtered, renamed subset in a single streaming pass **without reopening** the source.
+`ArchiveReader.stream_members()` yields. **Selection** stays on the reader
+(`stream_members(members=...)`, which yields the *original* members); **transformation**
+(`filter`) is applied here on the writer side, to a transient `.replace()` copy used for
+the written entry's identity while the original streams through — so a renaming `filter`
+never detaches the member from the backend's in-place late-bound updates. Thus
+`writer.add_members(reader.stream_members(predicate), filter=rename)` converts a selected,
+renamed subset in a single streaming pass **without reopening** the source. (The transform
+filter lives here rather than on `stream_members()` for the late-bound reason noted in §3.2.)
 The writer may buffer internally per its format requirements (e.g. ZIP local headers
 need the CRC before writing), but only on a per-member basis — never the full archive.
 
@@ -650,7 +659,7 @@ The original traceback must be attached and surfaced by default `traceback.print
 1. **Path traversal:** Any `name` component equal to `..` after splitting on `/` → `PathTraversalError`.
 2. **Absolute paths:** `name` starting with `/` or a Windows drive letter (`C:\`, `\\`) → `PathTraversalError`.
 3. **Null bytes:** `name` containing `\x00` → `PathTraversalError`.
-4. **Symlink escape:** For SYMLINK members, resolve the target relative to the eventual extraction path. If resolution escapes the `dest` root (after fully resolving all symlink chains) → `SymlinkEscapeError`. This check is re-validated at extraction time, not just at planning time.
+4. **Symlink escape:** For SYMLINK members, resolve the target relative to the eventual extraction path. If resolution escapes the `dest` root (after fully resolving all symlink chains) → `SymlinkEscapeError`. This check is re-validated at extraction time, not just at planning time. The resolution is wrapped in a guard: an adversarial symlink **loop** (`a → b`, `b → a`) makes the OS reject resolution with `ELOOP` (`OSError`/`RuntimeError`), which is caught and treated as an escape → `SymlinkEscapeError`, so a cyclic-symlink archive fails safe instead of crashing the extractor.
 5. **Hardlink escape:** For HARDLINK members, the link target path must resolve within `dest` → `SymlinkEscapeError`.
 6. **MemberType.OTHER:** Device nodes, FIFOs, sockets — always rejected with `SpecialFileError`, regardless of policy.
 
@@ -677,9 +686,17 @@ Applied **after** universal checks pass:
 
 ### 7.3 Decompression bomb detection
 
-All extraction paths must track cumulative bytes written and raise `ExtractionError` when:
-- Total bytes written exceeds `max_extracted_bytes` (default: 2 GiB; caller-configurable).
-- Decompression ratio for a single member exceeds `max_ratio` (default: 1000:1; caller-configurable).
+All extraction paths must track bytes written and raise `ExtractionError` when:
+- **Cumulative** bytes written across all members exceeds `max_extracted_bytes` (default: 2 GiB; caller-configurable).
+- A **single member's** output / `compressed_size` exceeds `max_ratio` (default: 1000:1; caller-configurable) — computed against that member's own output, not the cumulative total.
+
+**Ratio activation floor.** The ratio check is evaluated **only after** a member's output
+exceeds a `ratio_activation_threshold` (default: 5 MiB; caller-configurable). This prevents
+false positives on tiny but legitimately highly-compressible files — a 10-byte source
+expanding to 15 KiB is a 1500:1 ratio yet harmless, whereas a real bomb expands to hundreds
+of MiB or GiB and trips the ratio only after crossing the floor. The `BombTracker` is given
+the **original** member (not a filter copy) so `compressed_size` and any late-bound fields
+are the accurate source values.
 
 These limits apply only during `extract` / `extract_all`. `read()` and `open()` return raw data and leave bomb detection to the caller.
 
@@ -992,6 +1009,14 @@ CompressionSpec.LZMA        = CompressionSpec(algo=CompressionAlgo.LZMA2, level=
 | set | `FAST`/`DEFAULT`/`MAX` | Uses that algorithm, mapping the symbolic level to that algorithm's nearest concrete level. |
 | set | numeric `int` | Uses that algorithm at that numeric level. Out-of-range raises `ValueError` (no silent clamp). |
 
+**Fail fast on an unavailable codec.** When the caller names an **explicit** `algo` whose
+backend is not installed (e.g. `algo=CompressionAlgo.ZSTD` without the `[zstd]` extra), or a
+codec the target format cannot represent, `create()` (or the first `add_*` that would use it)
+**raises immediately** — `PackageNotInstalledError` for a missing package/tool,
+`UnsupportedFeatureError` for an unrepresentable codec. It MUST NOT silently substitute a
+different algorithm or degrade to the format default. (This applies only to an explicit
+`algo`; with `algo=None` the backend is choosing and SHALL pick an available algorithm.)
+
 ### 11.2 Conversion semantics
 
 `writer.add_members(reader)` must:
@@ -1051,9 +1076,11 @@ The test suite must demonstrate that extracting a canonical directory structure 
 
 The adversarial test corpus must include:
 - **Zip bomb:** quine-style and nested (42.zip variant) — verify `max_ratio` and `max_extracted_bytes` limits.
+- **Ratio-floor false-positive guard:** a tiny but highly-compressible legitimate file (e.g. 10 bytes → 15 KiB, 1500:1) — verify it extracts **without** error because its output stays under `ratio_activation_threshold`.
 - **Path traversal:** `../evil`, `../../etc/passwd`, `./../../outside` — verify `PathTraversalError`.
 - **Absolute paths:** `/etc/passwd`, `C:\Windows\System32\evil.dll` — verify `PathTraversalError`.
 - **Symlink escape:** symlink pointing to `../../outside`, and chained symlinks — verify `SymlinkEscapeError`.
+- **Symlink loop:** cyclic symlinks (`a → b`, `b → a`) — verify extraction fails safe with `SymlinkEscapeError` (no uncaught `OSError`/crash).
 - **Corrupt archive:** truncated ZIP (missing EOCD), truncated TAR, bad CRC — verify `CorruptionError` / `TruncatedError`.
 - **Unicode bombs:** `\x00` in paths, RTL override characters in filenames.
 - **Giant uncompressed size in header:** member claims 1 TiB size but archive is 1 KiB — verify extraction aborts cleanly.
@@ -1105,7 +1132,7 @@ with archivey.open_archive("archive.7z") as ar:
         print(f"{h.hexdigest()}  {member.name}")
 ```
 
-The same pattern works for any per-file sequential processing: MIME-type sniffing, line counting, full-text indexing, virus scanning.
+The same pattern works for any per-file sequential processing: MIME-type sniffing, line counting, full-text indexing, virus scanning. Prefer this (or `open()`) over `read()` for anything large: `read(member)` would pull the member's **entire** decompressed payload into RAM at once, whereas the loop above holds only one 64 KiB chunk.
 
 `ar.open(member)` in a `for member in ar` loop also works and is correct, but on a solid archive each `open()` re-decompresses the member's block from its start (emitting a `logging.WARNING`) — no growing cache is held, but the CPU cost adds up. Use `open()` when you need random access or may revisit members; use `stream_members()` when you're doing a single sequential pass.
 
@@ -1144,10 +1171,13 @@ with archivey.open_archive("input.tar.gz") as reader, \
      archivey.create("output.zip") as writer:
     writer.add_members(reader)
 
-# Select + filter during conversion in one streaming pass, no reopen:
+# Select on the reader, transform/rename on the writer — one streaming pass, no reopen:
 with archivey.open_archive("input.tar.gz") as reader, \
      archivey.create("output.zip") as writer:
-    writer.add_members(reader.stream_members(lambda m: m.name.endswith(".py")))
+    writer.add_members(
+        reader.stream_members(lambda m: m.name.endswith(".py")),   # selection
+        filter=lambda m: m.replace(name="src/" + m.name),          # transform/rename
+    )
 ```
 
 `add_members()` internally calls `reader.stream_members()`, so it gets the bounded-memory path for solid archives automatically.

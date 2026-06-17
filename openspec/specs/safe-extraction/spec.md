@@ -126,15 +126,27 @@ The individual universal constraints are:
 
 The system SHALL re-validate symlink targets at the moment the symlink is created on disk, not only at planning time. After `os.symlink(link_target, dest_path)` is called, the implementation SHALL resolve the created link's target with `Path.resolve()` and immediately unlink and raise `SymlinkEscapeError` if the resolved path escapes `dest`.
 
+The resolution itself can fail when the archive contains an adversarial symlink **loop**
+(e.g. `a → b` and `b → a`): the OS rejects the cyclic resolution with `ELOOP`. The
+implementation SHALL therefore wrap the resolution in a guard that catches `OSError`
+(POSIX `ELOOP` and the Windows equivalent) and `RuntimeError` (raised by `Path.resolve()`
+on some platforms/versions for loops), and on any such failure SHALL unlink the just-created
+link and reject the member with `SymlinkEscapeError` — failing safe rather than crashing the
+extractor.
+
 ```
 os.symlink(link_target, dest_path)
-resolved = (dest_path.parent / link_target).resolve()
-if not resolved.is_relative_to(dest.resolve()):
+try:
+    resolved = (dest_path.parent / link_target).resolve()
+    escaped = not resolved.is_relative_to(dest.resolve())
+except (OSError, RuntimeError):       # ELOOP / symlink loop / too many levels
+    escaped = True                    # treat an unresolvable link as an escape
+if escaped:
     dest_path.unlink()
-    raise FilterRejectionError(...)
+    raise SymlinkEscapeError(...)
 ```
 
-This single-pass, post-creation check catches TOCTOU symlink attacks where earlier archive members create symlinks that could redirect later writes.
+This single-pass, post-creation check catches TOCTOU symlink attacks where earlier archive members create symlinks that could redirect later writes, and the loop guard keeps an adversarial cyclic-symlink archive from aborting extraction with an uncaught OS error.
 
 #### Scenario: symlink resolves outside dest at extraction time
 
@@ -147,6 +159,11 @@ This single-pass, post-creation check catches TOCTOU symlink attacks where earli
 - **WHEN** an earlier member creates a symlink that redirects a later member's write outside `dest`
 - **THEN** the post-creation `Path.resolve()` check catches the escape and raises `SymlinkEscapeError`
 
+#### Scenario: adversarial symlink loop fails safe
+
+- **WHEN** the archive contains a cyclic symlink set (e.g. `a → b`, `b → a`) and the post-creation `Path.resolve()` raises `OSError` (`ELOOP`) or `RuntimeError`
+- **THEN** the just-created link is unlinked and `SymlinkEscapeError` is raised; the extractor does not crash with an uncaught OS error
+
 ---
 
 ### Requirement: Hardlink Two-Pass Extraction
@@ -156,7 +173,7 @@ The system SHALL support hardlinks (as found in TAR archives) through a strategy
 - **FILE / DIR / SYMLINK** members are written immediately; the mapping from member identity to extracted path is recorded.
 - **HARDLINK** members: if the source member's extracted path is already recorded, `os.link()` is called; if not yet extracted, the source is copied with `shutil.copy2()`.
 - In streaming mode, TAR guarantees the hardlink target precedes the link in archive order; if the source was filtered out, an explicit error with a clear message is raised.
-- In random-access mode, if the source was not selected by the filter it is added to the extraction set implicitly and discarded after the link is created.
+- In random-access mode, the source may be unselected by the `members` selector or `filter`. The implementation MUST NOT materialize an unselected source at its own final destination path (that would leak a file the caller deliberately excluded). Instead it SHALL make the source's **content** available only through the selected link(s): write the source data to the **first selected link's** path and `os.link()` any further selected links to it; the unselected source name itself is never created. (An implementation MAY equivalently stage the content in a hidden temp file inside `dest` — e.g. `dest/.archivey-tmp-<id>` — link the selected targets to it, then unlink the temp; both approaches satisfy the guarantee.) If **no** link to the source is selected either, the source's data is not extracted at all.
 - If `os.link()` fails due to a cross-device error, the implementation SHALL fall back to copying.
 
 #### Scenario: hardlink to already-extracted member
@@ -169,11 +186,26 @@ The system SHALL support hardlinks (as found in TAR archives) through a strategy
 - **WHEN** a HARDLINK member is encountered before its target in streaming mode and the target was filtered out
 - **THEN** an explicit error is raised with a clear message
 
+#### Scenario: selected hardlink whose source was excluded (random-access)
+
+- **WHEN** a selected HARDLINK member points to a source that the `members` selector / `filter` excluded
+- **THEN** the source content is written to the first selected link's path (further selected links are `os.link()`'d to it), and the excluded source is never created at its own destination path
+
 ---
 
 ### Requirement: Policy-Specific Metadata Transforms
 
-The system SHALL apply policy-specific permission and ownership transforms to a new (immutable) copy of the `ArchiveMember` after universal checks pass. The transform corresponding to the active `ExtractionPolicy` is selected from `POLICY_TRANSFORMS` in `_filters.py` and applied before any I/O.
+The system SHALL apply policy-specific permission and ownership transforms to a **transient copy** of the `ArchiveMember` (produced via `member.replace(...)`) after universal checks pass. The transform corresponding to the active `ExtractionPolicy` is selected from `POLICY_TRANSFORMS` in `_filters.py` and applied before any I/O.
+
+Per member the coordinator builds exactly one transient copy: universal checks run on the
+original, then the policy transform and then the optional user `filter` are applied to the
+copy (in that order). The copy supplies the on-disk **identity** — `name`, `mode`,
+timestamps, and therefore the destination path. The **original** `ArchiveMember` is what the
+coordinator feeds to `BombTracker.start_member()` and records in the `ExtractionResult`, so
+the ratio check and reported metadata use the accurate source values — including any
+late-bound fields (final `size`/CRC) the backend fills in place as the data streams, which a
+copy taken before reading would not have received. The copy is discarded once the member's
+file is written.
 
 ```python
 class ExtractionPolicy(Enum):
@@ -270,7 +302,15 @@ class OverwritePolicy(Enum):
 
 ### Requirement: Extraction as a Composable Module
 
-The system SHALL implement safe extraction in a dedicated `_extraction.py` module (`ExtractionCoordinator`) that is separate from the reader backends and format detection. Both `archivey.extract()` and `ArchiveReader.extract_all()` SHALL delegate to the same `ExtractionCoordinator`, which drives a single unified forward pass via `_iter_with_data()`.
+The system SHALL implement safe extraction in a dedicated `_extraction.py` module (`ExtractionCoordinator`) that is separate from the reader backends and format detection. Both `archivey.extract()` and `ArchiveReader.extract_all()` SHALL delegate to the same `ExtractionCoordinator`, which drives a single unified forward pass over the reader's `(member, stream)` pairs.
+
+The coordinator — not the reader — is where member **transformation** lives. The reader's
+streaming generator yields the **original, mutable** `ArchiveMember` objects (so the backend
+can keep filling late-bound fields in place); the coordinator applies the `members` selector,
+the policy transform, and the user `filter` to a transient copy (per the metadata-transform
+requirement above), keeping the original for the `BombTracker` and `ExtractionResult`. This
+localization is deliberate: applying a copy-producing `filter` inside the reader's generator
+would detach the yielded copy from the backend's in-place late-bound updates.
 
 Decompression-bomb enforcement (see the bomb-limit requirements below) is handled by a `BombTracker` instance passed through to each member extraction during this pass. Progress callbacks and `ExtractionResult` accumulation also happen inside this single pass.
 
@@ -285,23 +325,38 @@ Decompression-bomb enforcement (see the bomb-limit requirements below) is handle
 
 The system SHALL track the total number of bytes written across all members during a single `extract()` or `extract_all()` call and SHALL raise `ExtractionError` when that cumulative total exceeds `max_extracted_bytes`. The default limit is 2 GiB (2 147 483 648 bytes). The caller MAY override this limit by passing `max_extracted_bytes` to `extract()` or `extract_all()`.
 
-The limit is tracked by a `BombTracker` instance constructed once per extraction call. Byte counts are cumulative across all members in the call, not per-member.
+The limit is tracked by a `BombTracker` instance constructed once per extraction call. The cumulative byte total spans all members in the call; the per-member ratio (next requirement) is tracked separately against each member's own output.
 
 ```python
 class BombTracker:
-    def __init__(self, max_bytes: int, max_ratio: float):
+    def __init__(self, max_bytes: int, max_ratio: float,
+                 ratio_activation_threshold: int = 5 * 2**20):  # 5 MiB
         self._max_bytes = max_bytes
         self._max_ratio = max_ratio
-        self._total_bytes = 0
+        self._ratio_floor = ratio_activation_threshold
+        self._total_bytes = 0          # cumulative across all members
+        self._member_bytes = 0         # output bytes for the current member
+        self._member: ArchiveMember | None = None
 
-    def count(self, member: ArchiveMember, chunk_bytes: int) -> None:
+    def start_member(self, member: ArchiveMember) -> None:
+        # Called with the ORIGINAL member (not a filter copy), so compressed_size
+        # and any late-bound fields are the accurate source values.
+        self._member = member
+        self._member_bytes = 0
+
+    def count(self, chunk_bytes: int) -> None:
         self._total_bytes += chunk_bytes
+        self._member_bytes += chunk_bytes
         if self._total_bytes > self._max_bytes:
             raise ExtractionError(
                 f"Extraction limit reached: {self._total_bytes} bytes > {self._max_bytes}"
             )
-        if member.compressed_size and member.compressed_size > 0:
-            ratio = self._total_bytes / member.compressed_size
+        # The ratio is only evaluated once THIS member's output exceeds the
+        # activation threshold, so a tiny but highly-compressible legitimate file
+        # (e.g. 10 bytes -> 15 KiB = 1500:1) cannot trip a false positive.
+        cs = self._member.compressed_size if self._member else None
+        if self._member_bytes > self._ratio_floor and cs and cs > 0:
+            ratio = self._member_bytes / cs
             if ratio > self._max_ratio:
                 raise ExtractionError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit {self._max_ratio:.0f}:1"
@@ -327,12 +382,17 @@ The default of 2 GiB is sufficient for most legitimate use cases and prevents gi
 
 The system SHALL raise `ExtractionError` when the decompression ratio for a single member exceeds `max_ratio` during extraction. The default ratio limit is 1000:1. The caller MAY override this by passing `max_ratio` to `extract()` or `extract_all()`.
 
-The ratio for a member is computed as `bytes_written_for_member / member.compressed_size`. The check is only performed when `member.compressed_size` is known and greater than zero. The default of 1000:1 is deliberately generous — typical DEFLATE compresses at 3:1 to 10:1, and even pathological quine-style zip bombs produce outer-layer ratios around 391:1 — so the limit catches only pathological cases without triggering on legitimately highly-compressible data.
+The ratio for a member is computed as `bytes_written_for_member / member.compressed_size` (per-member output, **not** the cumulative total). The check is performed only when `member.compressed_size` is known and greater than zero, **and** only after that member's output has exceeded a `ratio_activation_threshold` (default 5 MiB, caller-configurable). The threshold prevents false positives on tiny but legitimately highly-compressible files: a 10-byte source expanding to 15 KiB is a 1500:1 ratio yet harmless, whereas a real bomb expands to hundreds of MiB or GiB and trips the ratio only after crossing the floor. The default of 1000:1 is otherwise deliberately generous — typical DEFLATE compresses at 3:1 to 10:1, and even pathological quine-style zip bombs produce outer-layer ratios around 391:1 — so the limit catches only pathological cases without triggering on legitimately highly-compressible data.
 
 #### Scenario: single member exceeds ratio limit
 
-- **WHEN** a single member decompresses to more than `max_ratio` times its compressed size
+- **WHEN** a single member decompresses to more than `max_ratio` times its compressed size **and** its output has passed the `ratio_activation_threshold`
 - **THEN** `ExtractionError` is raised while processing that member
+
+#### Scenario: tiny highly-compressible file below the activation threshold is not flagged
+
+- **WHEN** a member's output exceeds `max_ratio` times its compressed size but stays under the `ratio_activation_threshold` (default 5 MiB) — e.g. a few bytes expanding to a few KiB
+- **THEN** no `ExtractionError` is raised; the ratio check does not activate until the member's output crosses the threshold
 
 #### Scenario: ratio check skipped when compressed size is unknown
 
