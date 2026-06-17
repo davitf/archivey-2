@@ -83,6 +83,38 @@ The system SHALL buffer a non-seekable ZIP source into a `tempfile.SpooledTempor
 - **WHEN** a ZIP stream is opened from a non-seekable source with `Intent.RANDOM`
 - **THEN** the system raises an error indicating random access is unavailable for non-seekable ZIP streams
 
+### Requirement: Reject multi-volume (split/spanned) ZIP archives with a clear error
+
+Unlike multi-volume 7z and RAR (which Archivey joins — see `format-7z` and
+`format-rar`), the stdlib `zipfile` backend cannot read a multi-volume ZIP. A ZIP
+**split** set (`name.z01`, `name.z02`, …, final `name.zip`) or a **spanned** set
+(written across removable media) records each entry's location as a
+*(disk-number, offset-within-disk)* pair; `zipfile` rejects the ZIP64 multi-disk
+locator outright, and naive concatenation of the segments is unreliable (non-zero disk
+fields in the end-of-central-directory, a possible leading spanning marker, and
+non-absolute offsets). The system SHALL detect this case and raise
+`UnsupportedFeatureError` rather than mis-reading the archive or surfacing a cryptic
+stdlib `BadZipFile`.
+
+- Detection MAY use: a non-zero "number of this disk" / "disk where the central
+  directory starts" field in the (ZIP64) end-of-central-directory record, a `disks > 1`
+  ZIP64 EOCD locator, or being pointed at a `.z01`/`.zNN` segment.
+- The error message SHOULD advise the caller to rejoin the volumes first
+  (e.g. `zip -s 0 split.zip --out whole.zip`).
+- Proper multi-volume ZIP support is deferred to a future **native ZIP reader**
+  (see `IDEAS.md`), which can resolve *(disk, offset)* addressing across a
+  concatenation of the segments.
+
+#### Scenario: opening a split ZIP set is rejected
+
+- **WHEN** `open_archive()` is given a multi-volume ZIP (a `.z01`…`.zip` split set, or any segment of one)
+- **THEN** `UnsupportedFeatureError` is raised, advising the caller to rejoin the volumes first
+
+#### Scenario: a ZIP declaring multiple disks is rejected cleanly
+
+- **WHEN** a ZIP whose end-of-central-directory declares a non-zero disk number (or a ZIP64 locator with `disks > 1`) is opened
+- **THEN** `UnsupportedFeatureError` is raised rather than a stdlib `BadZipFile`
+
 ### Requirement: Support streaming ZIP write via data descriptor
 
 The system SHALL support writing ZIP archives to non-seekable destinations using the data descriptor mechanism.

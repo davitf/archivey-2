@@ -134,8 +134,8 @@ All codec/detection-dependent formats stay unwired until Phases 2–3.
    `INDEXED`/`DIRECT`/`SEEKABLE` cost. Needs no codec layer (Phase 2) or magic
    detection (Phase 3), so it validates the ABC end-to-end now.
 6. **CI workflow** (`.github/workflows/ci.yml`), stood up now and grown each phase — a
-   **reduced ~10-job matrix** (vs DEV's ~18): Linux × `{3.11,3.12,3.13}` ×
-   `{core-only, [all]}` (6), plus macOS + Windows on min/max Python with `[all]` (4);
+   **reduced ~12-job matrix** (vs DEV's ~18): Linux × `{3.11,3.12,3.13,3.14}` ×
+   `{core-only, [all]}` (8), plus macOS + Windows on min/max Python with `[all]` (4);
    each job runs ruff + Pyrefly + ty + pytest (coverage report only). uv-cached on
    `uv.lock`; 7z/RAR read tests `xfail` until Phase 7.
 
@@ -388,8 +388,8 @@ All of `cli` (incl. *CLI installed without the `[cli]` extra*).
 
 ### Tasks
 1. README, Google-style docstrings (`mkdocstrings`), `list_formats()`, CHANGELOG.
-2. **Final CI tuning** — the matrix was stood up in Phase 1 (reduced ~10-job: Linux ×
-   `{3.11,3.12,3.13}` × `{core-only, [all]}`; macOS + Windows on min/max Python with
+2. **Final CI tuning** — the matrix was stood up in Phase 1 (reduced ~12-job: Linux ×
+   `{3.11,3.12,3.13,3.14}` × `{core-only, [all]}`; macOS + Windows on min/max Python with
    `[all]`); here, confirm the generated-archive cache works per Python version and the
    full corpus generates from scratch. Coverage stays **report-only — no `fail_under`
    gate** (decided).

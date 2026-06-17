@@ -44,19 +44,19 @@
 
 > Stand the CI workflow up **now** (it grows with each phase) rather than at the end —
 > a green matrix is part of "Phase 1 done". Keep it deliberately smaller than DEV's
-> ~18 tox envs: a **reduced ~10-job matrix** (decided), exercising every supported
+> ~18 tox envs: a **reduced ~12-job matrix** (decided), exercising every supported
 > Python, the no-deps core install, and the OS-specific path/symlink/junction behaviour.
 
 - [ ] 2b.1 GitHub Actions workflow (`.github/workflows/ci.yml`) running, per job,
       `uv run ruff check`, `uv run pyrefly check`, `uv run ty check`, and
       `uv run pytest` (with `pytest-cov` producing a **report only**, never failing the
       build). Use `uv` for env setup; cache the uv environment keyed on `uv.lock`.
-- [ ] 2b.2 Matrix (~10 jobs):
-      - **Linux** × Python `{3.11, 3.12, 3.13}` × install `{core-only (no extras),
-        [all]}` = 6 jobs — `core-only` asserts the zero-dep core imports and runs with
+- [ ] 2b.2 Matrix (~12 jobs):
+      - **Linux** × Python `{3.11, 3.12, 3.13, 3.14}` × install `{core-only (no extras),
+        [all]}` = 8 jobs — `core-only` asserts the zero-dep core imports and runs with
         no third-party packages; `[all]` runs the full suite (extras present; `unrar`
         installed for RAR-data tests).
-      - **macOS** + **Windows** × Python `{3.11 (min), 3.13 (max)}`, `[all]` = 4 jobs —
+      - **macOS** + **Windows** × Python `{3.11 (min), 3.14 (max)}`, `[all]` = 4 jobs —
         the cross-platform surface (path normalisation, symlinks, junctions, no-`unrar`
         skips) where behaviour genuinely differs by OS.
 - [ ] 2b.3 Mark RAR/7z read tests `xfail`/`skip` until Phase 7 so the matrix is green

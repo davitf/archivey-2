@@ -3,7 +3,7 @@
 > **Status: speculative.** Nothing here is committed or scheduled. These are
 > "might do later, worth remembering" notes — *not* part of the `PLAN.md` phase
 > roadmap. Firm, decided v1 deferrals (async, in-place modify, sparse-file
-> extraction, multi-volume joining, etc.) live in `openspec/project.md`
+> extraction, etc.) live in `openspec/project.md`
 > ("Deferred / out of scope (v1)") and `SPEC.md` Appendix A — this file is the
 > looser idea pile. Promote an item by writing a real spec/`openspec` change for it.
 
@@ -17,6 +17,12 @@
   mode is forward-only and sizes/CRC arrive in trailing data descriptors — i.e. the
   **late-bound `ArchiveMember` fields** + `FORWARD_ONLY`/`is_solid=False` cost model we
   already designed for. Lands as a native variant of `formats/zip_reader.py`.
+  This is also the natural home for **multi-volume (split/spanned) ZIP** — the
+  `.z01`…`.zip` sets that `zipfile` cannot read (it rejects multi-disk archives; see
+  `format-zip`). A native parser can read the central directory disk-aware and resolve
+  each *(disk-number, offset)* against a concatenation stream over the ordered segments
+  — the analogue of the 7z volume-join, but with ZIP's per-disk addressing rather than a
+  dumb byte-split. (For v1 we just detect these and raise `UnsupportedFeatureError`.)
 
 - **libarchive backend** — `python-libarchive-c` as an **alternative / additional**
   backend for several formats (zip/tar/7z/iso/cpio/…), in the `[all]`/alternative tier
