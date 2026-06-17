@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.internal._errors import FormatDetectionError
-from archivey.internal._intent import Intent
-from archivey.internal._reader import BaseArchiveReader
-from archivey.internal._registry import get_registry
-from archivey.internal._types import ArchiveFormat
+from archivey.internal.errors import FormatDetectionError
+from archivey.internal.intent import Intent
+from archivey.internal.reader import BaseArchiveReader
+from archivey.internal.registry import get_registry
+from archivey.internal.types import ArchiveFormat
 
 
 def open_archive(
@@ -36,7 +36,7 @@ def open_archive(
         path = Path(source)
         archive_name = str(path)
         if path.is_dir():
-            format = ArchiveFormat.DIRECTORY  # type: ignore[attr-defined]
+            format = ArchiveFormat.DIRECTORY
 
     if format is None:
         raise FormatDetectionError(

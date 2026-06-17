@@ -6,10 +6,10 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping
 
 if TYPE_CHECKING:
-    from archivey.internal._intent import CostReceipt
+    from archivey.internal.intent import CostReceipt
 
 logger = logging.getLogger("archivey.normalization")
 
@@ -39,6 +39,25 @@ class ArchiveFormat:
     container: ContainerFormat
     stream: StreamFormat
 
+    # Named instances, populated just after the class definition. Declared here as
+    # ClassVars so both type checkers know they exist (no per-use `type: ignore`).
+    ZIP: ClassVar[ArchiveFormat]
+    TAR: ClassVar[ArchiveFormat]
+    TAR_GZ: ClassVar[ArchiveFormat]
+    TAR_BZ2: ClassVar[ArchiveFormat]
+    TAR_XZ: ClassVar[ArchiveFormat]
+    TAR_ZST: ClassVar[ArchiveFormat]
+    TAR_LZ4: ClassVar[ArchiveFormat]
+    GZ: ClassVar[ArchiveFormat]
+    BZ2: ClassVar[ArchiveFormat]
+    XZ: ClassVar[ArchiveFormat]
+    ZST: ClassVar[ArchiveFormat]
+    SEVEN_Z: ClassVar[ArchiveFormat]
+    RAR: ClassVar[ArchiveFormat]
+    ISO: ClassVar[ArchiveFormat]
+    DIRECTORY: ClassVar[ArchiveFormat]
+    UNKNOWN: ClassVar[ArchiveFormat]
+
     def file_extension(self) -> str:
         if self.stream == StreamFormat.UNCOMPRESSED:
             return self.container.value
@@ -63,22 +82,22 @@ def _add_format(name: str, container: ContainerFormat, stream: StreamFormat) -> 
 
 
 # Predefined named instances assigned as class attributes
-ArchiveFormat.ZIP = _add_format("ZIP", ContainerFormat.ZIP, StreamFormat.UNCOMPRESSED)  # type: ignore[attr-defined]
-ArchiveFormat.TAR = _add_format("TAR", ContainerFormat.TAR, StreamFormat.UNCOMPRESSED)  # type: ignore[attr-defined]
-ArchiveFormat.TAR_GZ = _add_format("TAR_GZ", ContainerFormat.TAR, StreamFormat.GZIP)  # type: ignore[attr-defined]
-ArchiveFormat.TAR_BZ2 = _add_format("TAR_BZ2", ContainerFormat.TAR, StreamFormat.BZIP2)  # type: ignore[attr-defined]
-ArchiveFormat.TAR_XZ = _add_format("TAR_XZ", ContainerFormat.TAR, StreamFormat.XZ)  # type: ignore[attr-defined]
-ArchiveFormat.TAR_ZST = _add_format("TAR_ZST", ContainerFormat.TAR, StreamFormat.ZSTD)  # type: ignore[attr-defined]
-ArchiveFormat.TAR_LZ4 = _add_format("TAR_LZ4", ContainerFormat.TAR, StreamFormat.LZ4)  # type: ignore[attr-defined]
-ArchiveFormat.GZ = _add_format("GZ", ContainerFormat.RAW_STREAM, StreamFormat.GZIP)  # type: ignore[attr-defined]
-ArchiveFormat.BZ2 = _add_format("BZ2", ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)  # type: ignore[attr-defined]
-ArchiveFormat.XZ = _add_format("XZ", ContainerFormat.RAW_STREAM, StreamFormat.XZ)  # type: ignore[attr-defined]
-ArchiveFormat.ZST = _add_format("ZST", ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)  # type: ignore[attr-defined]
-ArchiveFormat.SEVEN_Z = _add_format("SEVEN_Z", ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED)  # type: ignore[attr-defined]
-ArchiveFormat.RAR = _add_format("RAR", ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)  # type: ignore[attr-defined]
-ArchiveFormat.ISO = _add_format("ISO", ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)  # type: ignore[attr-defined]
-ArchiveFormat.DIRECTORY = _add_format("DIRECTORY", ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED)  # type: ignore[attr-defined]
-ArchiveFormat.UNKNOWN = _add_format("UNKNOWN", ContainerFormat.UNKNOWN, StreamFormat.UNCOMPRESSED)  # type: ignore[attr-defined]
+ArchiveFormat.ZIP = _add_format("ZIP", ContainerFormat.ZIP, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.TAR = _add_format("TAR", ContainerFormat.TAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.TAR_GZ = _add_format("TAR_GZ", ContainerFormat.TAR, StreamFormat.GZIP)
+ArchiveFormat.TAR_BZ2 = _add_format("TAR_BZ2", ContainerFormat.TAR, StreamFormat.BZIP2)
+ArchiveFormat.TAR_XZ = _add_format("TAR_XZ", ContainerFormat.TAR, StreamFormat.XZ)
+ArchiveFormat.TAR_ZST = _add_format("TAR_ZST", ContainerFormat.TAR, StreamFormat.ZSTD)
+ArchiveFormat.TAR_LZ4 = _add_format("TAR_LZ4", ContainerFormat.TAR, StreamFormat.LZ4)
+ArchiveFormat.GZ = _add_format("GZ", ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
+ArchiveFormat.BZ2 = _add_format("BZ2", ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
+ArchiveFormat.XZ = _add_format("XZ", ContainerFormat.RAW_STREAM, StreamFormat.XZ)
+ArchiveFormat.ZST = _add_format("ZST", ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)
+ArchiveFormat.SEVEN_Z = _add_format("SEVEN_Z", ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.RAR = _add_format("RAR", ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.ISO = _add_format("ISO", ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DIRECTORY = _add_format("DIRECTORY", ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.UNKNOWN = _add_format("UNKNOWN", ContainerFormat.UNKNOWN, StreamFormat.UNCOMPRESSED)
 
 
 class MemberType(Enum):
@@ -239,7 +258,9 @@ class ArchiveMember:
     _member_id: int | None = field(default=None, repr=False, compare=False)
     _archive_id: str | None = field(default=None, repr=False, compare=False)
 
-    def __hash__(self) -> None:  # type: ignore[override]
+    # Mutable members are intentionally unhashable. Annotated `-> int` (the call
+    # always raises) so the override stays compatible with object.__hash__.
+    def __hash__(self) -> int:
         raise TypeError(f"unhashable type: '{type(self).__name__}'")
 
     @property

@@ -8,16 +8,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator
 
-from archivey.internal._intent import (
+from archivey.internal.intent import (
     AccessCost,
     CostReceipt,
     Intent,
     ListingCost,
     StreamCapability,
 )
-from archivey.internal._reader import BaseArchiveReader, ReadBackend
-from archivey.internal._registry import register_reader
-from archivey.internal._types import (
+from archivey.internal.reader import BaseArchiveReader, ReadBackend
+from archivey.internal.registry import register_reader
+from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -37,7 +37,7 @@ class DirectoryReader(BaseArchiveReader):
         intent: Intent,
         archive_name: str | None,
     ) -> None:
-        super().__init__(ArchiveFormat.DIRECTORY, intent, archive_name)  # type: ignore[attr-defined]
+        super().__init__(ArchiveFormat.DIRECTORY, intent, archive_name)
         self._root = root
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -155,7 +155,7 @@ class DirectoryReader(BaseArchiveReader):
             solid_block_count=None,
         )
         return ArchiveInfo(
-            format=ArchiveFormat.DIRECTORY,  # type: ignore[attr-defined]
+            format=ArchiveFormat.DIRECTORY,
             format_version=None,
             is_solid=False,
             member_count=None,  # unknown until walked
@@ -172,7 +172,7 @@ class DirectoryReader(BaseArchiveReader):
 class DirectoryReadBackend(ReadBackend):
     """Backend factory for directory pseudo-archives."""
 
-    FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.DIRECTORY,)  # type: ignore[attr-defined]
+    FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.DIRECTORY,)
     EXTENSIONS: tuple[str, ...] = ()
     MAGIC: tuple[tuple[int, bytes], ...] = ()
     REQUIRES_SEEK = False

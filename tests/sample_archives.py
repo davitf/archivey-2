@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from archivey.internal._types import MemberType
+from archivey.internal.types import MemberType
 
 
 @dataclass

@@ -7,13 +7,13 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterator
 
-from archivey.internal._errors import (
+from archivey.internal.errors import (
     ArchiveyError,
     LinkTargetNotFoundError,
     UnsupportedOperationError,
 )
-from archivey.internal._intent import CostReceipt, Intent
-from archivey.internal._types import (
+from archivey.internal.intent import CostReceipt, Intent
+from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -140,8 +140,9 @@ class BaseArchiveReader(ABC):
         while current.link_target is not None:
             target_name = current.link_target
             if target_name in visited:
-                # Cycle detected; leave link_target_member as None
-                break
+                # Cycle detected; leave link_target_member unset (None) rather than
+                # pointing at an intermediate link in the cycle.
+                return
             visited.add(current.name)
             target = by_name.get(target_name)
             if target is None:

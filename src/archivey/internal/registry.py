@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from archivey.internal._reader import ReadBackend, WriteBackend
-    from archivey.internal._types import ArchiveFormat
+    from archivey.internal.reader import ReadBackend, WriteBackend
+    from archivey.internal.types import ArchiveFormat
 
-from archivey.internal._errors import UnsupportedFormatError
+from archivey.internal.errors import UnsupportedFormatError
 
 
 class BackendRegistry:
@@ -35,7 +35,7 @@ class BackendRegistry:
         return self._readers[fmt]
 
     def writer_for_format(self, fmt: ArchiveFormat) -> type[WriteBackend]:
-        from archivey.internal._errors import UnsupportedOperationError
+        from archivey.internal.errors import UnsupportedOperationError
 
         if fmt not in self._writers:
             raise UnsupportedOperationError(

@@ -23,6 +23,9 @@ authors = [
 ]
 rar = [
     "cryptography>=45.0.0",
+    # TODO(phase-7): the spec's [rar] bundle also pulls a Blake2sp backend for
+    # RAR5 checksum verification. No standalone package decided yet (stdlib hashlib
+    # has blake2b/blake2s but not the parallel blake2sp); resolve when format-rar lands.
 ]
 crypto = [
     "cryptography>=45.0.0",
@@ -79,6 +82,8 @@ validate-bump = false
 
 [tool.ruff]
 target-version = "py311"
+# The frozen DEV oracle under tests/_dev_oracle is reference code, not ours to lint.
+extend-exclude = ["tests/_dev_oracle"]
 
 [tool.ruff.lint]
 extend-select = ["I", "F", "C4", "ISC", "RET", "BLE"]
@@ -89,7 +94,11 @@ project-includes = ["src"]
 python_version = "3.11"
 
 [tool.ty]
-# ty (pyright-based) strict type checking
+# ty is Astral's own from-scratch type checker (not pyright/mypy-based). The library
+# is kept clean on both ty and Pyrefly.
+[tool.ty.environment]
+python-version = "3.11"
+root = ["src"]
 
 [tool.coverage.run]
 source = ["archivey"]

@@ -14,7 +14,7 @@ from archivey import (
     MemberType,
     open_archive,
 )
-from archivey.internal._intent import AccessCost, ListingCost, StreamCapability
+from archivey.internal.intent import AccessCost, ListingCost, StreamCapability
 
 # ---------------------------------------------------------------------------
 # Fixtures
