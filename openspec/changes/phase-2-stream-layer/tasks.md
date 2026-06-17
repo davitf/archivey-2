@@ -5,6 +5,22 @@
 > Prerequisite: Phase 1 complete (spine + harness green).
 > Clean-slate: build the package fresh; no `io_helpers.py` shim, no method-swap.
 
+## 0. Carry-forward from the Phase-1 review (PR #5)
+
+- [ ] 0.1 **Wire the exception-translation spine.** Phase 1 left
+      `BaseArchiveReader._stamp_error_context()` defined but **never called**, and there
+      is no per-library translator hook or stream wrapper yet. The `ArchiveStream` built
+      here is the carrier: route exceptions raised while reading a member stream through
+      the backend's `_translate_exception()` (→ `ArchiveyError` subclass) and then through
+      `_stamp_error_context()` so format/archive/member context is attached. Add a test
+      that a raw decode error surfaces as a stamped `ArchiveyError`.
+- [ ] 0.2 **(Reminder for the streaming readers, Phase 5+)** the base
+      `_iter_with_data()` default eagerly registers all members and is for indexed
+      backends only; forward-only/solid readers MUST override it (correctness, not
+      efficiency) and must not call `_get_members_registered()`. See the docstring in
+      `internal/reader.py`. Nothing to do in Phase 2 — just don't build on the default
+      when the first streaming backend lands.
+
 ## 1. internal/streams package
 
 > **DEV source map** (port-as-unit references; pin commit `730275b…`): the primitives

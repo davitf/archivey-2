@@ -83,8 +83,10 @@ class DirectoryReader(BaseArchiveReader):
         member_type: MemberType,
         link_target: str | None,
     ) -> ArchiveMember:
-        # `name` is already built with "/" separators from the scan, so no path
-        # rewriting is needed here.
+        # `name` is built from live filesystem entries (already "/"-separated, no
+        # "."/".."/leading-slash components), so it is normalize_member_name()-clean by
+        # construction — unlike names decoded from an archive, which every real backend
+        # must route through that helper.
         modified = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
         accessed = datetime.fromtimestamp(st.st_atime, tz=timezone.utc)
         # st_birthtime is the true creation time but only exists on some platforms

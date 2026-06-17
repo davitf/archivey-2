@@ -8,7 +8,10 @@ if TYPE_CHECKING:
     from archivey.internal.reader import ReadBackend, WriteBackend
     from archivey.internal.types import ArchiveFormat
 
-from archivey.internal.errors import UnsupportedFormatError
+from archivey.internal.errors import (
+    UnsupportedFormatError,
+    UnsupportedOperationError,
+)
 
 
 class BackendRegistry:
@@ -35,8 +38,6 @@ class BackendRegistry:
         return self._readers[fmt]
 
     def writer_for_format(self, fmt: ArchiveFormat) -> type[WriteBackend]:
-        from archivey.internal.errors import UnsupportedOperationError
-
         if fmt not in self._writers:
             raise UnsupportedOperationError(
                 f"No write backend registered for format {fmt!r}",

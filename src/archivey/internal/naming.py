@@ -8,11 +8,8 @@ deterministic rules, while keeping the verbatim bytes in ``ArchiveMember.raw_nam
 
 from __future__ import annotations
 
-import logging
-
+from archivey.internal.logs import normalization as logger
 from archivey.internal.types import MemberType
-
-logger = logging.getLogger("archivey.normalization")
 
 
 def normalize_member_name(decoded: str, member_type: MemberType) -> str:

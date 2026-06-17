@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterator
@@ -19,8 +18,6 @@ from archivey.internal.types import (
     ArchiveMember,
     MemberType,
 )
-
-logger = logging.getLogger("archivey.backends")
 
 # Type alias for member selector filter
 MemberSelector = Callable[[ArchiveMember], bool] | None
@@ -89,7 +86,20 @@ class BaseArchiveReader(ABC):
     def _iter_members(self) -> Iterator[ArchiveMember]: ...
 
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
-        """Yield (member, stream) pairs. Override for solid-archive efficiency."""
+        """Yield (member, stream) pairs in archive order; backs ``stream_members``.
+
+        This default is for **random-access / fully-indexed** backends only (ZIP,
+        directory): it calls ``_get_members_registered()``, which eagerly drains
+        ``_iter_members()`` and builds the name map *before* yielding anything.
+
+        Streaming / forward-only / solid backends **must override** this — it is a
+        correctness requirement, not just an optimization. A non-seekable TAR or a solid
+        7z/RAR cannot enumerate every member before reading data, so the override must
+        produce ``(member, stream)`` pairs progressively from a single forward pass and
+        must **not** call ``_get_members_registered()``. The yielded stream is only valid
+        until the iterator advances (see the ``stream_members`` contract in
+        ``archive-reading``); for non-file members it is ``None``.
+        """
         for member in self._get_members_registered():
             if member.is_file:
                 yield member, self._open_member(member)
