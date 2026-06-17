@@ -220,6 +220,12 @@ class ArchiveMember:
     is_encrypted: bool = False
     is_sparse: bool = False                 # TAR sparse files; extraction as regular file
 
+    # --- Provenance / extra metadata (None when the format does not record it) ---
+    comment: str | None = None              # per-member comment (some formats)
+    create_system: "CreateSystem | None" = None   # OS that created the entry (ZIP create_system
+                                            #   values: FAT/UNIX/NTFS/…; other formats map where they can)
+    windows_attrs: int | None = None        # Windows FILE_ATTRIBUTE_* bitmask, if recorded
+
     # --- Integrity ---
     # Per-algorithm digests, keyed by lowercase algorithm name. CRC32 values are
     # ints ("crc32"); cryptographic/other digests are raw bytes ("blake2sp",
@@ -236,6 +242,21 @@ class ArchiveMember:
     @property
     def member_id(self) -> int: ...         # stable 0-based position in the source archive,
                                             #   assigned at registration; identity for de-dup/ordering
+    @property
+    def archive_id(self) -> str: ...        # id of the archive this member belongs to; used to
+                                            #   validate a member passed back into its own reader
+
+    # --- Read-only convenience helpers (derived from `type`/`extra`; never settable) ---
+    @property
+    def is_file(self) -> bool: ...          # type == FILE
+    @property
+    def is_dir(self) -> bool: ...           # type == DIRECTORY
+    @property
+    def is_link(self) -> bool: ...          # type in (SYMLINK, HARDLINK)
+    @property
+    def is_other(self) -> bool: ...         # type == OTHER
+    @property
+    def is_junction(self) -> bool: ...      # SYMLINK with extra["zip.is_junction"] is True
 
     def replace(self, **kwargs: Any) -> "ArchiveMember":
         """Return a *copy* with the given fields changed; never mutates self.
@@ -247,6 +268,13 @@ pass; the `hashes` and `extra` fields are excluded from `__eq__` (integrity dige
 vary by format and would break cross-format equivalence; format-specific extras do not
 affect logical identity). There is no `crc32` field or accessor — callers read
 `member.hashes.get("crc32")`. The object is **not hashable**.
+
+The `is_file`/`is_dir`/`is_link`/`is_other`/`is_junction` helpers and `comment` /
+`create_system` (a `CreateSystem` enum mirroring ZIP's create-system values:
+FAT/UNIX/NTFS/…) / `windows_attrs` metadata fields are carried for ergonomics and
+fidelity. Archivey deliberately does **not** expose `zipfile`-compatibility aliases
+(`date_time`, `CRC`, a naive-`mtime` alias) — it is not impersonating `zipfile`; callers
+use `modified`, `hashes["crc32"]`, and the `MemberType` enum directly.
 
 #### Scenario: unavailable field is None
 

@@ -397,9 +397,17 @@ class ArchiveMember:
     # Excluded from __eq__: format-specific extras don't affect logical identity.
     extra: dict[str, Any] = field(default_factory=dict, compare=False)
 
+    # Provenance/metadata fields (None when unrecorded): comment, create_system
+    #   (a CreateSystem enum mirroring ZIP's FAT/UNIX/NTFS/… values), windows_attrs.
+
     @property
-    def member_id(self) -> int: ...         # stable 0-based position in the source archive,
-                                            #   assigned at registration; identity for de-dup/ordering
+    def member_id(self) -> int: ...         # stable 0-based position; assigned at registration
+    @property
+    def archive_id(self) -> str: ...        # owning-archive id; validates a member passed back in
+
+    # Read-only convenience helpers (never settable):
+    @property
+    def is_file(self) -> bool: ...          # also is_dir / is_link / is_other / is_junction
 
     def replace(self, **kwargs: Any) -> "ArchiveMember":
         """Return a *copy* with the given fields changed; never mutates self.
@@ -407,7 +415,9 @@ class ArchiveMember:
 ```
 
 There is **no `crc32` field** — integrity lives in `hashes` (e.g. `member.hashes.get("crc32")`);
-`hashes` and `extra` are excluded from `__eq__`. The object is **not hashable**.
+`hashes` and `extra` are excluded from `__eq__`. The object is **not hashable**. The
+`is_*` helpers plus `comment`/`create_system`/`windows_attrs` are carried for ergonomics;
+Archivey deliberately omits `zipfile`-compat aliases (`date_time`, `CRC`, naive `mtime`).
 
 **Normalization rules for `name`** (applied in order):
 1. Replace all `\` with `/`.
@@ -761,8 +771,8 @@ consumes nothing: it inspects bytes through `peek()`.
 
 Reading and writing are separate concerns (7z reading is native while writing needs
 `py7zr`; RAR has a reader but no writer), so read and write backends live in **separate
-registries**. Read backends register via `archivey.backends.register_reader(BackendClass)`
-and write backends via `register_writer(BackendClass)`. Core backends register at import
+registries**. Read backends register via `register_reader(BackendClass)` and write
+backends via `register_writer(BackendClass)` (from `archivey.internal.registry`). Core backends register at import
 time; optional, library-backed backends register inside a `try/except ImportError` guard
 so an absent dependency simply makes the format unavailable (it never appears in
 `list_formats()`/`list_writable_formats()`) rather than crashing the import. The native 7z

@@ -81,7 +81,7 @@ further sanitize each member (returning a `.replace()`d copy) or skip it (return
 
 ### Requirement: Non-Bypassable Universal Path-Safety Constraints
 
-The system SHALL enforce the following constraints on every member before extraction regardless of the `ExtractionPolicy` in use, including `ExtractionPolicy.TRUSTED`. These checks are applied by `check_universal()` in `_filters.py` as the first step of the extraction pipeline, before any policy transform.
+The system SHALL enforce the following constraints on every member before extraction regardless of the `ExtractionPolicy` in use, including `ExtractionPolicy.TRUSTED`. These checks are applied by `check_universal()` in `filters.py` as the first step of the extraction pipeline, before any policy transform.
 
 Three independent enforcement layers provide defense in depth:
 
@@ -195,7 +195,7 @@ The system SHALL support hardlinks (as found in TAR archives) through a strategy
 
 ### Requirement: Policy-Specific Metadata Transforms
 
-The system SHALL apply policy-specific permission and ownership transforms to a **transient copy** of the `ArchiveMember` (produced via `member.replace(...)`) after universal checks pass. The transform corresponding to the active `ExtractionPolicy` is selected from `POLICY_TRANSFORMS` in `_filters.py` and applied before any I/O.
+The system SHALL apply policy-specific permission and ownership transforms to a **transient copy** of the `ArchiveMember` (produced via `member.replace(...)`) after universal checks pass. The transform corresponding to the active `ExtractionPolicy` is selected from `POLICY_TRANSFORMS` in `filters.py` and applied before any I/O.
 
 Per member the coordinator builds exactly one transient copy: universal checks run on the
 original, then the policy transform and then the optional user `filter` are applied to the
@@ -302,7 +302,7 @@ class OverwritePolicy(Enum):
 
 ### Requirement: Extraction as a Composable Module
 
-The system SHALL implement safe extraction in a dedicated `_extraction.py` module (`ExtractionCoordinator`) that is separate from the reader backends and format detection. Both `archivey.extract()` and `ArchiveReader.extract_all()` SHALL delegate to the same `ExtractionCoordinator`, which drives a single unified forward pass over the reader's `(member, stream)` pairs.
+The system SHALL implement safe extraction in a dedicated `internal/extraction.py` module (`ExtractionCoordinator`) that is separate from the reader backends and format detection. Both `archivey.extract()` and `ArchiveReader.extract_all()` SHALL delegate to the same `ExtractionCoordinator`, which drives a single unified forward pass over the reader's `(member, stream)` pairs.
 
 The coordinator — not the reader — is where member **transformation** lives. The reader's
 streaming generator yields the **original, mutable** `ArchiveMember` objects (so the backend

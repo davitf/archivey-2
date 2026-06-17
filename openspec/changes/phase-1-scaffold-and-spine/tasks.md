@@ -68,8 +68,11 @@
       PeekableStream + `detect_format` — lands in Phase 3.)
 - [ ] 4.4 Data model: `ArchiveMember` (**mutable** `@dataclass`, caller-read-only,
       `.replace()` copy-on-edit, **unhashable**; `raw_name: bytes | None`;
-      `link_target_member`; `hashes` + `extra` excluded from `__eq__`; `member_id`
-      property), `ArchiveInfo` (incl. `is_solid`), `ArchiveFormat` = `(container,
+      `link_target_member`; `hashes` + `extra` excluded from `__eq__`; `member_id` /
+      `archive_id` properties; read-only helpers `is_file`/`is_dir`/`is_link`/
+      `is_other`/`is_junction`; `comment` / `create_system` (`CreateSystem` enum) /
+      `windows_attrs` fields; **no** `zipfile`-compat aliases `date_time`/`CRC`/`mtime`),
+      `ArchiveInfo` (incl. `is_solid`), `ArchiveFormat` = `(container,
       stream)` frozen pair (`ContainerFormat` × `StreamFormat` + named class-vars),
       `MemberType`, `CompressionAlgo` (extensible, incl. `BROTLI`) /
       `CompressionMethod`, and member-name normalization (`name` decoded+normalized,
@@ -87,9 +90,21 @@
       (`DIRECT`/`SOLID`), `StreamCapability` (`SEEKABLE`/`FORWARD_ONLY`),
       `solid_block_count`, `notes`. `is_solid` lives on `ArchiveInfo`.
 
-> These are contracts/types only — with no format backend wired, opening a real
-> archive is not yet supported (paths raise a clear not-implemented error or the
-> registry reports "no backend"). Behavior is filled in Phases 2–7.
+## 4b. First backend — directory pseudo-backend (validates the spine)
+
+- [ ] 4b.1 `formats/directory_reader.py`: a `ReadBackend` + `BaseArchiveReader`
+      subclass that walks a filesystem directory, yields one `ArchiveMember` per
+      entry (file/dir/symlink), reads file data via `open()`, and resolves in-archive
+      symlinks through the ABC's link-following. Needs **no** codec layer and **no**
+      magic detection. Registered for `ArchiveFormat.DIRECTORY`; `open_archive(path)`
+      selects it when the source is an existing directory.
+- [ ] 4b.2 Its `CostReceipt`: `listing_cost=INDEXED`, `access_cost=DIRECT`,
+      `stream_capability=SEEKABLE`, `is_solid=False`.
+
+> With the directory backend wired, the spine is exercised end-to-end (iterate →
+> `read`/`open` → link resolution → cost). Codec/detection-dependent formats
+> (ZIP/single-file/ISO/TAR/7z/RAR) still raise a clear "no backend"/`xfail` until
+> their phases (3–7).
 
 ## 5. New declarative test framework
 
@@ -120,6 +135,10 @@
 - [ ] 6.3 `logging`: *library emits no output by default*.
 - [ ] 6.4 `testing-contract`: framework stands up (matrix harness importable; oracle
       hooks wired but skipped when libs absent).
+- [ ] 6.4b `format-directory`: opening a directory yields members with correct
+      filesystem metadata; `read`/`open` return file content; in-directory symlinks
+      follow; `cost` reports `INDEXED`/`DIRECT`/`SEEKABLE` — the spine validated
+      end-to-end against a real backend.
 
 **Gates**
 - [ ] 6.5 `uv run mypy src/` clean under `--strict`.
@@ -131,7 +150,8 @@
 ## 7. Deferred (not in this phase)
 
 - Stream layer (`internal/streams/`, codec layer) — Phase 2.
-- Leaf format backends (ZIP/dir/single-file/ISO) — Phase 3.
+- Codec/detection-dependent leaf backends (ZIP/single-file/ISO) — Phase 3 (the
+  directory backend lands here in Phase 1).
 - Native 7z/RAR readers — Phase 7.
 - CI matrix + coverage gating — Phase 10.
 - Deleting `tests/_dev_oracle/` — Phase 10.

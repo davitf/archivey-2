@@ -15,7 +15,7 @@ The system SHALL register library-backed optional backends (ISO, ZST, LZ4) and t
 Note: 7-Zip and RAR *reading* are **native** and always registered (no import guard). RAR data reads additionally require the external `unrar` binary at runtime — a missing-tool condition handled at read time, not via an import guard (see `format-rar`).
 
 ```python
-# backends/_iso.py
+# formats/iso_reader.py
 try:
     import pycdlib
     _PYCDLIB_AVAILABLE = True
@@ -30,11 +30,11 @@ class IsoReadBackend(ReadBackend):
     def open_read(self, source, intent, password, encoding) -> ArchiveReader: ...
 
 if _PYCDLIB_AVAILABLE:
-    archivey.backends.register_reader(IsoReadBackend)   # only registered when usable
+    register_reader(IsoReadBackend)   # from archivey.internal.registry; only when usable
 ```
 
-Read backends register via `archivey.backends.register_reader(BackendClass)` and write
-backends via `register_writer(BackendClass)`. An optional backend is registered only
+Read backends register via `register_reader(BackendClass)` and write backends via
+`register_writer(BackendClass)` (from `archivey.internal.registry`). An optional backend is registered only
 inside its successful-import guard, so an unavailable format never appears in
 `list_formats()`/`list_writable_formats()`.
 

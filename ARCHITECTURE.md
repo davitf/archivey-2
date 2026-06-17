@@ -8,28 +8,38 @@
 
 ```
 src/archivey/
-├── __init__.py            # Public API re-exports: open_archive(), create(), extract(), detect_format()
+├── __init__.py            # Public API re-exports: open_archive(), create(), extract(),
+│                          #   detect_format(), and the public types
 ├── py.typed               # PEP 561 marker
 │
-├── _types.py              # All public types (ArchiveMember, ArchiveInfo, CostReceipt, all enums)
-├── _errors.py             # Exception hierarchy
-├── _reader.py             # ArchiveReader ABC + default method implementations
-├── _writer.py             # ArchiveWriter ABC
-├── _detection.py          # Format detection engine + PeekableStream
-├── _filters.py            # ExtractionPolicy filters and path sanitizer
-├── _extraction.py         # Safe extraction coordinator (uses _filters.py)
-├── _progress.py           # ExtractionProgress, ExtractionResult
+├── core.py                # open_archive() / create() / extract() / detect_format() entry points
+├── types.py               # Public types: ArchiveMember, ArchiveInfo, ArchiveFormat
+│                          #   (+ ContainerFormat/StreamFormat), MemberType, CompressionAlgo/Method,
+│                          #   Intent, CostReceipt (+ Listing/Access/StreamCapability),
+│                          #   ExtractionPolicy/OverwritePolicy, MemberSelector/MemberFilter aliases
+├── exceptions.py          # ArchiveyError hierarchy
+├── filters.py             # ExtractionPolicy transforms + path sanitizer
 │
-└── backends/
-    ├── __init__.py        # BackendRegistry singleton + register_reader()/register_writer()
-    ├── _base.py           # ReadBackend / WriteBackend ABCs
-    ├── _zip.py            # ZIP (zipfile stdlib)
-    ├── _tar.py            # TAR all variants (tarfile stdlib)
-    ├── _single.py         # GZ, BZ2, XZ single-file compressors
-    ├── _dir.py            # Directory pseudo-backend
-    ├── _7z.py             # 7-Zip — native reader (stdlib lzma/bz2/zlib); py7zr only for writing
-    ├── _rar.py            # RAR — native metadata parser + system `unrar` for data (read-only)
-    └── _iso.py            # ISO 9660 (pycdlib, optional)
+├── internal/              # private spine + helpers (not part of the public import surface)
+│   ├── base_reader.py     # BaseArchiveReader ABC + default impls (link-follow, context stamping)
+│   ├── base_writer.py     # ArchiveWriter ABC
+│   ├── registry.py        # BackendRegistry + ReadBackend / WriteBackend ABCs
+│   ├── detection.py       # Format detection engine + PeekableStream         (Phase 3)
+│   ├── extraction.py      # ExtractionCoordinator + BombTracker (uses filters) (Phase 4)
+│   ├── progress.py        # ExtractionProgress / ExtractionResult              (Phase 4)
+│   ├── io_helpers.py      # is_seekable, ensure_binaryio, simplified BinaryIOWrapper, …
+│   └── streams/           # compressed + seekable stream layer                 (Phase 2)
+│       └── compat.py, detect.py, slice.py, decompress.py, xz.py, lzip.py
+│
+└── formats/               # one module per format backend
+    ├── __init__.py            # registers backends at import time
+    ├── directory_reader.py    # Directory pseudo-backend                       (Phase 1)
+    ├── zip_reader.py          # ZIP (zipfile stdlib)
+    ├── tar_reader.py          # TAR all variants (tarfile stdlib)
+    ├── single_file_reader.py  # GZ, BZ2, XZ, ZST single-file compressors
+    ├── sevenzip_reader.py     # 7-Zip — native reader (stdlib lzma/bz2/zlib); py7zr only for writing
+    ├── rar_reader.py          # RAR — native metadata parser + system `unrar` for data (read-only)
+    └── iso_reader.py          # ISO 9660 (pycdlib, optional)
 
 tests/
 ├── fixtures/              # Committed binary archives — only what can't be generated
@@ -120,17 +130,17 @@ not re-run byte matching. Backend selection by format and detection are two dist
 
 → see SPEC.md §3.2 / openspec `archive-reading`
 
-Rather than having backend-specific reader classes be the public API, all backends return objects that implement the `ArchiveReader` ABC. The ABC provides default implementations for methods like `extract()` and `extract_all()` that delegate to the `_extraction.py` module — backends only need to implement iteration and raw data access.
+Rather than having backend-specific reader classes be the public API, all backends return objects that implement the `ArchiveReader` ABC. The ABC provides default implementations for methods like `extract_all()` that delegate to the `internal/extraction.py` module — backends only need to implement iteration and raw data access.
 
 ```
-ArchiveReader (ABC in _reader.py)
-├── ZipReader    (backends/_zip.py)
-├── TarReader    (backends/_tar.py)
-├── SingleFileReader (backends/_single.py)
-├── SevenZReader (backends/_7z.py)
-├── RarReader    (backends/_rar.py)
-├── IsoReader    (backends/_iso.py)
-└── DirReader    (backends/_dir.py)
+BaseArchiveReader (ABC in internal/base_reader.py)
+├── ZipReader        (formats/zip_reader.py)
+├── TarReader        (formats/tar_reader.py)
+├── SingleFileReader (formats/single_file_reader.py)
+├── SevenZReader     (formats/sevenzip_reader.py)
+├── RarReader        (formats/rar_reader.py)
+├── IsoReader        (formats/iso_reader.py)
+└── DirectoryReader  (formats/directory_reader.py)
 ```
 
 The methods backends **must or may** implement:
@@ -270,7 +280,7 @@ This is a standard "read-ahead buffer" pattern — the key property is that the 
 
 → see SPEC.md §7 / openspec `safe-extraction`
 
-`_extraction.py` implements the safe extraction coordinator. It has no deferred/pending state; both streaming and random-access extraction use the same unified forward pass driven by `_iter_with_data()`.
+`internal/extraction.py` implements the safe extraction coordinator. It has no deferred/pending state; both streaming and random-access extraction use the same unified forward pass driven by `_iter_with_data()`.
 
 ```python
 class ExtractionCoordinator:
@@ -358,7 +368,7 @@ The `sample_archive.contents` object is both the generation spec and the ground 
 → see SPEC.md §7 / openspec `safe-extraction`
 
 ```python
-# _filters.py
+# filters.py
 
 def check_universal(member: ArchiveMember) -> None:
     """Raises FilterRejectionError if member violates universal constraints."""
@@ -488,7 +498,7 @@ dependency is absent the guard catches the `ImportError` and the format simply n
 appears in `list_formats()` — import never crashes:
 
 ```python
-# backends/_iso.py
+# formats/iso_reader.py
 try:
     import pycdlib
     _PYCDLIB_AVAILABLE = True
@@ -503,7 +513,7 @@ class IsoReadBackend(ReadBackend):
     def open_read(self, source, intent, password, encoding) -> ArchiveReader: ...
 
 if _PYCDLIB_AVAILABLE:
-    archivey.backends.register_reader(IsoReadBackend)   # only registered when usable
+    register_reader(IsoReadBackend)   # from archivey.internal.registry; only when usable
 ```
 
 When an ISO file is detected but `pycdlib` is not installed, `reader_for_format()` raises
@@ -529,7 +539,7 @@ registered):
 archivey.open_archive("file.zip")
   │  (opener wraps a non-seekable source in PeekableStream, shared below)
   ▼
-_detection.py: detect_format()
+internal/detection.py: detect_format()
   │  peek first 4KiB (via the shared PeekableStream / seekable rewind)
   │  match magic bytes → ArchiveFormat.ZIP
   ▼

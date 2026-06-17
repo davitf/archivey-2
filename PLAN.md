@@ -86,11 +86,14 @@ simply absent from the equivalence matrix until Phase 7.
 
 ---
 
-## Phase 1 — Scaffold, spine, and the new test harness
+## Phase 1 — Scaffold, spine, new test harness, and the directory backend
 
-**Goal:** an empty-but-correct skeleton — the target package shape, the spine
-contracts (written fresh), the logging hierarchy, and the new declarative test
-framework — all green, with no formats wired yet.
+**Goal:** a correct skeleton with the spine validated against one real backend —
+the target package shape, the spine contracts (written fresh), the logging
+hierarchy, the new declarative test framework, and the **directory pseudo-backend**
+(the one leaf format needing no codec layer or magic detection), so the ABC is
+exercised end-to-end (iterate → read/open → link resolution → cost) from day one.
+All codec/detection-dependent formats stay unwired until Phases 2–3.
 
 **Entry criteria:** fresh repo; `archivey-dev` cloned per `CLAUDE.md`.
 
@@ -124,17 +127,24 @@ framework — all green, with no formats wired yet.
    reusing them; `tests/fixtures/` with a
    JSON sidecar per committed archive; **no generated binaries committed**; flat
    `tests/` layout. Clone DEV's suite into `tests/_dev_oracle/` as the frozen gate.
+5. **Directory backend** (`formats/directory_reader.py`): the spine's first real
+   consumer — walks a filesystem directory, yields members with filesystem metadata,
+   serves data via `read`/`open`, follows in-directory symlinks, reports
+   `INDEXED`/`DIRECT`/`SEEKABLE` cost. Needs no codec layer (Phase 2) or magic
+   detection (Phase 3), so it validates the ABC end-to-end now.
 
 ### Tests added
 Harness self-tests (corpus round-trips through generation+cache); `__version__`
-exposure; logging emits nothing by default.
+exposure; logging emits nothing by default; **`format-directory` end-to-end**
+(members, read/open, symlink follow, cost).
 
 ### Acceptance — spec scenarios covered
 - `packaging-and-extras`: *core install pulls no third-party packages*, *install
   rejected on unsupported Python*, *supported on all three operating systems*,
   *`__version__` reflects the installed distribution*.
 - `backend-registry`: *core backend available without extras*, *optional backend
-  absent at import* (registry exists; no format backends yet).
+  absent at import* (registry exists; directory backend wired).
+- `format-directory`: all scenarios (directory backend validates the spine).
 - `logging`: *library emits no output by default*.
 - `testing-contract`: framework stands up (matrix harness importable; oracle hooks
   wired but skipped when libs absent).
@@ -185,23 +195,24 @@ detection covers them.
 **Entry criteria:** Phase 2 green.
 
 ### Tasks
-1. Port **ZIP**, **directory**, **single-file compressors**, and **ISO** backends
-   onto the new ABC (interface-only changes). ISO namespace auto-selection
-   (Rock Ridge → Joliet → plain) and optional `pycdlib` graceful degradation.
+1. Port **ZIP**, **single-file compressors**, and **ISO** backends onto the new ABC
+   (interface-only changes; the **directory** backend already landed in Phase 1).
+   ISO namespace auto-selection (Rock Ridge → Joliet → plain) and optional `pycdlib`
+   graceful degradation.
 2. Port **format detection** magic table + extension fallback + conflict warning
    for these formats; non-seekable peek/replay shared by the opener.
 3. Wire **CostReceipt** values for these formats; `archive-reading` random/by-name
    access on indexed sources.
 
 ### Tests added
-`format-zip`, `format-directory`, `format-single-file-compressors`, `format-iso`
+`format-zip`, `format-single-file-compressors`, `format-iso`
 scenarios; `format-detection` scenarios for these formats; `backend-registry`
 selection + *ISO without pycdlib* + *list_formats() excludes unavailable*;
 `access-intent-and-cost` O(1)/AUTO/RANDOM scenarios for ZIP; equivalence matrix
 seeded; non-seekable ZIP spooling. Retire matching frozen-oracle coverage.
 
 ### Acceptance — spec scenarios covered
-`format-zip` (all), `format-directory` (all), `format-single-file-compressors`
+`format-zip` (all), `format-single-file-compressors`
 (all read), `format-iso` (all), `format-detection` (ZIP/TAR magic, gzip-wrapping,
 SFX, ISO extended peek, never-consumes-bytes), `backend-registry` (selection +
 degradation).

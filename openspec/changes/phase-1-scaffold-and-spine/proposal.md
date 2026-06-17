@@ -27,7 +27,7 @@ cloned as a **frozen test oracle**, not copied as a baseline.
   uv workflow; package stays pip-installable.
 - **Package layout** — `src/archivey/{internal,formats}/` + public `__init__.py` +
   `py.typed`; establish the `archivey` **logger hierarchy** (no handlers).
-- **Spine, written fresh** (types/ABCs in place, no backends yet):
+- **Spine, written fresh** (types/ABCs in place; the directory backend below is the only one wired):
   - `BaseArchiveReader` ABC in `ARCHITECTURE.md` vocabulary — `_iter_members`,
     `_iter_with_data`, `_open_member` with **no** `for_iteration` and **no**
     `_prepare_member_for_open`; `_SUPPORTS_RANDOM_ACCESS` / `_MEMBER_LIST_UPFRONT`
@@ -58,6 +58,12 @@ cloned as a **frozen test oracle**, not copied as a baseline.
     (`INDEXED`/`REQUIRES_SCANNING`/`REQUIRES_DECOMPRESSION`), `AccessCost`
     (`DIRECT`/`SOLID`), `StreamCapability` (`SEEKABLE`/`FORWARD_ONLY`),
     `solid_block_count` (`is_solid` lives on `ArchiveInfo`, not the receipt).
+- **First backend — the `directory` pseudo-backend** (`formats/directory_reader.py`):
+  the one leaf format that needs **no** codec layer (Phase 2) and **no** magic
+  detection (Phase 3) — just a filesystem walk. It is wired as the ABC's first real
+  consumer so the spine is validated end-to-end (iterate → `read`/`open` → link
+  resolution → `CostReceipt`) and the new harness has a working target from day one.
+  All codec/detection-dependent leaf formats (ZIP, single-file, ISO) stay in Phase 3.
 - **New declarative test framework** — cleaned corpus port (`sample_archives`,
   `ArchiveContents`, `FileInfo`, `ArchiveCreationInfo`); `conftest.py`
   parametrization; **generate-on-demand + cache**; `tests/fixtures/` with a JSON
@@ -74,7 +80,10 @@ carries no spec deltas. Capabilities realized or seeded:
   mapping, env matrix, `__version__`).
 - **`backend-registry`, `archive-data-model`, `error-handling`,
   `access-intent-and-cost`** — the **types and contracts** land here (written
-  fresh); per-format *behavior* arrives as backends are added (Phases 3–7).
+  fresh); per-format *behavior* for codec/detection-dependent formats arrives as
+  backends are added (Phases 3–7).
+- **`format-directory`** — realized in full (the directory pseudo-backend is the
+  spine's first consumer; needs no codec or detection layer).
 - **`logging`** — the named-logger hierarchy is established.
 - **`testing-contract`** — framework foundations (declarative corpus, on-demand
   generation + cache, no committed binaries). Finalized in Phase 10.

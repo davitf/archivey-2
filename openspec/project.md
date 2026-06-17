@@ -73,9 +73,9 @@ once. Specs themselves remain order-free; this table is the association.
 
 | Phase | Theme | Primary capabilities advanced |
 |-------|-------|-------------------------------|
-| 1 | Scaffold + spine + new test harness | `packaging-and-extras` (pyproject, extras, env matrix, `__version__`); `backend-registry`, `archive-data-model`, `error-handling`, `access-intent-and-cost` (types/contracts written fresh); `logging`; `testing-contract` (framework foundations: declarative corpus, on-demand generation + cache, no committed binaries). DEV cloned as a frozen oracle. |
+| 1 | Scaffold + spine + new test harness + directory backend | `packaging-and-extras` (pyproject, extras, env matrix, `__version__`); `backend-registry`, `archive-data-model`, `error-handling`, `access-intent-and-cost` (types/contracts written fresh); `format-directory` (the spine's first backend — no codec/detection layer needed); `logging`; `testing-contract` (framework foundations: declarative corpus, on-demand generation + cache, no committed binaries). DEV cloned as a frozen oracle. |
 | 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams`. (7z/ZIP container codecs `pyppmd`/`inflate64`/AES stage land with Phase 7.) |
-| 3 | Indexed leaf formats | `format-zip`, `format-directory`, `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry` (selection/degradation), `access-intent-and-cost` (CostReceipt values) |
+| 3 | Indexed leaf formats | `format-zip`, `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry` (selection/degradation), `access-intent-and-cost` (CostReceipt values). (`format-directory` already landed in Phase 1.) |
 | 4 | TAR, streaming & safe extraction | `format-tar`, `safe-extraction` (incl. bomb limits + progress/result), `archive-reading` (sequential + `stream_members`) |
 | 5 | Public API finalization & cost surface | `archive-reading`, `archive-data-model`, `access-intent-and-cost`, `error-handling` |
 | 6 | Writing support | `archive-writing` (+ `format-zip` / `format-tar` writers) |
