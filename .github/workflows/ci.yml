@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }} / ${{ matrix.install }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux core-only (no extras)
+          - os: ubuntu-latest
+            python-version: "3.11"
+            install: core-only
+          - os: ubuntu-latest
+            python-version: "3.12"
+            install: core-only
+          - os: ubuntu-latest
+            python-version: "3.13"
+            install: core-only
+          - os: ubuntu-latest
+            python-version: "3.14"
+            install: core-only
+          # Linux [all]
+          - os: ubuntu-latest
+            python-version: "3.11"
+            install: all
+          - os: ubuntu-latest
+            python-version: "3.12"
+            install: all
+          - os: ubuntu-latest
+            python-version: "3.13"
+            install: all
+          - os: ubuntu-latest
+            python-version: "3.14"
+            install: all
+          # macOS min/max [all]
+          - os: macos-latest
+            python-version: "3.11"
+            install: all
+          - os: macos-latest
+            python-version: "3.14"
+            install: all
+          # Windows min/max [all]
+          - os: windows-latest
+            python-version: "3.11"
+            install: all
+          - os: windows-latest
+            python-version: "3.14"
+            install: all
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies (core-only)
+        if: matrix.install == 'core-only'
+        run: uv sync --group dev --no-extra
+
+      - name: Install dependencies ([all])
+        if: matrix.install == 'all'
+        run: uv sync --group dev --extra all
+
+      - name: Install unrar (Linux, for RAR data tests)
+        if: runner.os == 'Linux' && matrix.install == 'all'
+        run: sudo apt-get install -y unrar || true
+
+      - name: Ruff
+        run: uv run ruff check src/ tests/
+
+      - name: Pyrefly
+        run: uv run pyrefly check
+        continue-on-error: true
+
+      - name: ty
+        run: uv run ty check src/
+        continue-on-error: true
+
+      - name: pytest
+        run: uv run pytest tests/ -v

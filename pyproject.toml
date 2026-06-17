@@ -1,0 +1,112 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "archivey"
+version = "0.2.0.dev0"
+description = "Python library for reading, streaming, and safely extracting archives"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Davi Figueiredo", email = "gh@davitf.com" }
+]
+
+[project.optional-dependencies]
+7z = [
+    "pyppmd>=1.1.0",
+    "inflate64>=1.0.0",
+    "zstandard>=0.23.0",
+    "brotli>=1.1.0",
+    "cryptography>=45.0.0",
+]
+rar = [
+    "cryptography>=45.0.0",
+]
+crypto = [
+    "cryptography>=45.0.0",
+]
+7z-write = [
+    "py7zr>=1.0.0",
+]
+iso = [
+    "pycdlib>=1.14.0",
+]
+zstd = [
+    "zstandard>=0.23.0",
+]
+lz4 = [
+    "lz4>=4.4.5",
+]
+cli = [
+    "tqdm>=4.67.0",
+]
+seekable = [
+    "rapidgzip>=0.14.0",
+    "indexed_bzip2>=1.6.0",
+]
+recommended-lite = [
+    "archivey[7z,rar,7z-write,iso,zstd,lz4,cli]",
+]
+recommended = [
+    "archivey[recommended-lite,seekable]",
+]
+all = [
+    "archivey[recommended]",
+    "python-xz>=0.5.0",
+    "pyzstd>=0.17.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "pyrefly>=0.20.0",
+    "ty>=0.0.1a13",
+    "ruff>=0.11.0",
+    "coverage[toml]>=7.6.0",
+    "py7zr>=1.0.0",
+    "rarfile>=4.2",
+    "zstandard>=0.23.0",
+    "lz4>=4.4.5",
+    "cryptography>=45.0.0",
+]
+
+[tool.hatch.version]
+path = "src/archivey/__init__.py"
+validate-bump = false
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+extend-select = ["I", "F", "C4", "ISC", "RET", "BLE"]
+
+[tool.pyrefly]
+search-path = ["src"]
+project-includes = ["src"]
+python_version = "3.11"
+
+[tool.ty]
+# ty (pyright-based) strict type checking
+
+[tool.coverage.run]
+source = ["archivey"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "except ImportError:",
+    "@abstractmethod",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests", "."]
+testpaths = ["tests"]
+addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml"
+
+markers = [
+    "sample_archives: declarative parametrization over sample archives and config variants",
+]
