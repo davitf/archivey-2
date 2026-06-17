@@ -106,6 +106,7 @@ exclude_also = [
 pythonpath = ["src", "tests", "."]
 testpaths = ["tests"]
 addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml"
+norecursedirs = ["_dev_oracle"]
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
