@@ -28,7 +28,8 @@ ArchiveyError(Exception)
 │       ├── SymlinkEscapeError  # symlink resolves outside dest
 │       └── SpecialFileError    # device node, FIFO, socket
 ├── UnsupportedFeatureError     # recognized but unhandled feature/variant/codec
-│                               #   (e.g. multi-volume, RAR2, BCJ2, unknown coder)
+│                               #   (e.g. a ZIP codec stdlib zipfile lacks, an
+│                               #   AES-encrypted ZIP, the 7z BCJ2 coder)
 ├── PackageNotInstalledError    # a required optional package or external tool is
 │                               #   absent (codec backend, crypto backend, unrar)
 └── UnsupportedOperationError   # API misuse: operation not valid for this reader's mode
@@ -36,9 +37,9 @@ ArchiveyError(Exception)
 ```
 
 `UnsupportedFeatureError` and `PackageNotInstalledError` may be raised at open or
-read time (e.g. listing a multi-volume archive, or reading a member whose codec
-package is missing), so they are top-level `ArchiveyError` subtypes rather than
-nested under `OpenError`/`ReadError`.
+read time (e.g. opening a 7z archive that uses the BCJ2 coder, or reading a ZIP
+member whose compression method stdlib `zipfile` cannot decode), so they are
+top-level `ArchiveyError` subtypes rather than nested under `OpenError`/`ReadError`.
 
 `StreamNotSeekableError` is an **open-time** failure: the source cannot `seek()` but the
 chosen format/backend requires a seekable source (e.g. opening a ZIP from a pipe with
@@ -54,8 +55,9 @@ incompatible at open), **not** `UnsupportedOperationError`.
   intent/usage avoids it. It can therefore occur in normal use when the wrong access mode
   was selected, but the fix is always on the caller's side.
 - `UnsupportedFeatureError` signals a **valid archive with a feature Archivey does not
-  implement** (RAR2, BCJ2, an unknown coder, multi-volume): nothing the caller does
-  changes it; the archive itself needs an unsupported capability.
+  implement** (a ZIP codec stdlib `zipfile` lacks, an AES-encrypted ZIP entry, the 7z
+  BCJ2 coder, an unknown coder): nothing the caller does changes it; the archive itself
+  needs an unsupported capability.
 
 #### Scenario: catch all library errors with a single clause
 
@@ -74,7 +76,7 @@ incompatible at open), **not** `UnsupportedOperationError`.
 
 #### Scenario: recognized but unsupported feature
 
-- **WHEN** an archive uses a recognized feature the reader does not handle (e.g. multi-volume, RAR2, or the BCJ2 coder)
+- **WHEN** an archive uses a recognized feature the reader does not handle (e.g. a ZIP compression method stdlib `zipfile` doesn't implement, or the 7z BCJ2 coder)
 - **THEN** `UnsupportedFeatureError` is raised rather than producing incorrect output
 
 ---

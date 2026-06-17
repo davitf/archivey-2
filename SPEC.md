@@ -649,7 +649,8 @@ ArchiveyError(Exception)
 │       ├── SymlinkEscapeError  # symlink resolves outside dest
 │       └── SpecialFileError    # device node, FIFO, socket
 ├── UnsupportedFeatureError     # recognized but unhandled feature/variant/codec
-│                               #   (e.g. multi-volume, RAR2, BCJ2, unknown coder)
+│                               #   (e.g. a ZIP codec stdlib zipfile lacks, an
+│                               #   AES-encrypted ZIP, the 7z BCJ2 coder)
 ├── PackageNotInstalledError    # a required optional package or external tool is
 │                               #   absent (codec backend, crypto backend, unrar)
 └── UnsupportedOperationError   # API misuse: operation not valid for this reader's mode
@@ -668,8 +669,8 @@ cannot `seek()` but the chosen format/backend needs one), so it is a subclass of
   through a read-only RAR backend, using a closed reader). It is not caused by the
   archive's contents; the fix is always on the caller's side.
 - `UnsupportedFeatureError` = a **valid archive with a feature Archivey does not
-  implement** (RAR2, BCJ2, an unknown coder, multi-volume): nothing the caller does
-  changes it.
+  implement** (a ZIP codec stdlib `zipfile` lacks, an AES-encrypted ZIP entry, the 7z
+  BCJ2 coder, an unknown coder): nothing the caller does changes it.
 
 **Requirement:** every `ArchiveyError` must carry:
 - `message: str` — human-readable explanation
