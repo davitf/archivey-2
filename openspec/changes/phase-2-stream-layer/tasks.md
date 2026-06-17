@@ -6,6 +6,16 @@
 
 ## 1. internal/streams package
 
+> **DEV source map** (port-as-unit references; pin commit `730275b…`): the primitives
+> are scattered, not all in `io_helpers.py` —
+> `RecordableStream`, `SlicingStream`, `BinaryIOWrapper` → `internal/io_helpers.py`;
+> `RewindableStreamWrapper`, `is_seekable`/`is_stream`/`is_filename`/`ensure_binaryio`/
+> `ensure_bufferedio`/`fix_stream_start_position` → `core.py`;
+> `read_exact` → `formats/single_file_reader.py`;
+> `DecompressorStream` → `formats/decompressor_stream.py`;
+> `XzStream` → `formats/xz_stream.py`; `LzipStream` → `formats/lzip_stream.py`.
+> Treat these as references to rewrite cleanly into the new layout, not files to copy.
+
 - [ ] 1.1 Create `src/archivey/internal/streams/` (with `__init__.py`).
 - [ ] 1.2 `detect.py` — port `RecordableStream`, `RewindableStreamWrapper`.
 - [ ] 1.3 `slice.py` — port `SlicingStream`.

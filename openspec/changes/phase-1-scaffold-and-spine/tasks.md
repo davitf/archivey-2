@@ -50,18 +50,42 @@
       `_iter_with_data`, `_open_member` (**no** `for_iteration`), class attributes
       `_SUPPORTS_RANDOM_ACCESS` / `_MEMBER_LIST_UPFRONT` (TAR resolves the former at
       `__init__` from source seekability), **no** `_prepare_member_for_open` hook;
-      registration + link-resolution (depth-limited) skeleton.
-- [ ] 4.2 Backend registry + `Backend` ABC: import-time self-registration;
-      selection by peek bytes / path / intent; `SUPPORTS_WRITE` / `REQUIRES_SEEK`.
-- [ ] 4.3 Public-API skeleton: `open_archive()`, the `ArchiveReader` surface, and
-      the context-manager / `close()` lifecycle.
-- [ ] 4.4 Data model: `Member` (frozen, hashable, `extra` excluded from hash/eq,
-      digests under algorithm keys), `ArchiveInfo`, `ArchiveFormat`, `MemberType`,
-      compression-method model, and member-name normalization rules.
-- [ ] 4.5 `ArchiveyError` hierarchy (`error-handling` spec): single root, required
-      attributes (`format`, member name), cause/traceback preservation contract.
-- [ ] 4.6 `Intent` enum + `CostReceipt` (`ListingCost`/`AccessCost`/
-      `StreamCapability`) types.
+      assign `member_id` at registration; public surface (`stream_members(members)`
+      — selector only, **no** transform filter; `read`/`open`; `extract_all`
+      signature); link resolution by **cycle-detection** (visited-set, no depth
+      limit) that fills `link_target_member` and raises `LinkTargetNotFoundError`
+      on a missing target. (`extract_all` *body* — coordinator/BombTracker — is
+      Phase 4; the method exists here as a deferred stub.)
+- [ ] 4.2 `ReadBackend` / `WriteBackend` ABCs (split) + registry with separate
+      `register_reader`/`reader_for_format` and `register_writer`/`writer_for_format`;
+      import-time self-registration; backends declare `MAGIC` (`(offset, bytes)`) /
+      `EXTENSIONS` as data and `REQUIRES_SEEK`; **selection by format**, not a
+      per-backend `detect(peek)`. (The central detector that consumes the magic
+      table is Phase 3; here the registry + ABCs + format→backend lookup exist.)
+- [ ] 4.3 Public-API skeleton: `open_archive(..., encoding: str | None = None)`, the
+      `ArchiveReader` surface, the context-manager / `close()` lifecycle, and the
+      `MemberSelector` / `MemberFilter` type aliases. (Actual detection wiring —
+      PeekableStream + `detect_format` — lands in Phase 3.)
+- [ ] 4.4 Data model: `ArchiveMember` (**mutable** `@dataclass`, caller-read-only,
+      `.replace()` copy-on-edit, **unhashable**; `raw_name: bytes | None`;
+      `link_target_member`; `hashes` + `extra` excluded from `__eq__`; `member_id`
+      property), `ArchiveInfo` (incl. `is_solid`), `ArchiveFormat` = `(container,
+      stream)` frozen pair (`ContainerFormat` × `StreamFormat` + named class-vars),
+      `MemberType`, `CompressionAlgo` (extensible, incl. `BROTLI`) /
+      `CompressionMethod`, and member-name normalization (`name` decoded+normalized,
+      `raw_name` verbatim bytes). Field names follow the **spec** (`name`, `size`,
+      `compressed_size`, `modified`, …), not DEV's (`filename`/`file_size`/…).
+- [ ] 4.5 `ArchiveyError` hierarchy (`error-handling` spec): single root; required
+      attributes `message` / `source_format` / `archive_name` / `member_name` /
+      `__cause__`; the per-**library** translator + central context-stamping wrapper
+      in the ABC; members incl. `StreamNotSeekableError` (under `OpenError`),
+      `LinkTargetNotFoundError` (under `ReadError`), `UnsupportedFeatureError`,
+      `PackageNotInstalledError`, `UnsupportedOperationError`. Genuine
+      `OSError`/`KeyboardInterrupt`/`MemoryError` propagate unchanged.
+- [ ] 4.6 `Intent` enum + `CostReceipt` types: `ListingCost`
+      (`INDEXED`/`REQUIRES_SCANNING`/`REQUIRES_DECOMPRESSION`), `AccessCost`
+      (`DIRECT`/`SOLID`), `StreamCapability` (`SEEKABLE`/`FORWARD_ONLY`),
+      `solid_block_count`, `notes`. `is_solid` lives on `ArchiveInfo`.
 
 > These are contracts/types only — with no format backend wired, opening a real
 > archive is not yet supported (paths raise a clear not-implemented error or the
@@ -72,9 +96,11 @@
 - [ ] 5.1 Port the corpus cleaned: `sample_archives.py`, `ArchiveContents`,
       `FileInfo`, `ArchiveCreationInfo` (declarative specs + expected data, which are
       API-agnostic).
-- [ ] 5.2 `conftest.py` parametrization; **generate-on-demand + cache** to
-      `$XDG_CACHE_HOME/archivey-tests/` keyed by
-      `hash(spec + creation_params + lib versions)`; `--regen` flag.
+- [ ] 5.2 `conftest.py` parametrization; **generate-on-demand + cache** to a
+      project-local dir `.pytest_cache/archivey-archives/` (overridable via
+      `ARCHIVEY_TEST_CACHE`; **not** `$XDG_CACHE_HOME`, unset on Windows), written
+      atomically (temp + `os.replace`), keyed by `hash(spec + creation_params + lib
+      versions + generator-code version)`; `--regen` flag.
 - [ ] 5.3 `tests/fixtures/` for committed adversarial archives, each with a JSON
       sidecar (format per `ARCHITECTURE.md §2.8`); add generated archives to
       `.gitignore`; **commit no generated binaries**.

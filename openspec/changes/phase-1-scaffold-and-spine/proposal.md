@@ -31,17 +31,33 @@ cloned as a **frozen test oracle**, not copied as a baseline.
   - `BaseArchiveReader` ABC in `ARCHITECTURE.md` vocabulary — `_iter_members`,
     `_iter_with_data`, `_open_member` with **no** `for_iteration` and **no**
     `_prepare_member_for_open`; `_SUPPORTS_RANDOM_ACCESS` / `_MEMBER_LIST_UPFRONT`
-    as **class attributes**; registration + link-resolution skeleton.
-  - Backend registry + `Backend` ABC (self-register at import; selection by peek
-    bytes / path / intent; `SUPPORTS_WRITE` / `REQUIRES_SEEK`).
-  - Public-API skeleton (`open_archive`, the `ArchiveReader` surface, context-
-    manager lifecycle).
-  - Data model — `Member` (frozen, hashable, `extra`, digests under algorithm
-    keys), `ArchiveInfo`, `ArchiveFormat`, `MemberType`, the compression-method
-    model, and member-name normalization.
-  - `ArchiveyError` hierarchy with the required attributes and the
-    cause/traceback-preservation contract.
-  - `Intent` enum + `CostReceipt` types.
+    as **class attributes**; `member_id` assignment at registration; the public
+    surface (`stream_members(members)` selector-only, `read`/`open`, `extract_all`
+    signature) and **link resolution by cycle-detection** (visited-set, no depth
+    limit; resolves `link_target_member`; missing target → `LinkTargetNotFoundError`).
+  - `ReadBackend` / `WriteBackend` ABCs (split — not one `Backend`) + the registry
+    with separate `register_reader`/`reader_for_format` and
+    `register_writer`/`writer_for_format`; backends declare `MAGIC`/`EXTENSIONS` as
+    **data** and `REQUIRES_SEEK`; selection is **by format** (the central detector
+    that consumes the magic data is wired in Phase 3). Import-time self-registration.
+  - Public-API skeleton (`open_archive` with `encoding: str | None = None`, the
+    `ArchiveReader` surface, context-manager lifecycle).
+  - Data model — `ArchiveMember` (**mutable**, caller-read-only with `.replace()`
+    copy-on-edit, **unhashable**; `raw_name: bytes`; `link_target_member`; `hashes`
+    digests under algorithm keys; `extra`), `ArchiveInfo` (incl. `is_solid`),
+    `ArchiveFormat` as a `(container, stream)` frozen pair (`ContainerFormat` ×
+    `StreamFormat`, named class-vars), `MemberType`, the `CompressionAlgo`
+    (extensible, incl. `BROTLI`) / `CompressionMethod` model, and member-name
+    normalization (`name` decoded+normalized; `raw_name` verbatim bytes).
+  - `ArchiveyError` hierarchy with required attributes (`message`, `source_format`,
+    `archive_name`, `member_name`, `__cause__`), the per-library-translator +
+    central-context-stamping pattern, and the new members `StreamNotSeekableError`,
+    `LinkTargetNotFoundError`, `UnsupportedFeatureError`, `PackageNotInstalledError`,
+    `UnsupportedOperationError`.
+  - `Intent` enum + `CostReceipt` types — `ListingCost`
+    (`INDEXED`/`REQUIRES_SCANNING`/`REQUIRES_DECOMPRESSION`), `AccessCost`
+    (`DIRECT`/`SOLID`), `StreamCapability` (`SEEKABLE`/`FORWARD_ONLY`),
+    `solid_block_count` (`is_solid` lives on `ArchiveInfo`, not the receipt).
 - **New declarative test framework** — cleaned corpus port (`sample_archives`,
   `ArchiveContents`, `FileInfo`, `ArchiveCreationInfo`); `conftest.py`
   parametrization; **generate-on-demand + cache**; `tests/fixtures/` with a JSON
