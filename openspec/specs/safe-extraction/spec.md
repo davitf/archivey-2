@@ -17,6 +17,7 @@ archivey.extract(
     *,
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
+    on_error: OnError = OnError.STOP,
     format: ArchiveFormat | None = None,
     password: str | bytes | None = None,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
@@ -52,6 +53,7 @@ class ArchiveReader:
         filter: MemberFilter | None = None,      # per-member sanitize/rename; None to skip a member
         policy: ExtractionPolicy = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
+        on_error: OnError = OnError.STOP,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
     ) -> list[ExtractionResult]: ...
 ```
@@ -458,14 +460,16 @@ The system SHALL return a `list[ExtractionResult]` from `archivey.extract()` and
 @dataclass
 class ExtractionResult:
     member: ArchiveMember
-    path: Path | None           # None if skipped
-    status: ExtractionStatus    # EXTRACTED, SKIPPED, REJECTED
+    path: Path | None            # the written path, or None if not written
+    status: ExtractionStatus
+    error: ArchiveyError | None = None   # the failure, for FAILED/REJECTED under OnError.CONTINUE
 
 class ExtractionStatus(Enum):
     EXTRACTED = "extracted"
-    SKIPPED   = "skipped"       # due to OverwritePolicy.SKIP
-    REJECTED  = "rejected"      # due to filter rejection; no exception raised if
-                                # on_rejection=OnRejection.WARN (default: RAISE)
+    SKIPPED   = "skipped"       # pre-existing destination, under OverwritePolicy.SKIP
+    REJECTED  = "rejected"      # blocked by a safety filter (universal or policy check)
+    FAILED    = "failed"        # error while extracting (corrupt/truncated/encrypted data,
+                                # ratio bomb, write error) — recorded under OnError.CONTINUE
 ```
 
 #### Scenario: successfully extracted member
@@ -478,7 +482,71 @@ class ExtractionStatus(Enum):
 - **WHEN** a member's destination path already exists and `OverwritePolicy.SKIP` is active
 - **THEN** the member's `ExtractionResult` has `status=ExtractionStatus.SKIPPED` and `path=None`
 
-#### Scenario: rejected member due to filter
+#### Scenario: rejected member under OnError.CONTINUE
 
-- **WHEN** a member is blocked by a safety filter and the rejection policy is WARN rather than RAISE
-- **THEN** the member's `ExtractionResult` has `status=ExtractionStatus.REJECTED` and `path=None`, and no exception is raised
+- **WHEN** a member is blocked by a safety filter and `OnError.CONTINUE` is active
+- **THEN** the member's `ExtractionResult` has `status=ExtractionStatus.REJECTED`, `path=None`, and `error` set to the `FilterRejectionError`, and extraction continues
+
+#### Scenario: failed member under OnError.CONTINUE
+
+- **WHEN** a member fails to extract (e.g. `CorruptionError`) and `OnError.CONTINUE` is active
+- **THEN** any partial output for that member is removed, its `ExtractionResult` has `status=ExtractionStatus.FAILED` and `error` set, and extraction proceeds to the next member
+
+---
+
+### Requirement: Error Policy (OnError) for extraction failures
+
+The system SHALL accept an `on_error` parameter on `archivey.extract()` and
+`ArchiveReader.extract_all()` that governs what happens when an individual member cannot
+be extracted — distinct from `OverwritePolicy`, which governs only pre-existing
+destination files.
+
+```python
+class OnError(Enum):
+    STOP     = "stop"      # default: raise the first failure and halt (no further members)
+    CONTINUE = "continue"  # best-effort: record the failure, clean up, proceed to the next member
+```
+
+A per-member failure is any `ArchiveyError` raised while processing one member: a
+`FilterRejectionError` (universal/policy safety check), a data error
+(`CorruptionError`/`TruncatedError`/`EncryptionError`), the per-member ratio
+`ExtractionError`, or a write error to that member's path.
+
+- **`OnError.STOP` (default):** the first per-member failure is raised immediately;
+  already-extracted members remain on disk, the failing member's partial output is
+  removed, and no further members are processed. This is the safe default for untrusted
+  input — you learn about the problem at once.
+- **`OnError.CONTINUE`:** the failure is caught, the failing member's partial output (if
+  any) is removed (a failed member never leaves a half-written file), an
+  `ExtractionResult` with `status` `REJECTED` (filter) or `FAILED` (other) and `error`
+  set is recorded, a `logging.WARNING` is emitted, and extraction proceeds to the next
+  member. The returned `list[ExtractionResult]` is the report — it carries every member's
+  outcome, including the `REJECTED`/`FAILED` entries; the library does **not** raise an
+  aggregate at the end (the caller inspects `status`/`error`).
+
+`on_error` replaces the earlier ad-hoc rejection flag: `STOP` is the old "raise on
+rejection", `CONTINUE` is the old "warn and skip", now applied uniformly to all failure
+kinds.
+
+**Always-stop exceptions, regardless of `on_error`:**
+- The cumulative `max_extracted_bytes` limit is a global resource guard — exceeding it
+  raises `ExtractionError` and halts even under `CONTINUE` (continuing would defeat the
+  guard). (The *per-member* ratio limit is a per-member failure and is skippable under
+  `CONTINUE`.)
+- `KeyboardInterrupt`, `MemoryError`, and other non-`ArchiveyError` exceptions propagate
+  unchanged and are never swallowed by `CONTINUE`.
+
+#### Scenario: STOP halts on the first failure
+
+- **WHEN** a member fails mid-extraction under the default `OnError.STOP`
+- **THEN** the exception is raised immediately, the failing member's partial file is removed, and no later members are processed (earlier ones stay on disk)
+
+#### Scenario: CONTINUE extracts the good members and reports the rest
+
+- **WHEN** an archive with some corrupt members is extracted under `OnError.CONTINUE`
+- **THEN** every extractable member is written, and the returned `list[ExtractionResult]` contains `EXTRACTED` entries plus `FAILED`/`REJECTED` entries (each with its `error`); no exception is raised for the per-member failures
+
+#### Scenario: cumulative bomb limit still halts under CONTINUE
+
+- **WHEN** the cumulative `max_extracted_bytes` limit is exceeded during a `CONTINUE` extraction
+- **THEN** `ExtractionError` is raised and extraction halts regardless of `on_error`

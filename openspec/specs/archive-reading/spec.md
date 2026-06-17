@@ -173,6 +173,13 @@ def open(self, member: str | ArchiveMember) -> BinaryIO: ...   # streaming; call
 
 Both methods accept either a member name string or an `ArchiveMember` object.
 
+**Integrity on full reads.** When a member carries a verifiable digest, reading it fully
+verifies the content (see `compressed-streams`). A mismatch is surfaced **after** all
+bytes are delivered: in a streaming `open()` loop the data chunks all arrive normally and
+the terminal end-of-stream read raises `CorruptionError`, so the caller never loses a
+trailing chunk; `read()` reads to EOF internally and therefore raises `CorruptionError`
+(returning no bytes) on mismatch.
+
 **Memory profile — `read()` is unbounded.** `read(member)` materializes the member's
 **entire decompressed payload in memory at once** and returns it as a single `bytes`
 object. It is intended for small members — configuration files, manifests, small assets —

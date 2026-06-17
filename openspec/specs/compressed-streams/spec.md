@@ -144,6 +144,18 @@ Constraints:
   closed after a partial read SHALL NOT verify or raise, because the digest of
   partial content is undefined. The stage therefore applies to the sequential read
   path, not to random-access reads served by `seekable-decompressor-streams`.
+- **The mismatch SHALL be raised from the read that signals end-of-stream — after all
+  decompressed bytes have already been delivered to the caller.** The stage MUST NOT
+  withhold or discard the final data chunk: a consumer using the canonical
+  `while chunk := f.read(n): ...` loop receives **every** byte first, and then the
+  terminal read (the call that would otherwise return `b""`/EOF) raises
+  `CorruptionError` instead. This guarantees the caller never loses a trailing chunk of
+  data that may well be correct; the integrity verdict is delivered *after* the data,
+  not in place of it. The bytes-returning `read()`-all path (and `reader.read(member)`)
+  internally reads to EOF, so it raises on mismatch and returns no bytes — an
+  all-or-nothing read of data that failed integrity cannot be handed back as valid.
+  (A consumer that stops early, or reads exactly `size` bytes without probing EOF, falls
+  under the partial-read rule above and is not verified.)
 - For a digest algorithm the stage cannot compute — because its backend is not
   installed (e.g. `blake2sp` without the `[rar]` Blake2sp backend) or it is an
   unknown algorithm — it SHALL emit a warning via the `archivey` integrity logger
@@ -157,6 +169,11 @@ Constraints:
 
 - **WHEN** a member is read to EOF and its decompressed bytes do not match `hashes["crc32"]`
 - **THEN** `CorruptionError` naming the algorithm is raised
+
+#### Scenario: mismatch surfaces at EOF without losing the final chunk
+
+- **WHEN** a consumer reads a member with `while chunk := f.read(n)` and the content's digest does not match
+- **THEN** every data chunk (including the last) is delivered normally, and the **following** read — the one that would signal EOF — raises `CorruptionError`; no trailing data is withheld
 
 #### Scenario: partial read is not verified
 

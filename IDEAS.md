@@ -44,23 +44,34 @@
   `glob()`, `read_bytes()`, `is_dir()`, … over the member tree (precedent: `zipfile.Path`).
   Read-only wrapper; needs random access, so a `DIRECT`/indexed-archive convenience.
 
-- **fsspec filesystem** — expose an opened archive as an `fsspec` filesystem so
-  pandas/dask/pyarrow/etc. can read members by path. Pairs naturally with the pathlib
-  navigation layer.
+- **fsspec integration** — three distinct directions, all useful:
+  (1) **expose** an opened archive as an `fsspec` filesystem so pandas/dask/pyarrow/etc.
+  read members by path (pairs with the pathlib navigation layer);
+  (2) **open** archives *from* an `fsspec` URL (`s3://…/a.zip`, `http(s)://`, …) as the
+  `source`; (3) **extract** *to* an `fsspec` location as the `dest`. (2)/(3) mostly mean
+  accepting fsspec-opened file objects at the `open_archive`/`extract` boundary.
 
 ## Performance & robustness
 
 - **Parallel extraction** — extract independent members concurrently for
-  `AccessCost.DIRECT` archives (bounded by I/O). No benefit for `SOLID` (members share a
-  decompression stream).
+  `AccessCost.DIRECT` archives (bounded by I/O). Also applies to **solid archives with
+  multiple independent blocks** — e.g. a 7z with several solid folders can decompress
+  folders in parallel (py7zr does this); members *within* one solid block stay
+  sequential. No benefit for a single-block solid archive.
 
 - **Seek-index persistence** — save/load the gzip/bz2/xz seek points (the index built by
-  `seekable-decompressor-streams`) to disk so repeated random access into the same file
-  is cheap across runs.
+  `seekable-decompressor-streams`; `rapidgzip`/`indexed_bzip2` already expose import/export)
+  to disk so repeated random access into the same file is cheap across runs. **Must guard
+  against staleness:** key/validate the stored index against the archive's identity
+  (mtime + size, ideally a content hash) so an index is never reused for a modified
+  archive.
 
 - **Archive repair / recovery mode** — best-effort extraction of corrupt or truncated
   archives, returning what is readable rather than failing the whole operation.
-  Synergizes with the native streaming ZIP reader.
+  Synergizes with the native streaming ZIP reader and `OnError.CONTINUE`. (We already have
+  concrete real-world ZIPs that no existing reader repairs but ours plausibly could.)
 
 - **Integrity-verify mode** — verify every member against its stored checksum without
-  writing anything to disk (a read-only "scrub" pass).
+  writing to disk. Marginal value (it's essentially `stream_members()` reading each stream
+  fully and discarding, which already triggers digest verification at EOF), but trivial to
+  add as a named convenience.

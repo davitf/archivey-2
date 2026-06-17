@@ -59,7 +59,8 @@ archivey.extract(
     dest: str | Path,
     *,
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-    overwrite: OverwritePolicy = OverwritePolicy.ERROR,
+    overwrite: OverwritePolicy = OverwritePolicy.ERROR,   # pre-existing files
+    on_error: OnError = OnError.STOP,                     # member extraction failures
     format: ArchiveFormat | None = None,
     password: str | bytes | None = None,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
@@ -133,6 +134,7 @@ class ArchiveReader:
         filter: MemberFilter | None = None,      # per-member sanitize/rename; None to skip
         policy: ExtractionPolicy = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
+        on_error: OnError = OnError.STOP,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
     ) -> list[ExtractionResult]: ...
 
@@ -598,14 +600,27 @@ not just TAR, and the per-bit transforms are Archivey's own:
 | `STANDARD` | `tar` | Like `tar` (strips setuid/setgid/sticky and group/other-write intent), but Archivey still drops uid/gid and keeps the universal path-safety checks that `tarfile`'s `tar` filter does not all guarantee. |
 | `TRUSTED` | `fully_trusted` | Applies stored mode and (as root) uid/gid. Unlike `fully_trusted`, Archivey **still enforces** the non-bypassable universal path/symlink/special-file constraints. |
 
-### 5.3 OverwritePolicy
+### 5.3 OverwritePolicy and OnError
+
+`OverwritePolicy` governs **pre-existing destination files**; `OnError` governs
+**member extraction failures** (corrupt/encrypted data, ratio bomb, write error, or a
+safety-filter rejection). They are independent knobs.
 
 ```python
 class OverwritePolicy(Enum):
     ERROR   = "error"   # raise ExtractionError if destination file exists
     SKIP    = "skip"    # silently skip existing files
     REPLACE = "replace" # overwrite unconditionally
+
+class OnError(Enum):
+    STOP     = "stop"      # default: raise the first failure and halt (no further members)
+    CONTINUE = "continue"  # best-effort: clean up the partial file, record FAILED/REJECTED
+                           #   (with the error) in the result list, and proceed
 ```
+
+Under `OnError.CONTINUE` the returned `list[ExtractionResult]` is the report (no
+aggregate exception is raised); the cumulative `max_extracted_bytes` bomb limit and
+`KeyboardInterrupt`/`MemoryError` always halt regardless. See §7 / `safe-extraction`.
 
 ---
 
@@ -1052,15 +1067,20 @@ class ExtractionProgress:
 @dataclass
 class ExtractionResult:
     member: ArchiveMember
-    path: Path | None           # None if skipped
-    status: ExtractionStatus    # EXTRACTED, SKIPPED, REJECTED
+    path: Path | None            # the written path, or None if not written
+    status: ExtractionStatus
+    error: ArchiveyError | None = None   # the failure, for FAILED/REJECTED under OnError.CONTINUE
 
 class ExtractionStatus(Enum):
     EXTRACTED = "extracted"
-    SKIPPED   = "skipped"       # due to OverwritePolicy.SKIP
-    REJECTED  = "rejected"      # due to filter rejection; no exception raised if
-                                # on_rejection=OnRejection.WARN (default: RAISE)
+    SKIPPED   = "skipped"       # pre-existing destination, under OverwritePolicy.SKIP
+    REJECTED  = "rejected"      # blocked by a safety filter (under OnError.CONTINUE)
+    FAILED    = "failed"        # error while extracting (under OnError.CONTINUE)
 ```
+
+Under the default `OnError.STOP`, the first rejection/failure raises and halts; under
+`OnError.CONTINUE` the failing member is recorded as `REJECTED`/`FAILED` (with `error`)
+and extraction proceeds — the returned list is the report. See §5.3 and §7.
 
 ---
 
