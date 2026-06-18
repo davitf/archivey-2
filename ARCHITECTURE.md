@@ -14,8 +14,8 @@ src/archivey/
 │
 ├── core.py                # open_archive() / create() / extract() / detect_format() entry points
 ├── types.py               # Public types: ArchiveMember, ArchiveInfo, ArchiveFormat
-│                          #   (+ ContainerFormat/StreamFormat), MemberType, CompressionAlgo/Method,
-│                          #   Intent, CostReceipt (+ Listing/Access/StreamCapability),
+│                          #   (+ ContainerFormat/StreamFormat), MemberType, CompressionAlgorithm/Method,
+│                          #   CostReceipt (+ Listing/Access/StreamCapability),
 │                          #   ExtractionPolicy/OverwritePolicy, MemberSelector/MemberFilter aliases
 ├── exceptions.py          # ArchiveyError hierarchy
 ├── filters.py             # ExtractionPolicy transforms + path sanitizer
@@ -82,7 +82,7 @@ only become known once its data has been read:
   than its header.
 
 The library fills these fields **in place** on the same object the caller already holds,
-so late values appear without a re-fetch. This is required for `Intent.SEQUENTIAL`, where
+so late values appear without a re-fetch. This is required under `streaming=True`, where
 the member list cannot be materialized and re-read — the library cannot hand back a fresh
 object, so it must complete the one in flight.
 
@@ -246,7 +246,7 @@ def members(self) -> list[ArchiveMember]:
 
 After materialization, `__iter__` returns `iter(self._members_cache)` for efficiency (avoids re-reading on second iteration).
 
-**Sequential intent guard:** if `intent == Intent.SEQUENTIAL`, materialization is forbidden. Calling `.members()` or `__len__` raises `UnsupportedOperationError` with a clear message.
+**Streaming guard:** if the reader was opened with `streaming=True` (forward-only), materialization is forbidden. Calling `.members()` or `__len__` raises `UnsupportedOperationError` with a clear message.
 
 ### 2.5 PeekableStream for non-seekable sources
 
@@ -510,7 +510,7 @@ class IsoReadBackend(ReadBackend):
     EXTENSIONS = (".iso",)
     MAGIC = ((32769, b"CD001"),)          # declared as data; the central detector matches it
     OPTIONAL_DEPENDENCY = "pycdlib"
-    def open_read(self, source, intent, password, encoding) -> ArchiveReader: ...
+    def open_read(self, source, streaming, password, encoding, archive_name) -> ArchiveReader: ...
 
 if _PYCDLIB_AVAILABLE:
     register_reader(IsoReadBackend)   # from archivey.internal.registry; only when usable
@@ -546,7 +546,7 @@ internal/detection.py: detect_format()
 BackendRegistry.reader_for_format(ArchiveFormat.ZIP)
   │  find ZipReadBackend
   ▼
-ZipReadBackend.open_read(source, intent, ...)
+ZipReadBackend.open_read(source, streaming, ...)
   │  zipfile.ZipFile(source)  ← reads EOCD, central directory
   │  build CostReceipt
   │  build ArchiveInfo
@@ -722,7 +722,7 @@ the model itself.
 **Rationale (mutable, not frozen — reversed from an earlier draft):** the model must be
 **mutable** so the library can fill late-known fields (final `size`/CRC for gzip and ZIP
 data-descriptor entries, a `link_target` stored in the member's data) **in place** during a
-single streaming pass — required for `Intent.SEQUENTIAL`, where the member cannot be
+single streaming pass — required under `streaming=True`, where the member cannot be
 re-materialized and re-fetched (see §2.1). The contract makes this safe: callers treat
 members as read-only, the library is the only writer, and any caller/filter edit goes
 through `member.replace(...)`, which returns a copy. The cost is that `ArchiveMember` is

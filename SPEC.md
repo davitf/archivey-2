@@ -34,7 +34,7 @@ archivey.open_archive(
     source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
     *,
     format: ArchiveFormat | None = None,  # override detection
-    intent: Intent = Intent.AUTO,
+    streaming: bool = False,              # False = random access; True = forward-only, one pass
     password: str | bytes | None = None,
     encoding: str | None = None,         # None = auto-detect member-name encoding
 ) -> ArchiveReader
@@ -98,7 +98,7 @@ class ArchiveReader:
     def __len__(self) -> int: ...                         # may trigger scan
     def __contains__(self, name: str) -> bool: ...
 
-    # --- Random access (requires seekable source or RANDOM intent) ---
+    # --- Random access (default streaming=False; raises under streaming=True) ---
     def __getitem__(self, name: str) -> ArchiveMember: ...  # KeyError if absent
     def get(self, name: str, default=None) -> ArchiveMember | None: ...
 
@@ -144,7 +144,7 @@ class ArchiveReader:
     def close(self) -> None: ...
 ```
 
-**Constraint:** calling `__getitem__`, `get`, or random `extract_all(members=[name])` on a reader opened with `Intent.SEQUENTIAL` raises `UnsupportedOperationError` unless the backend can satisfy it cheaply (e.g. the archive has an in-memory index already loaded). `members()` and `__len__` likewise raise `UnsupportedOperationError` under `Intent.SEQUENTIAL`, since they require materializing all members.
+**Constraint:** calling `__getitem__`, `get`, or random `extract_all(members=[name])` on a reader opened with `streaming=True` raises `UnsupportedOperationError`. `members()` and `__len__` likewise raise under `streaming=True`, since they require materializing all members. The enforcement is **uniform** — it does not depend on whether a backend happens to have an index loaded — so streaming behaviour is deterministic across formats. (`get_members_if_available()` is exempt: it never scans, so it stays callable.)
 
 **Two sequential access patterns — different memory profiles:**
 
@@ -334,7 +334,7 @@ member is first yielded and only become known once its data has been read — th
 `size`/CRC of a gzip stream or a ZIP data-descriptor entry, or a `link_target` stored in
 (or encrypted within) the member's *data* rather than its header. The library fills these
 fields **in place** as it streams, so the `ArchiveMember` a caller already holds gains its
-late values without a re-fetch (required for `Intent.SEQUENTIAL`, where the member list
+late values without a re-fetch (required under `streaming=True`, where the member list
 cannot be materialized and re-read).
 
 Because the object is mutable, the contract is: **callers MUST treat an `ArchiveMember`
@@ -546,26 +546,27 @@ separate boolean.
 
 ## 5. Enums and Policies
 
-### 5.1 Intent
+### 5.1 Access mode (`streaming`)
 
-```python
-class Intent(Enum):
-    AUTO       = "auto"       # library chooses optimal access mode
-    SEQUENTIAL = "sequential" # caller promises forward-only iteration; disables index loading
-    RANDOM     = "random"     # caller needs random access; library fails fast if impossible
-```
+Access mode is a single boolean on `open_archive()` (`streaming: bool = False`), not an
+enum. There are exactly two modes:
 
-- `AUTO`: selects the most appropriate mode for the detected format. Indexes (central
-  directories, 7z headers) are loaded when available. For seekable single-stream formats,
-  seek points (the index that makes random access into a compressed stream affordable) are
-  **not** built up front — the library builds them **lazily**, only if the caller actually
-  `seek()`s and only when the backend judges it worthwhile.
-- `SEQUENTIAL`: caller promises forward-only, single-pass iteration; index loading is
-  disabled where possible.
-- `RANDOM`: caller requires random access; the library fails fast at `open_archive()` if
-  the format/source cannot support it. It also signals that random access is expected, so
-  the backend MAY **proactively** build seek points for compressed single-stream formats
-  rather than deferring them.
+- `streaming=False` (**default**) — **random access**. The library loads index structures
+  (central directories, 7z headers) when available and presents the archive for arbitrary
+  member access. It **requires a source it can random-access** and fails fast at
+  `open_archive()` if the source is non-seekable and the format cannot adapt — it does
+  **not** silently degrade to forward-only (which would surface failures only later, at
+  read time). For seekable single-stream formats, seek points (the index that makes random
+  access into a compressed stream affordable) are built **lazily** — only if the caller
+  actually `seek()`s.
+- `streaming=True` — **forward-only, single pass**. The caller promises one forward pass;
+  index loading is disabled where possible, and any source works (including non-seekable
+  pipes/sockets). All random-access and full-materialization methods raise
+  `UnsupportedOperationError`, uniformly across formats.
+
+Eager seek-point building (the old `Intent.RANDOM` promise from an earlier draft) is
+intentionally **not** exposed; it can return later as an explicit opt-in flag if a need
+arises. See the `access-mode-and-cost` capability spec for the full method-by-mode table.
 
 ### 5.2 ExtractionPolicy
 
@@ -665,7 +666,7 @@ cannot `seek()` but the chosen format/backend needs one), so it is a subclass of
 
 **`UnsupportedOperationError` vs `UnsupportedFeatureError` — a deliberate split:**
 - `UnsupportedOperationError` = **API misuse**: the caller asked for something this
-  reader's *mode* does not permit (random access on an `Intent.SEQUENTIAL` reader, writing
+  reader's *mode* does not permit (random access on a `streaming=True` reader, writing
   through a read-only RAR backend, using a closed reader). It is not caused by the
   archive's contents; the fix is always on the caller's side.
 - `UnsupportedFeatureError` = a **valid archive with a feature Archivey does not
@@ -843,9 +844,10 @@ class ReadBackend(ABC):
     def open_read(
         self,
         source: Path | BinaryIO,            # a PeekableStream for non-seekable sources
-        intent: Intent,
+        streaming: bool,
         password: bytes | None,
         encoding: str | None,
+        archive_name: str | None,           # computed once by open_archive() (path or stream name)
     ) -> ArchiveReader: ...
 
 class WriteBackend(ABC):
@@ -888,7 +890,7 @@ non-seekable source, `open_read()` raises `StreamNotSeekableError` (a subclass o
 - `compression`: map `compress_type` integer → `CompressionMethod`.
 - `is_encrypted`: `flag_bits & 0x1`.
 
-**Non-seekable ZIP:** Since the central directory lives at EOF, a non-seekable ZIP stream cannot be opened with `Intent.RANDOM`. With `Intent.SEQUENTIAL` or `Intent.AUTO`, the backend buffers to a `tempfile.SpooledTemporaryFile` with a configurable `spool_max_size` (default: 50 MiB) before opening. If the archive exceeds `spool_max_size`, a `ReadError` is raised with a hint to save to disk first.
+**Non-seekable ZIP:** Since the central directory lives at EOF, a non-seekable ZIP stream cannot be read in the random-access default (`streaming=False`). The backend raises `StreamNotSeekableError` at open time, advising the caller to buffer the source (save to disk or a `BytesIO`) and reopen; the library does **not** implicitly buffer. (Transparent spooling to a `tempfile.SpooledTemporaryFile`, if wanted, would return as an explicit opt-in argument — see the `format-zip` spec's Phase-3 reconciliation note.)
 
 **Streaming ZIP write:** Uses the `flag_bits |= 0x8` (data descriptor) mode, which allows writing CRC and sizes after the data. File size is not required in advance.
 

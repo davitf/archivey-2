@@ -3,6 +3,19 @@
 > **Context.** SPEC.md / ARCHITECTURE.md / PLAN.md in this repo were written as a clean-slate design from the high-level requirements, deliberately without looking at the existing implementation. This document compares that proposal against the real implementation at [`davitf/archivey-dev`](https://github.com/davitf/archivey-dev) (~10,150 lines of source, ~8,000 lines of tests, v0.1.0a4), and proposes how to combine the best of both into a new version with **no backwards-compatibility requirement**.
 >
 > Shorthand used below: **DEV** = the existing implementation; **CSP** = the clean-slate proposal in this repo.
+>
+> **Decision update (post-implementation).** This document originally recommended adopting
+> CSP's `Intent` enum (AUTO/SEQUENTIAL/RANDOM) in place of DEV's `streaming=` bool — see the
+> "access intent" rows in §2/§3 and §5. That recommendation was **reversed** during the v2
+> build: `AUTO` does not actually auto-select (it is just another mode), and the model
+> collapses to a real binary — random access vs. forward-only — plus a deferred performance
+> hint. v2 therefore **keeps `streaming: bool`** (default `False` = random access, fails fast
+> on a non-seekable source; `True` = forward-only single pass) and **drops the `Intent`
+> enum**; the eager seek-point hint (the old `Intent.RANDOM`) may return later as an explicit
+> opt-in. The `CostReceipt` and tri-state backend-config conclusions are unchanged. The
+> authoritative spec is `openspec/specs/access-mode-and-cost/`. The remaining `Intent`
+> mentions below are left as the historical comparison and as a description of CSP/DEV's own
+> proposals — they do not describe the shipped v2 API.
 
 ---
 
@@ -15,9 +28,9 @@ Where they differ, **DEV is ahead on reading depth** and **CSP is ahead on scope
 - DEV solved the solid-archive streaming problem *properly* — true bounded-memory streaming via a background thread + queue for 7z and a single `unrar p` pipe demultiplexer for RAR. CSP's per-block `SpooledTemporaryFile` caching is strictly worse and should be discarded.
 - DEV has an entire subsystem CSP never conceived: **seekable decompressor streams** (XZ block index, lzip trailer scan, rapidgzip/indexed_bzip2 backends) giving random access *inside* compressed streams.
 - DEV's test harness (declarative sample archives × format matrix × backend configs ≈ 1,000+ effective cases) is far beyond CSP's plan.
-- CSP has **writing + conversion**, which DEV lacks entirely, plus **decompression-bomb protection** (absent in DEV), and a crisper **cost/intent model** — which DEV's own in-progress `openspec` changes (`access-intent`, `base-reader-architecture-extensions`) independently arrived at but have not implemented.
+- CSP has **writing + conversion**, which DEV lacks entirely, plus **decompression-bomb protection** (absent in DEV), and a crisper **cost/access-mode model** — which DEV's own in-progress `openspec` changes (`access-intent`, `base-reader-architecture-extensions`) independently arrived at but have not implemented.
 
-**Recommendation in one line:** keep DEV's reading core, architecture, and test harness as the foundation; add CSP's writer layer, bomb protection, and cost/intent surface; take the API-shape cleanup (naming, frozen-ish member, composite format type already in DEV) as the one-time benefit of the compatibility break; and follow DEV's own native-reader roadmap (drop py7zr/rarfile) as the engine upgrade.
+**Recommendation in one line:** keep DEV's reading core, architecture, and test harness as the foundation; add CSP's writer layer, bomb protection, and cost/access-mode surface; take the API-shape cleanup (naming, frozen-ish member, composite format type already in DEV) as the one-time benefit of the compatibility break; and follow DEV's own native-reader roadmap (drop py7zr/rarfile) as the engine upgrade.
 
 ---
 
@@ -32,7 +45,7 @@ Where they differ, **DEV is ahead on reading depth** and **CSP is ahead on scope
 | Writing & conversion | Absent | Full design (`create()`, `add_members()`) | **CSP** |
 | Bomb protection | Absent | `BombTracker` (total bytes + ratio) | **CSP** |
 | Cost transparency | `has_random_access()` only; openspec proposal pending | `CostReceipt` at open | **CSP shape, DEV's openspec confirms** |
-| Access intent | `streaming=` bool; openspec proposal pending | `Intent` enum (AUTO/SEQUENTIAL/RANDOM) | **CSP shape, DEV's openspec confirms** |
+| Access intent | `streaming=` bool; openspec proposal pending | `Intent` enum (AUTO/SEQUENTIAL/RANDOM) | **DEV's `streaming: bool` kept** (Intent enum considered, then dropped — see note above) |
 | Format type model | `ArchiveFormat(container, stream)` composite | Flat enum with TAR_GZ etc. | **DEV** (clearly better) |
 | Member identity | `member_id` + `archive_id`, duplicate-filename support | Name-keyed lookup | **DEV** |
 | Member dataclass | Mutable + zipfile-compat shims (`CRC`, `date_time`) | Frozen, no shims | **Mixed** (see §4.2) |
@@ -54,11 +67,11 @@ Where they differ, **DEV is ahead on reading depth** and **CSP is ahead on scope
 
 Three of CSP's "novel" ideas turn out to already exist as in-progress DEV proposals (`openspec/changes/`):
 
-1. **`access-intent`** — replaces the `streaming` bool with a declared access intent (AUTO/SEQUENTIAL/...), exactly CSP's `Intent` enum, and makes backend flags tri-state so AUTO can pick indexed backends to honor the intent.
+1. **`access-intent`** — proposed replacing the `streaming` bool with a declared access intent (AUTO/SEQUENTIAL/...), exactly CSP's `Intent` enum, and making backend flags tri-state so AUTO can pick indexed backends to honor the intent. *(v2 ultimately kept the `streaming` bool and dropped the enum — see the note at the top — but adopted the tri-state-config and cost ideas.)*
 2. **`base-reader-architecture-extensions`** — adds cost introspection (`member_access_cost`, `seek_cost`): CSP's `CostReceipt`, split across reader and stream.
 3. **`sevenzip-native-reader` / `rar-native-metadata-reader`** — drop py7zr and rarfile in favor of native parsers. The 7z design contains the decisive feasibility finding: *stdlib `lzma` with `FORMAT_RAW` natively implements LZMA1/LZMA2 **and the entire BCJ branch-filter family and Delta***, so a native pull-based 7z decompressor needs almost no new codec code. This is stronger than CSP's version of the same idea (which assumed the `bcj` C extension was needed).
 
-Independent convergence from two directions is good evidence these are the right calls. **v2 should commit to all three.**
+Independent convergence from two directions is good evidence these are the right calls. **v2 should commit to all three** (with the access-mode shape landing as `streaming: bool` rather than the `Intent` enum — see the note at the top).
 
 ---
 
@@ -95,7 +108,7 @@ archivey.detect_format(src)
 **v2 decision — merge, leaning CSP for surface ergonomics, DEV for semantics:**
 
 ```python
-archivey.open_archive(src, *, intent=Intent.AUTO, pwd=None, config=None, format=None) -> ArchiveReader
+archivey.open_archive(src, *, streaming=False, pwd=None, config=None, format=None) -> ArchiveReader
 archivey.open_compressed_stream(src, ...) -> BinaryIO        # keep from DEV
 archivey.extract(src, dest, ...)                             # one-shot, from CSP
 archivey.detect_format(src) -> FormatInfo                    # from CSP
@@ -171,7 +184,7 @@ Near-identical trees. v2 merges: DEV's class names are fine; add CSP's `__cause_
 
 DEV's contextvars-based `ArchiveyConfig` with scoped `archivey_config(...)` overrides is genuinely good (thread- and async-safe, testable). Its weakness — acknowledged by DEV's own `access-intent` proposal — is that backend flags (`use_rapidgzip`, `use_indexed_bzip2`, `use_python_xz`, ...) leak the cost model: you must know the trick to get cheap seeking on `.tar.gz`.
 
-**v2:** keep the config system; convert backend flags to tri-state (`AUTO`/`ON`/`OFF`) resolved against the caller's `Intent` (exactly the `access-intent` proposal); fold in CSP's bomb limits and overwrite default. Drop `tqdm` as a hard dependency — progress becomes a callback (CSP), with tqdm used only by the CLI (and listed in its extra).
+**v2:** keep the config system; convert backend flags to tri-state (`AUTO`/`ON`/`OFF`) resolved against the caller's access mode (the `streaming` flag); fold in CSP's bomb limits and overwrite default. Drop `tqdm` as a hard dependency — progress becomes a callback (CSP), with tqdm used only by the CLI (and listed in its extra).
 
 ### 4.8 Writing and conversion — the big addition
 
@@ -230,14 +243,14 @@ From CSP:
 A read **and write** archive library, built on DEV's reading core, with:
 
 1. **DEV's architecture preserved:** `BaseArchiveReader` registration/lazy-iteration model, member identity (`member_id`), link resolution, `ExtractionHelper`, io_helpers, seekable decompressor streams, detection pipeline, test harness, CLI, config system.
-2. **The three converged openspec changes implemented, CSP-flavored:** `Intent` enum replacing `streaming=`; `CostReceipt` exposed as one object on `ArchiveInfo` (listing cost / member access cost / seek cost / solid block info); tri-state backend config resolved from intent.
+2. **The converged openspec conclusions implemented:** the `streaming: bool` access mode kept (the `Intent` enum was considered and dropped — see the note at the top); `CostReceipt` exposed as one object on `ArchiveInfo` (listing cost / member access cost / seek cost / solid block info); tri-state backend config resolved from the access mode.
 3. **CSP's additions:** writer + conversion layer; bomb protection; one-shot `extract()`; `FormatInfo`; structured compression chains; progress callbacks.
 4. **The compat-break cleanups:** method renames (`members()`, `stream_members()`), `mtime` tz-aware rename, zipfile-shim removal, Python 3.11+, zero hard deps, `FilterRejectionError` subtree, dest-boundary enforcement in the extraction writer.
 5. **DEV's native-reader roadmap as the engine plan:** native 7z reader (deletes the thread/queue apparatus, py7zr stays for writing only), native RAR metadata parser (drops rarfile; unrar remains the decompressor). These were designed for v1 but a no-compat v2 is the cheapest moment to land them.
 
 ### 5.2 What v2 explicitly drops
 
-- `streaming` / `streaming_only` parameters (subsumed by `Intent`).
+- `streaming_only` parameter (folded into the single `streaming` bool; the `Intent` enum that would have subsumed it was dropped — see the note at the top).
 - `mtime_with_tz` naming, `CRC`/`date_time` shims, `get_*` method-name prefixes.
 - tqdm/typing-extensions/backports-strenum as hard dependencies; Python 3.10.
 - CSP's per-folder SpooledTemporaryFile 7z caching and `unrar x`-to-tmpdir as *primary* strategies (the latter survives inside `extract_all`).
@@ -248,7 +261,7 @@ A read **and write** archive library, built on DEV's reading core, with:
 
 | Phase | Content | Builds on |
 |---|---|---|
-| 1 | Fork DEV core; apply renames + `Intent`/`CostReceipt`/tri-state config (the two pending openspec changes); Python 3.11 floor; drop hard deps | DEV + openspec |
+| 1 | Fork DEV core; apply renames + `streaming` access mode / `CostReceipt` / tri-state config (the converged openspec conclusions); Python 3.11 floor; drop hard deps | DEV + openspec |
 | 2 | Bomb protection + `FilterRejectionError` subtree + writer-level dest enforcement; adversarial test corpus | CSP §7, DEV harness |
 | 3 | Writer layer: TAR + ZIP + single-file; `add_members()` conversion; round-trip tests | CSP Phase 5 |
 | 4 | One-shot `extract()`, `read()`, `FormatInfo`, structured compression chain, progress callbacks | CSP |
