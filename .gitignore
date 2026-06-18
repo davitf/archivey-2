@@ -6,3 +6,7 @@ dist/
 .coverage
 coverage.xml
 .venv/
+
+# MkDocs build output / Material cache
+site/
+.cache/

@@ -184,50 +184,74 @@ EXTRA_IS_JUNCTION = "is_junction"
 class ArchiveMember:
     """Represents a single archive entry. Mutable; callers must treat as read-only."""
 
-    # Type
     type: MemberType
+    """What kind of entry this is (file, directory, symlink, …)."""
 
-    # Identity
     name: str
+    """Normalized member path, ``/``-separated, decoded for display and lookup."""
+
     raw_name: bytes | None = None
+    """The member name exactly as stored in the archive, undecoded."""
 
-    # Sizes
     size: int | None = None
+    """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""
+
     compressed_size: int | None = None
+    """Compressed size in bytes, or ``None`` if unknown."""
 
-    # Timestamps
     modified: datetime | None = None
+    """Last-modified time, if recorded."""
+
     accessed: datetime | None = None
+    """Last-access time, if recorded."""
+
     created: datetime | None = None
+    """Creation time, if recorded (rare; most formats only store modification time)."""
 
-    # Permissions & ownership
     mode: int | None = None
+    """Unix permission bits, or ``None`` if the format/entry carries no mode."""
+
     uid: int | None = None
+    """Owner user id, if recorded."""
+
     gid: int | None = None
+    """Owner group id, if recorded."""
+
     uname: str | None = None
+    """Owner user name, if recorded."""
+
     gname: str | None = None
+    """Owner group name, if recorded."""
 
-    # Link semantics
     link_target: str | None = None
+    """For a symlink/hardlink, the raw target path string as stored."""
+
     link_target_member: "ArchiveMember | None" = field(default=None, compare=False)
+    """For a link, the resolved target member within this archive, if found."""
 
-    # Compression
     compression: tuple[CompressionMethod, ...] = field(default_factory=tuple)
+    """The codec chain applied to this member (outermost last)."""
 
-    # Flags
     is_encrypted: bool = False
+    """Whether this member's data is encrypted."""
+
     is_sparse: bool = False
+    """Whether this member is stored as a sparse file."""
 
-    # Provenance
     comment: str | None = None
+    """Per-member comment, if the format records one."""
+
     create_system: CreateSystem | None = None
+    """The OS that created the entry (drives mode/attribute interpretation)."""
+
     windows_attrs: int | None = None
+    """Raw Windows file-attribute bitmask, if recorded."""
 
-    # Integrity - excluded from __eq__
     hashes: Mapping[str, int | bytes] = field(default_factory=dict, compare=False)
+    """Stored content digests keyed by algorithm name (e.g. ``"crc32"``). Excluded from equality."""
 
-    # Format-specific - excluded from __eq__
     extra: dict[str, Any] = field(default_factory=dict, compare=False)
+    """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality."""
 
     # Private internal fields (not part of the public contract)
     _member_id: int | None = field(default=None, repr=False, compare=False)
@@ -281,10 +305,25 @@ class ArchiveInfo:
     a full member scan."""
 
     format: ArchiveFormat
-    format_version: str | None  # e.g. "4.5" for ZIP, "5" for RAR5; None if unknown
-    is_solid: bool  # decompressing one member may require decompressing earlier ones
-    member_count: int | None  # None when a count would require scanning the whole archive
-    comment: str | None  # archive-level comment, if the format records one
-    is_encrypted: bool  # header-level encryption (7z, RAR5), not per-member encryption
+    """The detected ``(container, stream)`` format of the archive."""
+
+    format_version: str | None
+    """Format version string, e.g. ``"4.5"`` for ZIP or ``"5"`` for RAR5; ``None`` if unknown."""
+
+    is_solid: bool
+    """Whether decompressing one member may require decompressing earlier ones."""
+
+    member_count: int | None
+    """Number of members, or ``None`` when a count would require scanning the whole archive."""
+
+    comment: str | None
+    """Archive-level comment, if the format records one."""
+
+    is_encrypted: bool
+    """Header-level encryption (7z, RAR5) — not per-member encryption (see ``ArchiveMember.is_encrypted``)."""
+
     is_multivolume: bool
-    cost: "CostReceipt"  # listing/access cost receipt (see access-mode-and-cost)
+    """Whether the archive spans multiple volumes."""
+
+    cost: "CostReceipt"
+    """Listing/access cost receipt for the archive (see the ``access-mode-and-cost`` capability)."""

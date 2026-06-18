@@ -48,6 +48,7 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `testing-contract` | Equivalence matrix, adversarial corpus, round-trip and non-seekable coverage |
 | `cli` | The `archivey` command-line interface |
 | `packaging-and-extras` | Install-time contract: zero-dep core (incl. native 7z read + RAR metadata), extras→capability mapping, Python/OS matrix, `__version__` |
+| `documentation` | Source-derived API reference (MkDocs + mkdocstrings/Griffe extensions); strict docs build in CI |
 
 **7z/RAR strategy (native-first):** 7z and RAR are read with **native** parsers,
 not `py7zr`/`rarfile`. 7z reading decodes common codecs through stdlib
