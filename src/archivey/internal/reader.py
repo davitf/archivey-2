@@ -163,16 +163,50 @@ class ArchiveReader(ABC):
 
 
 class BaseArchiveReader(ArchiveReader):
-    """Internal helper base for all format readers.
+    """Internal helper base for all format readers — the backend contract lives here.
 
     Implements the public :class:`ArchiveReader` surface (iteration, lookup, link
-    following, lifecycle) in terms of four primitives a backend must provide —
-    :meth:`_iter_members`, :meth:`_open_member`, :meth:`_get_archive_info`,
-    :meth:`_close_archive` — plus the optional :meth:`_iter_with_data` override for
-    streaming/solid backends. Format backends extend **this**, not ``ArchiveReader``.
+    following, lifecycle). Format backends extend **this**, not ``ArchiveReader``.
+
+    Implementing a backend
+    ----------------------
+    **MUST implement** (abstract):
+
+    - ``_iter_members()``       — yield every :class:`ArchiveMember` once, in archive
+      order.
+    - ``_open_member(member)``  — return a ``BinaryIO`` for a ``FILE`` member's data.
+    - ``_get_archive_info()``   — return the :class:`ArchiveInfo` (format, solidity,
+      cost, …).
+    - ``_close_archive()``      — release resources (called exactly once, via
+      ``close()``).
+
+    **MUST set** when they differ from the defaults (both default ``True``):
+
+    - ``_MEMBER_LIST_UPFRONT``    — can the full member list be produced *without*
+      reading member data (e.g. from a central directory)? When ``False``, the listing
+      methods (``members``/``len``/``__getitem__``/``get``) raise
+      ``UnsupportedOperationError`` under ``Intent.SEQUENTIAL``.
+    - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
+      When ``False`` (e.g. a non-seekable TAR), ``open``/``read`` raise
+      ``UnsupportedOperationError``; sequential access via ``stream_members`` still
+      works. TAR resolves this per-instance in ``__init__`` from source seekability.
+
+    **MAY override**:
+
+    - ``_iter_with_data()`` — see its own docstring. The default is correct for
+      random-access / indexed backends only; **streaming / solid backends MUST override
+      it** (correctness, not just efficiency).
+
+    Everything else here (``_get_members_registered``, ``_resolve_link``,
+    ``_open_with_link_follow``, ``_stamp_error_context``) is internal plumbing and is not
+    an extension point.
     """
 
+    # Can an arbitrary member be opened out of order? When False, open()/read() raise
+    # UnsupportedOperationError and callers must use stream_members() instead.
     _SUPPORTS_RANDOM_ACCESS: bool = True
+    # Is the full member list available without reading member data (e.g. a central
+    # directory)? When False, listing methods raise under Intent.SEQUENTIAL.
     _MEMBER_LIST_UPFRONT: bool = True
 
     def __init__(
@@ -336,6 +370,11 @@ class BaseArchiveReader(ArchiveReader):
 
     def open(self, member: str | ArchiveMember) -> BinaryIO:
         """Open member for reading. Follows symlinks."""
+        if not self._SUPPORTS_RANDOM_ACCESS:
+            raise UnsupportedOperationError(
+                "This reader does not support random access (open()/read()); "
+                "iterate with stream_members() instead.",
+            )
         if isinstance(member, str):
             member = self[member]
         return self._open_with_link_follow(member, visited=set())
