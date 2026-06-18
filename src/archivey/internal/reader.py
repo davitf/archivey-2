@@ -370,6 +370,8 @@ class BaseArchiveReader(ArchiveReader):
 
     def open(self, member: str | ArchiveMember) -> BinaryIO:
         """Open member for reading. Follows symlinks."""
+        # NOTE (Phase 3/5): this guards on backend *capability* only. Intent.SEQUENTIAL
+        # should also disable random access on a capable backend — see phase-2 task 0.3.
         if not self._SUPPORTS_RANDOM_ACCESS:
             raise UnsupportedOperationError(
                 "This reader does not support random access (open()/read()); "
