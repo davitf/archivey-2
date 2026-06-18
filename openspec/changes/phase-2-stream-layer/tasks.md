@@ -20,12 +20,13 @@
       efficiency) and must not call `_get_members_registered()`. See the docstring in
       `internal/reader.py`. Nothing to do in Phase 2 — just don't build on the default
       when the first streaming backend lands.
-- [ ] 0.3 **(Reminder for Phase 3/5) intent-based random-access disabling.** `open()`
-      currently disables random access only on the *backend capability*
-      (`_SUPPORTS_RANDOM_ACCESS`). The spec also wants `Intent.SEQUENTIAL` to disable
-      random access on an otherwise-capable backend (e.g. a ZIP opened sequentially) —
-      not wired yet because it ties into AUTO-intent backend selection. Add the
-      `intent == SEQUENTIAL` guard to `open()`/`read()` when that lands.
+- [ ] 0.3 **(Reminder for Phase 3) open-time fail-fast on non-seekable sources.** The
+      method-level intent enforcement is done (`SEQUENTIAL` is forward-only; see the
+      intent × method table in `access-intent-and-cost`). What remains is the
+      *open-time* rule: `open_archive(..., intent=AUTO|RANDOM)` MUST fail fast when the
+      source is non-seekable and the format requires seek — using
+      `ReadBackend.REQUIRES_SEEK` / `_SUPPORTS_RANDOM_ACCESS`. Needs the real
+      source/format detection that lands in Phase 3.
 
 ## 1. internal/streams package
 

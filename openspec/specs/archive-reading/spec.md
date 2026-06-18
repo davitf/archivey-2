@@ -114,13 +114,16 @@ The system SHALL support iterating all members in archive order via `__iter__`, 
 ```python
 def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
 def members(self) -> list[ArchiveMember]: ...          # materializes all (may trigger scan)
+def get_members_if_available(self) -> list[ArchiveMember] | None: ...  # no-scan peek
 def __len__(self) -> int: ...                   # may trigger scan
 def __contains__(self, name: str) -> bool: ...
 ```
 
 `__iter__` MUST yield `ArchiveMember` objects one at a time without loading all members into memory. `members()` and `__len__` MAY trigger a full scan for streaming formats that have no central directory. After the member list has been materialized once, subsequent `__iter__` calls MUST return from the cache rather than re-reading the archive.
 
-When opened with `Intent.SEQUENTIAL`, calling `members()` or `__len__` SHALL raise `UnsupportedOperationError` because those methods require materializing all members.
+`get_members_if_available()` returns the member list only when it is available **without scanning** (already materialized, or the backend has a true upfront index), else `None`; it never scans, so it is callable under any intent. See `access-intent-and-cost` for its full contract.
+
+When opened with `Intent.SEQUENTIAL`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random `extract()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the intent × method table in `access-intent-and-cost`.
 
 #### Scenario: forward iteration
 
@@ -143,7 +146,7 @@ def __getitem__(self, name: str) -> ArchiveMember: ...    # KeyError if absent
 def get(self, name: str, default=None) -> ArchiveMember | None: ...
 ```
 
-Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Intent.SEQUENTIAL` SHALL raise `UnsupportedOperationError` unless the backend can satisfy it cheaply (e.g. the archive has an in-memory index already loaded).
+Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Intent.SEQUENTIAL` SHALL raise `UnsupportedOperationError` — uniformly, regardless of whether the backend has an index loaded (a `SEQUENTIAL` reader is forward-only; this keeps its behaviour deterministic across formats). A caller that wants a no-scan peek at the member list under any intent uses `get_members_if_available()` instead.
 
 #### Scenario: successful key lookup
 
@@ -157,8 +160,8 @@ Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Inten
 
 #### Scenario: random access on sequential-intent reader
 
-- **WHEN** `ar["file.txt"]` is called on a reader opened with `Intent.SEQUENTIAL` and the backend cannot satisfy it cheaply
-- **THEN** `UnsupportedOperationError` is raised
+- **WHEN** `ar["file.txt"]` is called on a reader opened with `Intent.SEQUENTIAL`
+- **THEN** `UnsupportedOperationError` is raised (regardless of any loaded index)
 
 ---
 

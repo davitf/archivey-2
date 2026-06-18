@@ -98,7 +98,14 @@ class ArchiveReader(ABC):
     @abstractmethod
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``UnsupportedOperationError``
-        on a ``SEQUENTIAL`` reader that has no upfront index."""
+        under ``Intent.SEQUENTIAL`` (use :meth:`get_members_if_available` there)."""
+        ...
+
+    @abstractmethod
+    def get_members_if_available(self) -> list[ArchiveMember] | None:
+        """The full member list if it is available without scanning, else ``None``.
+        Never scans or consumes the forward pass, so it is safe under any intent
+        (including ``SEQUENTIAL``)."""
         ...
 
     @abstractmethod
@@ -182,14 +189,22 @@ class BaseArchiveReader(ArchiveReader):
 
     **MUST set** when they differ from the defaults (both default ``True``):
 
-    - ``_MEMBER_LIST_UPFRONT``    — can the full member list be produced *without*
-      reading member data (e.g. from a central directory)? When ``False``, the listing
-      methods (``members``/``len``/``__getitem__``/``get``) raise
-      ``UnsupportedOperationError`` under ``Intent.SEQUENTIAL``.
+    - ``_MEMBER_LIST_UPFRONT``    — does the backend have a true upfront index (central
+      directory, 7z header, filesystem listing) that yields the full member list
+      *without scanning*? This is the predicate behind :meth:`get_members_if_available`
+      (it returns the list when ``True``, else ``None``). It does **not** gate the
+      intent-enforced methods — those key off the declared intent alone.
     - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
-      When ``False`` (e.g. a non-seekable TAR), ``open``/``read`` raise
-      ``UnsupportedOperationError``; sequential access via ``stream_members`` still
-      works. TAR resolves this per-instance in ``__init__`` from source seekability.
+      When ``False``, ``open``/``read`` raise ``UnsupportedOperationError``; sequential
+      access via ``stream_members`` still works. (The open-time fail-fast for
+      non-seekable sources under AUTO/RANDOM intent — which also consults this — lands
+      with format detection in Phase 3.)
+
+    Intent enforcement (independent of the flags above): under ``Intent.SEQUENTIAL`` the
+    reader is forward-only, so ``members``/``len``/``__contains__``/``__getitem__``/
+    ``get``/``open``/``read`` all raise ``UnsupportedOperationError`` — uniformly, not
+    per-backend. Only a single pass of ``__iter__``/``stream_members``/``extract_all``
+    (and ``get_members_if_available``) is allowed.
 
     **MAY override**:
 
@@ -307,6 +322,23 @@ class BaseArchiveReader(ArchiveReader):
 
     # --- Public API ---
 
+    def _require_random_access(self, op: str) -> None:
+        """Raise ``UnsupportedOperationError`` if ``op`` (a random-access or
+        full-materialization operation) is not allowed under the declared intent.
+
+        Under ``Intent.SEQUENTIAL`` the reader is forward-only: only a single pass of
+        ``__iter__``/``stream_members`` (or one ``extract_all``) is allowed. This is
+        uniform and format-independent — it does **not** depend on whether a backend
+        happens to have an index loaded (use :meth:`get_members_if_available` for a
+        no-scan peek at the list instead).
+        """
+        if self._intent == Intent.SEQUENTIAL:
+            raise UnsupportedOperationError(
+                f"{op} is not available on a SEQUENTIAL (forward-only) reader. "
+                f"Iterate with stream_members(), or call get_members_if_available() "
+                f"for a no-scan member list.",
+            )
+
     @property
     def format(self) -> ArchiveFormat:
         return self._format
@@ -327,31 +359,39 @@ class BaseArchiveReader(ArchiveReader):
             yield from self._get_members_registered()
 
     def members(self) -> list[ArchiveMember]:
-        if self._intent == Intent.SEQUENTIAL and not self._MEMBER_LIST_UPFRONT:
-            raise UnsupportedOperationError(
-                "Cannot materialize member list on a SEQUENTIAL reader without upfront index",
-            )
+        self._require_random_access("members()")
         return list(self._get_members_registered())
 
+    def get_members_if_available(self) -> list[ArchiveMember] | None:
+        """Return the full member list if it is available **without scanning**, else
+        ``None``. Safe to call under any intent (including ``SEQUENTIAL``).
+
+        Non-``None`` when the list is already materialized (e.g. after an iteration
+        pass) or the backend has a true upfront index (``_MEMBER_LIST_UPFRONT`` — a ZIP
+        central directory, a 7z header, the filesystem listing). It never triggers a
+        scan or consumes the forward pass; when the list would require one it returns
+        ``None`` (call :meth:`members` to force materialization, in random mode).
+        """
+        if self._members_cache is not None:
+            return self._members_cache
+        if self._MEMBER_LIST_UPFRONT:
+            return self._get_members_registered()
+        return None
+
     def __len__(self) -> int:
-        if self._intent == Intent.SEQUENTIAL and not self._MEMBER_LIST_UPFRONT:
-            raise UnsupportedOperationError(
-                "Cannot get member count on a SEQUENTIAL reader without upfront index",
-            )
+        self._require_random_access("len()")
         return len(self._get_members_registered())
 
     def __contains__(self, name: object) -> bool:
         if not isinstance(name, str):
             return False
+        self._require_random_access("membership ('in') test")
         self._get_members_registered()
         assert self._members_by_name is not None
         return name in self._members_by_name
 
     def __getitem__(self, name: str) -> ArchiveMember:
-        if self._intent == Intent.SEQUENTIAL and not self._MEMBER_LIST_UPFRONT:
-            raise UnsupportedOperationError(
-                "Cannot do key lookup on a SEQUENTIAL reader without upfront index",
-            )
+        self._require_random_access("key lookup")
         self._get_members_registered()
         assert self._members_by_name is not None
         try:
@@ -360,18 +400,17 @@ class BaseArchiveReader(ArchiveReader):
             raise KeyError(f"Member {name!r} not found") from None
 
     def get(self, name: str, default: ArchiveMember | None = None) -> ArchiveMember | None:
-        if self._intent == Intent.SEQUENTIAL and not self._MEMBER_LIST_UPFRONT:
-            raise UnsupportedOperationError(
-                "Cannot do key lookup on a SEQUENTIAL reader without upfront index",
-            )
+        self._require_random_access("key lookup")
         self._get_members_registered()
         assert self._members_by_name is not None
         return self._members_by_name.get(name, default)
 
     def open(self, member: str | ArchiveMember) -> BinaryIO:
         """Open member for reading. Follows symlinks."""
-        # NOTE (Phase 3/5): this guards on backend *capability* only. Intent.SEQUENTIAL
-        # should also disable random access on a capable backend — see phase-2 task 0.3.
+        # Two independent gates: the declared intent (SEQUENTIAL forbids random access)
+        # and the backend capability (_SUPPORTS_RANDOM_ACCESS, used by the Phase-3
+        # open-time fail-fast for non-seekable sources).
+        self._require_random_access("open()/read()")
         if not self._SUPPORTS_RANDOM_ACCESS:
             raise UnsupportedOperationError(
                 "This reader does not support random access (open()/read()); "
