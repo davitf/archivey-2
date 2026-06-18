@@ -21,10 +21,10 @@
       `internal/reader.py`. Nothing to do in Phase 2 — just don't build on the default
       when the first streaming backend lands.
 - [ ] 0.3 **(Reminder for Phase 3) open-time fail-fast on non-seekable sources.** The
-      method-level intent enforcement is done (`SEQUENTIAL` is forward-only; see the
-      intent × method table in `access-intent-and-cost`). What remains is the
-      *open-time* rule: `open_archive(..., intent=AUTO|RANDOM)` MUST fail fast when the
-      source is non-seekable and the format requires seek — using
+      method-level access-mode enforcement is done (`streaming=True` is forward-only; see
+      the access-mode × method table in `access-mode-and-cost`). What remains is the
+      *open-time* rule: `open_archive(..., streaming=False)` (the random-access default)
+      MUST fail fast when the source is non-seekable and the format requires seek — using
       `ReadBackend.REQUIRES_SEEK` / `_SUPPORTS_RANDOM_ACCESS`. Needs the real
       source/format detection that lands in Phase 3.
 

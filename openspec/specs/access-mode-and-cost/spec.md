@@ -1,4 +1,4 @@
-# Access Intent and Cost
+# Access Mode and Cost
 
 ## Purpose
 

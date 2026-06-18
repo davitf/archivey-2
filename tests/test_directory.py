@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -160,6 +163,21 @@ def test_member_archive_id_set(simple_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Iteration order: a directory's own non-dir entries before its subdirectories
+# ---------------------------------------------------------------------------
+
+
+def test_non_dirs_listed_before_subdirs(simple_dir: Path) -> None:
+    with open_archive(simple_dir) as reader:
+        names = [m.name for m in reader]
+    # Top-level files precede the subdirectory entry (and therefore its contents).
+    assert names.index("a.txt") < names.index("sub/")
+    assert names.index("b.txt") < names.index("sub/")
+    # Parent-before-children still holds within the subtree.
+    assert names.index("sub/") < names.index("sub/c.txt")
+
+
+# ---------------------------------------------------------------------------
 # Iteration
 # ---------------------------------------------------------------------------
 
@@ -263,6 +281,40 @@ def test_open_symlink_follows_to_real_content(symlink_dir: Path) -> None:
     with open_archive(symlink_dir) as reader:
         data = reader.read("link.txt")
         assert data == b"real content"
+
+
+# ---------------------------------------------------------------------------
+# Windows NTFS junction handling (runs only on the Windows CI leg)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="os.DirEntry.is_junction() needs Python 3.12+"
+)
+def test_windows_junction_detected_and_not_traversed(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "inside.txt").write_bytes(b"inside")
+    junction = tmp_path / "jx"
+    # mklink /J creates a junction and needs no admin rights (unlike a symlink).
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        check=True,
+        capture_output=True,
+    )
+
+    with open_archive(tmp_path) as reader:
+        by_name = {m.name: m for m in reader.members()}
+
+    junction_member = by_name["jx"]
+    # A junction is surfaced as a symlink-like leaf, flagged via is_junction.
+    assert junction_member.type == MemberType.SYMLINK
+    assert junction_member.is_junction is True
+    # It is NOT walked through: its contents do not appear under the junction name.
+    assert "jx/inside.txt" not in by_name
+    # The real target directory, walked directly, still yields its contents.
+    assert "target/inside.txt" in by_name
 
 
 # ---------------------------------------------------------------------------
@@ -378,3 +430,21 @@ def test_version_accessible() -> None:
 def test_archive_format_named_instances() -> None:
     fmt = ArchiveFormat.DIRECTORY  # type: ignore[attr-defined]
     assert repr(fmt) == "ArchiveFormat.DIRECTORY"
+
+
+# ---------------------------------------------------------------------------
+# source_name(): names paths and named streams, None for anonymous streams
+# ---------------------------------------------------------------------------
+
+
+def test_source_name_for_path_and_stream(tmp_path: Path) -> None:
+    from archivey.internal.open_archive import source_name
+
+    p = tmp_path / "x.bin"
+    p.write_bytes(b"")
+    assert source_name(p) == str(p)
+    assert source_name(str(p)) == str(p)
+    with open(p, "rb") as f:
+        assert source_name(f) == str(p)
+    # An in-memory stream has no name attribute -> None.
+    assert source_name(io.BytesIO(b"")) is None

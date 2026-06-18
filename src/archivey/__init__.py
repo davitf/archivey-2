@@ -7,7 +7,6 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-from archivey.internal.api import open_archive
 from archivey.internal.cost import (
     AccessCost,
     CostReceipt,
@@ -35,6 +34,7 @@ from archivey.internal.errors import (
     UnsupportedOperationError,
     WriteError,
 )
+from archivey.internal.open_archive import open_archive
 from archivey.internal.reader import ArchiveReader
 from archivey.internal.types import (
     ArchiveFormat,

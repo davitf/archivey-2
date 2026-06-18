@@ -60,7 +60,7 @@ The system SHALL map each `ZipInfo` entry to a `ArchiveMember` dataclass using t
 
 ### Requirement: Handle non-seekable ZIP streams
 
-The ZIP central directory resides at the **end** of the file, so a ZIP cannot be read from a non-seekable source (a pipe/socket) without first buffering it to seekable storage. Per the access-mode contract (`access-intent-and-cost`), the system SHALL raise `StreamNotSeekableError` at open time for a non-seekable ZIP source, advising the caller to buffer the source (save to disk or a `BytesIO`) and reopen, rather than buffering implicitly.
+The ZIP central directory resides at the **end** of the file, so a ZIP cannot be read from a non-seekable source (a pipe/socket) without first buffering it to seekable storage. Per the access-mode contract (`access-mode-and-cost`), the system SHALL raise `StreamNotSeekableError` at open time for a non-seekable ZIP source, advising the caller to buffer the source (save to disk or a `BytesIO`) and reopen, rather than buffering implicitly.
 
 > **Reconcile when the ZIP backend lands (Phase 3).** The earlier design auto-spooled a non-seekable ZIP into a `tempfile.SpooledTemporaryFile` transparently (threshold `spool_max_size`, default 50 MiB; oversized → `ReadError`). That convenience conflicts with the decided rule that `streaming=False` **fails fast** on a source it cannot random-access and the library does **not** implicitly buffer. If transparent spooling is wanted back, it must return as an **explicit opt-in** (e.g. a `spool_max_size` argument), not the default. Finalize this when the backend is implemented.
 

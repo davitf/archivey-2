@@ -217,7 +217,7 @@ detection covers them.
 `format-zip`, `format-single-file-compressors`, `format-iso`
 scenarios; `format-detection` scenarios for these formats; `backend-registry`
 selection + *ISO without pycdlib* + *list_formats() excludes unavailable*;
-`access-intent-and-cost` O(1)/AUTO/RANDOM scenarios for ZIP; equivalence matrix
+`access-mode-and-cost` O(1)/AUTO/RANDOM scenarios for ZIP; equivalence matrix
 seeded; non-seekable ZIP spooling. Retire matching frozen-oracle coverage.
 
 ### Acceptance — spec scenarios covered
@@ -281,16 +281,16 @@ no `pending_*` attributes anywhere.
 2. Finalize `archive-data-model` (`ArchiveFormat`/`MemberType` taxonomy,
    compression-method model, the full `Member` record — hashable, `extra`, digests
    under algorithm keys, name normalization — and `ArchiveInfo`).
-3. Finalize `access-intent-and-cost` — `Intent` enforcement and **CostReceipt
+3. Finalize `access-mode-and-cost` — `Intent` enforcement and **CostReceipt
    values verified per format**; `error-handling` translation contract (cause/
    traceback preserved; genuine I/O not reclassified; context filled by base reader).
 
 ### Tests added
-`archive-data-model`, `access-intent-and-cost`, `error-handling`, and the remaining
+`archive-data-model`, `access-mode-and-cost`, `error-handling`, and the remaining
 `archive-reading` scenarios; per-format CostReceipt assertions.
 
 ### Acceptance — spec scenarios covered
-All of `archive-reading`, `archive-data-model`, `access-intent-and-cost`,
+All of `archive-reading`, `archive-data-model`, `access-mode-and-cost`,
 `error-handling`.
 **Gates:** `pyrefly` + `ty` clean (strict); public API matches `SPEC.md §2–§7`; CostReceipt
 correct for every format implemented so far.

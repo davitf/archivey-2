@@ -1,4 +1,4 @@
-"""Public API entry points."""
+"""The ``open_archive()`` entry point."""
 
 from __future__ import annotations
 
@@ -9,6 +9,19 @@ from archivey.internal.errors import FormatDetectionError
 from archivey.internal.reader import ArchiveReader
 from archivey.internal.registry import get_registry
 from archivey.internal.types import ArchiveFormat
+
+
+def source_name(source: str | Path | BinaryIO) -> str | None:
+    """Best-effort human-readable name for a source, for error messages and metadata.
+
+    A path-like source yields its string form; a file-like stream yields its ``name``
+    attribute when that is a string (``open()`` sets it, ``BytesIO`` does not, and some
+    streams expose an integer fd there — both of those yield ``None``).
+    """
+    if isinstance(source, (str, Path)):
+        return str(source)
+    name = getattr(source, "name", None)
+    return name if isinstance(name, str) else None
 
 
 def open_archive(
@@ -34,12 +47,10 @@ def open_archive(
     if isinstance(password, str):
         password = password.encode()
 
-    archive_name: str | None = None
-    if isinstance(source, (str, Path)):
-        path = Path(source)
-        archive_name = str(path)
-        if path.is_dir():
-            format = ArchiveFormat.DIRECTORY
+    archive_name = source_name(source)
+
+    if isinstance(source, (str, Path)) and Path(source).is_dir():
+        format = ArchiveFormat.DIRECTORY
 
     if format is None:
         raise FormatDetectionError(
@@ -52,8 +63,9 @@ def open_archive(
     backend_cls = registry.reader_for_format(format)
     backend = backend_cls()
     return backend.open_read(
-        source if not isinstance(source, str) else Path(source),
+        Path(source) if isinstance(source, str) else source,
         streaming=streaming,
         password=password,
         encoding=encoding,
+        archive_name=archive_name,
     )

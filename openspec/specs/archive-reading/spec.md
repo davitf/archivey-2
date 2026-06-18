@@ -121,9 +121,9 @@ def __contains__(self, name: str) -> bool: ...
 
 `__iter__` MUST yield `ArchiveMember` objects one at a time without loading all members into memory. `members()` and `__len__` MAY trigger a full scan for streaming formats that have no central directory. After the member list has been materialized once, subsequent `__iter__` calls MUST return from the cache rather than re-reading the archive.
 
-`get_members_if_available()` returns the member list only when it is available **without scanning** (already materialized, or the backend has a true upfront index), else `None`; it never scans, so it is callable under any intent. See `access-intent-and-cost` for its full contract.
+`get_members_if_available()` returns the member list only when it is available **without scanning** (already materialized, or the backend has a true upfront index), else `None`; it never scans, so it is callable under any intent. See `access-mode-and-cost` for its full contract.
 
-When opened with `streaming=True`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random `extract()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-intent-and-cost`.
+When opened with `streaming=True`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random `extract()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-mode-and-cost`.
 
 #### Scenario: forward iteration
 

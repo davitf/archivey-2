@@ -27,7 +27,7 @@ class IsoReadBackend(ReadBackend):
     EXTENSIONS = (".iso",)
     MAGIC = ((32769, b"CD001"),)          # declared as data; the detector matches it
     OPTIONAL_DEPENDENCY = "pycdlib"
-    def open_read(self, source, streaming, password, encoding) -> ArchiveReader: ...
+    def open_read(self, source, streaming, password, encoding, archive_name) -> ArchiveReader: ...
 
 if _PYCDLIB_AVAILABLE:
     register_reader(IsoReadBackend)   # from archivey.internal.registry; only when usable
@@ -137,6 +137,7 @@ class ReadBackend(ABC):
         streaming: bool,
         password: bytes | None,
         encoding: str | None,
+        archive_name: str | None,           # computed once by open_archive() (path or stream name)
     ) -> ArchiveReader: ...
 
 class WriteBackend(ABC):

@@ -52,10 +52,12 @@
       `uv run pytest` (with `pytest-cov` producing a **report only**, never failing the
       build). Use `uv` for env setup; cache the uv environment keyed on `uv.lock`.
 - [x] 2b.2 Matrix (~12 jobs):
-      - **Linux** × Python `{3.11, 3.12, 3.13, 3.14}` × install `{core-only (no extras),
-        [all]}` = 8 jobs — `core-only` asserts the zero-dep core imports and runs with
-        no third-party packages; `[all]` runs the full suite (extras present; `unrar`
-        installed for RAR-data tests).
+      - **Linux** × Python `{3.11, 3.14}` core-only + `{3.11, 3.12, 3.13, 3.14}` `[all]`
+        — `core-only` asserts the zero-dep core imports with no third-party packages **and
+        runs the full suite** against it (tests needing an optional lib must skip/xfail
+        cleanly — that clean-skip behaviour is exactly what this leg proves); `[all]` runs
+        the full suite with extras present (`unrar` installed for RAR-data tests). Core-only
+        is min+max Python only (the core path barely varies across point releases).
       - **macOS** + **Windows** × Python `{3.11 (min), 3.14 (max)}`, `[all]` = 4 jobs —
         the cross-platform surface (path normalisation, symlinks, junctions, no-`unrar`
         skips) where behaviour genuinely differs by OS.

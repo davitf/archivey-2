@@ -287,4 +287,4 @@ class ArchiveInfo:
     comment: str | None  # archive-level comment, if the format records one
     is_encrypted: bool  # header-level encryption (7z, RAR5), not per-member encryption
     is_multivolume: bool
-    cost: "CostReceipt"  # listing/access cost receipt (see access-intent-and-cost)
+    cost: "CostReceipt"  # listing/access cost receipt (see access-mode-and-cost)

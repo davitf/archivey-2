@@ -372,7 +372,7 @@ instead). `member_count` SHALL be `None` when the format has no central director
 count requires scanning the entire archive. `is_encrypted` refers to header-level
 encryption (as in 7z or RAR5), distinct from per-member encryption indicated by
 `ArchiveMember.is_encrypted`. `cost` embeds a `CostReceipt` (defined in the
-access-intent-and-cost capability) describing listing and access costs.
+access-mode-and-cost capability) describing listing and access costs.
 
 #### Scenario: member_count is None for streaming formats
 

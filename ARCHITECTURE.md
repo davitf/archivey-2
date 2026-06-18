@@ -232,7 +232,7 @@ Everything else (`__iter__`, `__getitem__`, `read`, `open`, `stream_members`, `e
 
 ### 2.4 Lazy member materialization
 
-→ see SPEC.md §3.2 / openspec `archive-reading`, `access-intent-and-cost`
+→ see SPEC.md §3.2 / openspec `archive-reading`, `access-mode-and-cost`
 
 `__iter__` calls `_iter_members()` directly — a generator that never loads all members.
 
@@ -455,7 +455,7 @@ MUST NOT convert an unrelated runtime exception into an `ArchiveyError`.
 
 ### 2.12 Cost Receipt computation
 
-→ see SPEC.md §4.6 / openspec `access-intent-and-cost`
+→ see SPEC.md §4.6 / openspec `access-mode-and-cost`
 
 Each backend computes its `CostReceipt` in `open_read()`, **before** any heavy I/O. The
 three axes are orthogonal: `listing_cost` (enumeration), `access_cost` (format layout), and

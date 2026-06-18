@@ -17,11 +17,22 @@ from archivey.internal.cost import (
 from archivey.internal.reader import BaseArchiveReader, ReadBackend
 from archivey.internal.registry import register_reader
 from archivey.internal.types import (
+    EXTRA_IS_JUNCTION,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
     MemberType,
 )
+
+
+def _is_junction(entry: os.DirEntry[str]) -> bool:
+    """True if a scandir entry is a Windows NTFS junction.
+
+    ``os.DirEntry.is_junction()`` only exists on Python 3.12+; on older interpreters
+    (and on every non-Windows platform, where junctions don't exist) this returns False.
+    """
+    is_junction = getattr(entry, "is_junction", None)
+    return bool(is_junction()) if is_junction is not None else False
 
 
 class DirectoryReader(BaseArchiveReader):
@@ -55,6 +66,10 @@ class DirectoryReader(BaseArchiveReader):
         except OSError:
             return
 
+        # Emit all non-directory entries at this level first, then descend into the
+        # subdirectories, so the iterator yields a directory's own files before walking
+        # into its children. `subdirs` keeps the (member, path) pairs to recurse into.
+        subdirs: list[tuple[ArchiveMember, Path]] = []
         for entry in entries:
             rel_path = rel_prefix + entry.name
             try:
@@ -66,14 +81,31 @@ class DirectoryReader(BaseArchiveReader):
                 yield self._make_member(
                     rel_path, st, MemberType.SYMLINK, os.readlink(entry.path)
                 )
+            elif _is_junction(entry):
+                # A Windows NTFS junction points at a directory but is a reparse point,
+                # not a real subtree to walk — surface it as a symlink-like leaf (flagged
+                # via extra[EXTRA_IS_JUNCTION]) and do NOT recurse through it.
+                yield self._make_member(
+                    rel_path,
+                    st,
+                    MemberType.SYMLINK,
+                    os.readlink(entry.path),
+                    is_junction=True,
+                )
             elif entry.is_dir(follow_symlinks=False):
-                yield self._make_member(rel_path + "/", st, MemberType.DIRECTORY, None)
-                # Recurse, keeping members in a stable parent-before-children order.
-                yield from self._scan(Path(entry.path), rel_path + "/")
+                member = self._make_member(
+                    rel_path + "/", st, MemberType.DIRECTORY, None
+                )
+                subdirs.append((member, Path(entry.path)))
             elif entry.is_file(follow_symlinks=False):
                 yield self._make_member(rel_path, st, MemberType.FILE, None)
             else:
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)
+
+        # Now descend, keeping a stable parent-before-children order within each subtree.
+        for member, path in subdirs:
+            yield member
+            yield from self._scan(path, member.name)
 
     def _make_member(
         self,
@@ -81,6 +113,7 @@ class DirectoryReader(BaseArchiveReader):
         st: os.stat_result,
         member_type: MemberType,
         link_target: str | None,
+        is_junction: bool = False,
     ) -> ArchiveMember:
         # `name` is built from live filesystem entries (already "/"-separated, no
         # "."/".."/leading-slash components), so it is normalize_member_name()-clean by
@@ -120,6 +153,7 @@ class DirectoryReader(BaseArchiveReader):
             uname=self._lookup_uname(uid),
             gname=self._lookup_gname(gid),
             link_target=link_target,
+            extra={EXTRA_IS_JUNCTION: True} if is_junction else {},
         )
 
     def _lookup_uname(self, uid: int) -> str | None:
@@ -182,11 +216,11 @@ class DirectoryReadBackend(ReadBackend):
         streaming: bool,
         password: bytes | None,
         encoding: str | None,
+        archive_name: str | None,
     ) -> DirectoryReader:
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
-        archive_name = str(source)
-        return DirectoryReader(source, streaming, archive_name)
+        return DirectoryReader(source, streaming, archive_name or str(source))
 
 
 # Self-register at import time

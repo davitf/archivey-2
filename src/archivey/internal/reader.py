@@ -39,6 +39,7 @@ class ReadBackend(ABC):
         streaming: bool,
         password: bytes | None,
         encoding: str | None,
+        archive_name: str | None,
     ) -> "BaseArchiveReader": ...
 
 
@@ -87,7 +88,7 @@ class ArchiveReader(ABC):
     @property
     @abstractmethod
     def cost(self) -> CostReceipt:
-        """The listing/access cost receipt for this archive (see ``access-intent-and-cost``)."""
+        """The listing/access cost receipt for this archive (see ``access-mode-and-cost``)."""
         ...
 
     @abstractmethod

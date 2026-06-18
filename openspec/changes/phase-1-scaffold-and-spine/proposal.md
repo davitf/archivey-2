@@ -85,7 +85,7 @@ carries no spec deltas. Capabilities realized or seeded:
 - **`packaging-and-extras`** — realized directly (pyproject, extras→capability
   mapping, env matrix, `__version__`).
 - **`backend-registry`, `archive-data-model`, `error-handling`,
-  `access-intent-and-cost`** — the **types and contracts** land here (written
+  `access-mode-and-cost`** — the **types and contracts** land here (written
   fresh); per-format *behavior* for codec/detection-dependent formats arrives as
   backends are added (Phases 3–7).
 - **`format-directory`** — realized in full (the directory pseudo-backend is the
