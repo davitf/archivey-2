@@ -8,10 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator
 
-from archivey.internal.intent import (
+from archivey.internal.cost import (
     AccessCost,
     CostReceipt,
-    Intent,
     ListingCost,
     StreamCapability,
 )
@@ -34,10 +33,10 @@ class DirectoryReader(BaseArchiveReader):
     def __init__(
         self,
         root: Path,
-        intent: Intent,
+        streaming: bool,
         archive_name: str | None,
     ) -> None:
-        super().__init__(ArchiveFormat.DIRECTORY, intent, archive_name)
+        super().__init__(ArchiveFormat.DIRECTORY, streaming, archive_name)
         self._root = root
         # uid/gid -> name caches: most entries in a tree share an owner/group, and
         # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
@@ -180,14 +179,14 @@ class DirectoryReadBackend(ReadBackend):
     def open_read(
         self,
         source: Path | BinaryIO,
-        intent: Intent,
+        streaming: bool,
         password: bytes | None,
         encoding: str | None,
     ) -> DirectoryReader:
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
         archive_name = str(source)
-        return DirectoryReader(source, intent, archive_name)
+        return DirectoryReader(source, streaming, archive_name)
 
 
 # Self-register at import time

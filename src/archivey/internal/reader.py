@@ -6,12 +6,12 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterator
 
+from archivey.internal.cost import CostReceipt
 from archivey.internal.errors import (
     ArchiveyError,
     LinkTargetNotFoundError,
     UnsupportedOperationError,
 )
-from archivey.internal.intent import CostReceipt, Intent
 from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -36,7 +36,7 @@ class ReadBackend(ABC):
     def open_read(
         self,
         source: Path | BinaryIO,
-        intent: Intent,
+        streaming: bool,
         password: bytes | None,
         encoding: str | None,
     ) -> "BaseArchiveReader": ...
@@ -98,14 +98,14 @@ class ArchiveReader(ABC):
     @abstractmethod
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``UnsupportedOperationError``
-        under ``Intent.SEQUENTIAL`` (use :meth:`get_members_if_available` there)."""
+        on a streaming reader (use :meth:`get_members_if_available` there)."""
         ...
 
     @abstractmethod
     def get_members_if_available(self) -> list[ArchiveMember] | None:
         """The full member list if it is available without scanning, else ``None``.
-        Never scans or consumes the forward pass, so it is safe under any intent
-        (including ``SEQUENTIAL``)."""
+        Never scans or consumes the forward pass, so it is safe to call on any reader
+        (including a streaming one)."""
         ...
 
     @abstractmethod
@@ -193,16 +193,16 @@ class BaseArchiveReader(ArchiveReader):
       directory, 7z header, filesystem listing) that yields the full member list
       *without scanning*? This is the predicate behind :meth:`get_members_if_available`
       (it returns the list when ``True``, else ``None``). It does **not** gate the
-      intent-enforced methods — those key off the declared intent alone.
+      access-mode-enforced methods — those key off the ``streaming`` flag alone.
     - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
       When ``False``, ``open``/``read`` raise ``UnsupportedOperationError``; sequential
-      access via ``stream_members`` still works. (The open-time fail-fast for
-      non-seekable sources under DEFAULT/RANDOM intent — which also consults this — lands
+      access via ``stream_members`` still works. (The open-time fail-fast for a
+      non-seekable source under ``streaming=False`` — which also consults this — lands
       with format detection in Phase 3.)
 
-    Intent enforcement (independent of the flags above): under ``Intent.SEQUENTIAL`` the
-    reader is forward-only, so ``members``/``len``/``__contains__``/``__getitem__``/
-    ``get``/``open``/``read`` all raise ``UnsupportedOperationError`` — uniformly, not
+    Access-mode enforcement (independent of the flags above): a ``streaming=True`` reader
+    is forward-only, so ``members``/``len``/``__contains__``/``__getitem__``/``get``/
+    ``open``/``read`` all raise ``UnsupportedOperationError`` — uniformly, not
     per-backend. Only a single pass of ``__iter__``/``stream_members``/``extract_all``
     (and ``get_members_if_available``) is allowed.
 
@@ -221,17 +221,17 @@ class BaseArchiveReader(ArchiveReader):
     # UnsupportedOperationError and callers must use stream_members() instead.
     _SUPPORTS_RANDOM_ACCESS: bool = True
     # Is the full member list available without reading member data (e.g. a central
-    # directory)? When False, listing methods raise under Intent.SEQUENTIAL.
+    # directory)? Drives get_members_if_available(); does not gate the streaming methods.
     _MEMBER_LIST_UPFRONT: bool = True
 
     def __init__(
         self,
         format: ArchiveFormat,
-        intent: Intent,
+        streaming: bool,
         archive_name: str | None,
     ) -> None:
         self._format = format
-        self._intent = intent
+        self._streaming = streaming
         self._archive_name = archive_name
         self._archive_id = str(id(self))
         self._members_cache: list[ArchiveMember] | None = None
@@ -324,17 +324,17 @@ class BaseArchiveReader(ArchiveReader):
 
     def _require_random_access(self, op: str) -> None:
         """Raise ``UnsupportedOperationError`` if ``op`` (a random-access or
-        full-materialization operation) is not allowed under the declared intent.
+        full-materialization operation) is not allowed on this reader.
 
-        Under ``Intent.SEQUENTIAL`` the reader is forward-only: only a single pass of
+        A ``streaming=True`` reader is forward-only: only a single pass of
         ``__iter__``/``stream_members`` (or one ``extract_all``) is allowed. This is
         uniform and format-independent — it does **not** depend on whether a backend
         happens to have an index loaded (use :meth:`get_members_if_available` for a
         no-scan peek at the list instead).
         """
-        if self._intent == Intent.SEQUENTIAL:
+        if self._streaming:
             raise UnsupportedOperationError(
-                f"{op} is not available on a SEQUENTIAL (forward-only) reader. "
+                f"{op} is not available on a streaming (forward-only) reader. "
                 f"Iterate with stream_members(), or call get_members_if_available() "
                 f"for a no-scan member list.",
             )
@@ -352,8 +352,8 @@ class BaseArchiveReader(ArchiveReader):
         return self._get_archive_info().cost
 
     def __iter__(self) -> Iterator[ArchiveMember]:
-        if self._intent == Intent.SEQUENTIAL and self._members_cache is None:
-            # For sequential intent, stream directly without caching
+        if self._streaming and self._members_cache is None:
+            # Forward-only: stream directly without caching the whole list.
             yield from self._iter_members()
         else:
             yield from self._get_members_registered()
@@ -364,7 +364,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def get_members_if_available(self) -> list[ArchiveMember] | None:
         """Return the full member list if it is available **without scanning**, else
-        ``None``. Safe to call under any intent (including ``SEQUENTIAL``).
+        ``None``. Safe to call on any reader (including a streaming one).
 
         Non-``None`` when the list is already materialized (e.g. after an iteration
         pass) or the backend has a true upfront index (``_MEMBER_LIST_UPFRONT`` — a ZIP
@@ -407,7 +407,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def open(self, member: str | ArchiveMember) -> BinaryIO:
         """Open member for reading. Follows symlinks."""
-        # Two independent gates: the declared intent (SEQUENTIAL forbids random access)
+        # Two independent gates: the access mode (streaming=True forbids random access)
         # and the backend capability (_SUPPORTS_RANDOM_ACCESS, used by the Phase-3
         # open-time fail-fast for non-seekable sources).
         self._require_random_access("open()/read()")

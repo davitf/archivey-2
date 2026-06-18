@@ -60,7 +60,7 @@ cloned as a **frozen test oracle**, not copied as a baseline.
     central-context-stamping pattern, and the new members `StreamNotSeekableError`,
     `LinkTargetNotFoundError`, `UnsupportedFeatureError`, `PackageNotInstalledError`,
     `UnsupportedOperationError`.
-  - `Intent` enum + `CostReceipt` types — `ListingCost`
+  - Access mode = `streaming: bool` (no `Intent` enum) + `CostReceipt` types — `ListingCost`
     (`INDEXED`/`REQUIRES_SCANNING`/`REQUIRES_DECOMPRESSION`), `AccessCost`
     (`DIRECT`/`SOLID`), `StreamCapability` (`SEEKABLE`/`FORWARD_ONLY`),
     `solid_block_count` (`is_solid` lives on `ArchiveInfo`, not the receipt).

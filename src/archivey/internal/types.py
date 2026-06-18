@@ -8,7 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Mapping
 
 if TYPE_CHECKING:
-    from archivey.internal.intent import CostReceipt
+    from archivey.internal.cost import CostReceipt
 
 
 class ContainerFormat(str, Enum):

@@ -15,7 +15,7 @@ archivey.open_archive(
     source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
     *,
     format: ArchiveFormat | None = None,  # override detection
-    intent: Intent = Intent.DEFAULT,
+    streaming: bool = False,             # False = random access; True = forward-only one pass
     password: str | bytes | None = None,
     encoding: str | None = None,         # None = auto-detect member-name encoding
 ) -> ArchiveReader
@@ -123,30 +123,30 @@ def __contains__(self, name: str) -> bool: ...
 
 `get_members_if_available()` returns the member list only when it is available **without scanning** (already materialized, or the backend has a true upfront index), else `None`; it never scans, so it is callable under any intent. See `access-intent-and-cost` for its full contract.
 
-When opened with `Intent.SEQUENTIAL`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random `extract()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the intent × method table in `access-intent-and-cost`.
+When opened with `streaming=True`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random `extract()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-intent-and-cost`.
 
 #### Scenario: forward iteration
 
 - **WHEN** `for member in ar` is executed
 - **THEN** the reader yields `ArchiveMember` objects in archive order without buffering all of them in memory
 
-#### Scenario: materialization on sequential intent
+#### Scenario: materialization on a streaming reader
 
-- **WHEN** `ar.members()` or `len(ar)` is called on a reader opened with `Intent.SEQUENTIAL`
+- **WHEN** `ar.members()` or `len(ar)` is called on a reader opened with `streaming=True`
 - **THEN** `UnsupportedOperationError` is raised
 
 ---
 
 ### Requirement: Membership and random access by name
 
-The system SHALL support dictionary-style lookup of members by normalized name, subject to an intent constraint.
+The system SHALL support dictionary-style lookup of members by normalized name, subject to an access-mode constraint.
 
 ```python
 def __getitem__(self, name: str) -> ArchiveMember: ...    # KeyError if absent
 def get(self, name: str, default=None) -> ArchiveMember | None: ...
 ```
 
-Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Intent.SEQUENTIAL` SHALL raise `UnsupportedOperationError` — uniformly, regardless of whether the backend has an index loaded (a `SEQUENTIAL` reader is forward-only; this keeps its behaviour deterministic across formats). A caller that wants a no-scan peek at the member list under any intent uses `get_members_if_available()` instead.
+Calling `__getitem__`, `get`, or random `extract` on a reader opened with `streaming=True` SHALL raise `UnsupportedOperationError` — uniformly, regardless of whether the backend has an index loaded (a streaming reader is forward-only; this keeps its behaviour deterministic across formats). A caller that wants a no-scan peek at the member list on any reader uses `get_members_if_available()` instead.
 
 #### Scenario: successful key lookup
 
@@ -158,9 +158,9 @@ Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Inten
 - **WHEN** `ar["nonexistent.txt"]` is called and the member does not exist
 - **THEN** `KeyError` is raised
 
-#### Scenario: random access on sequential-intent reader
+#### Scenario: random access on a streaming reader
 
-- **WHEN** `ar["file.txt"]` is called on a reader opened with `Intent.SEQUENTIAL`
+- **WHEN** `ar["file.txt"]` is called on a reader opened with `streaming=True`
 - **THEN** `UnsupportedOperationError` is raised (regardless of any loaded index)
 
 ---

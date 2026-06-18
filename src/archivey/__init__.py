@@ -8,6 +8,12 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 from archivey.internal.api import open_archive
+from archivey.internal.cost import (
+    AccessCost,
+    CostReceipt,
+    ListingCost,
+    StreamCapability,
+)
 from archivey.internal.errors import (
     ArchiveyError,
     CorruptionError,
@@ -28,13 +34,6 @@ from archivey.internal.errors import (
     UnsupportedFormatError,
     UnsupportedOperationError,
     WriteError,
-)
-from archivey.internal.intent import (
-    AccessCost,
-    CostReceipt,
-    Intent,
-    ListingCost,
-    StreamCapability,
 )
 from archivey.internal.reader import ArchiveReader
 from archivey.internal.types import (
@@ -62,7 +61,6 @@ __all__ = [
     "CompressionAlgorithm",
     "CompressionMethod",
     "CreateSystem",
-    "Intent",
     "CostReceipt",
     "ListingCost",
     "AccessCost",

@@ -58,30 +58,16 @@ The system SHALL map each `ZipInfo` entry to a `ArchiveMember` dataclass using t
 - **WHEN** a ZIP entry has `flag_bits & 0x1` set
 - **THEN** `member.is_encrypted` is `True`
 
-### Requirement: Handle non-seekable ZIP streams by spooling
+### Requirement: Handle non-seekable ZIP streams
 
-The system SHALL buffer a non-seekable ZIP source into a `tempfile.SpooledTemporaryFile` before opening, because the ZIP central directory resides at the end of the file and cannot be read without seeking.
+The ZIP central directory resides at the **end** of the file, so a ZIP cannot be read from a non-seekable source (a pipe/socket) without first buffering it to seekable storage. Per the access-mode contract (`access-intent-and-cost`), the system SHALL raise `StreamNotSeekableError` at open time for a non-seekable ZIP source, advising the caller to buffer the source (save to disk or a `BytesIO`) and reopen, rather than buffering implicitly.
 
-- The spool threshold is configurable as `spool_max_size` (default: 50 MiB).
-- If the ZIP stream data exceeds `spool_max_size` before the central directory is reached, the system SHALL raise `ReadError` with a message advising the caller to save the archive to disk first.
-- Opening a non-seekable ZIP stream with `Intent.RANDOM` is not supported; the backend rejects this combination.
+> **Reconcile when the ZIP backend lands (Phase 3).** The earlier design auto-spooled a non-seekable ZIP into a `tempfile.SpooledTemporaryFile` transparently (threshold `spool_max_size`, default 50 MiB; oversized → `ReadError`). That convenience conflicts with the decided rule that `streaming=False` **fails fast** on a source it cannot random-access and the library does **not** implicitly buffer. If transparent spooling is wanted back, it must return as an **explicit opt-in** (e.g. a `spool_max_size` argument), not the default. Finalize this when the backend is implemented.
 
-#### Scenario: Small non-seekable ZIP is spooled successfully
+#### Scenario: non-seekable ZIP fails fast
 
-- **WHEN** a ZIP stream is opened from a non-seekable source (e.g., a network pipe) with `Intent.SEQUENTIAL` or `Intent.DEFAULT`
-- **AND** the total archive size is within `spool_max_size`
-- **THEN** the backend transparently buffers the stream and opens the archive normally
-
-#### Scenario: Oversized non-seekable ZIP raises ReadError
-
-- **WHEN** a ZIP stream is opened from a non-seekable source
-- **AND** the archive size exceeds `spool_max_size`
-- **THEN** the system raises `ReadError` with a hint to save the archive to disk first
-
-#### Scenario: RANDOM intent rejected on non-seekable source
-
-- **WHEN** a ZIP stream is opened from a non-seekable source with `Intent.RANDOM`
-- **THEN** the system raises an error indicating random access is unavailable for non-seekable ZIP streams
+- **WHEN** a ZIP stream is opened from a non-seekable source (e.g. a network pipe) with the default `streaming=False`
+- **THEN** `StreamNotSeekableError` is raised at open time, advising the caller to buffer the source and reopen
 
 ### Requirement: Reject multi-volume (split/spanned) ZIP archives with a clear error
 

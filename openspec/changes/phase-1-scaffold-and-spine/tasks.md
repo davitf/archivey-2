@@ -110,7 +110,8 @@
       `LinkTargetNotFoundError` (under `ReadError`), `UnsupportedFeatureError`,
       `PackageNotInstalledError`, `UnsupportedOperationError`. Genuine
       `OSError`/`KeyboardInterrupt`/`MemoryError` propagate unchanged.
-- [x] 4.6 `Intent` enum + `CostReceipt` types: `ListingCost`
+- [x] 4.6 Access mode = `streaming: bool` on `open_archive` (no `Intent` enum) +
+      `CostReceipt` types: `ListingCost`
       (`INDEXED`/`REQUIRES_SCANNING`/`REQUIRES_DECOMPRESSION`), `AccessCost`
       (`DIRECT`/`SOLID`), `StreamCapability` (`SEEKABLE`/`FORWARD_ONLY`),
       `solid_block_count`, `notes`. `is_solid` lives on `ArchiveInfo`.

@@ -6,68 +6,57 @@ Allows callers to declare upfront how they intend to access an archive (sequenti
 
 ## Requirements
 
-### Requirement: Declaring access intent at open_archive()
+### Requirement: Declaring access mode at open_archive()
 
-The system SHALL accept an `intent` parameter in `archivey.open_archive()` that the caller uses to declare their intended access pattern. The library uses this declaration to optimize backend initialization and to enforce access constraints.
+The system SHALL accept a `streaming: bool` parameter in `archivey.open_archive()` (default `False`) by which the caller declares their access pattern. The library uses it to optimize backend initialization and to enforce access constraints. There are exactly two modes:
 
-```python
-class Intent(Enum):
-    DEFAULT    = "default"    # the normal mode: random access, lazy seek-point building
-    SEQUENTIAL = "sequential" # caller promises forward-only iteration; disables index loading
-    RANDOM     = "random"     # like DEFAULT but a stronger promise: build seek points eagerly
-```
+- **`streaming=False`** (default) — **random access**. The library loads index structures (central directories, 7z headers) when available, and presents the archive for arbitrary member access. It **requires a source it can random-access**: it fails fast at `open_archive()` if the source is non-seekable and the format cannot adapt (it does **not** silently degrade to forward-only, which would surface failures only later, at read time). For seekable single-stream formats, seek points are built **lazily** — only if the caller actually `seek()`s.
+- **`streaming=True`** — **forward-only, single pass**. The caller promises one forward pass. The library MUST disable index loading where possible, avoiding the upfront cost of scanning or parsing a central directory, and works on any source (including non-seekable pipes/sockets). All random-access and full-materialization operations are disabled **uniformly** — independent of whether a backend happens to have an index loaded — so `streaming=True` behaviour is deterministic across formats. `get_members_if_available()` stays callable because it never scans.
 
-- `Intent.DEFAULT`: the library selects the most appropriate mode for the detected format. Index structures (central directories, 7z headers) are loaded when available. For seekable single-stream formats, seek points (the index that makes random access into a compressed stream affordable) are **not** built up front; the library builds them **lazily** — only if the caller actually `seek()`s, and only when the backend judges it worthwhile. `DEFAULT` **requires a seekable source**: like `RANDOM`, it fails fast at `open_archive()` if the source is non-seekable, rather than silently degrading to forward-only (which would surface failures only later, at read time). A caller that genuinely wants forward-only access to a non-seekable source must pass `Intent.SEQUENTIAL` explicitly, or catch the open-time error.
-- `Intent.SEQUENTIAL`: the caller promises forward-only, single-pass iteration. The library MUST disable index loading where possible, avoiding the upfront cost of scanning or parsing a central directory. All random-access and full-materialization operations are disabled **uniformly** — independent of whether a given backend happens to have an index loaded — so `SEQUENTIAL` behaviour is deterministic across formats. Only a single pass of `__iter__`/`stream_members` (or one `extract_all`) is allowed; `get_members_if_available()` stays callable because it never scans.
-- `Intent.RANDOM`: the caller requires random member access. The library SHALL fail fast at `open_archive()` time if the format or source cannot support random access (e.g. a non-seekable stream for a format that requires seek). It also signals that random access is expected, so the backend MAY **proactively** build seek points for compressed single-stream formats rather than deferring them.
+> A caller who wants forward-only access to a non-seekable source passes `streaming=True`; a caller who needs random access over a non-seekable source must buffer it (e.g. to a file or `BytesIO`) and reopen, rather than relying on implicit buffering. *(Eager seek-point building — the old `Intent.RANDOM` promise — is intentionally not exposed; it can return later as an explicit opt-in flag if a need arises.)*
 
-#### Scenario: DEFAULT intent on an indexed format
+#### Scenario: random-access (default) open on an indexed format
 
-- **WHEN** `archivey.open_archive("archive.zip", intent=Intent.DEFAULT)` is called
+- **WHEN** `archivey.open_archive("archive.zip")` is called (`streaming=False`)
 - **THEN** the ZIP central directory is read upfront and random access is available
 
-#### Scenario: SEQUENTIAL intent disables index loading
+#### Scenario: streaming open disables index loading
 
-- **WHEN** `archivey.open_archive("archive.tar.gz", intent=Intent.SEQUENTIAL)` is called
+- **WHEN** `archivey.open_archive("archive.tar.gz", streaming=True)` is called
 - **THEN** the library does not attempt to scan the full archive to build an index, and members are yielded as the stream is read
 
-#### Scenario: RANDOM intent fails fast on non-seekable source
+#### Scenario: random-access (default) fails fast on a non-seekable source
 
-- **WHEN** `archivey.open_archive(non_seekable_stream, intent=Intent.RANDOM)` is called on a format that requires seek
-- **THEN** an appropriate error is raised at open time, before any member data is read
-
-#### Scenario: DEFAULT intent fails fast on non-seekable source
-
-- **WHEN** `archivey.open_archive(non_seekable_stream, intent=Intent.DEFAULT)` is called on a format that requires seek
-- **THEN** an appropriate error is raised at open time (DEFAULT does not silently degrade to sequential) — the caller must pass `Intent.SEQUENTIAL` to read a non-seekable source
+- **WHEN** `archivey.open_archive(non_seekable_stream)` is called (`streaming=False`) on a format that needs to seek
+- **THEN** an appropriate error is raised at open time, before any member data is read — the caller must pass `streaming=True` (or buffer the source) to proceed
 
 ---
 
-### Requirement: Intent enforcement — SEQUENTIAL is forward-only
+### Requirement: Access-mode enforcement — streaming is forward-only
 
-A reader opened with `Intent.SEQUENTIAL` is forward-only. The system SHALL raise `UnsupportedOperationError` from every random-access or full-materialization method — `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random single-member `extract()`. This holds **uniformly**, regardless of whether the backend happens to have an index loaded, so `SEQUENTIAL` behaviour does not vary by format. Only a single forward pass via `__iter__`/`stream_members` (or one `extract_all`) is permitted.
+A reader opened with `streaming=True` is forward-only. The system SHALL raise `UnsupportedOperationError` from every random-access or full-materialization method — `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random single-member `extract()`. This holds **uniformly**, regardless of whether the backend happens to have an index loaded, so streaming behaviour does not vary by format. Only a single forward pass via `__iter__`/`stream_members` (or one `extract_all`) is permitted.
 
-`get_members_if_available()` is exempt: it never scans (see the next requirement), so it remains callable under any intent.
+`get_members_if_available()` is exempt: it never scans (see the next requirement), so it remains callable on any reader.
 
-#### Scenario: random access raises under SEQUENTIAL
+#### Scenario: random access raises on a streaming reader
 
-- **WHEN** any of `ar["f"]`, `ar.get("f")`, `len(ar)`, `ar.members()`, `ar.open(m)`, or `ar.read(m)` is called on a reader opened with `Intent.SEQUENTIAL`
+- **WHEN** any of `ar["f"]`, `ar.get("f")`, `len(ar)`, `ar.members()`, `ar.open(m)`, or `ar.read(m)` is called on a reader opened with `streaming=True`
 - **THEN** `UnsupportedOperationError` is raised
 
-#### Scenario: a single forward pass is allowed under SEQUENTIAL
+#### Scenario: a single forward pass is allowed on a streaming reader
 
-- **WHEN** a `SEQUENTIAL` reader is iterated once via `__iter__` or `stream_members()`
+- **WHEN** a `streaming=True` reader is iterated once via `__iter__` or `stream_members()`
 - **THEN** members are yielded in archive order without error
 
 ---
 
 ### Requirement: get_members_if_available() — a no-scan member list
 
-The system SHALL provide `get_members_if_available() -> list[ArchiveMember] | None`. It returns the full member list when that list is available **without scanning** — either already materialized (e.g. after an iteration pass) or because the backend has a true upfront index (a central directory, a 7z header, or the filesystem listing) — and `None` otherwise. It MUST NOT trigger a scan or consume the forward pass, so it is safe to call under any intent, including `SEQUENTIAL`. A caller that wants to force materialization uses `members()` (available in random mode only).
+The system SHALL provide `get_members_if_available() -> list[ArchiveMember] | None`. It returns the full member list when that list is available **without scanning** — either already materialized (e.g. after an iteration pass) or because the backend has a true upfront index (a central directory, a 7z header, or the filesystem listing) — and `None` otherwise. It MUST NOT trigger a scan or consume the forward pass, so it is safe to call on any reader, including a `streaming=True` one. A caller that wants to force materialization uses `members()` (available in random-access mode only).
 
-#### Scenario: indexed backend returns the list even under SEQUENTIAL
+#### Scenario: indexed backend returns the list even on a streaming reader
 
-- **WHEN** `ar.get_members_if_available()` is called on a `SEQUENTIAL` reader of a format with an upfront index (e.g. ZIP)
+- **WHEN** `ar.get_members_if_available()` is called on a `streaming=True` reader of a format with an upfront index (e.g. ZIP)
 - **THEN** the full member list is returned, with no scan and no error
 
 #### Scenario: streaming backend returns None before iteration
@@ -77,12 +66,12 @@ The system SHALL provide `get_members_if_available() -> list[ArchiveMember] | No
 
 ---
 
-### Requirement: Intent × method behaviour summary
+### Requirement: Access mode × method behaviour summary
 
-The per-method behaviour is the composition of the rules above. After a successful open there are two effective modes: **random** (`DEFAULT`/`RANDOM`, which differ only in whether seek points are built eagerly vs lazily) and **sequential** (`SEQUENTIAL`). The system SHALL behave per this table (`✅` = allowed, `⛔` = `UnsupportedOperationError`):
+The per-method behaviour is the composition of the rules above. There are exactly two modes: **random access** (`streaming=False`, the default) and **streaming** (`streaming=True`). The system SHALL behave per this table (`✅` = allowed, `⛔` = `UnsupportedOperationError`):
 
-| Method | random (`DEFAULT`/`RANDOM`) | `SEQUENTIAL` |
-|--------|--------------------------|--------------|
+| Method | random access (`streaming=False`) | streaming (`streaming=True`) |
+|--------|-----------------------------------|------------------------------|
 | `__iter__`, `stream_members` | ✅ | ✅ (one pass only) |
 | `extract_all` | ✅ | ✅ (the one pass) |
 | `get_members_if_available` | ✅ | ✅ (no-scan; may be `None`) |
@@ -91,9 +80,9 @@ The per-method behaviour is the composition of the rules above. After a successf
 | `__getitem__`, `get` | ✅ | ⛔ |
 | `open`, `read`, random `extract` | ✅ | ⛔ |
 | `cost`, `info`, `format`, `close`, context manager | ✅ | ✅ |
-| at `open_archive()` | fail fast if source not seekable | works on any source |
+| at `open_archive()` | fail fast if the source can't be random-accessed | works on any source |
 
-The independent backend-capability flag `_SUPPORTS_RANDOM_ACCESS` can also force `open`/`read` to raise (a backend that cannot seek the source at all); it composes with — does not replace — the intent rules above.
+The independent backend-capability flag `_SUPPORTS_RANDOM_ACCESS` can also force `open`/`read` to raise (a backend that cannot seek the source at all); it composes with — does not replace — the access-mode rules above.
 
 ---
 

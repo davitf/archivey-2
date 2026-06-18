@@ -167,7 +167,7 @@ final `size`/CRC of a gzip stream or a ZIP data-descriptor entry, or a `link_tar
 that is stored in (or encrypted within) the member's *data* rather than its header.
 The library fills these fields **in place** as it streams, so the `ArchiveMember` a
 caller already holds gains its late values without a re-fetch. This is required for
-`Intent.SEQUENTIAL` mode, where the member list cannot be materialized and re-read.
+`streaming=True` mode, where the member list cannot be materialized and re-read.
 
 Because the object is mutable, the contract is: **callers MUST treat an
 `ArchiveMember` as read-only.** The library is the only writer. A caller (or an

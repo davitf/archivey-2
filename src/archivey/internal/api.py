@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import BinaryIO
 
 from archivey.internal.errors import FormatDetectionError
-from archivey.internal.intent import Intent
 from archivey.internal.reader import ArchiveReader
 from archivey.internal.registry import get_registry
 from archivey.internal.types import ArchiveFormat
@@ -16,11 +15,15 @@ def open_archive(
     source: str | Path | BinaryIO,
     *,
     format: ArchiveFormat | None = None,
-    intent: Intent = Intent.DEFAULT,
+    streaming: bool = False,
     password: bytes | str | None = None,
     encoding: str | None = None,
 ) -> ArchiveReader:
     """Open an archive for reading.
+
+    ``streaming=False`` (the default) opens for random access and fails fast at open
+    time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
+    access (works on any source, but disables random-access methods).
 
     If source is a directory path, opens it as a directory pseudo-archive.
     Format detection (Phase 3) is not yet wired; only DIRECTORY is auto-detected here.
@@ -50,7 +53,7 @@ def open_archive(
     backend = backend_cls()
     return backend.open_read(
         source if not isinstance(source, str) else Path(source),
-        intent=intent,
+        streaming=streaming,
         password=password,
         encoding=encoding,
     )

@@ -1,19 +1,15 @@
-"""Intent enum and CostReceipt types."""
+"""Access-cost types: the `CostReceipt` and its enums.
+
+Access *mode* is not modelled here — it is the plain ``streaming: bool`` parameter of
+``open_archive`` (``False`` = random access, fail fast on a non-seekable source;
+``True`` = forward-only, single pass). This module is only the cost half of the
+``access-intent-and-cost`` capability.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-
-
-class Intent(Enum):
-    # The two access *contracts* are DEFAULT/RANDOM (random access; fail fast on a
-    # non-seekable source) vs SEQUENTIAL (forward-only, one pass). DEFAULT and RANDOM
-    # share that contract and differ only in seek-point eagerness: DEFAULT builds them
-    # lazily (on first seek), RANDOM proactively.
-    DEFAULT = "default"
-    SEQUENTIAL = "sequential"
-    RANDOM = "random"
 
 
 class ListingCost(Enum):
