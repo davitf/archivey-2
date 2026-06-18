@@ -95,8 +95,8 @@ class _ForwardOnlyReader(BaseArchiveReader):
 
 
 def test_open_raises_without_random_access_capability() -> None:
-    # AUTO intent isolates the *capability* gate from the intent gate.
-    reader = _ForwardOnlyReader(ArchiveFormat.TAR, Intent.AUTO, "x.tar")
+    # DEFAULT intent isolates the *capability* gate from the intent gate.
+    reader = _ForwardOnlyReader(ArchiveFormat.TAR, Intent.DEFAULT, "x.tar")
     with pytest.raises(archivey.UnsupportedOperationError):
         reader.open("a.txt")
     with pytest.raises(archivey.UnsupportedOperationError):
@@ -104,7 +104,7 @@ def test_open_raises_without_random_access_capability() -> None:
 
 
 def test_stream_members_works_without_random_access() -> None:
-    reader = _ForwardOnlyReader(ArchiveFormat.TAR, Intent.AUTO, "x.tar")
+    reader = _ForwardOnlyReader(ArchiveFormat.TAR, Intent.DEFAULT, "x.tar")
     out = [(m.name, s.read() if s is not None else None) for m, s in reader.stream_members()]
     assert out == [("a.txt", b"x")]
 
@@ -146,9 +146,9 @@ def test_get_members_if_available_is_none_without_index() -> None:
 
 
 def test_get_members_if_available_returns_cache_once_materialized() -> None:
-    # No upfront index, but AUTO iteration materializes the cache, after which the
+    # No upfront index, but DEFAULT iteration materializes the cache, after which the
     # list is available without a fresh scan.
-    reader = _ForwardOnlyReader(ArchiveFormat.TAR, Intent.AUTO, "x.tar")
+    reader = _ForwardOnlyReader(ArchiveFormat.TAR, Intent.DEFAULT, "x.tar")
     assert reader.get_members_if_available() is None
     _ = list(reader)
     assert reader.get_members_if_available() is not None

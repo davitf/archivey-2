@@ -7,7 +7,11 @@ from enum import Enum
 
 
 class Intent(Enum):
-    AUTO = "auto"
+    # The two access *contracts* are DEFAULT/RANDOM (random access; fail fast on a
+    # non-seekable source) vs SEQUENTIAL (forward-only, one pass). DEFAULT and RANDOM
+    # share that contract and differ only in seek-point eagerness: DEFAULT builds them
+    # lazily (on first seek), RANDOM proactively.
+    DEFAULT = "default"
     SEQUENTIAL = "sequential"
     RANDOM = "random"
 

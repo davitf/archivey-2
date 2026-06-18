@@ -15,7 +15,7 @@ archivey.open_archive(
     source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
     *,
     format: ArchiveFormat | None = None,  # override detection
-    intent: Intent = Intent.AUTO,
+    intent: Intent = Intent.DEFAULT,
     password: str | bytes | None = None,
     encoding: str | None = None,         # None = auto-detect member-name encoding
 ) -> ArchiveReader

@@ -16,7 +16,7 @@ def open_archive(
     source: str | Path | BinaryIO,
     *,
     format: ArchiveFormat | None = None,
-    intent: Intent = Intent.AUTO,
+    intent: Intent = Intent.DEFAULT,
     password: bytes | str | None = None,
     encoding: str | None = None,
 ) -> ArchiveReader:

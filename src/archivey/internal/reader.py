@@ -197,7 +197,7 @@ class BaseArchiveReader(ArchiveReader):
     - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
       When ``False``, ``open``/``read`` raise ``UnsupportedOperationError``; sequential
       access via ``stream_members`` still works. (The open-time fail-fast for
-      non-seekable sources under AUTO/RANDOM intent — which also consults this — lands
+      non-seekable sources under DEFAULT/RANDOM intent — which also consults this — lands
       with format detection in Phase 3.)
 
     Intent enforcement (independent of the flags above): under ``Intent.SEQUENTIAL`` the

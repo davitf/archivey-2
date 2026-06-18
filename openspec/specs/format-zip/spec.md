@@ -68,7 +68,7 @@ The system SHALL buffer a non-seekable ZIP source into a `tempfile.SpooledTempor
 
 #### Scenario: Small non-seekable ZIP is spooled successfully
 
-- **WHEN** a ZIP stream is opened from a non-seekable source (e.g., a network pipe) with `Intent.SEQUENTIAL` or `Intent.AUTO`
+- **WHEN** a ZIP stream is opened from a non-seekable source (e.g., a network pipe) with `Intent.SEQUENTIAL` or `Intent.DEFAULT`
 - **AND** the total archive size is within `spool_max_size`
 - **THEN** the backend transparently buffers the stream and opens the archive normally
 

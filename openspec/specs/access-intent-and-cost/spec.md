@@ -12,18 +12,18 @@ The system SHALL accept an `intent` parameter in `archivey.open_archive()` that 
 
 ```python
 class Intent(Enum):
-    AUTO       = "auto"       # library chooses optimal access mode
+    DEFAULT    = "default"    # the normal mode: random access, lazy seek-point building
     SEQUENTIAL = "sequential" # caller promises forward-only iteration; disables index loading
-    RANDOM     = "random"     # caller needs random access; library fails fast if impossible
+    RANDOM     = "random"     # like DEFAULT but a stronger promise: build seek points eagerly
 ```
 
-- `Intent.AUTO`: the library selects the most appropriate mode for the detected format. Index structures (central directories, 7z headers) are loaded when available. For seekable single-stream formats, seek points (the index that makes random access into a compressed stream affordable) are **not** built up front; the library builds them **lazily** — only if the caller actually `seek()`s, and only when the backend judges it worthwhile. `AUTO` **requires a seekable source**: like `RANDOM`, it fails fast at `open_archive()` if the source is non-seekable, rather than silently degrading to forward-only (which would surface failures only later, at read time). A caller that genuinely wants forward-only access to a non-seekable source must pass `Intent.SEQUENTIAL` explicitly, or catch the open-time error.
+- `Intent.DEFAULT`: the library selects the most appropriate mode for the detected format. Index structures (central directories, 7z headers) are loaded when available. For seekable single-stream formats, seek points (the index that makes random access into a compressed stream affordable) are **not** built up front; the library builds them **lazily** — only if the caller actually `seek()`s, and only when the backend judges it worthwhile. `DEFAULT` **requires a seekable source**: like `RANDOM`, it fails fast at `open_archive()` if the source is non-seekable, rather than silently degrading to forward-only (which would surface failures only later, at read time). A caller that genuinely wants forward-only access to a non-seekable source must pass `Intent.SEQUENTIAL` explicitly, or catch the open-time error.
 - `Intent.SEQUENTIAL`: the caller promises forward-only, single-pass iteration. The library MUST disable index loading where possible, avoiding the upfront cost of scanning or parsing a central directory. All random-access and full-materialization operations are disabled **uniformly** — independent of whether a given backend happens to have an index loaded — so `SEQUENTIAL` behaviour is deterministic across formats. Only a single pass of `__iter__`/`stream_members` (or one `extract_all`) is allowed; `get_members_if_available()` stays callable because it never scans.
 - `Intent.RANDOM`: the caller requires random member access. The library SHALL fail fast at `open_archive()` time if the format or source cannot support random access (e.g. a non-seekable stream for a format that requires seek). It also signals that random access is expected, so the backend MAY **proactively** build seek points for compressed single-stream formats rather than deferring them.
 
-#### Scenario: AUTO intent on an indexed format
+#### Scenario: DEFAULT intent on an indexed format
 
-- **WHEN** `archivey.open_archive("archive.zip", intent=Intent.AUTO)` is called
+- **WHEN** `archivey.open_archive("archive.zip", intent=Intent.DEFAULT)` is called
 - **THEN** the ZIP central directory is read upfront and random access is available
 
 #### Scenario: SEQUENTIAL intent disables index loading
@@ -36,10 +36,10 @@ class Intent(Enum):
 - **WHEN** `archivey.open_archive(non_seekable_stream, intent=Intent.RANDOM)` is called on a format that requires seek
 - **THEN** an appropriate error is raised at open time, before any member data is read
 
-#### Scenario: AUTO intent fails fast on non-seekable source
+#### Scenario: DEFAULT intent fails fast on non-seekable source
 
-- **WHEN** `archivey.open_archive(non_seekable_stream, intent=Intent.AUTO)` is called on a format that requires seek
-- **THEN** an appropriate error is raised at open time (AUTO does not silently degrade to sequential) — the caller must pass `Intent.SEQUENTIAL` to read a non-seekable source
+- **WHEN** `archivey.open_archive(non_seekable_stream, intent=Intent.DEFAULT)` is called on a format that requires seek
+- **THEN** an appropriate error is raised at open time (DEFAULT does not silently degrade to sequential) — the caller must pass `Intent.SEQUENTIAL` to read a non-seekable source
 
 ---
 
@@ -79,9 +79,9 @@ The system SHALL provide `get_members_if_available() -> list[ArchiveMember] | No
 
 ### Requirement: Intent × method behaviour summary
 
-The per-method behaviour is the composition of the rules above. After a successful open there are two effective modes: **random** (`AUTO`/`RANDOM`, which differ only in whether seek points are built eagerly vs lazily) and **sequential** (`SEQUENTIAL`). The system SHALL behave per this table (`✅` = allowed, `⛔` = `UnsupportedOperationError`):
+The per-method behaviour is the composition of the rules above. After a successful open there are two effective modes: **random** (`DEFAULT`/`RANDOM`, which differ only in whether seek points are built eagerly vs lazily) and **sequential** (`SEQUENTIAL`). The system SHALL behave per this table (`✅` = allowed, `⛔` = `UnsupportedOperationError`):
 
-| Method | random (`AUTO`/`RANDOM`) | `SEQUENTIAL` |
+| Method | random (`DEFAULT`/`RANDOM`) | `SEQUENTIAL` |
 |--------|--------------------------|--------------|
 | `__iter__`, `stream_members` | ✅ | ✅ (one pass only) |
 | `extract_all` | ✅ | ✅ (the one pass) |
