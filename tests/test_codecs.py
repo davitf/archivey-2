@@ -11,6 +11,7 @@ import zlib
 
 import pytest
 
+from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.errors import (
     ArchiveyError,
     CorruptionError,
@@ -30,6 +31,11 @@ from archivey.internal.types import StreamFormat
 from tests.streams_util import compress_lzma2_raw, lzma2_raw_filters
 
 CONTENT = b"the quick brown fox jumps over the lazy dog\n" * 50
+
+# Force the stdlib gzip backend for the translation-contract tests so they assert the same
+# exception taxonomy regardless of whether the [seekable] rapidgzip accelerator is
+# installed (rapidgzip, when present, would otherwise be auto-selected for random access).
+_STDLIB_GZIP = StreamConfig(use_rapidgzip=AcceleratorMode.OFF)
 
 
 # --- default backends ------------------------------------------------------------------
@@ -67,7 +73,9 @@ def test_codec_implemented_once_is_shared_across_formats() -> None:
 
 def test_resolve_backend_without_opening() -> None:
     """The open function and its translator are obtainable without opening a stream."""
-    backend = resolve_codec(Codec.GZIP)
+    # Pin the stdlib backend so the assertion is independent of whether the [seekable]
+    # accelerator is installed (which would otherwise select the rapidgzip translator).
+    backend = resolve_codec(Codec.GZIP, _STDLIB_GZIP)
     assert backend.codec is Codec.GZIP
     # The translator is returned and maps the library's own corruption exception.
     translated = backend.translate(gzip.BadGzipFile("bad"))
@@ -95,6 +103,10 @@ def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         crypto.get_crypto_backend()
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("cryptography") is None,
+    reason="cryptography is not installed (core-only leg); the present-path cannot run",
+)
 def test_crypto_reachable_only_through_wrapper() -> None:
     """With [crypto] present, the backend is reached via the wrapper (not a direct import)."""
     backend = crypto.get_crypto_backend()
@@ -110,7 +122,7 @@ def test_crypto_reachable_only_through_wrapper() -> None:
 def test_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[1] = 0x00  # break the gzip magic
-    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt))) as stream:
+    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP) as stream:
         with pytest.raises(CorruptionError) as excinfo:
             stream.read()
     assert isinstance(excinfo.value.__cause__, gzip.BadGzipFile)
@@ -119,8 +131,20 @@ def test_corrupt_gzip_translates_to_corruption_with_cause() -> None:
 def test_truncated_gzip_translates_to_truncated() -> None:
     compressed = gzip.compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
-    with open_codec_stream(Codec.GZIP, io.BytesIO(truncated)) as stream:
+    with open_codec_stream(Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP) as stream:
         with pytest.raises(TruncatedError):
+            stream.read()
+
+
+def test_accelerator_path_translates_errors_no_raw_leak() -> None:
+    """When rapidgzip is the active backend, its errors still surface as ArchiveyError."""
+    if importlib.util.find_spec("rapidgzip") is None:
+        pytest.skip("rapidgzip is not installed; the accelerator path cannot run")
+    corrupt = bytearray(gzip.compress(CONTENT))
+    corrupt[1] = 0x00
+    config = StreamConfig(use_rapidgzip=AcceleratorMode.ON)
+    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=config) as stream:
+        with pytest.raises(ArchiveyError):  # never a raw rapidgzip ValueError
             stream.read()
 
 
@@ -142,7 +166,9 @@ def test_translated_error_is_stamped() -> None:
 
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[1] = 0x00
-    stream = open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), stamp=stamp)
+    stream = open_codec_stream(
+        Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP, stamp=stamp
+    )
     with pytest.raises(CorruptionError) as excinfo:
         stream.read()
     assert excinfo.value.archive_name == "a.gz"

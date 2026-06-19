@@ -17,6 +17,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import importlib
+import io
 import lzma
 import os
 import zlib
@@ -30,6 +31,7 @@ from archivey.internal.errors import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    StreamNotSeekableError,
     TruncatedError,
 )
 from archivey.internal.streams.archive_stream import ArchiveStream, ExceptionTranslator
@@ -159,6 +161,44 @@ def _translate_bz2(e: Exception) -> ArchiveyError | None:
         return CorruptionError(f"bzip2 stream is corrupt: {e!r}")
     if isinstance(e, (EOFError, ValueError)):
         return TruncatedError(f"bzip2 stream is truncated: {e!r}")
+    return None
+
+
+def _translate_rapidgzip(e: Exception) -> ArchiveyError | None:
+    """Translate the rapidgzip accelerator's exceptions (ported from DEV's taxonomy)."""
+    text = str(e)
+    if isinstance(e, ValueError) and "Mismatching CRC32" in text:
+        return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
+    if isinstance(e, RuntimeError) and "IsalInflateWrapper" in text:
+        return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
+    if isinstance(e, ValueError) and "Failed to detect a valid file format" in text:
+        # The gzip magic was present when we opened it, so a detection failure now means
+        # the stream is truncated/corrupt rather than not-a-gzip.
+        return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
+    if isinstance(e, ValueError) and "End of file encountered" in text:
+        return TruncatedError(f"gzip stream is truncated (rapidgzip): {e!r}")
+    if isinstance(e, ValueError) and "has no valid fileno" in text:
+        return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
+    if isinstance(e, io.UnsupportedOperation) and "seek" in text:
+        return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
+    if isinstance(e, RuntimeError) and "std::exception" in text:
+        return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
+    return None
+
+
+def _translate_indexed_bzip2(e: Exception) -> ArchiveyError | None:
+    """Translate the indexed_bzip2 accelerator's exceptions (ported from DEV's taxonomy)."""
+    text = str(e)
+    if isinstance(e, RuntimeError) and "Calculated CRC" in text:
+        return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {e!r}")
+    if isinstance(e, RuntimeError) and text in ("std::exception", "Unknown exception"):
+        return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {e!r}")
+    if isinstance(e, ValueError) and "[BZip2 block data]" in text:
+        return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {e!r}")
+    if isinstance(e, ValueError) and "has no valid fileno" in text:
+        return StreamNotSeekableError("indexed_bzip2 does not support non-seekable streams")
+    if isinstance(e, io.UnsupportedOperation) and "seek" in text:
+        return StreamNotSeekableError("indexed_bzip2 does not support non-seekable streams")
     return None
 
 
@@ -349,14 +389,35 @@ class CodecBackend:
         return self._open(source, params, self.config)
 
 
+def _gzip_uses_accelerator(config: StreamConfig) -> bool:
+    return _rapidgzip is not None and config.use_rapidgzip.enabled_for(
+        streaming=config.streaming, available=True
+    )
+
+
+def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
+    return _indexed_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
+        streaming=config.streaming, available=True
+    )
+
+
 def resolve_codec(codec: Codec, config: StreamConfig = DEFAULT_STREAM_CONFIG) -> CodecBackend:
     """Resolve ``codec`` to its backend (open function + translator) without opening anything.
+
+    The translator must match the *active* backend: when an accelerator
+    (``rapidgzip`` / ``indexed_bzip2``) is the chosen backend, its exception taxonomy
+    differs from stdlib's, so the matching translator is selected here.
 
     Raises ``KeyError`` for a filter-only codec (Delta/BCJ), which is composed into a raw
     LZMA chain rather than opened standalone.
     """
     spec = _REGISTRY[codec]
-    return CodecBackend(codec=codec, config=config, translate=spec.translate, _open=spec.open)
+    translate = spec.translate
+    if codec is Codec.GZIP and _gzip_uses_accelerator(config):
+        translate = _translate_rapidgzip
+    elif codec is Codec.BZIP2 and _bzip2_uses_accelerator(config):
+        translate = _translate_indexed_bzip2
+    return CodecBackend(codec=codec, config=config, translate=translate, _open=spec.open)
 
 
 def open_codec_stream(
