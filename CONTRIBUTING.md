@@ -44,6 +44,15 @@ without it those tests skip cleanly.
 
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
+- **Don't accumulate debt — clean as you go.** When you touch something, leave it in the
+  shape it *should* have, not a quick patch bolted onto the old shape. If a change calls
+  for a rename, a moved file, an updated doc/spec, or a small refactor to keep the design
+  coherent, do it now as part of the change rather than deferring it — a deferred cleanup
+  is debt the next person (often the next phase) inherits. Code and docs/specs are kept in
+  sync: renaming a type or changing a contract means updating the prose docs and the
+  `openspec/specs/` that describe it in the same change. The one exception is the
+  pause-and-ask rule below: when a cleanup would resolve a genuine design discrepancy,
+  surface it instead of silently picking a direction.
 - **Comments explain *why*, not *what*.** Match the comment density and style of the
   surrounding code. Don't narrate what the code obviously does; do explain non-obvious
   decisions, format quirks, and edge cases (these archives are full of them).

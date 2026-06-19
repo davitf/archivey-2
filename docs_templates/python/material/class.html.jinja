@@ -1,0 +1,6 @@
+{% extends "_base/class.html.jinja" %}
+
+{% block docstring scoped %}
+  {{ super() }}
+  {% include "_fragments/enum_members_table.html.jinja" %}
+{% endblock %}

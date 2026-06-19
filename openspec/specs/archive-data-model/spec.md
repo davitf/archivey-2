@@ -93,7 +93,7 @@ class MemberType(Enum):
     OTHER     = "other"         # device nodes, FIFOs, sockets — extraction always rejected
 ```
 
-Windows NTFS junction points SHALL be surfaced as `MemberType.SYMLINK` with `extra["zip.is_junction"] = True`. Members of type `OTHER` SHALL always be rejected during extraction regardless of policy.
+Windows NTFS junction points SHALL be surfaced as `MemberType.SYMLINK` with `extra["is_junction"] = True`. Members of type `OTHER` SHALL always be rejected during extraction regardless of policy.
 
 #### Scenario: device node is classified as OTHER
 
@@ -103,16 +103,16 @@ Windows NTFS junction points SHALL be surfaced as `MemberType.SYMLINK` with `ext
 #### Scenario: Windows junction surfaced as SYMLINK
 
 - **WHEN** a ZIP archive contains a Windows junction point
-- **THEN** the corresponding `ArchiveMember` has `type == MemberType.SYMLINK` and `extra["zip.is_junction"] == True`
+- **THEN** the corresponding `ArchiveMember` has `type == MemberType.SYMLINK` and `extra["is_junction"] == True`
 
 ---
 
 ### Requirement: Compression method model
 
-The system SHALL define a `CompressionAlgo` enum covering all recognized codecs, a `CompressionMethod` frozen dataclass holding a single codec with its level and raw properties, and SHALL represent multi-codec filter chains as `tuple[CompressionMethod, ...]`.
+The system SHALL define a `CompressionAlgorithm` enum covering all recognized codecs, a `CompressionMethod` frozen dataclass holding a single codec with its level and raw properties, and SHALL represent multi-codec filter chains as `tuple[CompressionMethod, ...]`.
 
 ```python
-class CompressionAlgo(Enum):
+class CompressionAlgorithm(Enum):
     STORED    = "stored"
     DEFLATE   = "deflate"
     DEFLATE64 = "deflate64"
@@ -133,27 +133,27 @@ class CompressionAlgo(Enum):
 
 @dataclass(frozen=True)
 class CompressionMethod:
-    algo: CompressionAlgo
+    algo: CompressionAlgorithm
     level: int | None = None        # compression level if known
     properties: bytes | None = None # raw codec properties blob
 ```
 
-A `tuple[CompressionMethod, ...]` models a filter chain. For example, a typical 7z executable entry uses `(CompressionMethod(BCJ2), CompressionMethod(LZMA2))`. An unrecognized codec SHALL be mapped to `CompressionAlgo.UNKNOWN` rather than raising an exception.
+A `tuple[CompressionMethod, ...]` models a filter chain. For example, a typical 7z executable entry uses `(CompressionMethod(BCJ2), CompressionMethod(LZMA2))`. An unrecognized codec SHALL be mapped to `CompressionAlgorithm.UNKNOWN` rather than raising an exception.
 
 #### Scenario: single-codec member
 
 - **WHEN** a ZIP member is stored with DEFLATE compression
-- **THEN** `member.compression == (CompressionMethod(algo=CompressionAlgo.DEFLATE),)`
+- **THEN** `member.compression == (CompressionMethod(algo=CompressionAlgorithm.DEFLATE),)`
 
 #### Scenario: filter-chain member
 
 - **WHEN** a 7z member uses a BCJ2 + LZMA2 filter chain
-- **THEN** `member.compression == (CompressionMethod(CompressionAlgo.BCJ2), CompressionMethod(CompressionAlgo.LZMA2))`
+- **THEN** `member.compression == (CompressionMethod(CompressionAlgorithm.BCJ2), CompressionMethod(CompressionAlgorithm.LZMA2))`
 
 #### Scenario: unrecognized codec
 
 - **WHEN** an archive contains a codec ID that Archivey does not recognize
-- **THEN** the codec is mapped to `CompressionAlgo.UNKNOWN` and no exception is raised
+- **THEN** the codec is mapped to `CompressionAlgorithm.UNKNOWN` and no exception is raised
 
 ---
 
@@ -167,7 +167,7 @@ final `size`/CRC of a gzip stream or a ZIP data-descriptor entry, or a `link_tar
 that is stored in (or encrypted within) the member's *data* rather than its header.
 The library fills these fields **in place** as it streams, so the `ArchiveMember` a
 caller already holds gains its late values without a re-fetch. This is required for
-`Intent.SEQUENTIAL` mode, where the member list cannot be materialized and re-read.
+`streaming=True` mode, where the member list cannot be materialized and re-read.
 
 Because the object is mutable, the contract is: **callers MUST treat an
 `ArchiveMember` as read-only.** The library is the only writer. A caller (or an
@@ -256,7 +256,7 @@ class ArchiveMember:
     @property
     def is_other(self) -> bool: ...         # type == OTHER
     @property
-    def is_junction(self) -> bool: ...      # SYMLINK with extra["zip.is_junction"] is True
+    def is_junction(self) -> bool: ...      # SYMLINK with extra["is_junction"] is True
 
     def replace(self, **kwargs: Any) -> "ArchiveMember":
         """Return a *copy* with the given fields changed; never mutates self.
@@ -372,7 +372,7 @@ instead). `member_count` SHALL be `None` when the format has no central director
 count requires scanning the entire archive. `is_encrypted` refers to header-level
 encryption (as in 7z or RAR5), distinct from per-member encryption indicated by
 `ArchiveMember.is_encrypted`. `cost` embeds a `CostReceipt` (defined in the
-access-intent-and-cost capability) describing listing and access costs.
+access-mode-and-cost capability) describing listing and access costs.
 
 #### Scenario: member_count is None for streaming formats
 

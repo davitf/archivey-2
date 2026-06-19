@@ -15,7 +15,7 @@ archivey.open_archive(
     source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
     *,
     format: ArchiveFormat | None = None,  # override detection
-    intent: Intent = Intent.AUTO,
+    streaming: bool = False,             # False = random access; True = forward-only one pass
     password: str | bytes | None = None,
     encoding: str | None = None,         # None = auto-detect member-name encoding
 ) -> ArchiveReader
@@ -114,36 +114,39 @@ The system SHALL support iterating all members in archive order via `__iter__`, 
 ```python
 def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
 def members(self) -> list[ArchiveMember]: ...          # materializes all (may trigger scan)
+def get_members_if_available(self) -> list[ArchiveMember] | None: ...  # no-scan peek
 def __len__(self) -> int: ...                   # may trigger scan
 def __contains__(self, name: str) -> bool: ...
 ```
 
 `__iter__` MUST yield `ArchiveMember` objects one at a time without loading all members into memory. `members()` and `__len__` MAY trigger a full scan for streaming formats that have no central directory. After the member list has been materialized once, subsequent `__iter__` calls MUST return from the cache rather than re-reading the archive.
 
-When opened with `Intent.SEQUENTIAL`, calling `members()` or `__len__` SHALL raise `UnsupportedOperationError` because those methods require materializing all members.
+`get_members_if_available()` returns the member list only when it is available **without scanning** (already materialized, or the backend has a true upfront index), else `None`; it never scans, so it is callable under any intent. See `access-mode-and-cost` for its full contract.
+
+When opened with `streaming=True`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random `extract()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-mode-and-cost`.
 
 #### Scenario: forward iteration
 
 - **WHEN** `for member in ar` is executed
 - **THEN** the reader yields `ArchiveMember` objects in archive order without buffering all of them in memory
 
-#### Scenario: materialization on sequential intent
+#### Scenario: materialization on a streaming reader
 
-- **WHEN** `ar.members()` or `len(ar)` is called on a reader opened with `Intent.SEQUENTIAL`
+- **WHEN** `ar.members()` or `len(ar)` is called on a reader opened with `streaming=True`
 - **THEN** `UnsupportedOperationError` is raised
 
 ---
 
 ### Requirement: Membership and random access by name
 
-The system SHALL support dictionary-style lookup of members by normalized name, subject to an intent constraint.
+The system SHALL support dictionary-style lookup of members by normalized name, subject to an access-mode constraint.
 
 ```python
 def __getitem__(self, name: str) -> ArchiveMember: ...    # KeyError if absent
 def get(self, name: str, default=None) -> ArchiveMember | None: ...
 ```
 
-Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Intent.SEQUENTIAL` SHALL raise `UnsupportedOperationError` unless the backend can satisfy it cheaply (e.g. the archive has an in-memory index already loaded).
+Calling `__getitem__`, `get`, or random `extract` on a reader opened with `streaming=True` SHALL raise `UnsupportedOperationError` — uniformly, regardless of whether the backend has an index loaded (a streaming reader is forward-only; this keeps its behaviour deterministic across formats). A caller that wants a no-scan peek at the member list on any reader uses `get_members_if_available()` instead.
 
 #### Scenario: successful key lookup
 
@@ -155,10 +158,10 @@ Calling `__getitem__`, `get`, or random `extract` on a reader opened with `Inten
 - **WHEN** `ar["nonexistent.txt"]` is called and the member does not exist
 - **THEN** `KeyError` is raised
 
-#### Scenario: random access on sequential-intent reader
+#### Scenario: random access on a streaming reader
 
-- **WHEN** `ar["file.txt"]` is called on a reader opened with `Intent.SEQUENTIAL` and the backend cannot satisfy it cheaply
-- **THEN** `UnsupportedOperationError` is raised
+- **WHEN** `ar["file.txt"]` is called on a reader opened with `streaming=True`
+- **THEN** `UnsupportedOperationError` is raised (regardless of any loaded index)
 
 ---
 

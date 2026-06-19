@@ -43,16 +43,16 @@ top-level `ArchiveyError` subtypes rather than nested under `OpenError`/`ReadErr
 
 `StreamNotSeekableError` is an **open-time** failure: the source cannot `seek()` but the
 chosen format/backend requires a seekable source (e.g. opening a ZIP from a pipe with
-`Intent.RANDOM`). It is a subclass of `OpenError` (it is about the source/format being
+`streaming=False`). It is a subclass of `OpenError` (it is about the source/format being
 incompatible at open), **not** `UnsupportedOperationError`.
 
 **`UnsupportedOperationError` vs `UnsupportedFeatureError` — a deliberate split:**
 
 - `UnsupportedOperationError` signals **API misuse**: the caller asked for something this
   reader's *mode* does not permit — random access (`__getitem__`, `get`, materialization)
-  on an `Intent.SEQUENTIAL` reader, writing through a read-only RAR backend, or using a
+  on a `streaming=True` reader, writing through a read-only RAR backend, or using a
   closed reader. It is not caused by the archive's contents; choosing a different
-  intent/usage avoids it. It can therefore occur in normal use when the wrong access mode
+  access mode/usage avoids it. It can therefore occur in normal use when the wrong access mode
   was selected, but the fix is always on the caller's side.
 - `UnsupportedFeatureError` signals a **valid archive with a feature Archivey does not
   implement** (a ZIP codec stdlib `zipfile` lacks, an AES-encrypted ZIP entry, the 7z

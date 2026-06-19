@@ -60,7 +60,7 @@ cloned as a **frozen test oracle**, not copied as a baseline.
     central-context-stamping pattern, and the new members `StreamNotSeekableError`,
     `LinkTargetNotFoundError`, `UnsupportedFeatureError`, `PackageNotInstalledError`,
     `UnsupportedOperationError`.
-  - `Intent` enum + `CostReceipt` types — `ListingCost`
+  - Access mode = `streaming: bool` (no `Intent` enum) + `CostReceipt` types — `ListingCost`
     (`INDEXED`/`REQUIRES_SCANNING`/`REQUIRES_DECOMPRESSION`), `AccessCost`
     (`DIRECT`/`SOLID`), `StreamCapability` (`SEEKABLE`/`FORWARD_ONLY`),
     `solid_block_count` (`is_solid` lives on `ArchiveInfo`, not the receipt).
@@ -85,7 +85,7 @@ carries no spec deltas. Capabilities realized or seeded:
 - **`packaging-and-extras`** — realized directly (pyproject, extras→capability
   mapping, env matrix, `__version__`).
 - **`backend-registry`, `archive-data-model`, `error-handling`,
-  `access-intent-and-cost`** — the **types and contracts** land here (written
+  `access-mode-and-cost`** — the **types and contracts** land here (written
   fresh); per-format *behavior* for codec/detection-dependent formats arrives as
   backends are added (Phases 3–7).
 - **`format-directory`** — realized in full (the directory pseudo-backend is the

@@ -112,9 +112,9 @@ All codec/detection-dependent formats stay unwired until Phases 2–3.
    `_iter_with_data`, `_open_member` with **no** `for_iteration`, **no**
    `_prepare_member_for_open`; `_SUPPORTS_RANDOM_ACCESS`/`_MEMBER_LIST_UPFRONT`
    class attributes); the backend registry + `Backend` ABC; the public-API
-   skeleton (`open_archive`, `ArchiveReader` surface, `Member`/`ArchiveInfo`/
-   `ArchiveFormat`/`MemberType`, the `ArchiveyError` hierarchy, `Intent`/
-   `CostReceipt` types).
+   skeleton (`open_archive` with the `streaming: bool` access mode, `ArchiveReader`
+   surface, `Member`/`ArchiveInfo`/`ArchiveFormat`/`MemberType`, the `ArchiveyError`
+   hierarchy, `CostReceipt` types).
 4. **New declarative test framework:** port the corpus (`sample_archives.py`,
    `ArchiveContents`, `FileInfo`, `ArchiveCreationInfo`) cleaned; `conftest.py`
    parametrization; **generate-on-demand + cache** to a **project-local** dir
@@ -217,8 +217,9 @@ detection covers them.
 `format-zip`, `format-single-file-compressors`, `format-iso`
 scenarios; `format-detection` scenarios for these formats; `backend-registry`
 selection + *ISO without pycdlib* + *list_formats() excludes unavailable*;
-`access-intent-and-cost` O(1)/AUTO/RANDOM scenarios for ZIP; equivalence matrix
-seeded; non-seekable ZIP spooling. Retire matching frozen-oracle coverage.
+`access-mode-and-cost` indexed-listing / random-access (default `streaming=False`)
+scenarios for ZIP; equivalence matrix seeded; non-seekable ZIP fail-fast. Retire
+matching frozen-oracle coverage.
 
 ### Acceptance — spec scenarios covered
 `format-zip` (all), `format-single-file-compressors`
@@ -259,7 +260,7 @@ policies, overwrite, bomb limits, progress/result); `archive-reading` sequential
 
 ### Acceptance — spec scenarios covered
 `format-tar` (all), `safe-extraction` (all), `archive-reading` (*forward iteration*,
-*materialization on sequential intent*, *streaming a solid archive*, *stream invalid
+*materialization rejected under streaming*, *streaming a solid archive*, *stream invalid
 after advance*), `format-detection` (*gzip wrapping a tar/single file*),
 `testing-contract` (*path traversal member*, *zip bomb extraction*, *non-seekable
 TAR.GZ source*).
@@ -281,16 +282,16 @@ no `pending_*` attributes anywhere.
 2. Finalize `archive-data-model` (`ArchiveFormat`/`MemberType` taxonomy,
    compression-method model, the full `Member` record — hashable, `extra`, digests
    under algorithm keys, name normalization — and `ArchiveInfo`).
-3. Finalize `access-intent-and-cost` — `Intent` enforcement and **CostReceipt
+3. Finalize `access-mode-and-cost` — streaming-mode enforcement and **CostReceipt
    values verified per format**; `error-handling` translation contract (cause/
    traceback preserved; genuine I/O not reclassified; context filled by base reader).
 
 ### Tests added
-`archive-data-model`, `access-intent-and-cost`, `error-handling`, and the remaining
+`archive-data-model`, `access-mode-and-cost`, `error-handling`, and the remaining
 `archive-reading` scenarios; per-format CostReceipt assertions.
 
 ### Acceptance — spec scenarios covered
-All of `archive-reading`, `archive-data-model`, `access-intent-and-cost`,
+All of `archive-reading`, `archive-data-model`, `access-mode-and-cost`,
 `error-handling`.
 **Gates:** `pyrefly` + `ty` clean (strict); public API matches `SPEC.md §2–§7`; CostReceipt
 correct for every format implemented so far.

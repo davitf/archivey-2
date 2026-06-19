@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  # Lint + type-check once (these are environment-independent). No continue-on-error:
+  # a failure here fails CI — the "clean on Pyrefly AND ty" gate is enforced.
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Sync (dev tooling)
+        run: uv sync --group dev
+      - name: Ruff
+        run: uv run ruff check src/ tests/
+      - name: Pyrefly
+        run: uv run pyrefly check
+      - name: ty
+        run: uv run ty check src/
+
+  # Build the API-reference site with mkdocstrings. `--strict` turns broken refs and
+  # rendering warnings into failures, so doc rot (a renamed/removed public symbol, a bad
+  # cross-reference) fails CI like any other check.
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Build docs (strict)
+        run: uv run --group docs mkdocs build --strict
+
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: full [all] on every supported Python; clean zero-dep core on min+max
+          # only (the core path barely varies across point releases — min/max is enough).
+          - { os: ubuntu-latest, python-version: "3.11", install: core-only }
+          - { os: ubuntu-latest, python-version: "3.14", install: core-only }
+          - { os: ubuntu-latest, python-version: "3.11", install: all }
+          - { os: ubuntu-latest, python-version: "3.12", install: all }
+          - { os: ubuntu-latest, python-version: "3.13", install: all }
+          - { os: ubuntu-latest, python-version: "3.14", install: all }
+          # macOS + Windows on min/max Python (cross-platform path/symlink/junction surface).
+          - { os: macos-latest, python-version: "3.11", install: all }
+          - { os: macos-latest, python-version: "3.14", install: all }
+          - { os: windows-latest, python-version: "3.11", install: all }
+          - { os: windows-latest, python-version: "3.14", install: all }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      # ---- core-only: install the package with NO extras and NO dev group, then prove
+      # the zero-dep core works and that no third-party runtime package is present.
+      - name: Install core only (no extras, no dev group)
+        if: matrix.install == 'core-only'
+        run: uv sync --no-dev
+
+      - name: Assert zero-dependency core
+        if: matrix.install == 'core-only'
+        run: uv run --no-sync python tests/check_zero_dep_core.py
+
+      # Run the full suite against the zero-dep core too. pytest (+pytest-cov) is
+      # layered in ephemerally with --with so the optional FORMAT libraries stay
+      # absent; tests that need an optional lib must skip/xfail cleanly (see the
+      # `requires` helper in tests/conftest.py), which is exactly what this leg proves.
+      - name: Run tests (core-only)
+        if: matrix.install == 'core-only'
+        run: uv run --no-sync --with pytest --with pytest-cov pytest tests/ -q
+
+      # ---- [all]: full extras + dev group; run the whole suite.
+      - name: Install all extras + dev group
+        if: matrix.install == 'all'
+        run: uv sync --group dev --extra all
+
+      - name: Install unrar (Linux only, for RAR data tests)
+        if: matrix.install == 'all' && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y unrar || true
+
+      - name: Run tests
+        if: matrix.install == 'all'
+        run: uv run pytest tests/ -q

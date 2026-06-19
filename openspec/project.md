@@ -36,7 +36,7 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `archive-reading` | `open_archive()`, the `ArchiveReader` surface, iteration, random/sequential access, link following |
 | `archive-writing` | `create()`, the `ArchiveWriter` surface, streaming conversion |
 | `archive-data-model` | `Member`, `ArchiveInfo`, `ArchiveFormat`, `MemberType`, compression types |
-| `access-intent-and-cost` | `Intent` enum and the `CostReceipt` cost surface |
+| `access-mode-and-cost` | the `streaming: bool` access mode and the `CostReceipt` cost surface |
 | `safe-extraction` | `extract()`, extraction policies, the non-bypassable filter contract, decompression-bomb limits, and extraction progress/result reporting |
 | `format-detection` | `detect_format()`, magic table, non-seekable peek/replay |
 | `backend-registry` | Backend registration, selection, the `Backend` ABC, optional deps |
@@ -48,6 +48,7 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `testing-contract` | Equivalence matrix, adversarial corpus, round-trip and non-seekable coverage |
 | `cli` | The `archivey` command-line interface |
 | `packaging-and-extras` | Install-time contract: zero-dep core (incl. native 7z read + RAR metadata), extras→capability mapping, Python/OS matrix, `__version__` |
+| `documentation` | Source-derived API reference (MkDocs + mkdocstrings/Griffe extensions); strict docs build in CI |
 
 **7z/RAR strategy (native-first):** 7z and RAR are read with **native** parsers,
 not `py7zr`/`rarfile`. 7z reading decodes common codecs through stdlib
@@ -73,11 +74,11 @@ once. Specs themselves remain order-free; this table is the association.
 
 | Phase | Theme | Primary capabilities advanced |
 |-------|-------|-------------------------------|
-| 1 | Scaffold + spine + new test harness + directory backend | `packaging-and-extras` (pyproject, extras, env matrix, `__version__`); `backend-registry`, `archive-data-model`, `error-handling`, `access-intent-and-cost` (types/contracts written fresh); `format-directory` (the spine's first backend — no codec/detection layer needed); `logging`; `testing-contract` (framework foundations: declarative corpus, on-demand generation + cache, no committed binaries). DEV cloned as a frozen oracle. |
+| 1 | Scaffold + spine + new test harness + directory backend | `packaging-and-extras` (pyproject, extras, env matrix, `__version__`); `backend-registry`, `archive-data-model`, `error-handling`, `access-mode-and-cost` (types/contracts written fresh); `format-directory` (the spine's first backend — no codec/detection layer needed); `logging`; `testing-contract` (framework foundations: declarative corpus, on-demand generation + cache, no committed binaries). DEV cloned as a frozen oracle. |
 | 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams`. (7z/ZIP container codecs `pyppmd`/`inflate64`/AES stage land with Phase 7.) |
-| 3 | Indexed leaf formats | `format-zip`, `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry` (selection/degradation), `access-intent-and-cost` (CostReceipt values). (`format-directory` already landed in Phase 1.) |
+| 3 | Indexed leaf formats | `format-zip`, `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry` (selection/degradation), `access-mode-and-cost` (CostReceipt values). (`format-directory` already landed in Phase 1.) |
 | 4 | TAR, streaming & safe extraction | `format-tar`, `safe-extraction` (incl. bomb limits + progress/result), `archive-reading` (sequential + `stream_members`) |
-| 5 | Public API finalization & cost surface | `archive-reading`, `archive-data-model`, `access-intent-and-cost`, `error-handling` |
+| 5 | Public API finalization & cost surface | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` |
 | 6 | Writing support | `archive-writing` (+ `format-zip` / `format-tar` writers) |
 | 7 | Native 7z reader + native RAR metadata parser | `format-7z`, `format-rar` (native-first: read path imports no third-party lib; `unrar` binary stays for RAR data; `py7zr` for 7z write only); `testing-contract` oracle cross-validation |
 | 8 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` |
