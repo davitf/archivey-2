@@ -24,7 +24,7 @@ import zlib
 from dataclasses import dataclass, field
 from enum import Enum
 from types import ModuleType
-from typing import BinaryIO, Callable
+from typing import TYPE_CHECKING, BinaryIO, Callable
 
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.errors import (
@@ -34,6 +34,7 @@ from archivey.internal.errors import (
     StreamNotSeekableError,
     TruncatedError,
 )
+from archivey.internal.logs import streams as logger
 from archivey.internal.streams.archive_stream import ArchiveStream, ExceptionTranslator
 from archivey.internal.streams.compat import (
     ensure_binaryio,
@@ -44,6 +45,9 @@ from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.internal.types import StreamFormat
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 
 # Optional packages: resolved once via importlib (rather than static imports) because
@@ -256,6 +260,66 @@ def _translate_deflate64(e: Exception) -> ArchiveyError | None:
 # --- open functions --------------------------------------------------------------------
 
 
+class _SlowSeekWarningStream(io.RawIOBase, BinaryIO):
+    """Delegate to a sequential stdlib decoder, warning once on a rewinding seek.
+
+    stdlib ``gzip``/``bz2`` streams *can* seek, but a backward seek re-decompresses the
+    stream from the start — O(n) per rewind. We don't forbid that (no format here has a
+    fast index, and a slow seek still beats failing), but we don't let it pass silently
+    either: the first rewinding seek logs a warning pointing at the ``[seekable]``
+    accelerator. Forward seeks (linear decompression) and no-op seeks stay quiet.
+    """
+
+    def __init__(self, inner: BinaryIO, *, codec_name: str, accelerator: str) -> None:
+        super().__init__()
+        self._inner = inner
+        self._codec_name = codec_name
+        self._accelerator = accelerator
+        self._warned = False
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._inner.read(n)
+
+    def readinto(self, b: "WriteableBuffer", /) -> int:
+        raw_readinto = getattr(self._inner, "readinto", None)
+        if raw_readinto is not None:
+            return raw_readinto(b)
+        mv = memoryview(b).cast("B")
+        data = self._inner.read(len(mv))
+        mv[: len(data)] = data
+        return len(data)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        before = self._inner.tell()
+        result = self._inner.seek(offset, whence)
+        if not self._warned and result < before:
+            logger.warning(
+                "Seeking backward in a %s stream without a random-access accelerator "
+                "re-decompresses from the start (O(n) per rewind). Install the 'seekable' "
+                "extra (%s) for indexed random access.",
+                self._codec_name,
+                self._accelerator,
+            )
+            self._warned = True
+        return result
+
+    def tell(self, /) -> int:
+        return self._inner.tell()
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return self._inner.seekable()
+
+    def close(self) -> None:
+        self._inner.close()
+        super().close()
+
+
 def _open_stored(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
     if isinstance(source, (str, os.PathLike)):
         return open(os.fspath(source), "rb")
@@ -273,9 +337,12 @@ def _open_gzip(source: CodecSource, params: CodecParams, config: StreamConfig) -
             )
         return ensure_binaryio(_rapidgzip.open(source, parallelization=0))
     if isinstance(source, (str, os.PathLike)):
-        return ensure_binaryio(gzip.open(source, "rb"))
-    gz = gzip.GzipFile(fileobj=ensure_bufferedio(source), mode="rb")
-    return ensure_binaryio(gz)
+        gz: BinaryIO = ensure_binaryio(gzip.open(source, "rb"))
+    else:
+        gz = ensure_binaryio(gzip.GzipFile(fileobj=ensure_bufferedio(source), mode="rb"))
+    # stdlib gzip can seek, but a rewind re-decompresses from the start; warn rather than
+    # degrade silently (the [seekable] rapidgzip accelerator gives real random access).
+    return _SlowSeekWarningStream(gz, codec_name="gzip", accelerator="rapidgzip")
 
 
 def _open_bzip2(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
@@ -288,7 +355,13 @@ def _open_bzip2(source: CodecSource, params: CodecParams, config: StreamConfig) 
                 "(install the 'seekable' extra)."
             )
         return ensure_binaryio(_indexed_bzip2.open(source, parallelization=0))
-    return ensure_binaryio(bz2.open(source, "rb"))
+    # stdlib bz2 can seek, but a rewind re-decompresses from the start; warn rather than
+    # degrade silently (the [seekable] indexed_bzip2 accelerator gives real random access).
+    return _SlowSeekWarningStream(
+        ensure_binaryio(bz2.open(source, "rb")),
+        codec_name="bzip2",
+        accelerator="indexed_bzip2",
+    )
 
 
 def _open_xz(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:

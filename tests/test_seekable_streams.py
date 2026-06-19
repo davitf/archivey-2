@@ -124,12 +124,41 @@ def test_lzip_index_backwards_parses_members() -> None:
 # --- accelerator backends present / absent ---------------------------------------------
 
 
-def test_gzip_accelerator_off_is_sequential_only() -> None:
-    """With the accelerator OFF, a gzip stream is sequential — seeking is unsupported."""
+def test_gzip_accelerator_off_warns_on_rewind_but_still_seeks(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """With the accelerator OFF, gzip still seeks (slowly); a rewind logs one warning.
+
+    Forward consumption and forward seeks stay quiet — only a backward seek, which
+    re-decompresses from the start, triggers the warning.
+    """
     config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF)
     compressed = gzip.compress(CONTENT)
     with open_codec_stream(Codec.GZIP, io.BytesIO(compressed), config=config) as stream:
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.read(100) == CONTENT[:100]
+            assert stream.seek(200) == 200  # forward seek: no rewind, no warning
+            assert stream.read(10) == CONTENT[200:210]
+        assert not caplog.records
+
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.seek(0) == 0  # rewind → slow re-decompression
+            assert stream.read(10) == CONTENT[:10]  # still returns correct data
+    assert sum("seekable" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_bzip2_accelerator_off_warns_on_rewind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bz2 stdlib path mirrors gzip: a rewind warns and still seeks."""
+    config = StreamConfig(use_indexed_bzip2=AcceleratorMode.OFF)
+    compressed = bz2.compress(CONTENT)
+    with open_codec_stream(Codec.BZIP2, io.BytesIO(compressed), config=config) as stream:
         assert stream.read(100) == CONTENT[:100]
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.seek(0) == 0
+            assert stream.read(10) == CONTENT[:10]
+    assert any("indexed_bzip2" in r.getMessage() for r in caplog.records)
 
 
 def test_gzip_accelerator_on_without_package_raises() -> None:
