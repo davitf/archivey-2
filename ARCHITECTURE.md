@@ -27,9 +27,17 @@ src/archivey/
 │   ├── detection.py       # Format detection engine + PeekableStream         (Phase 3)
 │   ├── extraction.py      # ExtractionCoordinator + BombTracker (uses filters) (Phase 4)
 │   ├── progress.py        # ExtractionProgress / ExtractionResult              (Phase 4)
-│   ├── io_helpers.py      # is_seekable, ensure_binaryio, simplified BinaryIOWrapper, …
+│   ├── config.py          # StreamConfig + AcceleratorMode (internal; not yet public) (Phase 2)
 │   └── streams/           # compressed + seekable stream layer                 (Phase 2)
-│       └── compat.py, detect.py, slice.py, decompress.py, xz.py, lzip.py
+│       ├── compat.py          # is_seekable/is_stream/ensure_*; simplified BinaryIOWrapper; read_exact
+│       ├── slice.py           # SlicingStream
+│       ├── archive_stream.py  # ArchiveStream — exception translation/stamping carrier
+│       ├── decompress.py / xz.py / lzip.py   # seekable decompressor streams
+│       ├── codecs.py          # codec registry (one default backend per codec) + resolver
+│       ├── crypto.py          # the single wrapped AES crypto stage ([crypto])
+│       └── verify.py          # decompressed-output digest verification stage
+│       # (there is no io_helpers.py — clean slate; the detection peek/rewind primitive
+│       #  is PeekableStream in detection.py, Phase 3, not in this layer)
 │
 └── formats/               # one module per format backend
     ├── __init__.py            # registers backends at import time
