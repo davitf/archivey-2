@@ -11,6 +11,7 @@ interface.
 from __future__ import annotations
 
 import io
+import mmap
 import os
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypeGuard, runtime_checkable
 
@@ -51,10 +52,18 @@ def is_seekable(stream: Any) -> bool:
 
     A ``BufferedReader`` reports its own ``seekable()`` as ``True`` even when wrapping a
     non-seekable raw stream, so unwrap to the underlying raw object first. Streams that
-    lack ``seekable()`` entirely are treated as non-seekable.
+    lack a ``seekable()`` method are conservatively treated as non-seekable — except known
+    types we can assert statically (``mmap``). We deliberately do *not* probe by calling
+    ``seek()``: that would make this predicate side-effecting (it's called on hot paths and
+    on streams someone is mid-read on), and a no-op probe isn't even conclusive (a stream
+    can accept ``seek(0, SEEK_CUR)`` yet not reposition).
     """
     if isinstance(stream, io.BufferedReader):
         return is_seekable(stream.raw)
+    # mmap is always seekable but (before Python 3.13) exposes no seekable() method and is
+    # not an io.IOBase, so the generic check below would miss it.
+    if isinstance(stream, mmap.mmap):
+        return True
     seekable = getattr(stream, "seekable", None)
     if seekable is None:
         logger.debug("Stream %r has no seekable() method; treating as non-seekable", stream)
@@ -191,7 +200,13 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         seek = getattr(self._raw, "seek", None)
         if seek is None:
             raise io.UnsupportedOperation("seek")
-        return seek(offset, whence)
+        pos = seek(offset, whence)
+        if pos is None:
+            # Some objects' seek() returns None instead of the new position (mmap before
+            # Python 3.13); recover it via tell() so we honour the BinaryIO -> int contract.
+            tell = getattr(self._raw, "tell", None)
+            return tell() if tell is not None else offset
+        return pos
 
     def tell(self, /) -> int:
         tell = getattr(self._raw, "tell", None)

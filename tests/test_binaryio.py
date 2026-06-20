@@ -157,6 +157,35 @@ def test_is_seekable_object_without_seekable_method() -> None:
     assert not is_seekable(OnlyReadStream(b"x"))
 
 
+def test_is_seekable_special_cases_mmap() -> None:
+    import mmap
+
+    # mmap is seekable but exposes no seekable() method and isn't an io.IOBase.
+    mm = mmap.mmap(-1, 16)
+    try:
+        assert is_seekable(mm) is True
+    finally:
+        mm.close()
+
+
+def test_wrapper_over_mmap_seeks_and_returns_int_position() -> None:
+    import mmap
+
+    mm = mmap.mmap(-1, len(DATA))
+    mm.write(DATA)
+    mm.seek(0)
+    wrapper = BinaryIOWrapper(mm)
+    try:
+        assert wrapper.seekable() is True
+        assert wrapper.read(5) == DATA[:5]
+        # mmap.seek() returns None before 3.13; the wrapper must still return an int pos.
+        pos = wrapper.seek(0)
+        assert pos == 0
+        assert wrapper.read(5) == DATA[:5]
+    finally:
+        mm.close()
+
+
 # --- BinaryIOWrapper -------------------------------------------------------------------
 
 

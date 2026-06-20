@@ -252,9 +252,8 @@ def _os_pipe_reader(_tmp_path: Path) -> BinaryIO:
 
 
 def _mmap_source(_tmp_path: Path) -> BinaryIO:
-    # An anonymous mmap: seekable in practice, but it has no seekable() method and is not
-    # an io.IOBase, so it gets wrapped — and is_seekable() conservatively reports it
-    # non-seekable (see the module note / the open question raised in review).
+    # An anonymous mmap: not an io.IOBase (so it gets wrapped), but special-cased as
+    # seekable by is_seekable().
     mm = mmap.mmap(-1, len(CONTENT))
     mm.write(CONTENT)
     mm.seek(0)
@@ -304,9 +303,10 @@ CASES: dict[str, Case] = {
     "only_read": Case(_only_read, seekable=False, passes_is_stream=False),
     "read_into": Case(_read_into, seekable=False, passes_is_stream=False),
     "s3_streaming_body": Case(_s3_streaming_body, seekable=False, passes_is_stream=False),
-    # mmap is seekable in practice but exposes no seekable() method, so is_seekable()
-    # conservatively reports False and it is wrapped (see module note).
-    "mmap": Case(_mmap_source, seekable=False, passes_is_stream=False),
+    # mmap is not an io.IOBase (so it is wrapped), but is_seekable() special-cases it as
+    # seekable, and BinaryIOWrapper.seek() recovers the position via tell() (mmap.seek
+    # returns None before Python 3.13).
+    "mmap": Case(_mmap_source, seekable=True, passes_is_stream=False),
 }
 
 _OPTIONAL_DEP = {"urllib3_response": ("urllib3", HAVE_URLLIB3), "fsspec_memory": ("fsspec", HAVE_FSSPEC)}
