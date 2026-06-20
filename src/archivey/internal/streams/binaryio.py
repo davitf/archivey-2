@@ -212,9 +212,14 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
             return tell()
         if whence == io.SEEK_SET:
             return offset
+        # We don't expect this to be reachable: every io.IOBase defines tell(), and a
+        # duck-typed object that implements seek() conventionally implements tell() too. If
+        # it happens, a position-tracking fallback could be added — but we want to hear
+        # about the real stream type first rather than guess a position.
         raise io.UnsupportedOperation(
-            "cannot report position after a relative/end seek: the underlying stream's "
-            "seek() returned None and it has no tell()"
+            f"cannot report the position after a relative/end seek on "
+            f"{type(self._raw).__name__}: its seek() returned None and it has no tell(). "
+            f"This is unexpected — please report it (with the stream type) to archivey."
         )
 
     def tell(self, /) -> int:

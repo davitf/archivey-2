@@ -208,8 +208,9 @@ def test_wrapper_seek_none_no_tell_absolute_ok_relative_raises() -> None:
     # Absolute (SEEK_SET): the offset *is* the resulting position.
     assert wrapper.seek(4) == 4
     assert wrapper.read(2) == DATA[4:6]
-    # Relative/end: position is unknowable without tell(); don't guess — raise.
-    with pytest.raises(io.UnsupportedOperation):
+    # Relative/end: position is unknowable without tell(); don't guess — raise, and flag
+    # it as unexpected so a real occurrence gets reported.
+    with pytest.raises(io.UnsupportedOperation, match="please report"):
         wrapper.seek(2, io.SEEK_CUR)
     with pytest.raises(io.UnsupportedOperation):
         wrapper.seek(0, io.SEEK_END)
