@@ -109,6 +109,13 @@ python_version = "3.11"
 python-version = "3.11"
 root = ["src"]
 
+[tool.ty.src]
+# Type-check only the library, mirroring pyrefly's `project-includes = ["src"]`. Like
+# ruff (extend-exclude) and pytest (norecursedirs), ty thus excludes the frozen DEV
+# oracle under tests/_dev_oracle, which imports v1 module paths absent in v2. With this,
+# a bare `uv run ty check` is clean — no `src/` path argument needed.
+include = ["src"]
+
 [tool.coverage.run]
 source = ["archivey"]
 branch = true

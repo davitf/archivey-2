@@ -27,7 +27,7 @@ jobs:
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
-        run: uv run ty check src/
+        run: uv run ty check
 
   # Build the API-reference site with mkdocstrings. `--strict` turns broken refs and
   # rendering warnings into failures, so doc rot (a renamed/removed public symbol, a bad

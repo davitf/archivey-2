@@ -19,14 +19,13 @@ uv run pytest                 # run the test suite
 uv run ruff check             # lint
 uv run ruff format            # format
 uv run pyrefly check          # type-check (Pyrefly)
-uv run ty check src/          # type-check (ty) — scope to src/ (see note below)
+uv run ty check               # type-check (ty)
 ```
 
-Type-check **`src/`** with ty, as CI does (`uv run ty check src/`). A bare
-`uv run ty check` also walks the frozen `tests/_dev_oracle/` suite, which imports v1
-(`archivey-dev`) module paths that don't exist in v2 and so reports hundreds of expected
-`unresolved-import` diagnostics — noise, not regressions. Pyrefly is scoped by its
-project config and can be run bare.
+Each tool is configured to skip the frozen `tests/_dev_oracle/` suite (which imports v1
+`archivey-dev` module paths absent in v2): ruff via `extend-exclude`, pytest via
+`norecursedirs`, and pyrefly + ty are scoped to `src/`. So every command above runs clean
+with no extra path arguments.
 
 RAR *data* tests need the system `unrar` binary (`apt-get install -y unrar`, etc.);
 without it those tests skip cleanly.
