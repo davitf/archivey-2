@@ -28,6 +28,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.types import StreamFormat
+from tests.conftest import requires
 from tests.streams_util import compress_lzma2_raw, lzma2_raw_filters
 
 CONTENT = b"the quick brown fox jumps over the lazy dog\n" * 50
@@ -53,6 +54,16 @@ def test_raw_lzma2_backend_for_7z_folder() -> None:
     compressed = compress_lzma2_raw(CONTENT)
     params = CodecParams(filters=lzma2_raw_filters())
     with open_codec_stream(Codec.LZMA2, io.BytesIO(compressed), params=params) as stream:
+        assert stream.read() == CONTENT
+
+
+@requires("brotli")
+def test_brotli_backend_roundtrip() -> None:
+    """A Brotli stream decompresses via the brotli-backed stream (no file-like open())."""
+    import brotli
+
+    compressed = brotli.compress(CONTENT)
+    with open_codec_stream(Codec.BROTLI, io.BytesIO(compressed)) as stream:
         assert stream.read() == CONTENT
 
 
@@ -95,6 +106,15 @@ def test_resolve_backend_without_opening() -> None:
 def test_ppmd_without_pyppmd_raises() -> None:
     with pytest.raises(PackageNotInstalledError, match="pyppmd"):
         open_codec_stream(Codec.PPMD, io.BytesIO(b""))
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("brotli") is not None,
+    reason="brotli is installed; the missing-backend path cannot be exercised",
+)
+def test_brotli_without_brotli_raises() -> None:
+    with pytest.raises(PackageNotInstalledError, match="brotli"):
+        open_codec_stream(Codec.BROTLI, io.BytesIO(b""))
 
 
 def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,6 +174,29 @@ def test_corrupt_lzma2_translates_to_corruption() -> None:
     params = CodecParams(filters=lzma2_raw_filters())
     with open_codec_stream(Codec.LZMA2, io.BytesIO(bytes(corrupt)), params=params) as stream:
         with pytest.raises(CorruptionError):
+            stream.read()
+
+
+@requires("brotli")
+def test_corrupt_brotli_translates_to_corruption_with_cause() -> None:
+    import brotli
+
+    corrupt = bytearray(brotli.compress(CONTENT))
+    corrupt[len(corrupt) // 2] ^= 0xFF
+    with open_codec_stream(Codec.BROTLI, io.BytesIO(bytes(corrupt))) as stream:
+        with pytest.raises(CorruptionError) as excinfo:
+            stream.read()
+    assert isinstance(excinfo.value.__cause__, brotli.error)
+
+
+@requires("brotli")
+def test_truncated_brotli_translates_to_truncated() -> None:
+    import brotli
+
+    compressed = brotli.compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(Codec.BROTLI, io.BytesIO(truncated)) as stream:
+        with pytest.raises(TruncatedError):
             stream.read()
 
 

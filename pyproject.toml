@@ -73,6 +73,7 @@ dev = [
     "rarfile>=4.2",
     "zstandard>=0.23.0",
     "lz4>=4.4.5",
+    "brotli>=1.1.0",
     "cryptography>=45.0.0",
     # Exercise real third-party stream objects in tests/test_stream_inputs.py: urllib3 is
     # what requests' response.raw is (the canonical file-like network input); fsspec's file

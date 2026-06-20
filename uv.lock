@@ -86,6 +86,7 @@ zstd = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "brotli" },
     { name = "coverage", extra = ["toml"] },
     { name = "cryptography" },
     { name = "fsspec" },
@@ -134,6 +135,7 @@ provides-extras = ["7z", "rar", "crypto", "7z-write", "iso", "zstd", "lz4", "cli
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "brotli", specifier = ">=1.1.0" },
     { name = "coverage", extras = ["toml"], specifier = ">=7.6.0" },
     { name = "cryptography", specifier = ">=45.0.0" },
     { name = "fsspec", specifier = ">=2024.0.0" },

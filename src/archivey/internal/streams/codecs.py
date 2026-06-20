@@ -40,7 +40,10 @@ from archivey.internal.streams.binaryio import (
     ensure_binaryio,
     ensure_bufferedio,
 )
-from archivey.internal.streams.decompress import ZlibDecompressorStream
+from archivey.internal.streams.decompress import (
+    BrotliDecompressorStream,
+    ZlibDecompressorStream,
+)
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.internal.types import StreamFormat
@@ -61,6 +64,7 @@ def _optional(name: str) -> ModuleType | None:
 
 _zstandard = _optional("zstandard")
 _lz4_frame = _optional("lz4.frame")
+_brotli = _optional("brotli")
 _pyppmd = _optional("pyppmd")
 _inflate64 = _optional("inflate64")
 _rapidgzip = _optional("rapidgzip")
@@ -90,6 +94,7 @@ class Codec(Enum):
     ZLIB = "zlib"  # zlib-wrapped deflate
     ZSTD = "zstd"
     LZ4 = "lz4"
+    BROTLI = "brotli"
     PPMD = "ppmd"
     DEFLATE64 = "deflate64"
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
@@ -237,6 +242,15 @@ def _translate_lz4(e: Exception) -> ArchiveyError | None:
         return CorruptionError(f"Error reading lz4 stream: {e!r}")
     if isinstance(e, EOFError):
         return TruncatedError(f"lz4 stream is truncated: {e!r}")
+    return None
+
+
+def _translate_brotli(e: Exception) -> ArchiveyError | None:
+    # brotli raises its own brotli.error for corrupt data; a truncated stream doesn't
+    # raise here (the decompressor just never reports finished), so the base
+    # DecompressorStream surfaces that as TruncatedError on its own.
+    if _brotli is not None and isinstance(e, _brotli.error):
+        return CorruptionError(f"Error reading brotli stream: {e!r}")
     return None
 
 
@@ -403,6 +417,14 @@ def _open_lz4(source: CodecSource, params: CodecParams, config: StreamConfig) ->
     return ensure_binaryio(_lz4_frame.open(source, "rb"))
 
 
+def _open_brotli(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
+    if _brotli is None:
+        raise PackageNotInstalledError(
+            "The 'brotli' package is required for Brotli streams (install the '7z' extra)."
+        )
+    return BrotliDecompressorStream(source)
+
+
 def _open_ppmd(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
     if _pyppmd is None:
         raise PackageNotInstalledError(
@@ -439,6 +461,7 @@ _REGISTRY: dict[Codec, _CodecSpec] = {
     Codec.ZLIB: _CodecSpec(_open_zlib, _translate_zlib),
     Codec.ZSTD: _CodecSpec(_open_zstd, _translate_zstd),
     Codec.LZ4: _CodecSpec(_open_lz4, _translate_lz4),
+    Codec.BROTLI: _CodecSpec(_open_brotli, _translate_brotli),
     Codec.PPMD: _CodecSpec(_open_ppmd, _translate_ppmd),
     Codec.DEFLATE64: _CodecSpec(_open_deflate64, _translate_deflate64),
 }
