@@ -288,16 +288,21 @@ def _translate_deflate64(e: Exception) -> ArchiveyError | None:
 
 
 class _SlowSeekWarningStream(io.RawIOBase, BinaryIO):
-    """Delegate to a sequential stdlib decoder, warning once on a rewinding seek.
+    """Delegate to a forward-only decoder, warning once on a rewinding seek.
 
-    stdlib ``gzip``/``bz2`` streams *can* seek, but a backward seek re-decompresses the
-    stream from the start — O(n) per rewind. We don't forbid that (no format here has a
-    fast index, and a slow seek still beats failing), but we don't let it pass silently
-    either: the first rewinding seek logs a warning pointing at the ``[seekable]``
-    accelerator. Forward seeks (linear decompression) and no-op seeks stay quiet.
+    Several codecs *can* seek but service a backward seek by re-decompressing the stream
+    from the start — O(n) per rewind — because they carry no random-access index: gzip/bz2
+    (stdlib), brotli, lz4, and zlib. We don't forbid that (a slow seek beats failing, and
+    not every format can offer fast random access), but we don't let it pass silently
+    either: the first rewinding seek logs a warning. When an accelerator backend exists
+    (gzip → ``rapidgzip``, bz2 → ``indexed_bzip2``, both in the ``[seekable]`` extra), the
+    warning names it; otherwise it just states the codec re-decompresses from the start.
+    Forward seeks (linear decompression) and no-op seeks stay quiet.
     """
 
-    def __init__(self, inner: BinaryIO, *, codec_name: str, accelerator: str) -> None:
+    def __init__(
+        self, inner: BinaryIO, *, codec_name: str, accelerator: str | None = None
+    ) -> None:
         super().__init__()
         self._inner = inner
         self._codec_name = codec_name
@@ -320,13 +325,20 @@ class _SlowSeekWarningStream(io.RawIOBase, BinaryIO):
         before = self._inner.tell()
         result = self._inner.seek(offset, whence)
         if not self._warned and result < before:
-            logger.warning(
-                "Seeking backward in a %s stream without a random-access accelerator "
-                "re-decompresses from the start (O(n) per rewind). Install the 'seekable' "
-                "extra (%s) for indexed random access.",
-                self._codec_name,
-                self._accelerator,
-            )
+            if self._accelerator is not None:
+                logger.warning(
+                    "Seeking backward in a %s stream without a random-access accelerator "
+                    "re-decompresses from the start (O(n) per rewind). Install the "
+                    "'seekable' extra (%s) for indexed random access.",
+                    self._codec_name,
+                    self._accelerator,
+                )
+            else:
+                logger.warning(
+                    "Seeking backward in a %s stream re-decompresses from the start "
+                    "(O(n) per rewind): this codec has no random-access index.",
+                    self._codec_name,
+                )
             self._warned = True
         return result
 
@@ -408,11 +420,17 @@ def _open_lzma_raw(source: CodecSource, params: CodecParams, config: StreamConfi
 
 
 def _open_deflate(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
+    # Raw deflate is container-only (ZIP/7z members), never a standalone stream: the
+    # container owns member offsets, so it isn't wrapped in the rewind-warning stream the
+    # standalone single-file codecs use.
     return ZlibDecompressorStream(source, wbits=-15)
 
 
 def _open_zlib(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
-    return ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS)
+    # zlib has no random-access index, so a backward seek re-decodes from the start; warn.
+    return _SlowSeekWarningStream(
+        ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS), codec_name="zlib"
+    )
 
 
 def _open_zstd(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
@@ -428,7 +446,10 @@ def _open_lz4(source: CodecSource, params: CodecParams, config: StreamConfig) ->
         raise PackageNotInstalledError(
             "The 'lz4' package is required for lz4 streams (install the 'lz4' extra)."
         )
-    return ensure_binaryio(_lz4_frame.open(source, "rb"))
+    # lz4's frame reader seeks by re-decompressing from the start; warn on a rewind.
+    return _SlowSeekWarningStream(
+        ensure_binaryio(_lz4_frame.open(source, "rb")), codec_name="lz4"
+    )
 
 
 def _open_brotli(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
@@ -436,7 +457,8 @@ def _open_brotli(source: CodecSource, params: CodecParams, config: StreamConfig)
         raise PackageNotInstalledError(
             "The 'brotli' package is required for Brotli streams (install the '7z' extra)."
         )
-    return BrotliDecompressorStream(source)
+    # Brotli has no random-access index, so a backward seek re-decodes from the start; warn.
+    return _SlowSeekWarningStream(BrotliDecompressorStream(source), codec_name="brotli")
 
 
 def _open_unix_compress(

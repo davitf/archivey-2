@@ -8,6 +8,7 @@ import gzip
 import importlib.util
 import io
 import lzma
+import zlib
 
 import pytest
 
@@ -16,6 +17,7 @@ from archivey.internal.errors import PackageNotInstalledError, TruncatedError
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_backwards
 from archivey.internal.streams.xz import XzDecompressorStream, _read_xz_index_backwards
+from tests.conftest import requires
 from tests.streams_util import (
     CountingBytesIO,
     make_lzip_member,
@@ -184,6 +186,53 @@ def test_bzip2_accelerator_off_warns_on_rewind(
             assert stream.seek(0) == 0
             assert stream.read(10) == CONTENT[:10]
     assert any("indexed_bzip2" in r.getMessage() for r in caplog.records)
+
+
+# --- forward-only codecs without an accelerator: warn (generically) on a rewind ---------
+
+
+def test_zlib_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+    """zlib has no index: a rewind warns (no accelerator to name), a forward seek doesn't."""
+    compressed = zlib.compress(CONTENT)
+    with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed)) as stream:
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.read(100) == CONTENT[:100]
+            assert stream.seek(200) == 200  # forward seek: no warning
+            assert stream.read(10) == CONTENT[200:210]
+        assert not caplog.records
+
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.seek(0) == 0  # rewind → re-decode from start
+            assert stream.read(10) == CONTENT[:10]  # still correct
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum("no random-access index" in m for m in msgs) == 1
+    assert not any("seekable" in m for m in msgs)  # generic message, no accelerator named
+
+
+@requires("brotli")
+def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+    import brotli
+
+    compressed = brotli.compress(CONTENT)
+    with open_codec_stream(Codec.BROTLI, io.BytesIO(compressed)) as stream:
+        assert stream.read(100) == CONTENT[:100]
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.seek(0) == 0
+            assert stream.read(10) == CONTENT[:10]
+    assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
+
+
+@requires("lz4")
+def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+    import lz4.frame
+
+    compressed = lz4.frame.compress(CONTENT)
+    with open_codec_stream(Codec.LZ4, io.BytesIO(compressed)) as stream:
+        assert stream.read(100) == CONTENT[:100]
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.seek(0) == 0
+            assert stream.read(10) == CONTENT[:10]
+    assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
 
 
 def test_gzip_accelerator_on_without_package_raises() -> None:

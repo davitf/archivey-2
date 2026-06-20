@@ -41,3 +41,29 @@ The system SHALL support optional accelerator backends for formats that have no 
 - **WHEN** neither `rapidgzip` nor `indexed_bzip2` is installed, or the corresponding flag is `OFF`
 - **THEN** gzip and bzip2 streams stay backed by the stdlib decoders, which service a seek only by re-decompressing from the start (O(n) per rewind)
 - **AND** a seek that rewinds the stream logs a warning naming the `[seekable]` accelerator, rather than degrading silently or failing
+
+### Requirement: Index-less codecs warn on a rewinding seek
+
+A codec with no random-access index services a backward seek by re-decompressing the
+stream from the start — O(n) per rewind. This applies to gzip and bzip2 without an
+accelerator (above) and, with no accelerator available at all, to **brotli, lz4, and
+zlib**. The slow path is permitted (a slow seek beats failing, and not every format can
+offer fast random access), but it SHALL NOT be silent: the first seek that rewinds such a
+stream SHALL log a warning via the `archivey` streams logger. Where an accelerator backend
+exists (gzip, bzip2) the warning names the `[seekable]` extra; for brotli/lz4/zlib, which
+have no accelerator, it states that the codec re-decompresses from the start. Forward seeks
+and no-op seeks do not warn.
+
+Codecs that carry their own index (xz, lzip, unix-compress) seek efficiently and SHALL NOT
+warn. A codec that instead reports itself non-seekable and raises on a backward seek (zstd)
+does not degrade silently and is likewise not wrapped.
+
+#### Scenario: rewinding an index-less codec warns
+
+- **WHEN** a brotli, lz4, or zlib stream is read and then seeked backward to an earlier offset
+- **THEN** the data is delivered correctly **AND** a warning is logged that the codec re-decompresses from the start (no accelerator is named, because none exists for these codecs)
+
+#### Scenario: a forward-only seek does not warn
+
+- **WHEN** an index-less codec stream is seeked only forward (or to its current position)
+- **THEN** no rewind warning is logged
