@@ -4,9 +4,10 @@ The ``streams/binaryio.py`` helpers (``is_stream`` / ``is_seekable`` / ``ensure_
 ``ensure_bufferedio`` / ``BinaryIOWrapper``) are core infrastructure: every backend feeds
 them whatever stream the *source* produced. This module verifies they behave correctly
 against the real objects those sources return — local files, every stdlib codec stream,
-zip/tar member streams, archivey's own decompressor streams, a network response
-(``urllib3``), and bare/partial duck-typed objects — plus the nested-archive case where one
-archive's member stream is itself the source for another reader.
+zip/tar member streams, archivey's own decompressor streams, network responses (the stdlib
+``http.client.HTTPResponse`` and ``urllib3``), and bare/partial duck-typed objects — plus
+the nested-archive case where one archive's member stream is itself the source for another
+reader. (httpx has no file-like to test: its streaming API is iterator-based.)
 
 Each case is a *factory* (streams are single-use), tagged with whether it is already an
 ``io.IOBase`` (so ``is_stream`` passes it through) and whether it is seekable.
@@ -163,6 +164,29 @@ def _urllib3_response(_tmp_path: Path) -> BinaryIO:
     return HTTPResponse(body=io.BytesIO(CONTENT), status=200, preload_content=False)
 
 
+def _http_client_response(_tmp_path: Path) -> BinaryIO:
+    """A stdlib ``http.client.HTTPResponse`` (what ``urllib.request.urlopen`` returns).
+
+    Built over an in-memory fake socket so no network is needed. It is a non-seekable
+    ``io.BufferedIOBase`` — the canonical dependency-free "network stream" input.
+    (httpx is intentionally not covered: its streaming API is iterator-based
+    — ``iter_bytes``/``iter_raw`` — and exposes no ``read(n)`` file object to pass here.)
+    """
+    import http.client
+
+    class _FakeSocket:
+        def __init__(self, raw: bytes) -> None:
+            self._raw = io.BytesIO(raw)
+
+        def makefile(self, *args: object, **kwargs: object) -> io.BytesIO:
+            return self._raw
+
+    raw = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(CONTENT), CONTENT)
+    resp = http.client.HTTPResponse(_FakeSocket(raw))  # type: ignore[arg-type]  # duck-typed sock
+    resp.begin()
+    return resp
+
+
 def _only_read(_tmp_path: Path) -> BinaryIO:
     return OnlyReadStream(CONTENT)  # type: ignore[return-value]
 
@@ -191,6 +215,7 @@ CASES: dict[str, Case] = {
     "zlib_decompressor": Case(_zlib_decompressor, seekable=True, is_iobase=True),
     "codec_gzip": Case(_codec_gzip, seekable=True, is_iobase=True),
     "urllib3_response": Case(_urllib3_response, seekable=False, is_iobase=True),
+    "http_client_response": Case(_http_client_response, seekable=False, is_iobase=True),
     "only_read": Case(_only_read, seekable=False, is_iobase=False),
     "read_into": Case(_read_into, seekable=False, is_iobase=False),
     "non_seekable_bytesio": Case(_non_seekable_bytesio, seekable=False, is_iobase=True),
