@@ -179,11 +179,40 @@ def test_wrapper_over_mmap_seeks_and_returns_int_position() -> None:
         assert wrapper.seekable() is True
         assert wrapper.read(5) == DATA[:5]
         # mmap.seek() returns None before 3.13; the wrapper must still return an int pos.
-        pos = wrapper.seek(0)
-        assert pos == 0
-        assert wrapper.read(5) == DATA[:5]
+        assert wrapper.seek(0) == 0
+        # A relative seek must report the resulting *absolute* position (via tell()),
+        # not the relative offset.
+        assert wrapper.seek(10) == 10
+        assert wrapper.seek(3, io.SEEK_CUR) == 13
+        assert wrapper.seek(-1, io.SEEK_END) == len(DATA) - 1
+        assert wrapper.read(1) == DATA[-1:]
     finally:
         mm.close()
+
+
+class _NoneSeekNoTell:
+    """seek() returns None (like mmap<3.13) and there is no tell() — the degenerate case."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def read(self, size: int = -1) -> bytes:
+        return self._inner.read(size)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> None:
+        self._inner.seek(offset, whence)  # returns None
+
+
+def test_wrapper_seek_none_no_tell_absolute_ok_relative_raises() -> None:
+    wrapper = BinaryIOWrapper(_NoneSeekNoTell(DATA))
+    # Absolute (SEEK_SET): the offset *is* the resulting position.
+    assert wrapper.seek(4) == 4
+    assert wrapper.read(2) == DATA[4:6]
+    # Relative/end: position is unknowable without tell(); don't guess — raise.
+    with pytest.raises(io.UnsupportedOperation):
+        wrapper.seek(2, io.SEEK_CUR)
+    with pytest.raises(io.UnsupportedOperation):
+        wrapper.seek(0, io.SEEK_END)
 
 
 # --- BinaryIOWrapper -------------------------------------------------------------------

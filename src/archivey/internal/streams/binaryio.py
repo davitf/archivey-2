@@ -201,12 +201,21 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         if seek is None:
             raise io.UnsupportedOperation("seek")
         pos = seek(offset, whence)
-        if pos is None:
-            # Some objects' seek() returns None instead of the new position (mmap before
-            # Python 3.13); recover it via tell() so we honour the BinaryIO -> int contract.
-            tell = getattr(self._raw, "tell", None)
-            return tell() if tell is not None else offset
-        return pos
+        if pos is not None:
+            return pos
+        # Some objects' seek() returns None instead of the new position (mmap before Python
+        # 3.13); recover it so we honour the BinaryIO -> int contract. tell() gives the true
+        # absolute position for any whence; without it, only a SEEK_SET offset is the
+        # resulting position (a SEEK_CUR/SEEK_END result is unknowable, so don't guess).
+        tell = getattr(self._raw, "tell", None)
+        if tell is not None:
+            return tell()
+        if whence == io.SEEK_SET:
+            return offset
+        raise io.UnsupportedOperation(
+            "cannot report position after a relative/end seek: the underlying stream's "
+            "seek() returned None and it has no tell()"
+        )
 
     def tell(self, /) -> int:
         tell = getattr(self._raw, "tell", None)
