@@ -168,7 +168,7 @@ def _translate_bz2(e: Exception) -> ArchiveyError | None:
 
 
 def _translate_rapidgzip(e: Exception) -> ArchiveyError | None:
-    """Translate the rapidgzip accelerator's exceptions (ported from DEV's taxonomy)."""
+    """Translate the rapidgzip accelerator's exceptions to the library's error types."""
     text = str(e)
     if isinstance(e, ValueError) and "Mismatching CRC32" in text:
         return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
@@ -190,7 +190,7 @@ def _translate_rapidgzip(e: Exception) -> ArchiveyError | None:
 
 
 def _translate_indexed_bzip2(e: Exception) -> ArchiveyError | None:
-    """Translate the indexed_bzip2 accelerator's exceptions (ported from DEV's taxonomy)."""
+    """Translate the indexed_bzip2 accelerator's exceptions to the library's error types."""
     text = str(e)
     if isinstance(e, RuntimeError) and "Calculated CRC" in text:
         return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {e!r}")

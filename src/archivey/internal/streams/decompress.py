@@ -1,12 +1,11 @@
 """Seekable decompressor-stream base class and the zlib/deflate backend.
 
-Ported as a unit from DEV (``formats/decompressor_stream.py``), with exception types
-mapped to the v2 hierarchy (``CorruptionError`` / ``TruncatedError``) and the Brotli
-backend dropped (Brotli is not in the ``compressed-streams`` codec table).
-
 The base supports optional seek-point-based random access: subclasses register known
 positions as they decode (``add_seek_points``) and/or build a full index once on demand
 (``_build_index``). The XZ and lzip backends in ``xz.py`` / ``lzip.py`` build on this.
+
+Only the codecs in the ``compressed-streams`` codec table are provided here (so there is,
+for example, no Brotli backend).
 """
 
 from __future__ import annotations

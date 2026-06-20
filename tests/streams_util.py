@@ -81,7 +81,7 @@ def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
 
     lzip omits the 13-byte LZMA_ALONE header from its raw stream; compress with
     FORMAT_ALONE (which includes it), strip the header, then wrap in the lzip
-    header/trailer. (Ported from DEV's ``create_lzip_member`` test helper.)
+    header/trailer.
     """
     filters: list[dict] = [
         {"id": lzma.FILTER_LZMA1, "dict_size": 1 << dict_size_bits, "lc": 3, "lp": 0, "pb": 2}

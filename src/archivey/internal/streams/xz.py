@@ -1,7 +1,6 @@
 """
 Seekable XZ decompression over stdlib ``lzma``: backward index scan + streaming state
-machine. Ported as a unit from DEV (``formats/xz_stream.py``); exception types mapped to
-the v2 hierarchy (``CorruptionError`` / ``TruncatedError``).
+machine.
 
 XZ binary format (summary):
   A file is a sequence of one or more XZ streams, optionally separated by 4-byte-aligned

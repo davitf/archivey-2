@@ -1,6 +1,5 @@
 """
-Pure-stdlib seekable lzip decompression over Python's ``lzma`` module. Ported as a unit
-from DEV (``formats/lzip_stream.py``); exception types mapped to the v2 hierarchy.
+Pure-stdlib seekable lzip decompression over Python's ``lzma`` module.
 
 lzip format (per the lzip manual): a file is a sequence of one or more *members* that may
 be concatenated freely. Each member carries its own sizes in a 20-byte trailer (the
