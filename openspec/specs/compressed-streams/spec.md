@@ -50,6 +50,7 @@ The system SHALL decompress each supported codec through a default backend:
 | zstd | `zstandard` | optional `[zstd]` |
 | lz4 | `lz4` | optional `[lz4]` |
 | Brotli | `brotli` | optional `[7z]` |
+| unix-compress (LZW, `.Z`) | `uncompresspy` | optional `[unix-compress]` |
 | PPMd (var.H) | `pyppmd` | optional `[7z]` |
 | Deflate64 | `inflate64` | optional `[7z]` |
 | AES-256 (decrypt stage) | the wrapped crypto backend | optional `[crypto]` |

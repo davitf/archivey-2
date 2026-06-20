@@ -101,15 +101,15 @@ The system SHALL recognise the following formats by inspecting bytes at the spec
 | TAR (POSIX/GNU) | 257 | `75 73 74 61 72` ("ustar") — requires ≥ 512 bytes peek |
 | LZ4 | 0 | `04 22 4D 18` |
 | lzip | 0 | `4C 5A 49 50` ("LZIP") |
+| unix-compress | 0 | `1F 9D` |
 | zlib | 0 | `78 01` / `78 5E` / `78 9C` / `78 DA` — weak signal (see note) |
 
 The zlib 2-byte header is a CMF/FLG pair, not a true magic number: the same prefix
 begins many raw-deflate streams and can occur in arbitrary data, so a zlib match is the
 **least specific** entry in the table. Detection MAY treat a zlib-header match as lower
 confidence than an exact multi-byte magic and let a conflicting extension or a successful
-structural probe override it. unix-compress (`.Z`, LZW magic `1F 9D`) is intentionally
-**absent** from this table: v2 ports no LZW backend, so it is neither detected nor opened
-(see `format-single-file-compressors`).
+structural probe override it. (unix-compress's `1F 9D` is a true 2-byte magic and is not
+subject to that caveat.)
 
 #### Scenario: ZIP standard local file header
 
@@ -156,7 +156,7 @@ to override it.
 ### Requirement: Compressed streams are probed for an inner TAR
 
 When the outer stream is a single-file compressor (gzip, bzip2, xz, zstd, lz4, lzip,
-zlib, brotli), detection SHALL peek a bounded prefix of the *decompressed* content and
+zlib, brotli, unix-compress), detection SHALL peek a bounded prefix of the *decompressed* content and
 test for the TAR `ustar` signature at offset 257, so a tarball is reported as the
 combined format (`TAR_GZ` / `TAR_BZ2` / `TAR_XZ` / `TAR_ZST` / `TAR_LZ4`, and likewise
 the TAR + lzip/zlib/brotli combination) rather than a bare single-file compressor. The

@@ -16,6 +16,7 @@ from archivey.internal.errors import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    StreamNotSeekableError,
     TruncatedError,
 )
 from archivey.internal.streams import crypto
@@ -29,7 +30,12 @@ from archivey.internal.streams.codecs import (
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.types import StreamFormat
 from tests.conftest import requires
-from tests.streams_util import compress_lzma2_raw, lzma2_raw_filters
+from tests.streams_util import (
+    NonSeekableBytesIO,
+    compress_lzma2_raw,
+    lzma2_raw_filters,
+    make_unix_compress,
+)
 
 CONTENT = b"the quick brown fox jumps over the lazy dog\n" * 50
 
@@ -64,6 +70,14 @@ def test_brotli_backend_roundtrip() -> None:
 
     compressed = brotli.compress(CONTENT)
     with open_codec_stream(Codec.BROTLI, io.BytesIO(compressed)) as stream:
+        assert stream.read() == CONTENT
+
+
+@requires("uncompresspy", "ncompress")
+def test_unix_compress_backend_roundtrip() -> None:
+    """A unix-compress (.Z) stream decompresses via the uncompresspy backend."""
+    compressed = make_unix_compress(CONTENT)
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
         assert stream.read() == CONTENT
 
 
@@ -115,6 +129,15 @@ def test_ppmd_without_pyppmd_raises() -> None:
 def test_brotli_without_brotli_raises() -> None:
     with pytest.raises(PackageNotInstalledError, match="brotli"):
         open_codec_stream(Codec.BROTLI, io.BytesIO(b""))
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("uncompresspy") is not None,
+    reason="uncompresspy is installed; the missing-backend path cannot be exercised",
+)
+def test_unix_compress_without_uncompresspy_raises() -> None:
+    with pytest.raises(PackageNotInstalledError, match="uncompresspy"):
+        open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(b""))
 
 
 def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -198,6 +221,24 @@ def test_truncated_brotli_translates_to_truncated() -> None:
     with open_codec_stream(Codec.BROTLI, io.BytesIO(truncated)) as stream:
         with pytest.raises(TruncatedError):
             stream.read()
+
+
+@requires("uncompresspy", "ncompress")
+def test_corrupt_unix_compress_translates_to_corruption() -> None:
+    corrupt = bytearray(make_unix_compress(CONTENT))
+    corrupt[10] ^= 0xFF  # break the LZW bitstream
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(bytes(corrupt))) as stream:
+        with pytest.raises(CorruptionError):
+            stream.read()
+
+
+@requires("uncompresspy", "ncompress")
+def test_unix_compress_non_seekable_source_translates() -> None:
+    """uncompresspy needs random access; a non-seekable source is reported, not leaked."""
+    compressed = make_unix_compress(CONTENT)
+    # The seekable requirement is enforced at open time (eager), so the open call raises.
+    with pytest.raises(StreamNotSeekableError):
+        open_codec_stream(Codec.UNIX_COMPRESS, NonSeekableBytesIO(compressed))
 
 
 def test_translated_error_is_stamped() -> None:

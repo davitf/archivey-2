@@ -65,6 +65,7 @@ def _optional(name: str) -> ModuleType | None:
 _zstandard = _optional("zstandard")
 _lz4_frame = _optional("lz4.frame")
 _brotli = _optional("brotli")
+_uncompresspy = _optional("uncompresspy")
 _pyppmd = _optional("pyppmd")
 _inflate64 = _optional("inflate64")
 _rapidgzip = _optional("rapidgzip")
@@ -95,6 +96,7 @@ class Codec(Enum):
     ZSTD = "zstd"
     LZ4 = "lz4"
     BROTLI = "brotli"
+    UNIX_COMPRESS = "unix_compress"  # LZW (.Z)
     PPMD = "ppmd"
     DEFLATE64 = "deflate64"
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
@@ -251,6 +253,18 @@ def _translate_brotli(e: Exception) -> ArchiveyError | None:
     # DecompressorStream surfaces that as TruncatedError on its own.
     if _brotli is not None and isinstance(e, _brotli.error):
         return CorruptionError(f"Error reading brotli stream: {e!r}")
+    return None
+
+
+def _translate_unix_compress(e: Exception) -> ArchiveyError | None:
+    # uncompresspy raises ValueError both for a non-seekable input (it needs random
+    # access to decode) and for a corrupt LZW bitstream. The .Z format carries no length
+    # or checksum trailer, so truncation is undetectable — a cut stream just yields fewer
+    # bytes with no error (there is intentionally no TruncatedError path here).
+    if isinstance(e, ValueError):
+        if "seekable" in str(e):
+            return StreamNotSeekableError("uncompresspy does not support non-seekable streams")
+        return CorruptionError(f"Error reading unix-compress (.Z) stream: {e!r}")
     return None
 
 
@@ -425,6 +439,20 @@ def _open_brotli(source: CodecSource, params: CodecParams, config: StreamConfig)
     return BrotliDecompressorStream(source)
 
 
+def _open_unix_compress(
+    source: CodecSource, params: CodecParams, config: StreamConfig
+) -> BinaryIO:
+    if _uncompresspy is None:
+        raise PackageNotInstalledError(
+            "The 'uncompresspy' package is required for unix-compress (.Z) streams "
+            "(install the 'unix-compress' extra)."
+        )
+    # uncompresspy.LZWFile accepts a path or a (seekable) file object and is itself a
+    # RawIOBase, so ensure_binaryio passes it through unchanged.
+    src = os.fspath(source) if isinstance(source, (str, os.PathLike)) else source
+    return ensure_binaryio(_uncompresspy.LZWFile(src))
+
+
 def _open_ppmd(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
     if _pyppmd is None:
         raise PackageNotInstalledError(
@@ -462,6 +490,7 @@ _REGISTRY: dict[Codec, _CodecSpec] = {
     Codec.ZSTD: _CodecSpec(_open_zstd, _translate_zstd),
     Codec.LZ4: _CodecSpec(_open_lz4, _translate_lz4),
     Codec.BROTLI: _CodecSpec(_open_brotli, _translate_brotli),
+    Codec.UNIX_COMPRESS: _CodecSpec(_open_unix_compress, _translate_unix_compress),
     Codec.PPMD: _CodecSpec(_open_ppmd, _translate_ppmd),
     Codec.DEFLATE64: _CodecSpec(_open_deflate64, _translate_deflate64),
 }

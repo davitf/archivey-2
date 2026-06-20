@@ -123,6 +123,21 @@ def make_multiblock_xz(data: bytes, block_size: int) -> bytes:
     return result.stdout
 
 
+def make_unix_compress(data: bytes) -> bytes:
+    """LZW-compress ``data`` into a standard unix-compress (`.Z`) stream.
+
+    The runtime decoder (``uncompresspy``) only decompresses, so fixtures are produced
+    with ``ncompress`` (a separate LZW *compressor*) — giving a genuine cross-
+    implementation roundtrip. Imported lazily so this module still imports in the
+    core-only test leg, where ncompress is absent (callers guard with ``requires``).
+    """
+    import ncompress
+
+    out = io.BytesIO()
+    ncompress.compress(io.BytesIO(data), out)
+    return out.getvalue()
+
+
 def lzma2_raw_filters() -> list[dict]:
     """A FORMAT_RAW LZMA2 filter spec, as a 7z folder coder would supply."""
     return [{"id": lzma.FILTER_LZMA2, "preset": 6}]

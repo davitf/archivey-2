@@ -42,6 +42,9 @@ zstd = [
 lz4 = [
     "lz4>=4.4.5",
 ]
+unix-compress = [
+    "uncompresspy>=0.4.0",
+]
 cli = [
     "tqdm>=4.67.0",
 ]
@@ -50,7 +53,7 @@ seekable = [
     "indexed_bzip2>=1.6.0",
 ]
 recommended-lite = [
-    "archivey[7z,rar,7z-write,iso,zstd,lz4,cli]",
+    "archivey[7z,rar,7z-write,iso,zstd,lz4,unix-compress,cli]",
 ]
 recommended = [
     "archivey[recommended-lite,seekable]",
@@ -74,6 +77,10 @@ dev = [
     "zstandard>=0.23.0",
     "lz4>=4.4.5",
     "brotli>=1.1.0",
+    # uncompresspy is the runtime decoder for unix-compress (.Z); ncompress is a test-only
+    # LZW *compressor* (uncompresspy only decompresses) used to generate .Z fixtures.
+    "uncompresspy>=0.4.0",
+    "ncompress>=1.0.0",
     "cryptography>=45.0.0",
     # Exercise real third-party stream objects in tests/test_stream_inputs.py: urllib3 is
     # what requests' response.raw is (the canonical file-like network input); fsspec's file
