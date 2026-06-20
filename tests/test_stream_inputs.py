@@ -1,0 +1,361 @@
+"""Cross-library matrix: the stream helpers vs. every stream type a caller might supply.
+
+The ``streams/binaryio.py`` helpers (``is_stream`` / ``is_seekable`` / ``ensure_binaryio`` /
+``ensure_bufferedio`` / ``BinaryIOWrapper``) are core infrastructure: every backend feeds
+them whatever stream the *source* produced. This module verifies they behave correctly
+against the real objects those sources return — local files, every stdlib codec stream,
+zip/tar member streams, archivey's own decompressor streams, a network response
+(``urllib3``), and bare/partial duck-typed objects — plus the nested-archive case where one
+archive's member stream is itself the source for another reader.
+
+Each case is a *factory* (streams are single-use), tagged with whether it is already an
+``io.IOBase`` (so ``is_stream`` passes it through) and whether it is seekable.
+"""
+
+from __future__ import annotations
+
+import bz2
+import gzip
+import importlib.util
+import io
+import lzma
+import tarfile
+import zipfile
+import zlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO, Callable
+
+import pytest
+
+from archivey.internal.streams.binaryio import (
+    BinaryIOWrapper,
+    ensure_binaryio,
+    ensure_bufferedio,
+    is_seekable,
+    is_stream,
+)
+from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
+from archivey.internal.streams.decompress import ZlibDecompressorStream
+from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.xz import XzDecompressorStream
+from tests.streams_util import NonSeekableBytesIO, make_lzip_member
+
+# Non-trivial, non-repetitive payload so chunked reads and seeks are meaningful.
+CONTENT = bytes((i * 7 + 13) % 256 for i in range(5000))
+
+HAVE_URLLIB3 = importlib.util.find_spec("urllib3") is not None
+
+
+def _close(stream: object) -> None:
+    """Close ``stream`` if it has a ``close`` (the bare duck-typed cases deliberately don't)."""
+    closer = getattr(stream, "close", None)
+    if callable(closer):
+        closer()
+
+
+# --- partial / bare duck-typed objects (the reason BinaryIOWrapper exists) --------------
+
+
+class OnlyReadStream:
+    """A bare object with only ``read()`` — not an io.IOBase."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def read(self, size: int = -1) -> bytes:
+        return self._inner.read(size)
+
+
+class ReadIntoStream(OnlyReadStream):
+    """Partial file-like that also implements ``readinto`` but is not an io.IOBase."""
+
+    def readinto(self, b) -> int:  # type: ignore[no-untyped-def]
+        return self._inner.readinto(b)
+
+
+# --- stream factories ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Case:
+    build: Callable[[Path], BinaryIO]
+    seekable: bool
+    is_iobase: bool  # True => is_stream() should pass it through unwrapped
+
+
+def _buffered_file(tmp_path: Path) -> BinaryIO:
+    p = tmp_path / "buffered.bin"
+    p.write_bytes(CONTENT)
+    return open(p, "rb")
+
+
+def _raw_file(tmp_path: Path) -> BinaryIO:
+    p = tmp_path / "raw.bin"
+    p.write_bytes(CONTENT)
+    return open(p, "rb", buffering=0)
+
+
+def _bytesio(_tmp_path: Path) -> BinaryIO:
+    return io.BytesIO(CONTENT)
+
+
+def _gzip_member(_tmp_path: Path) -> BinaryIO:
+    return gzip.open(io.BytesIO(gzip.compress(CONTENT)), "rb")
+
+
+def _bz2_member(_tmp_path: Path) -> BinaryIO:
+    return bz2.open(io.BytesIO(bz2.compress(CONTENT)), "rb")
+
+
+def _lzma_member(_tmp_path: Path) -> BinaryIO:
+    return lzma.open(io.BytesIO(lzma.compress(CONTENT)), "rb")
+
+
+def _zip_member(stored: bool) -> Callable[[Path], BinaryIO]:
+    def build(_tmp_path: Path) -> BinaryIO:
+        buf = io.BytesIO()
+        method = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
+        with zipfile.ZipFile(buf, "w", method) as z:
+            z.writestr("m.bin", CONTENT)
+        buf.seek(0)
+        return zipfile.ZipFile(buf).open("m.bin")
+
+    return build
+
+
+def _tar_member(compression: str) -> Callable[[Path], BinaryIO]:
+    def build(_tmp_path: Path) -> BinaryIO:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode=f"w:{compression}" if compression else "w") as t:
+            info = tarfile.TarInfo("m.bin")
+            info.size = len(CONTENT)
+            t.addfile(info, io.BytesIO(CONTENT))
+        buf.seek(0)
+        member = tarfile.open(fileobj=buf, mode="r:*").extractfile("m.bin")
+        assert member is not None
+        return member
+
+    return build
+
+
+def _xz_decompressor(_tmp_path: Path) -> BinaryIO:
+    return XzDecompressorStream(io.BytesIO(lzma.compress(CONTENT, format=lzma.FORMAT_XZ)))
+
+
+def _lzip_decompressor(_tmp_path: Path) -> BinaryIO:
+    return LzipDecompressorStream(io.BytesIO(make_lzip_member(CONTENT)))
+
+
+def _zlib_decompressor(_tmp_path: Path) -> BinaryIO:
+    co = zlib.compressobj(9, zlib.DEFLATED, -15)
+    raw = co.compress(CONTENT) + co.flush()
+    return ZlibDecompressorStream(io.BytesIO(raw), wbits=-15)
+
+
+def _codec_gzip(_tmp_path: Path) -> BinaryIO:
+    return open_codec_stream(Codec.GZIP, io.BytesIO(gzip.compress(CONTENT)))
+
+
+def _urllib3_response(_tmp_path: Path) -> BinaryIO:
+    from urllib3.response import HTTPResponse
+
+    return HTTPResponse(body=io.BytesIO(CONTENT), status=200, preload_content=False)
+
+
+def _only_read(_tmp_path: Path) -> BinaryIO:
+    return OnlyReadStream(CONTENT)  # type: ignore[return-value]
+
+
+def _read_into(_tmp_path: Path) -> BinaryIO:
+    return ReadIntoStream(CONTENT)  # type: ignore[return-value]
+
+
+def _non_seekable_bytesio(_tmp_path: Path) -> BinaryIO:
+    return NonSeekableBytesIO(CONTENT)
+
+
+CASES: dict[str, Case] = {
+    "buffered_file": Case(_buffered_file, seekable=True, is_iobase=True),
+    "raw_fileio": Case(_raw_file, seekable=True, is_iobase=True),
+    "bytesio": Case(_bytesio, seekable=True, is_iobase=True),
+    "gzip": Case(_gzip_member, seekable=True, is_iobase=True),
+    "bz2": Case(_bz2_member, seekable=True, is_iobase=True),
+    "lzma": Case(_lzma_member, seekable=True, is_iobase=True),
+    "zip_stored": Case(_zip_member(stored=True), seekable=True, is_iobase=True),
+    "zip_deflated": Case(_zip_member(stored=False), seekable=True, is_iobase=True),
+    "tar_uncompressed": Case(_tar_member(""), seekable=True, is_iobase=True),
+    "tar_gz": Case(_tar_member("gz"), seekable=True, is_iobase=True),
+    "xz_decompressor": Case(_xz_decompressor, seekable=True, is_iobase=True),
+    "lzip_decompressor": Case(_lzip_decompressor, seekable=True, is_iobase=True),
+    "zlib_decompressor": Case(_zlib_decompressor, seekable=True, is_iobase=True),
+    "codec_gzip": Case(_codec_gzip, seekable=True, is_iobase=True),
+    "urllib3_response": Case(_urllib3_response, seekable=False, is_iobase=True),
+    "only_read": Case(_only_read, seekable=False, is_iobase=False),
+    "read_into": Case(_read_into, seekable=False, is_iobase=False),
+    "non_seekable_bytesio": Case(_non_seekable_bytesio, seekable=False, is_iobase=True),
+}
+
+
+def _params() -> list:
+    params = []
+    for cid in CASES:
+        marks = []
+        if cid == "urllib3_response" and not HAVE_URLLIB3:
+            marks.append(pytest.mark.skip(reason="urllib3 not installed"))
+        params.append(pytest.param(cid, id=cid, marks=marks))
+    return params
+
+
+@pytest.fixture(params=_params())
+def case(request: pytest.FixtureRequest) -> Case:
+    return CASES[request.param]
+
+
+# --- the matrix ------------------------------------------------------------------------
+
+
+def test_is_stream_classification(case: Case, tmp_path: Path) -> None:
+    stream = case.build(tmp_path)
+    try:
+        assert is_stream(stream) is case.is_iobase
+    finally:
+        _close(stream)
+
+
+def test_is_seekable_matches_capability(case: Case, tmp_path: Path) -> None:
+    stream = case.build(tmp_path)
+    try:
+        assert is_seekable(stream) is case.seekable
+    finally:
+        _close(stream)
+
+
+def test_ensure_binaryio_passthrough_or_wrap(case: Case, tmp_path: Path) -> None:
+    stream = case.build(tmp_path)
+    try:
+        ensured = ensure_binaryio(stream)
+        if case.is_iobase:
+            assert ensured is stream  # already a BinaryIO; not re-wrapped
+        else:
+            assert isinstance(ensured, BinaryIOWrapper)  # partial object gets adapted
+    finally:
+        _close(stream)
+
+
+def test_full_read_yields_content(case: Case, tmp_path: Path) -> None:
+    stream = ensure_binaryio(case.build(tmp_path))
+    try:
+        assert stream.read() == CONTENT
+    finally:
+        _close(stream)
+
+
+def test_chunked_read_yields_content(case: Case, tmp_path: Path) -> None:
+    stream = ensure_binaryio(case.build(tmp_path))
+    try:
+        chunks = []
+        while True:
+            chunk = stream.read(64)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        assert b"".join(chunks) == CONTENT
+    finally:
+        _close(stream)
+
+
+def test_readinto_yields_content(case: Case, tmp_path: Path) -> None:
+    stream = ensure_binaryio(case.build(tmp_path))
+    try:
+        out = bytearray()
+        buf = bytearray(128)
+        while True:
+            n = stream.readinto(buf)
+            if not n:
+                break
+            out.extend(buf[:n])
+        assert bytes(out) == CONTENT
+    finally:
+        _close(stream)
+
+
+def test_ensure_bufferedio_yields_content(case: Case, tmp_path: Path) -> None:
+    stream = case.build(tmp_path)
+    try:
+        buffered = ensure_bufferedio(stream)
+        assert buffered.read() == CONTENT
+    finally:
+        _close(stream)
+
+
+def test_seek_rewind_when_seekable(case: Case, tmp_path: Path) -> None:
+    """A seekable source can be rewound and re-read; a non-seekable one reports so."""
+    stream = ensure_binaryio(case.build(tmp_path))
+    try:
+        if not case.seekable:
+            assert not is_seekable(stream)
+            return
+        head = stream.read(100)
+        assert head == CONTENT[:100]
+        stream.seek(0)
+        assert stream.read(100) == CONTENT[:100]
+    finally:
+        _close(stream)
+
+
+# --- nested archives: a member stream is itself the source for another reader -----------
+
+
+def test_nested_zip_member_as_codec_source() -> None:
+    """A gzip stream stored as a ZIP member, then decompressed via the codec layer.
+
+    The ZIP member stream (``ZipExtFile``) is the *source* handed to the codec layer — the
+    nested-archive pattern, where what you read out of one container feeds another.
+    """
+    gz_bytes = gzip.compress(CONTENT)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("inner.gz", gz_bytes)
+    buf.seek(0)
+    with zipfile.ZipFile(buf) as z:
+        member_stream = z.open("inner.gz")
+        with open_codec_stream(Codec.GZIP, member_stream) as decompressed:
+            assert decompressed.read() == CONTENT
+
+
+def test_nested_tar_member_feeds_zipfile() -> None:
+    """A whole ZIP archive stored inside a TAR, opened straight from the TAR member stream.
+
+    ``tarfile``'s ``ExFileObject`` is seekable over an uncompressed TAR, so ``zipfile`` can
+    read its central directory directly from the member stream — no intermediate buffering.
+    """
+    inner_zip = io.BytesIO()
+    with zipfile.ZipFile(inner_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("payload.bin", CONTENT)
+    inner_bytes = inner_zip.getvalue()
+
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w") as t:
+        info = tarfile.TarInfo("inner.zip")
+        info.size = len(inner_bytes)
+        t.addfile(info, io.BytesIO(inner_bytes))
+    tar_buf.seek(0)
+
+    member = tarfile.open(fileobj=tar_buf, mode="r").extractfile("inner.zip")
+    assert member is not None
+    assert is_seekable(member)
+    with zipfile.ZipFile(ensure_binaryio(member)) as inner:
+        assert inner.read("payload.bin") == CONTENT
+
+
+def test_raw_lzma2_member_stream_source() -> None:
+    """A non-seekable member stream as a codec source (forward-only path)."""
+    from tests.streams_util import compress_lzma2_raw, lzma2_raw_filters
+
+    raw = compress_lzma2_raw(CONTENT)
+    source = NonSeekableBytesIO(raw)
+    with open_codec_stream(
+        Codec.LZMA2, source, params=CodecParams(filters=lzma2_raw_filters())
+    ) as stream:
+        assert stream.read() == CONTENT

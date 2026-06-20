@@ -97,17 +97,29 @@ def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
 
 
 class BinaryIOWrapper(io.RawIOBase, BinaryIO):
-    """Adapt an object that is *almost* a ``BinaryIO`` to the real interface.
+    """Adapt an object that exposes a *partial* file API to the full ``BinaryIO`` interface.
 
-    Some codec libraries return file-likes that miss ``readinto`` or otherwise don't
-    satisfy the type checker. This wraps them with straightforward delegation; missing
-    ``readinto`` falls back to ``read``. It deliberately does **not** close the wrapped
-    object (it is often a temporary view).
+    Most streams never need this. Every stdlib stream — ``open()`` (``BufferedReader`` /
+    ``FileIO``), ``BytesIO``, ``GzipFile`` / ``BZ2File`` / ``LZMAFile``, zipfile's
+    ``ZipExtFile``, tarfile's ``ExFileObject`` — and modern network responses
+    (``http.client.HTTPResponse``, ``urllib3>=2`` ``HTTPResponse``) subclass ``io.IOBase``,
+    so :func:`is_stream` passes them through unwrapped.
+
+    Wrapping is for objects that implement a few file methods *without* subclassing
+    ``io.IOBase``, so the type checker won't accept them as ``BinaryIO`` and they may be
+    missing methods we rely on. Concretely:
+
+    - ``urllib3<2`` ``HTTPResponse`` (``requests``' ``response.raw`` on older installs):
+      has ``read()`` but is not an ``io.IOBase`` and historically lacked ``readinto`` /
+      ``seekable``.
+    - ``py7zr`` / ``rarfile`` member handles (Phase 7) and arbitrary user objects exposing
+      just ``read()`` (and maybe ``seek()``).
 
     Delegation is plain (each method forwards to ``self._raw``) rather than rebinding
-    methods onto the instance (``self.read = self._raw.read``): the rebinding trick saves
-    one attribute lookup per call but mutates the instance and defeats type checking, and
-    it makes no measurable difference on the large reads that matter.
+    methods onto the instance: rebinding saves one attribute lookup per call but mutates the
+    instance and defeats type checking, for no measurable gain on the large reads that
+    matter. The wrapper deliberately does **not** close the wrapped object (it is often a
+    temporary view onto a stream someone else owns).
     """
 
     def __init__(self, raw: Any) -> None:
@@ -116,19 +128,35 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
 
     def read(self, size: int = -1, /) -> bytes:
         data = self._raw.read(size)
-        # A blocking stream returns b"" at EOF; normalise a None (non-blocking "no data
-        # yet") to b"" so the wrapper presents a plain blocking BinaryIO.
-        return data if data is not None else b""
+        if data is None:
+            # A read() returns None only for a *non-blocking* stream that has no data
+            # available right now — never at EOF, where blocking and non-blocking streams
+            # alike return b"". archivey's readers pull synchronously and cannot make
+            # progress on a non-blocking source, so surface that explicitly instead of
+            # fabricating b"" (which would look like EOF and silently truncate the data).
+            raise BlockingIOError(
+                "underlying stream returned no data without reaching EOF (non-blocking "
+                "stream?); archivey requires a blocking stream"
+            )
+        return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
         raw_readinto = getattr(self._raw, "readinto", None)
         if raw_readinto is not None:
+            # Some partial file-likes advertise readinto but raise when actually called
+            # (e.g. NotImplementedError); fall back to read() in that case.
             try:
-                result = raw_readinto(b)
-                if result is not None:
-                    return result
+                n = raw_readinto(b)
             except (NotImplementedError, io.UnsupportedOperation):
                 pass
+            else:
+                if n is None:
+                    # Same non-blocking case as read() above; don't report a 0-byte read.
+                    raise BlockingIOError(
+                        "underlying stream returned no data without reaching EOF "
+                        "(non-blocking stream?); archivey requires a blocking stream"
+                    )
+                return n
         mv = memoryview(b).cast("B")
         data = self.read(len(mv))
         mv[: len(data)] = data
@@ -139,6 +167,25 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         if write is None:
             raise io.UnsupportedOperation("write")
         return write(data)
+
+    def readable(self) -> bool:
+        # Prefer the stream's own answer; fall back to "does it expose a reader?" for
+        # partial file-likes that don't implement readable().
+        raw_readable = getattr(self._raw, "readable", None)
+        if raw_readable is not None:
+            return bool(raw_readable())
+        return hasattr(self._raw, "read") or hasattr(self._raw, "readinto")
+
+    def writable(self) -> bool:
+        # hasattr(raw, "write") is NOT a reliable signal: every io.IOBase defines write()
+        # even when opened read-only (it raises io.UnsupportedOperation — GzipFile raises
+        # OSError). The honest answer is the stream's own writable(); only fall back to
+        # hasattr() for partial file-likes that don't implement writable() (e.g. urllib3's
+        # HTTPResponse, which omits write() entirely).
+        raw_writable = getattr(self._raw, "writable", None)
+        if raw_writable is not None:
+            return bool(raw_writable())
+        return hasattr(self._raw, "write")
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         seek = getattr(self._raw, "seek", None)
@@ -152,12 +199,6 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
             raise io.UnsupportedOperation("tell")
         return tell()
 
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return hasattr(self._raw, "write")
-
     def seekable(self) -> bool:
         return is_seekable(self._raw)
 
@@ -170,7 +211,13 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
 
 
 def ensure_binaryio(obj: Any) -> BinaryIO:
-    """Return ``obj`` as a ``BinaryIO``, wrapping it only if it doesn't already qualify."""
+    """Return ``obj`` as a ``BinaryIO``, wrapping it only if it doesn't already qualify.
+
+    The result is a valid ``BinaryIO`` but not necessarily an ``io.RawIOBase`` (an
+    already-qualifying ``BytesIO`` is a ``BufferedIOBase``, returned unchanged). Callers
+    that specifically need a ``RawIOBase`` — e.g. to feed ``io.BufferedReader`` — should use
+    :func:`ensure_bufferedio`, which handles that requirement internally.
+    """
     if is_stream(obj):
         return obj
     logger.debug("Wrapping %r in BinaryIOWrapper to satisfy the BinaryIO interface", obj)
@@ -192,8 +239,12 @@ class _NonClosingBufferedReader(io.BufferedReader):
 def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     """Return ``obj`` as a buffered reader, without taking ownership of it.
 
-    A raw stream is wrapped in a non-closing ``BufferedReader``; an already-buffered
-    stream is returned unchanged.
+    An already-buffered stream is returned unchanged; otherwise it is wrapped in a
+    non-closing ``BufferedReader``. ``io.BufferedReader`` requires its underlying object to
+    be an ``io.RawIOBase`` (it rejects a merely stream-like object), so a non-``RawIOBase``
+    source is first adapted via :class:`BinaryIOWrapper` (which *is* a ``RawIOBase``) — this
+    is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
+    whose result may be a ``BufferedIOBase`` that ``BufferedReader`` would reject.
     """
     if isinstance(obj, io.BufferedIOBase):
         return obj
