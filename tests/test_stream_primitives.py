@@ -2,7 +2,7 @@
 
 These are the shared building blocks every later format depends on, so they get focused
 unit tests of their corner cases (per CONTRIBUTING's narrow exception for low-level
-primitives). Scenarios are partly mined from DEV's ``test_io_helpers``.
+primitives).
 """
 
 from __future__ import annotations
@@ -11,17 +11,16 @@ import io
 
 import pytest
 
-from archivey.internal.streams.compat import (
+from archivey.internal.streams.binaryio import (
     BinaryIOWrapper,
     ensure_binaryio,
     ensure_bufferedio,
-    fix_stream_start_position,
     is_filename,
     is_seekable,
     is_stream,
     read_exact,
 )
-from archivey.internal.streams.slice import SlicingStream
+from archivey.internal.streams.slice import SlicingStream, fix_stream_start_position
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
 DATA = b"0123456789abcdefghijklmnopqrstuvwxyz"

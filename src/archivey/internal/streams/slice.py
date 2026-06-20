@@ -1,8 +1,8 @@
 """``SlicingStream`` — a bounded view over a region of another binary stream.
 
-Ported as a unit from DEV (``io_helpers.SlicingStream``). Used to present a member's
-byte range inside a container as a standalone stream, and to give a mid-positioned
-stream a clean origin (see ``fix_stream_start_position``).
+Used to present a member's byte range inside a container as a standalone stream, and (via
+``fix_stream_start_position``) to give a mid-positioned stream a clean ``tell() == 0``
+origin for codec libraries that assume it.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 from typing import TYPE_CHECKING, BinaryIO
 
-from archivey.internal.streams.compat import is_seekable
+from archivey.internal.streams.binaryio import is_seekable
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -121,3 +121,19 @@ class SlicingStream(io.RawIOBase, BinaryIO):
 
     def seekable(self) -> bool:
         return self._seekable
+
+
+def fix_stream_start_position(stream: BinaryIO) -> BinaryIO:
+    """Make a stream behave as if its current position were 0.
+
+    If ``stream`` is seekable and already at offset 0, it is returned unchanged. If it is
+    seekable but positioned mid-stream, it is wrapped in a :class:`SlicingStream` so the
+    consumer (a codec library that assumes ``tell() == 0``) sees a clean origin.
+    Non-seekable streams are returned as-is (the caller can only read forward anyway).
+    """
+    if not is_seekable(stream):
+        return stream
+    start_pos = stream.tell()
+    if start_pos == 0:
+        return stream
+    return SlicingStream(stream, start=start_pos)

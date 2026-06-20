@@ -30,7 +30,7 @@ from typing import (
 
 from archivey.internal.errors import CorruptionError, TruncatedError
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.compat import ensure_bufferedio
+from archivey.internal.streams.binaryio import ensure_bufferedio
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer

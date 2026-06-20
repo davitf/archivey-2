@@ -29,8 +29,8 @@ src/archivey/
 │   ├── progress.py        # ExtractionProgress / ExtractionResult              (Phase 4)
 │   ├── config.py          # StreamConfig + AcceleratorMode (internal; not yet public) (Phase 2)
 │   └── streams/           # compressed + seekable stream layer                 (Phase 2)
-│       ├── compat.py          # is_seekable/is_stream/ensure_*; simplified BinaryIOWrapper; read_exact
-│       ├── slice.py           # SlicingStream
+│       ├── binaryio.py        # classify/coerce caller objects to BinaryIO (is_*, ensure_*, BinaryIOWrapper, read_exact)
+│       ├── slice.py           # SlicingStream + fix_stream_start_position
 │       ├── archive_stream.py  # ArchiveStream — exception translation/stamping carrier
 │       ├── decompress.py / xz.py / lzip.py   # seekable decompressor streams
 │       ├── codecs.py          # codec registry (one default backend per codec) + resolver

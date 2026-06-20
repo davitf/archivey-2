@@ -13,7 +13,7 @@ from archivey.internal.errors import (
     UnsupportedOperationError,
 )
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.compat import is_seekable
+from archivey.internal.streams.binaryio import is_seekable
 from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,

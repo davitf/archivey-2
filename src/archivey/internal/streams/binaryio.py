@@ -1,11 +1,11 @@
-"""Stream compatibility helpers.
+"""Adapt arbitrary caller-provided objects to the uniform ``BinaryIO`` the library relies on.
 
-Ported as a unit from DEV's scattered helpers (``core.py`` / ``io_helpers.py`` /
-``single_file_reader.py``), with one deliberate change: ``BinaryIOWrapper`` is rewritten
-with **plain delegation** rather than DEV's ``self.read = self._raw.read`` method-swap
-trick. The swap optimised away one attribute lookup per call at the cost of mutating the
-instance and confusing type checkers; plain delegation is simpler and benchmarks
-equivalently on large reads (see PLAN's `BinaryIOWrapper` risk note).
+Sources reach the library in many shapes — a path, a real file object, a ``BytesIO``, or a
+codec library's file-like that is *almost* a ``BinaryIO`` (e.g. missing ``readinto``). This
+module is the single place that classifies those objects (``is_filename`` / ``is_stream`` /
+``is_seekable``) and coerces them to a consistent ``BinaryIO`` (``ensure_binaryio`` /
+``ensure_bufferedio`` / ``BinaryIOWrapper``), so the rest of the stream layer can assume one
+interface.
 """
 
 from __future__ import annotations
@@ -103,6 +103,11 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
     satisfy the type checker. This wraps them with straightforward delegation; missing
     ``readinto`` falls back to ``read``. It deliberately does **not** close the wrapped
     object (it is often a temporary view).
+
+    Delegation is plain (each method forwards to ``self._raw``) rather than rebinding
+    methods onto the instance (``self.read = self._raw.read``): the rebinding trick saves
+    one attribute lookup per call but mutates the instance and defeats type checking, and
+    it makes no measurable difference on the large reads that matter.
     """
 
     def __init__(self, raw: Any) -> None:
@@ -198,22 +203,3 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     else:
         raw = BinaryIOWrapper(obj)
     return _NonClosingBufferedReader(raw)
-
-
-def fix_stream_start_position(stream: BinaryIO) -> BinaryIO:
-    """Make a stream behave as if its current position were 0.
-
-    If ``stream`` is seekable and already at offset 0, it is returned unchanged. If it is
-    seekable but positioned mid-stream, it is wrapped in a slice so the consumer (a codec
-    library that assumes ``tell() == 0``) sees a clean origin. Non-seekable streams are
-    returned as-is (the caller can only read forward anyway).
-    """
-    if not is_seekable(stream):
-        return stream
-    start_pos = stream.tell()
-    if start_pos == 0:
-        return stream
-    # Imported lazily to avoid a module import cycle (slice imports compat).
-    from archivey.internal.streams.slice import SlicingStream
-
-    return SlicingStream(stream, start=start_pos)

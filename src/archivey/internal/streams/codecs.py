@@ -36,7 +36,7 @@ from archivey.internal.errors import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.archive_stream import ArchiveStream, ExceptionTranslator
-from archivey.internal.streams.compat import (
+from archivey.internal.streams.binaryio import (
     ensure_binaryio,
     ensure_bufferedio,
 )
