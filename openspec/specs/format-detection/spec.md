@@ -100,6 +100,16 @@ The system SHALL recognise the following formats by inspecting bytes at the spec
 | ISO 9660 | 32 769 | `43 44 30 30 31` ("CD001") — requires ≥ 32 774 bytes peek |
 | TAR (POSIX/GNU) | 257 | `75 73 74 61 72` ("ustar") — requires ≥ 512 bytes peek |
 | LZ4 | 0 | `04 22 4D 18` |
+| lzip | 0 | `4C 5A 49 50` ("LZIP") |
+| zlib | 0 | `78 01` / `78 5E` / `78 9C` / `78 DA` — weak signal (see note) |
+
+The zlib 2-byte header is a CMF/FLG pair, not a true magic number: the same prefix
+begins many raw-deflate streams and can occur in arbitrary data, so a zlib match is the
+**least specific** entry in the table. Detection MAY treat a zlib-header match as lower
+confidence than an exact multi-byte magic and let a conflicting extension or a successful
+structural probe override it. unix-compress (`.Z`, LZW magic `1F 9D`) is intentionally
+**absent** from this table: v2 ports no LZW backend, so it is neither detected nor opened
+(see `format-single-file-compressors`).
 
 #### Scenario: ZIP standard local file header
 
@@ -113,16 +123,46 @@ The system SHALL recognise the following formats by inspecting bytes at the spec
 
 ---
 
+### Requirement: Magic-less formats are detected by a content probe
+
+Some single-file compressors carry **no magic bytes** at all — Brotli is the notable
+case (a raw Brotli stream has no signature or framing). When the magic-byte table yields
+no match, the system SHALL attempt a bounded **content probe** for each such format: feed
+a small prefix of the source to the codec's incremental decompressor and treat
+"decompresses without error" as a match. A probe match SHALL report
+`confidence=DetectionConfidence.PROBABLE` and `detected_by="content_probe"` (it is a
+structural test, weaker than an exact magic match). Content probes run only after all
+magic-byte matching has failed, and each probe MUST restore the source position so a
+later probe — or the backend — sees the bytes it consumed.
+
+A probe is **skipped** when its decompression backend is unavailable (e.g. Brotli when
+the `[7z]` extra is not installed); detection then falls through to the extension guess
+(`.br` → Brotli) rather than failing. Because a content probe can have false positives on
+short or adversarial inputs, an extension that disagrees with a probe result MAY be used
+to override it.
+
+#### Scenario: standalone Brotli detected by content probe
+
+- **WHEN** a source matches no magic pattern and a bounded prefix decompresses cleanly through the Brotli decompressor
+- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.BROTLI, confidence=DetectionConfidence.PROBABLE, detected_by="content_probe")`
+
+#### Scenario: Brotli probe skipped when the backend is missing
+
+- **WHEN** a `.br` path matches no magic pattern and the Brotli backend is not installed
+- **THEN** the content probe is skipped and detection falls back to the extension guess (`ArchiveFormat.BROTLI`, `confidence=DetectionConfidence.GUESS`, `detected_by="extension"`)
+
+---
+
 ### Requirement: Compressed streams are probed for an inner TAR
 
-When the outer stream is a single-file compressor (gzip, bzip2, xz, zstd, lz4),
-detection SHALL peek a bounded prefix of the *decompressed* content and test for the
-TAR `ustar` signature at offset 257, so a tarball is reported as the combined format
-(`TAR_GZ` / `TAR_BZ2` / `TAR_XZ` / `TAR_ZST` / `TAR_LZ4`) rather than a bare
-single-file compressor. The probe SHALL decompress only enough to reach the TAR
-header region (≥ 512 decompressed bytes). If the compressor's decompression backend
-is unavailable, detection reports the bare compressor format and defers the inner-TAR
-determination to open time.
+When the outer stream is a single-file compressor (gzip, bzip2, xz, zstd, lz4, lzip,
+zlib, brotli), detection SHALL peek a bounded prefix of the *decompressed* content and
+test for the TAR `ustar` signature at offset 257, so a tarball is reported as the
+combined format (`TAR_GZ` / `TAR_BZ2` / `TAR_XZ` / `TAR_ZST` / `TAR_LZ4`, and likewise
+the TAR + lzip/zlib/brotli combination) rather than a bare single-file compressor. The
+probe SHALL decompress only enough to reach the TAR header region (≥ 512 decompressed
+bytes). If the compressor's decompression backend is unavailable, detection reports the
+bare compressor format and defers the inner-TAR determination to open time.
 
 #### Scenario: gzip wrapping a tar
 
