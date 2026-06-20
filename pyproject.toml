@@ -74,9 +74,11 @@ dev = [
     "zstandard>=0.23.0",
     "lz4>=4.4.5",
     "cryptography>=45.0.0",
-    # Exercises the network-response stream case in tests/test_stream_inputs.py: requests'
-    # response.raw is a urllib3 HTTPResponse, the canonical file-like network input.
+    # Exercise real third-party stream objects in tests/test_stream_inputs.py: urllib3 is
+    # what requests' response.raw is (the canonical file-like network input); fsspec's file
+    # objects are ubiquitous in data pipelines (local/S3/GCS/HTTP behind one interface).
     "urllib3>=2.0.0",
+    "fsspec>=2024.0.0",
 ]
 # Documentation toolchain. Kept out of `dev` so the common lint/test loop stays light;
 # build the site with `uv run --group docs mkdocs build --strict`.

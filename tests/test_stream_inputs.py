@@ -20,7 +20,10 @@ import gzip
 import importlib.util
 import io
 import lzma
+import mmap
+import os
 import tarfile
+import tempfile
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -46,6 +49,7 @@ from tests.streams_util import NonSeekableBytesIO, make_lzip_member
 CONTENT = bytes((i * 7 + 13) % 256 for i in range(5000))
 
 HAVE_URLLIB3 = importlib.util.find_spec("urllib3") is not None
+HAVE_FSSPEC = importlib.util.find_spec("fsspec") is not None
 
 
 def _close(stream: object) -> None:
@@ -75,6 +79,28 @@ class ReadIntoStream(OnlyReadStream):
         return self._inner.readinto(b)
 
 
+class FakeS3StreamingBody:
+    """Mimics ``botocore.response.StreamingBody`` (S3 ``get_object()["Body"]``).
+
+    The real object wraps a urllib3 response: it has ``read(amt=None)``, ``tell()``,
+    ``close()`` and ``iter_chunks()`` / ``iter_lines()``, but is **not** an io.IOBase and
+    has no ``seek``/``seekable``/``readinto`` — i.e. a forward-only partial file-like that
+    must be wrapped. Modelled faithfully here rather than depending on botocore.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def read(self, amt: int | None = None) -> bytes:
+        return self._inner.read(amt if amt is not None else -1)
+
+    def tell(self) -> int:
+        return self._inner.tell()
+
+    def close(self) -> None:
+        self._inner.close()
+
+
 # --- stream factories ------------------------------------------------------------------
 
 
@@ -82,7 +108,7 @@ class ReadIntoStream(OnlyReadStream):
 class Case:
     build: Callable[[Path], BinaryIO]
     seekable: bool
-    is_iobase: bool  # True => is_stream() should pass it through unwrapped
+    passes_is_stream: bool  # True => is_stream() accepts it, so ensure_binaryio passes it through
 
 
 def _buffered_file(tmp_path: Path) -> BinaryIO:
@@ -199,35 +225,101 @@ def _non_seekable_bytesio(_tmp_path: Path) -> BinaryIO:
     return NonSeekableBytesIO(CONTENT)
 
 
+def _spooled_tempfile(_tmp_path: Path) -> BinaryIO:
+    # Common for buffering uploads/downloads in memory then spilling to disk.
+    f = tempfile.SpooledTemporaryFile(max_size=len(CONTENT) // 2)  # forced to spill
+    f.write(CONTENT)
+    f.seek(0)
+    return f
+
+
+def _named_tempfile(_tmp_path: Path) -> BinaryIO:
+    # _TemporaryFileWrapper: fully duck-types BinaryIO but is NOT an io.IOBase, so this
+    # exercises the duck-typed branch of is_stream() on a real-world object.
+    f = tempfile.NamedTemporaryFile()
+    f.write(CONTENT)
+    f.seek(0)
+    return f
+
+
+def _os_pipe_reader(_tmp_path: Path) -> BinaryIO:
+    # A real OS non-seekable stream (BufferedReader over a pipe fd). CONTENT fits the
+    # pipe buffer, so the single write doesn't block before the write end is closed.
+    r, w = os.pipe()
+    os.write(w, CONTENT)
+    os.close(w)
+    return open(r, "rb")
+
+
+def _mmap_source(_tmp_path: Path) -> BinaryIO:
+    # An anonymous mmap: seekable in practice, but it has no seekable() method and is not
+    # an io.IOBase, so it gets wrapped — and is_seekable() conservatively reports it
+    # non-seekable (see the module note / the open question raised in review).
+    mm = mmap.mmap(-1, len(CONTENT))
+    mm.write(CONTENT)
+    mm.seek(0)
+    return mm  # type: ignore[return-value]
+
+
+def _s3_streaming_body(_tmp_path: Path) -> BinaryIO:
+    return FakeS3StreamingBody(CONTENT)  # type: ignore[return-value]
+
+
+def _fsspec_memory(_tmp_path: Path) -> BinaryIO:
+    import fsspec
+
+    fs = fsspec.filesystem("memory")
+    path = "/stream_inputs_case.bin"
+    with fs.open(path, "wb") as f:
+        f.write(CONTENT)
+    return fs.open(path, "rb")
+
+
 CASES: dict[str, Case] = {
-    "buffered_file": Case(_buffered_file, seekable=True, is_iobase=True),
-    "raw_fileio": Case(_raw_file, seekable=True, is_iobase=True),
-    "bytesio": Case(_bytesio, seekable=True, is_iobase=True),
-    "gzip": Case(_gzip_member, seekable=True, is_iobase=True),
-    "bz2": Case(_bz2_member, seekable=True, is_iobase=True),
-    "lzma": Case(_lzma_member, seekable=True, is_iobase=True),
-    "zip_stored": Case(_zip_member(stored=True), seekable=True, is_iobase=True),
-    "zip_deflated": Case(_zip_member(stored=False), seekable=True, is_iobase=True),
-    "tar_uncompressed": Case(_tar_member(""), seekable=True, is_iobase=True),
-    "tar_gz": Case(_tar_member("gz"), seekable=True, is_iobase=True),
-    "xz_decompressor": Case(_xz_decompressor, seekable=True, is_iobase=True),
-    "lzip_decompressor": Case(_lzip_decompressor, seekable=True, is_iobase=True),
-    "zlib_decompressor": Case(_zlib_decompressor, seekable=True, is_iobase=True),
-    "codec_gzip": Case(_codec_gzip, seekable=True, is_iobase=True),
-    "urllib3_response": Case(_urllib3_response, seekable=False, is_iobase=True),
-    "http_client_response": Case(_http_client_response, seekable=False, is_iobase=True),
-    "only_read": Case(_only_read, seekable=False, is_iobase=False),
-    "read_into": Case(_read_into, seekable=False, is_iobase=False),
-    "non_seekable_bytesio": Case(_non_seekable_bytesio, seekable=False, is_iobase=True),
+    # --- already-conforming io.IOBase streams (passed through unwrapped) ---
+    "buffered_file": Case(_buffered_file, seekable=True, passes_is_stream=True),
+    "raw_fileio": Case(_raw_file, seekable=True, passes_is_stream=True),
+    "bytesio": Case(_bytesio, seekable=True, passes_is_stream=True),
+    "spooled_tempfile": Case(_spooled_tempfile, seekable=True, passes_is_stream=True),
+    "gzip": Case(_gzip_member, seekable=True, passes_is_stream=True),
+    "bz2": Case(_bz2_member, seekable=True, passes_is_stream=True),
+    "lzma": Case(_lzma_member, seekable=True, passes_is_stream=True),
+    "zip_stored": Case(_zip_member(stored=True), seekable=True, passes_is_stream=True),
+    "zip_deflated": Case(_zip_member(stored=False), seekable=True, passes_is_stream=True),
+    "tar_uncompressed": Case(_tar_member(""), seekable=True, passes_is_stream=True),
+    "tar_gz": Case(_tar_member("gz"), seekable=True, passes_is_stream=True),
+    "xz_decompressor": Case(_xz_decompressor, seekable=True, passes_is_stream=True),
+    "lzip_decompressor": Case(_lzip_decompressor, seekable=True, passes_is_stream=True),
+    "zlib_decompressor": Case(_zlib_decompressor, seekable=True, passes_is_stream=True),
+    "codec_gzip": Case(_codec_gzip, seekable=True, passes_is_stream=True),
+    # --- non-seekable io.IOBase streams (network / pipes) ---
+    "urllib3_response": Case(_urllib3_response, seekable=False, passes_is_stream=True),
+    "http_client_response": Case(_http_client_response, seekable=False, passes_is_stream=True),
+    "os_pipe_reader": Case(_os_pipe_reader, seekable=False, passes_is_stream=True),
+    "non_seekable_bytesio": Case(_non_seekable_bytesio, seekable=False, passes_is_stream=True),
+    # --- fully duck-typed but NOT io.IOBase (accepted via the method-set check) ---
+    "named_tempfile": Case(_named_tempfile, seekable=True, passes_is_stream=True),
+    "fsspec_memory": Case(_fsspec_memory, seekable=True, passes_is_stream=True),
+    # --- partial / bare objects that must be wrapped ---
+    "only_read": Case(_only_read, seekable=False, passes_is_stream=False),
+    "read_into": Case(_read_into, seekable=False, passes_is_stream=False),
+    "s3_streaming_body": Case(_s3_streaming_body, seekable=False, passes_is_stream=False),
+    # mmap is seekable in practice but exposes no seekable() method, so is_seekable()
+    # conservatively reports False and it is wrapped (see module note).
+    "mmap": Case(_mmap_source, seekable=False, passes_is_stream=False),
 }
+
+_OPTIONAL_DEP = {"urllib3_response": ("urllib3", HAVE_URLLIB3), "fsspec_memory": ("fsspec", HAVE_FSSPEC)}
 
 
 def _params() -> list:
     params = []
     for cid in CASES:
         marks = []
-        if cid == "urllib3_response" and not HAVE_URLLIB3:
-            marks.append(pytest.mark.skip(reason="urllib3 not installed"))
+        if cid in _OPTIONAL_DEP:
+            pkg, available = _OPTIONAL_DEP[cid]
+            if not available:
+                marks.append(pytest.mark.skip(reason=f"{pkg} not installed"))
         params.append(pytest.param(cid, id=cid, marks=marks))
     return params
 
@@ -243,7 +335,7 @@ def case(request: pytest.FixtureRequest) -> Case:
 def test_is_stream_classification(case: Case, tmp_path: Path) -> None:
     stream = case.build(tmp_path)
     try:
-        assert is_stream(stream) is case.is_iobase
+        assert is_stream(stream) is case.passes_is_stream
     finally:
         _close(stream)
 
@@ -260,7 +352,7 @@ def test_ensure_binaryio_passthrough_or_wrap(case: Case, tmp_path: Path) -> None
     stream = case.build(tmp_path)
     try:
         ensured = ensure_binaryio(stream)
-        if case.is_iobase:
+        if case.passes_is_stream:
             assert ensured is stream  # already a BinaryIO; not re-wrapped
         else:
             assert isinstance(ensured, BinaryIOWrapper)  # partial object gets adapted
