@@ -235,6 +235,30 @@ def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
     assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
 
 
+@requires("zstandard")
+def test_zstd_reopens_and_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+    """zstd's reader can't seek backward in place; a rewind reopens from the start + warns.
+
+    A forward seek stays quiet; the backward seek reopens the source and re-decodes,
+    delivering correct data with one warning.
+    """
+    import zstandard
+
+    compressed = zstandard.ZstdCompressor().compress(CONTENT)
+    with open_codec_stream(Codec.ZSTD, io.BytesIO(compressed)) as stream:
+        assert stream.seekable() is True  # made rewindable via reopen
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.read(100) == CONTENT[:100]
+            assert stream.seek(300) == 300  # forward: no rewind, no warning
+            assert stream.read(10) == CONTENT[300:310]
+        assert not caplog.records
+
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.seek(0) == 0  # backward → reopen + re-decode from start
+            assert stream.read(100) == CONTENT[:100]  # correct data after reopen
+    assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
+
+
 def test_gzip_accelerator_on_without_package_raises() -> None:
     """ON explicitly requests rapidgzip; absent, that's a PackageNotInstalledError."""
     if importlib.util.find_spec("rapidgzip") is not None:

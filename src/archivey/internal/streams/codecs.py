@@ -39,6 +39,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream, ExceptionTra
 from archivey.internal.streams.binaryio import (
     ensure_binaryio,
     ensure_bufferedio,
+    is_seekable,
 )
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
@@ -433,12 +434,98 @@ def _open_zlib(source: CodecSource, params: CodecParams, config: StreamConfig) -
     )
 
 
+class _ZstdReopenStream(io.RawIOBase, BinaryIO):
+    """A zstd decoder that services a backward seek by reopening from the start.
+
+    zstandard's reader raises ``OSError`` on a backward seek. To give zstd the same
+    forward-only-but-rewindable behaviour as the other index-less codecs (brotli/lz4/zlib),
+    a backward seek closes the reader, rewinds the source, and reopens a fresh decoder, then
+    re-decompresses forward to the target. The O(n) rewind cost is surfaced by the
+    ``_SlowSeekWarningStream`` the opener wraps around this, so this class stays quiet.
+    """
+
+    def __init__(self, source: CodecSource) -> None:
+        super().__init__()
+        self._source = source
+        self._inner = self._open()
+        self._size: int | None = None
+
+    def _open(self) -> BinaryIO:
+        assert _zstandard is not None
+        return _zstandard.open(self._source, "rb")
+
+    def _reopen(self) -> None:
+        # Closing the zstandard reader does not close the underlying source, so it can be
+        # rewound and reopened. (A path source is simply reopened from scratch.)
+        self._inner.close()
+        if not isinstance(self._source, (str, os.PathLike)):
+            self._source.seek(0)
+        self._inner = self._open()
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._inner.read(n)
+
+    def readinto(self, b: "WriteableBuffer", /) -> int:
+        raw_readinto = getattr(self._inner, "readinto", None)
+        if raw_readinto is not None:
+            return raw_readinto(b)
+        mv = memoryview(b).cast("B")
+        data = self._inner.read(len(mv))
+        mv[: len(data)] = data
+        return len(data)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if whence == io.SEEK_SET:
+            new_pos = offset
+        elif whence == io.SEEK_CUR:
+            new_pos = self._inner.tell() + offset
+        elif whence == io.SEEK_END:
+            # zstandard cannot report the size without decoding; read to the end once and
+            # cache it (matching what _compression.DecompressReader does internally).
+            if self._size is None:
+                while self._inner.read(65536):
+                    pass
+                self._size = self._inner.tell()
+            new_pos = self._size + offset
+        else:
+            raise ValueError(f"Invalid whence: {whence}")
+        try:
+            return self._inner.seek(new_pos)
+        except OSError as e:
+            if "cannot seek zstd decompression stream backwards" in str(e):
+                self._reopen()
+                return self._inner.seek(new_pos)
+            raise
+
+    def tell(self, /) -> int:
+        return self._inner.tell()
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        # A path can always be reopened; a stream source only if it can be rewound.
+        if isinstance(self._source, (str, os.PathLike)):
+            return True
+        return is_seekable(self._source)
+
+    def close(self) -> None:
+        self._inner.close()
+        super().close()
+
+
 def _open_zstd(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
     if _zstandard is None:
         raise PackageNotInstalledError(
             "The 'zstandard' package is required for zstd streams (install the 'zstd' extra)."
         )
-    return ensure_binaryio(_zstandard.open(source, "rb"))
+    # zstd's reader raises on a backward seek; reopen-from-start gives it the same
+    # rewindable forward-only behaviour as the other index-less codecs, and the wrapper
+    # warns on the (O(n)) rewind.
+    return _SlowSeekWarningStream(_ZstdReopenStream(source), codec_name="zstd")
 
 
 def _open_lz4(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
