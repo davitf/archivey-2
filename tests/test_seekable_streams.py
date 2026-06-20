@@ -21,6 +21,8 @@ from tests.streams_util import (
     make_lzip_member,
     make_multi_member_lzip,
     make_multi_stream_xz,
+    make_multiblock_xz,
+    xz_cli_available,
 )
 
 CONTENT = bytes(range(256)) * 200  # 51200 bytes, compressible but non-trivial
@@ -74,6 +76,29 @@ def test_xz_index_backwards_parses_blocks() -> None:
     blocks = _read_xz_index_backwards(io.BytesIO(compressed), len(compressed))
     assert sum(b.uncompressed_size for b in blocks) == 2 * len(CONTENT)
     assert blocks[0].decompressed_start == 0
+
+
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
+)
+def test_xz_multiblock_backward_seek_crosses_block_boundary() -> None:
+    """A backward seek within a *single* multi-block XZ stream uses the block chain.
+
+    ``lzma.compress`` emits one block per stream, so the in-stream "advance to the next
+    block" path of ``_XzBlockChain`` is otherwise unexercised. Build a genuinely
+    multi-block stream and seek so the read spans a block boundary.
+    """
+    compressed = make_multiblock_xz(CONTENT, block_size=8192)
+    blocks = _read_xz_index_backwards(io.BytesIO(compressed), len(compressed))
+    assert len(blocks) > 1  # genuinely multi-block within one stream
+
+    with XzDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read() == CONTENT  # forward pass populates the block index
+        start = len(CONTENT) // 3
+        length = len(CONTENT) // 2  # long enough to cross at least one block boundary
+        stream.seek(start)
+        assert stream.read(length) == CONTENT[start : start + length]
 
 
 def test_xz_truncated_raises() -> None:

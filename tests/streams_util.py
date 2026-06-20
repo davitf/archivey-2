@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import lzma
+import shutil
 import struct
+import subprocess
 import zlib
 
 
@@ -98,6 +100,27 @@ def make_multi_member_lzip(parts: list[bytes], dict_size_bits: int = 20) -> byte
 
 def make_multi_stream_xz(parts: list[bytes]) -> bytes:
     return b"".join(lzma.compress(p, format=lzma.FORMAT_XZ) for p in parts)
+
+
+def xz_cli_available() -> bool:
+    """Whether the ``xz`` CLI is on PATH (needed to build a multi-block XZ stream)."""
+    return shutil.which("xz") is not None
+
+
+def make_multiblock_xz(data: bytes, block_size: int) -> bytes:
+    """Compress ``data`` into a *single* XZ stream split into multiple blocks.
+
+    stdlib ``lzma`` always emits one block per stream, so the multi-block layout (which
+    drives ``XzDecompressorStream``'s block-chain random-access path) is produced via the
+    ``xz`` CLI's ``--block-size``. Guard callers with :func:`xz_cli_available`.
+    """
+    result = subprocess.run(
+        ["xz", "-z", "-c", f"--block-size={block_size}"],
+        input=data,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout
 
 
 def lzma2_raw_filters() -> list[dict]:

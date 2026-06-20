@@ -39,7 +39,6 @@ from archivey.internal.streams.archive_stream import ArchiveStream, ExceptionTra
 from archivey.internal.streams.compat import (
     ensure_binaryio,
     ensure_bufferedio,
-    is_seekable,
 )
 from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.lzip import LzipDecompressorStream
@@ -507,12 +506,11 @@ def open_codec_stream(
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
     """
     backend = resolve_codec(codec, config)
-    # A path opens to a seekable file; a stream is as seekable as its source.
-    seekable = is_seekable(source) if not isinstance(source, (str, bytes, os.PathLike)) else True
+    # Opened eagerly (lazy=False), so ArchiveStream.seekable() reflects the real backend
+    # stream — no seekable hint needed (that only matters for a lazily-opened stream).
     return ArchiveStream(
         lambda: backend.open(source, params),
         translate=backend.translate,
         stamp=stamp,
         lazy=False,
-        seekable=seekable,
     )
