@@ -18,12 +18,25 @@ only ever appear inside a container (ZIP/7z), so they are reachable through
 
 ### Requirement: Present a single-file compressor as a one-member archive
 
-The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, or Z source as an archive containing exactly one `ArchiveMember` of type `MemberType.FILE`. No directory members are synthesized. The member's name is inferred by stripping the compression extension from the source filename (e.g., `data.txt.gz` → `data.txt`; likewise `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.zz`, `.br`, `.Z`). If no filename is available (e.g., the source is an anonymous stream), the member name defaults to `"data"`.
+The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, or Z source as an archive containing exactly one `ArchiveMember` of type `MemberType.FILE`. No directory members are synthesized.
+
+The member's name is inferred from the source filename as follows:
+
+- If the filename ends in a **recognized single-file-compressor extension** — `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.zz`, `.br`, `.Z` (case-insensitively) — that extension is **stripped** (e.g. `data.txt.gz` → `data.txt`).
+- Otherwise the extension is **not** removed: it may be meaningful and unrelated to compression (the stream was identified by content/magic, not by a matching name), so the suffix `.uncompressed` is **appended** instead (e.g. `mystery.bin` → `mystery.bin.uncompressed`, `backup` → `backup.uncompressed`). Blindly stripping an arbitrary extension would discard real information and could yield an empty or misleading name.
+- If no filename is available (e.g. an anonymous stream), the member name defaults to `"data"`.
+
+The recognized compression extensions are exactly the standalone-stream extensions of the codecs in this capability; the combined `tar.gz`/`.tgz`-style names are a `format-detection` concern, not single-file member naming.
 
 #### Scenario: ArchiveMember name inferred from filename
 
 - **WHEN** a single-file compressor archive is opened from a path such as `data.txt.gz`
 - **THEN** the single member's `name` is `"data.txt"` (the compression extension `.gz` is stripped)
+
+#### Scenario: source extension is not a known compression extension
+
+- **WHEN** a single-file compressor archive is opened from a path such as `mystery.bin` (identified as compressed by content, not by a `.gz`/`.xz`/… name)
+- **THEN** the extension is left intact and the single member's `name` is `"mystery.bin.uncompressed"` (the original extension is not discarded)
 
 #### Scenario: ArchiveMember name defaults when no filename is available
 

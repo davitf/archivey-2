@@ -37,12 +37,16 @@ if TYPE_CHECKING:
 class _IncrementalHasher(Protocol):
     """The subset of the ``hashlib`` hash interface this stage uses."""
 
+    @property
+    def digest_size(self) -> int: ...
     def update(self, data: bytes, /) -> None: ...
     def digest(self) -> bytes: ...
 
 
 class _Crc32Hasher:
     """A ``hashlib``-shaped wrapper over ``zlib.crc32`` so all algorithms share an interface."""
+
+    digest_size = 4
 
     def __init__(self) -> None:
         self._value = 0
@@ -51,7 +55,7 @@ class _Crc32Hasher:
         self._value = zlib.crc32(data, self._value)
 
     def digest(self) -> bytes:
-        return (self._value & 0xFFFFFFFF).to_bytes(4, "big")
+        return (self._value & 0xFFFFFFFF).to_bytes(self.digest_size, "big")
 
 
 def _make_hasher(algorithm: str) -> Callable[[], _IncrementalHasher] | None:
@@ -64,12 +68,16 @@ def _make_hasher(algorithm: str) -> Callable[[], _IncrementalHasher] | None:
     return None
 
 
-def _matches(hasher: _IncrementalHasher, expected: int | bytes) -> bool:
-    digest = hasher.digest()
-    # Digests may be stored as raw bytes or as a big-endian integer (e.g. CRC32 as int).
-    if isinstance(expected, int):
-        return int.from_bytes(digest, "big") == expected
-    return digest == expected
+def _expected_as_bytes(value: int | bytes, hasher: _IncrementalHasher) -> bytes:
+    """Normalize a stored digest to ``bytes`` once, in the hasher's own width.
+
+    A digest may be stored as raw bytes or as a big-endian integer (e.g. CRC32 as int).
+    Converting the *expected* value up front lets verification be a plain ``bytes ==
+    bytes`` compare against ``hasher.digest()`` — no per-read int<->bytes round-trip.
+    """
+    if isinstance(value, int):
+        return value.to_bytes(hasher.digest_size, "big")
+    return value
 
 
 class VerifyingStream(io.RawIOBase, BinaryIO):
@@ -82,7 +90,7 @@ class VerifyingStream(io.RawIOBase, BinaryIO):
     ) -> None:
         super().__init__()
         self._inner = inner
-        self._expected: dict[str, int | bytes] = {}
+        self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
         for algorithm, value in expected.items():
             factory = _make_hasher(algorithm)
@@ -93,15 +101,16 @@ class VerifyingStream(io.RawIOBase, BinaryIO):
                     algorithm,
                 )
                 continue
-            self._expected[algorithm] = value
-            self._hashers[algorithm] = factory()
+            hasher = factory()
+            self._hashers[algorithm] = hasher
+            self._expected[algorithm] = _expected_as_bytes(value, hasher)
         self._verified = False
 
     def _verify(self) -> None:
         """Check every computable digest; raise on the first mismatch."""
         self._verified = True
-        for algorithm, value in self._expected.items():
-            if not _matches(self._hashers[algorithm], value):
+        for algorithm, expected in self._expected.items():
+            if self._hashers[algorithm].digest() != expected:
                 raise CorruptionError(
                     f"Digest mismatch for {algorithm!r}: stored value does not match the "
                     f"decompressed content."

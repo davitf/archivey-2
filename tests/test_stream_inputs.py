@@ -243,11 +243,23 @@ def _named_tempfile(_tmp_path: Path) -> BinaryIO:
 
 
 def _os_pipe_reader(_tmp_path: Path) -> BinaryIO:
-    # A real OS non-seekable stream (BufferedReader over a pipe fd). CONTENT fits the
-    # pipe buffer, so the single write doesn't block before the write end is closed.
+    # A real OS non-seekable stream (BufferedReader over a pipe fd). The data is written
+    # from a background thread so a consumer can drain the pipe concurrently: CONTENT
+    # exceeds the Windows pipe buffer (~4 KiB, vs 64 KiB on Linux / 16 KiB on macOS), so a
+    # single in-thread write would block forever waiting for a reader and deadlock the test.
+    import threading
+
     r, w = os.pipe()
-    os.write(w, CONTENT)
-    os.close(w)
+
+    def _fill() -> None:
+        try:
+            os.write(w, CONTENT)
+        except OSError:
+            pass  # reader closed early (e.g. a test that doesn't read); broken pipe is fine
+        finally:
+            os.close(w)
+
+    threading.Thread(target=_fill, daemon=True).start()
     return open(r, "rb")
 
 

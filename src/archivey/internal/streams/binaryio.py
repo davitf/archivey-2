@@ -232,7 +232,12 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         return is_seekable(self._raw)
 
     def close(self) -> None:
-        # Intentionally does not close the wrapped stream (often a temporary view).
+        # Do NOT close the wrapped stream. Like _NonClosingBufferedReader below, this
+        # wrapper adapts a stream the *caller* owns; archivey must never close a stream the
+        # user handed it. A plain RawIOBase.close() wouldn't touch self._raw anyway, but the
+        # point is deliberate: closing happens implicitly — via a `with` block or GC
+        # finalization of this wrapper — and must not take the caller's stream down with it.
+        # super().close() only marks this wrapper closed.
         super().close()
 
     def __repr__(self) -> str:
@@ -256,8 +261,14 @@ def ensure_binaryio(obj: Any) -> BinaryIO:
 class _NonClosingBufferedReader(io.BufferedReader):
     """A ``BufferedReader`` that detaches instead of closing its raw stream.
 
-    Used when we temporarily buffer a caller-owned stream (e.g. to peek a header): the
-    buffer must not close a stream we don't own.
+    A normal ``io.BufferedReader`` closes its underlying raw stream when the buffer itself
+    is closed — and that close is usually *implicit*: leaving a ``with`` block, or the
+    reader being finalized by GC. When we temporarily buffer a **caller-owned** stream
+    (e.g. to peek a header), that would close a stream archivey doesn't own, breaking the
+    caller's later reads. Detaching on close severs the link to the raw stream first, so
+    closing the buffer leaves the source open and usable. (See
+    ``test_ensure_bufferedio_does_not_close_raw_source`` and its plain-``BufferedReader``
+    contrast for the behaviour this guards against.)
     """
 
     def close(self) -> None:

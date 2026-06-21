@@ -379,3 +379,33 @@ def test_ensure_bufferedio_does_not_close_raw_source() -> None:
     assert buffered.read(4) == DATA[:4]
     buffered.close()
     assert not inner.closed  # the non-closing buffer detaches rather than closing
+
+
+def test_plain_bufferedreader_closes_source_demonstrates_why_we_detach() -> None:
+    """Contrast: a *plain* BufferedReader closes its raw stream on close().
+
+    This is the failure mode ``_NonClosingBufferedReader`` exists to prevent — closing the
+    buffer (explicitly, or implicitly via GC / a ``with`` block) would close a stream the
+    caller owns. ``ensure_bufferedio`` must NOT behave like this.
+    """
+    inner = CountingBytesIO(DATA)
+    plain = io.BufferedReader(inner)
+    plain.close()
+    assert inner.closed  # plain BufferedReader took the (caller-owned) source down with it
+
+    # ensure_bufferedio over the same kind of source leaves it open — the behaviour we want.
+    survivor = CountingBytesIO(DATA)
+    ensure_bufferedio(survivor).close()
+    assert not survivor.closed
+
+
+def test_ensure_bufferedio_source_still_readable_after_buffer_closed() -> None:
+    """After the non-closing buffer is closed, the caller can keep reading the source."""
+    inner = CountingBytesIO(DATA)
+    buffered = ensure_bufferedio(inner)
+    assert buffered.read(4) == DATA[:4]
+    buffered.close()
+    # The source is still open and continues from where the buffer left off is not
+    # guaranteed (the buffer read ahead), but it must remain usable, not closed.
+    assert not inner.closed
+    assert inner.read(0) == b""  # a live, non-raising operation on an open stream

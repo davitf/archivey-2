@@ -1,4 +1,4 @@
-"""Seekable decompressor-stream base class and the zlib/deflate backend.
+"""Seekable decompressor-stream base class and the zlib/deflate and Brotli backends.
 
 The base supports optional seek-point-based random access: subclasses register known
 positions as they decode (``add_seek_points``) and/or build a full index once on demand
