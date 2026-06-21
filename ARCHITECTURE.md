@@ -29,15 +29,19 @@ src/archivey/
 │   ├── progress.py        # ExtractionProgress / ExtractionResult              (Phase 4)
 │   ├── config.py          # StreamConfig + AcceleratorMode (internal; not yet public) (Phase 2)
 │   └── streams/           # compressed + seekable stream layer                 (Phase 2)
-│       ├── binaryio.py        # classify/coerce caller objects to BinaryIO (is_*, ensure_*, BinaryIOWrapper, read_exact)
-│       ├── slice.py           # SlicingStream + fix_stream_start_position
+│       ├── streamtools/       # generic, archivey-agnostic binary-stream plumbing (extractable as a lib)
+│       │   ├── binaryio.py    # classify/coerce caller objects to BinaryIO (is_*, ensure_*, BinaryIOWrapper, read_exact)
+│       │   └── slice.py       # SlicingStream + fix_stream_start_position
+│       ├── decompressor_stream.py  # codec-agnostic seekable DecompressorStream base + SeekPoint
+│       ├── decompress.py      # concrete zlib/deflate + Brotli backends (build on the base)
+│       ├── xz.py / lzip.py    # segmented (block-index / trailer-scan) seekable backends
 │       ├── archive_stream.py  # ArchiveStream — exception translation/stamping carrier
-│       ├── decompress.py / xz.py / lzip.py   # seekable decompressor streams
 │       ├── codecs.py          # codec registry (one default backend per codec) + resolver
 │       ├── crypto.py          # the single wrapped AES crypto stage ([crypto])
 │       └── verify.py          # decompressed-output digest verification stage
-│       # (there is no io_helpers.py — clean slate; the detection peek/rewind primitive
-│       #  is PeekableStream in detection.py, Phase 3, not in this layer)
+│       # streamtools/ imports nothing from archivey (pure stdlib); everything else here
+│       # speaks ArchiveyError. (No io_helpers.py — the detection peek/rewind primitive is
+│       # PeekableStream in detection.py, Phase 3, not in this layer.)
 │
 └── formats/               # one module per format backend
     ├── __init__.py            # registers backends at import time
@@ -284,7 +288,7 @@ on a raw non-seekable stream it intends to keep reading must pass a `PeekableStr
 
 This is a standard "read-ahead buffer" pattern — the key property is that the backend never knows or cares whether the source was originally seekable.
 
-**Deciding "seekable" is not just `stream.seekable()`.** `streams/binaryio.py:is_seekable`
+**Deciding "seekable" is not just `stream.seekable()`.** `streams/streamtools/binaryio.py:is_seekable`
 is the single predicate that answers it, and it cannot blindly trust the stream's own
 `seekable()`:
 

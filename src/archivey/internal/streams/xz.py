@@ -29,7 +29,10 @@ from typing import BinaryIO
 
 from archivey.internal.errors import CorruptionError, TruncatedError
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.decompress import SeekPoint, _SegmentedDecompressorStream
+from archivey.internal.streams.decompressor_stream import (
+    SeekPoint,
+    _SegmentedDecompressorStream,
+)
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
 _XZ_FOOTER_MAGIC = b"YZ"

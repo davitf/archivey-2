@@ -36,16 +36,16 @@ from archivey.internal.errors import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.archive_stream import ArchiveStream, ExceptionTranslator
-from archivey.internal.streams.binaryio import (
-    ensure_binaryio,
-    ensure_bufferedio,
-    is_seekable,
-)
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
     ZlibDecompressorStream,
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.streamtools import (
+    ensure_binaryio,
+    ensure_bufferedio,
+    is_seekable,
+)
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.internal.types import StreamFormat
 

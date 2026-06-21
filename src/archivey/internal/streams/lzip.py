@@ -24,7 +24,10 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.internal.errors import CorruptionError, TruncatedError
-from archivey.internal.streams.decompress import SeekPoint, _SegmentedDecompressorStream
+from archivey.internal.streams.decompressor_stream import (
+    SeekPoint,
+    _SegmentedDecompressorStream,
+)
 
 _MAGIC = b"LZIP"
 _HEADER_SIZE = 6

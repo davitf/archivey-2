@@ -11,12 +11,17 @@ interface.
 from __future__ import annotations
 
 import io
+import logging
 import mmap
 import os
 import stat
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypeGuard, runtime_checkable
 
-from archivey.internal.logs import streams as logger
+# The ``streamtools`` subpackage is deliberately free of any archivey dependency — pure
+# stdlib binary-stream plumbing — so it could one day be lifted out as a standalone library.
+# Hence a plain stdlib logger rather than importing archivey's logging module; the name still
+# places it under the "archivey.streams" hierarchy when used inside archivey.
+logger = logging.getLogger("archivey.streams")
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer

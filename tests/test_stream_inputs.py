@@ -1,6 +1,6 @@
 """Cross-library matrix: the stream helpers vs. every stream type a caller might supply.
 
-The ``streams/binaryio.py`` helpers (``is_stream`` / ``is_seekable`` / ``ensure_binaryio`` /
+The ``streams/streamtools/binaryio.py`` helpers (``is_stream`` / ``is_seekable`` / ``ensure_binaryio`` /
 ``ensure_bufferedio`` / ``BinaryIOWrapper``) are core infrastructure: every backend feeds
 them whatever stream the *source* produced. This module verifies they behave correctly
 against the real objects those sources return — local files, every stdlib codec stream,
@@ -34,7 +34,10 @@ from typing import BinaryIO, Callable
 
 import pytest
 
-from archivey.internal.streams.binaryio import (
+from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
+from archivey.internal.streams.decompress import ZlibDecompressorStream
+from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.streamtools import (
     BinaryIOWrapper,
     ensure_binaryio,
     ensure_bufferedio,
@@ -42,9 +45,6 @@ from archivey.internal.streams.binaryio import (
     is_stream,
     read_exact,
 )
-from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.decompress import ZlibDecompressorStream
-from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
 from tests.streams_util import NonSeekableBytesIO, make_lzip_member
 
