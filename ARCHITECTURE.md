@@ -284,6 +284,30 @@ on a raw non-seekable stream it intends to keep reading must pass a `PeekableStr
 
 This is a standard "read-ahead buffer" pattern — the key property is that the backend never knows or cares whether the source was originally seekable.
 
+**Deciding "seekable" is not just `stream.seekable()`.** `streams/binaryio.py:is_seekable`
+is the single predicate that answers it, and it cannot blindly trust the stream's own
+`seekable()`:
+
+- A `BufferedReader` reports `seekable()=True` even over a non-seekable raw stream, so we
+  unwrap to `.raw` first.
+- `mmap` is seekable but (before Python 3.13) exposes no `seekable()` method, so it is
+  special-cased.
+- **An OS pipe on Windows lies**: its reader reports `seekable()=True`, and `seek()` even
+  returns a plausible offset, but the stream never actually repositions — a later read
+  returns bytes from the *real* (unmoved) position, and `seek(0, SEEK_END)` returns a bogus
+  size. Trusting that would silently corrupt random-access reads and size detection. (POSIX
+  is honest here — `lseek` on a pipe fails with `ESPIPE`, so `seekable()` is already
+  `False`.) This was confirmed on CI and is locked in by
+  `tests/test_stream_inputs.py:test_windows_pipe_seek_characterization`.
+
+So when `seekable()` claims `True`, `is_seekable` confirms via `os.fstat` that the
+underlying fd is not a FIFO/pipe or character device (neither is ever randomly seekable)
+and overrides the claim to `False` if it is. The `fstat` runs only when `seekable()` is
+`True` and only for objects with a real `fileno()`, so `BytesIO`, codec wrappers, and
+network responses (whose `fileno()` raises) are untouched. We deliberately do **not** probe
+by calling `seek()`: that would be side-effecting on a stream someone may be mid-read on,
+and — as the Windows pipe shows — a no-op probe isn't even conclusive.
+
 ### 2.6 Extraction as a separate, composable module
 
 → see SPEC.md §7 / openspec `safe-extraction`
