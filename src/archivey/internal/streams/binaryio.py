@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import mmap
 import os
+import stat
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypeGuard, runtime_checkable
 
 from archivey.internal.logs import streams as logger
@@ -47,16 +48,40 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     return bytes(data)
 
 
+def _is_fifo_or_chardev(stream: Any) -> bool:
+    """Whether ``stream`` is backed by an OS pipe/FIFO or character device.
+
+    Such objects are never randomly seekable, yet some lie about it (see
+    :func:`is_seekable`). We check the file *type* via ``fstat`` rather than probing with
+    ``seek()``. Returns ``False`` for anything without a real OS file descriptor (``BytesIO``,
+    codec wrappers, network responses), whose ``fileno()`` raises.
+    """
+    fileno = getattr(stream, "fileno", None)
+    if fileno is None:
+        return False
+    try:
+        mode = os.fstat(fileno()).st_mode
+    except (OSError, ValueError, io.UnsupportedOperation):
+        return False
+    return stat.S_ISFIFO(mode) or stat.S_ISCHR(mode)
+
+
 def is_seekable(stream: Any) -> bool:
     """Whether ``stream`` can actually seek.
 
     A ``BufferedReader`` reports its own ``seekable()`` as ``True`` even when wrapping a
     non-seekable raw stream, so unwrap to the underlying raw object first. Streams that
     lack a ``seekable()`` method are conservatively treated as non-seekable — except known
-    types we can assert statically (``mmap``). We deliberately do *not* probe by calling
-    ``seek()``: that would make this predicate side-effecting (it's called on hot paths and
-    on streams someone is mid-read on), and a no-op probe isn't even conclusive (a stream
-    can accept ``seek(0, SEEK_CUR)`` yet not reposition).
+    types we can assert statically (``mmap``).
+
+    We deliberately do *not* probe by calling ``seek()``: that would make this predicate
+    side-effecting (it's called on hot paths and on streams someone is mid-read on), and a
+    no-op probe isn't even conclusive. But ``seekable()`` cannot simply be trusted either: a
+    Windows ``os.pipe()`` reader reports ``seekable()=True`` while ``seek()`` returns a
+    plausible offset *without actually repositioning* (verified by
+    ``test_windows_pipe_seek_characterization``) — which would silently corrupt random-access
+    reads. So when ``seekable()`` claims ``True`` we confirm the underlying object isn't a
+    pipe/FIFO or character device (which are never seekable) and override the claim if it is.
     """
     if isinstance(stream, io.BufferedReader):
         return is_seekable(stream.raw)
@@ -68,7 +93,16 @@ def is_seekable(stream: Any) -> bool:
     if seekable is None:
         logger.debug("Stream %r has no seekable() method; treating as non-seekable", stream)
         return False
-    return bool(seekable())
+    if not seekable():
+        return False
+    if _is_fifo_or_chardev(stream):
+        logger.debug(
+            "Stream %r reports seekable() but is a pipe/char device; treating as "
+            "non-seekable (its seek() does not reposition)",
+            stream,
+        )
+        return False
+    return True
 
 
 # Methods/properties a real BinaryIO exposes; used by is_stream() to decide whether an

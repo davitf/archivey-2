@@ -247,12 +247,13 @@ def _named_tempfile(_tmp_path: Path) -> BinaryIO:
 
 
 def _os_pipe_reader(_tmp_path: Path) -> BinaryIO:
-    # A real OS non-seekable stream (BufferedReader over a pipe fd). POSIX-only: see the
-    # Windows skip in _params() — there the pipe's FileIO reports seekable()=True, so it
-    # doesn't model a non-seekable stream. The data is written from a background thread so a
-    # consumer can drain the pipe concurrently: CONTENT exceeds the Windows pipe buffer
-    # (~4 KiB, vs 64 KiB on Linux / 16 KiB on macOS), so a single in-thread write would
-    # block forever waiting for a reader and deadlock the test.
+    # A real OS non-seekable stream (BufferedReader over a pipe fd). On Windows the pipe's
+    # FileIO reports seekable()=True but seek() silently fails to reposition; is_seekable
+    # detects the FIFO via fstat and correctly returns False (see is_seekable and
+    # test_windows_pipe_seek_characterization), so this case is non-seekable on all
+    # platforms. The data is written from a background thread so a consumer can drain the
+    # pipe concurrently: CONTENT exceeds the Windows pipe buffer (~4 KiB, vs 64 KiB on Linux
+    # / 16 KiB on macOS), so a single in-thread write would block forever and deadlock.
     import threading
 
     r, w = os.pipe()
@@ -338,15 +339,6 @@ def _params() -> list:
             pkg, available = _OPTIONAL_DEP[cid]
             if not available:
                 marks.append(pytest.mark.skip(reason=f"{pkg} not installed"))
-        if cid == "os_pipe_reader" and _WINDOWS:
-            marks.append(
-                pytest.mark.skip(
-                    reason="os.pipe() is not reliably non-seekable on Windows (its "
-                    "BufferedReader/FileIO reports seekable()=True), so the non-seekable "
-                    "assertions don't hold; the other non-seekable cases cover that path "
-                    "cross-platform."
-                )
-            )
         params.append(pytest.param(cid, id=cid, marks=marks))
     return params
 
@@ -484,6 +476,16 @@ def _probe_pipe_seek(stream: BinaryIO) -> tuple[list[str], bool | None]:
     obs: list[str] = []
     claims = is_seekable(stream)
     obs.append(f"seekable()={stream.seekable()} is_seekable()={claims}")
+    try:
+        import stat as _stat
+
+        m = os.fstat(stream.fileno()).st_mode
+        obs.append(
+            f"fstat.st_mode=0o{m:o} S_ISFIFO={_stat.S_ISFIFO(m)} "
+            f"S_ISCHR={_stat.S_ISCHR(m)} S_ISREG={_stat.S_ISREG(m)}"
+        )
+    except Exception as e:  # noqa: BLE001 - characterizing the platform
+        obs.append(f"fstat -> RAISED {type(e).__name__}: {e}")
     obs.append(f"read(10)={list(read_exact(stream, 10))} (expect ten 0s)")
     if not claims:
         return obs, None

@@ -157,6 +157,26 @@ def test_is_seekable_object_without_seekable_method() -> None:
     assert not is_seekable(OnlyReadStream(b"x"))
 
 
+def test_is_seekable_overrides_lying_seekable_for_pipe() -> None:
+    # A stream can claim seekable()=True yet be a pipe whose seek() does not reposition
+    # (real Windows os.pipe behavior). is_seekable must distrust the claim for a FIFO and
+    # return False. Verified portably with a real pipe fd, which is a FIFO on every platform.
+    r, w = os.pipe()
+
+    class _LyingPipe:
+        def seekable(self) -> bool:
+            return True  # the lie a Windows pipe tells
+
+        def fileno(self) -> int:
+            return r
+
+    try:
+        assert is_seekable(_LyingPipe()) is False
+    finally:
+        os.close(r)
+        os.close(w)
+
+
 def test_is_seekable_special_cases_mmap() -> None:
     import mmap
 
