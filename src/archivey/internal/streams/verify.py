@@ -76,7 +76,13 @@ def _expected_as_bytes(value: int | bytes, hasher: _IncrementalHasher) -> bytes:
     bytes`` compare against ``hasher.digest()`` — no per-read int<->bytes round-trip.
     """
     if isinstance(value, int):
-        return value.to_bytes(hasher.digest_size, "big")
+        # Size the buffer to whichever is larger: the hasher's digest width (so a normal,
+        # in-range value compares equal to digest()) or the value's own minimum width. A
+        # malformed/oversized stored int (e.g. a "crc32" > 2**32) thus produces a longer
+        # byte string that simply won't equal the digest — surfacing as a CorruptionError on
+        # verify — rather than raising OverflowError here and leaking a non-ArchiveyError.
+        width = max(hasher.digest_size, (value.bit_length() + 7) // 8)
+        return value.to_bytes(width, "big")
     return value
 
 
