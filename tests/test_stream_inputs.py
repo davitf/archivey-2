@@ -22,6 +22,7 @@ import io
 import lzma
 import mmap
 import os
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -50,6 +51,7 @@ CONTENT = bytes((i * 7 + 13) % 256 for i in range(5000))
 
 HAVE_URLLIB3 = importlib.util.find_spec("urllib3") is not None
 HAVE_FSSPEC = importlib.util.find_spec("fsspec") is not None
+_WINDOWS = sys.platform == "win32"
 
 
 def _close(stream: object) -> None:
@@ -243,10 +245,12 @@ def _named_tempfile(_tmp_path: Path) -> BinaryIO:
 
 
 def _os_pipe_reader(_tmp_path: Path) -> BinaryIO:
-    # A real OS non-seekable stream (BufferedReader over a pipe fd). The data is written
-    # from a background thread so a consumer can drain the pipe concurrently: CONTENT
-    # exceeds the Windows pipe buffer (~4 KiB, vs 64 KiB on Linux / 16 KiB on macOS), so a
-    # single in-thread write would block forever waiting for a reader and deadlock the test.
+    # A real OS non-seekable stream (BufferedReader over a pipe fd). POSIX-only: see the
+    # Windows skip in _params() — there the pipe's FileIO reports seekable()=True, so it
+    # doesn't model a non-seekable stream. The data is written from a background thread so a
+    # consumer can drain the pipe concurrently: CONTENT exceeds the Windows pipe buffer
+    # (~4 KiB, vs 64 KiB on Linux / 16 KiB on macOS), so a single in-thread write would
+    # block forever waiting for a reader and deadlock the test.
     import threading
 
     r, w = os.pipe()
@@ -332,6 +336,15 @@ def _params() -> list:
             pkg, available = _OPTIONAL_DEP[cid]
             if not available:
                 marks.append(pytest.mark.skip(reason=f"{pkg} not installed"))
+        if cid == "os_pipe_reader" and _WINDOWS:
+            marks.append(
+                pytest.mark.skip(
+                    reason="os.pipe() is not reliably non-seekable on Windows (its "
+                    "BufferedReader/FileIO reports seekable()=True), so the non-seekable "
+                    "assertions don't hold; the other non-seekable cases cover that path "
+                    "cross-platform."
+                )
+            )
         params.append(pytest.param(cid, id=cid, marks=marks))
     return params
 
