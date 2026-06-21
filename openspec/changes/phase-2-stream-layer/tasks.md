@@ -7,7 +7,7 @@
 
 ## 0. Carry-forward from the Phase-1 review (PR #5)
 
-- [ ] 0.1 **Wire the exception-translation spine.** Phase 1 left
+- [x] 0.1 **Wire the exception-translation spine.** Phase 1 left
       `BaseArchiveReader._stamp_error_context()` defined but **never called**, and there
       is no per-library translator hook or stream wrapper yet. The `ArchiveStream` built
       here is the carrier: route exceptions raised while reading a member stream through
@@ -45,17 +45,17 @@
 > this phase — they are replaced by `PeekableStream`, built with `format-detection` in
 > **Phase 3**.
 
-- [ ] 1.1 Create `src/archivey/internal/streams/` (with `__init__.py`).
-- [ ] 1.2 `slice.py` — port `SlicingStream`. (The detection peek/rewind primitive —
+- [x] 1.1 Create `src/archivey/internal/streams/` (with `__init__.py`).
+- [x] 1.2 `slice.py` — port `SlicingStream`. (The detection peek/rewind primitive —
       DEV's `RecordableStream`/`RewindableStreamWrapper` — is **not** built here; it
       becomes `PeekableStream` in Phase 3 with `format-detection`.)
-- [ ] 1.3 `compat.py` — port `is_seekable`, `is_stream`, `is_filename`,
+- [x] 1.3 `compat.py` — port `is_seekable`, `is_stream`, `is_filename`,
       `ensure_binaryio`, `ensure_bufferedio`, `fix_stream_start_position`,
       `read_exact`; write a **simplified `BinaryIOWrapper`** fresh (plain delegation
       + `readinto` fallback; **no** `self.read = self._raw.read`).
-- [ ] 1.4 Port the decompressor streams as `decompress.py` / `xz.py` / `lzip.py`;
+- [x] 1.4 Port the decompressor streams as `decompress.py` / `xz.py` / `lzip.py`;
       leave `archive_stream.py` where it is.
-- [ ] 1.5 **Exhaustive primitive/helper tests** — these streams and helpers are the
+- [x] 1.5 **Exhaustive primitive/helper tests** — these streams and helpers are the
       building blocks every later format depends on, so test them hard *as units*, not
       just via the codec layer. First **mine DEV's stream tests** (pinned `730275b…`,
       e.g. `tests/test_io*.py` / stream-helper tests) and carry over every scenario that
@@ -70,40 +70,50 @@
 
 ## 2. compressed-streams codec layer
 
-- [ ] 2.1 Codec registry with one default backend per codec (gzip/bz2/xz/raw-LZMA2/
+- [x] 2.1 Codec registry with one default backend per codec (gzip/bz2/xz/raw-LZMA2/
       zlib/STORED, …); resolve-a-backend-without-opening.
-- [ ] 2.2 A single wrapped AES crypto stage, reachable only through the wrapper
+- [x] 2.2 A single wrapped AES crypto stage, reachable only through the wrapper
       (compose decrypt → decompress for encrypted folders).
-- [ ] 2.3 Missing optional backend raises `PackageNotInstalledError` (e.g. PPMd
+      *Interface-only this phase (maintainer decision): `internal/streams/crypto.py` provides
+      the `CryptoBackend` wrapper, the single `get_crypto_backend()` access point, and the
+      missing-backend gating. The concrete AES-CBC decryptor and the decrypt→decompress
+      composition land with the native 7z/RAR readers in Phase 7, where they're exercised
+      end-to-end.*
+- [x] 2.3 Missing optional backend raises `PackageNotInstalledError` (e.g. PPMd
       without `pyppmd`, AES without the crypto backend).
-- [ ] 2.4 Translate decompression errors for corrupt and truncated input.
-- [ ] 2.5 Verify decompressed output against expected digests on a full read; leave
+- [x] 2.4 Translate decompression errors for corrupt and truncated input.
+- [x] 2.5 Verify decompressed output against expected digests on a full read; leave
       partial reads unverified; skip unverifiable algorithms with a warning.
 
 ## 3. seekable-decompressor-streams
 
-- [ ] 3.1 XZ block-index seeking; lzip trailer-scan seeking.
-- [ ] 3.2 `rapidgzip` / `indexed_bzip2` accelerators behind `[seekable]`; clean
+- [x] 3.1 XZ block-index seeking; lzip trailer-scan seeking.
+- [x] 3.2 `rapidgzip` / `indexed_bzip2` accelerators behind `[seekable]`; clean
       behavior when the accelerator backend is absent.
 
 ## 4. Tests added (new suite)
 
-- [ ] 4.1 `compressed-streams` scenarios: default gzip backend, raw LZMA2 for a 7z
+- [x] 4.1 `compressed-streams` scenarios: default gzip backend, raw LZMA2 for a 7z
       folder, crypto wrapper reachability, missing-backend errors, corrupt/truncated
       translation, digest mismatch / partial / unverifiable, resolve-without-open.
-- [ ] 4.2 `seekable-decompressor-streams` scenarios: XZ and lzip seeking, accelerator
+- [x] 4.2 `seekable-decompressor-streams` scenarios: XZ and lzip seeking, accelerator
       present and absent.
 - [ ] 4.3 Retire the matching `tests/_dev_oracle/` coverage as it transfers.
+      *N/A this phase: the frozen oracle is fully quarantined (excluded from collection via
+      `norecursedirs`), so there is no separately-running stream coverage to remove. The
+      whole tree is deleted in Phase 10.*
 
 ## 5. Verify — acceptance criteria
 
 **Spec scenarios covered**
-- [ ] 5.1 All of `compressed-streams`.
-- [ ] 5.2 All of `seekable-decompressor-streams`.
+- [x] 5.1 All of `compressed-streams`.
+- [x] 5.2 All of `seekable-decompressor-streams`.
 
 **Gates**
-- [ ] 5.3 `uv run pyrefly check` and `uv run ty check` both clean (strict).
-- [ ] 5.4 `uv run ruff check` clean.
-- [ ] 5.5 New stream tests green; frozen oracle no worse.
+- [x] 5.3 `uv run pyrefly check` and `uv run ty check` both clean (strict).
+- [x] 5.4 `uv run ruff check` clean.
+- [x] 5.5 New stream tests green; frozen oracle no worse.
 - [ ] 5.6 (If a perf regression is suspected) benchmark the simplified
       `BinaryIOWrapper` against DEV's method-swap on a hot read loop.
+      *Not triggered: plain delegation is straightforward and no regression is suspected;
+      the conditional benchmark was not run.*

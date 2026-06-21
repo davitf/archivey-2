@@ -12,6 +12,8 @@ from archivey.internal.errors import (
     LinkTargetNotFoundError,
     UnsupportedOperationError,
 )
+from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.binaryio import is_seekable
 from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -265,6 +267,36 @@ class BaseArchiveReader(ArchiveReader):
 
     @abstractmethod
     def _open_member(self, member: ArchiveMember) -> BinaryIO: ...
+
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        """Map a raw exception (from a codec/library while reading a member) to an
+        ``ArchiveyError`` subclass, or return ``None`` to let it propagate unchanged.
+
+        This is the backend's per-library translator hook (see ``error-handling`` and
+        CONTRIBUTING). The default translates nothing; backends override it to map their
+        library's known exceptions. It MUST NOT contain a catch-all that converts any
+        ``Exception`` — an unrecognized error returns ``None`` so it surfaces and can be
+        mapped deliberately.
+        """
+        return None
+
+    def _wrap_member_stream(
+        self, inner: BinaryIO, member_name: str | None, *, lazy: bool = False
+    ) -> BinaryIO:
+        """Wrap a raw member stream so read/seek errors route through the backend's
+        translator and are stamped with format/archive/member context.
+
+        Backends return ``_wrap_member_stream(raw, member.name)`` from ``_open_member`` so
+        a decode error surfaces as a stamped ``ArchiveyError`` rather than a raw codec
+        exception.
+        """
+        return ArchiveStream(
+            lambda: inner,
+            translate=self._translate_exception,
+            stamp=lambda exc: self._stamp_error_context(exc, member_name),
+            lazy=lazy,
+            seekable=is_seekable(inner),
+        )
 
     @abstractmethod
     def _get_archive_info(self) -> ArchiveInfo: ...

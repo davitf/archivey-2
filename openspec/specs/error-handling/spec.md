@@ -152,6 +152,15 @@ field-setting across the backends.
 No internal library exception (e.g. `zipfile.BadZipFile`, `tarfile.TarError`, the
 7z/RAR backend errors) SHALL propagate to the caller unwrapped.
 
+A backend that serves member bytes through **no** decoding library — the directory
+backend, or a STORED/uncompressed member read as raw bytes — has no library exception
+taxonomy to translate, so it returns the underlying stream directly rather than wrapping
+it in a translator. This is deliberate, not a missing wrap: there is nothing to
+translate, and a genuine `OSError` from such a read MUST propagate unchanged per *Genuine
+runtime and I/O errors are not reclassified* below. The translate-and-stamp wrapper is
+applied only by backends that drive a codec, where a raw decode error must become a typed
+`ArchiveyError`.
+
 #### Scenario: original exception attached as __cause__
 
 - **WHEN** `zipfile.BadZipFile` is raised internally and wrapped as `CorruptionError`

@@ -15,3 +15,7 @@ detection = logging.getLogger("archivey.detection")
 normalization = logging.getLogger("archivey.normalization")
 extraction = logging.getLogger("archivey.extraction")
 backends = logging.getLogger("archivey.backends")
+streams = logging.getLogger("archivey.streams")
+# Used by the decompressed-output digest verification stage to warn when an expected
+# digest cannot be checked (unknown algorithm, or its backend is not installed).
+integrity = logging.getLogger("archivey.integrity")

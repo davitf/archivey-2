@@ -11,6 +11,7 @@ jobs:
   lint:
     name: Lint & type-check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -27,7 +28,7 @@ jobs:
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
-        run: uv run ty check src/
+        run: uv run ty check
 
   # Build the API-reference site with mkdocstrings. `--strict` turns broken refs and
   # rendering warnings into failures, so doc rot (a renamed/removed public symbol, a bad
@@ -35,6 +36,7 @@ jobs:
   docs:
     name: Docs build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -50,6 +52,9 @@ jobs:
   test:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     runs-on: ${{ matrix.os }}
+    # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
+    # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +101,7 @@ jobs:
       # `requires` helper in tests/conftest.py), which is exactly what this leg proves.
       - name: Run tests (core-only)
         if: matrix.install == 'core-only'
-        run: uv run --no-sync --with pytest --with pytest-cov pytest tests/ -q
+        run: uv run --no-sync --with pytest --with pytest-cov --with pytest-timeout pytest tests/ -q
 
       # ---- [all]: full extras + dev group; run the whole suite.
       - name: Install all extras + dev group

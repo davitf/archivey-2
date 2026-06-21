@@ -58,9 +58,10 @@ compression formats, and the CLI. The mapping is:
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
 | `[zstd]` | `zstandard` | standalone Zstandard (`.zst`, `.tar.zst`) |
 | `[lz4]` | `lz4` | LZ4 (`.tar.lz4`) |
+| `[unix-compress]` | `uncompresspy` | unix-compress (`.Z`, `.tar.Z`) — LZW decompression |
 | `[cli]` | `tqdm` | the `archivey` command-line interface and its progress bar |
 | `[seekable]` | `rapidgzip`, `indexed_bzip2` | faster gzip/bzip2 decompression **and random access (seeking)** into gz/bz2 streams. Native C++ libs: install needs a prebuilt wheel, or a C++17 compiler where no wheel exists |
-| `[recommended-lite]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[cli]` | every format/codec with broadly-wheeled deps; **no build-finicky C++ libs**. Use when `[recommended]` won't install |
+| `[recommended-lite]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[unix-compress]` + `[cli]` | every format/codec with broadly-wheeled deps; **no build-finicky C++ libs**. Use when `[recommended]` won't install |
 | `[recommended]` | `[recommended-lite]` + `[seekable]` | the **recommended** install — everything in `[recommended-lite]` plus gz/bz2 seeking and speed |
 | `[all]` | `[recommended]` **plus** every alternative/secondary backend | everything, including redundant alternative backends — mainly for testing/benchmarking |
 
