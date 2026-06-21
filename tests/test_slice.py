@@ -1,4 +1,4 @@
-"""Unit tests for ``SlicingStream`` and ``fix_stream_start_position`` (``streams/slice.py``).
+"""Unit tests for ``SlicingStream`` and ``fix_stream_start_position`` (``streams/streamtools/slice.py``).
 
 These are low-level building blocks every container backend relies on, so they get focused
 corner-case coverage (per CONTRIBUTING's narrow exception for stream primitives).
@@ -10,7 +10,10 @@ import io
 
 import pytest
 
-from archivey.internal.streams.slice import SlicingStream, fix_stream_start_position
+from archivey.internal.streams.streamtools import (
+    SlicingStream,
+    fix_stream_start_position,
+)
 from tests.streams_util import NonSeekableBytesIO
 
 DATA = b"0123456789abcdefghijklmnopqrstuvwxyz"

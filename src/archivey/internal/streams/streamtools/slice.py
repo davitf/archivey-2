@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 from typing import TYPE_CHECKING, BinaryIO
 
-from archivey.internal.streams.binaryio import is_seekable
+from archivey.internal.streams.streamtools.binaryio import is_seekable
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer

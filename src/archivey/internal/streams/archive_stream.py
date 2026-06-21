@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Callable, NoReturn
 
 from archivey.internal.errors import ArchiveyError
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.binaryio import is_seekable
+from archivey.internal.streams.streamtools import is_seekable
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
