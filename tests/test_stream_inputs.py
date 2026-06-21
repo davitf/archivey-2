@@ -25,6 +25,7 @@ import os
 import sys
 import tarfile
 import tempfile
+import warnings
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ from archivey.internal.streams.binaryio import (
     ensure_bufferedio,
     is_seekable,
     is_stream,
+    read_exact,
 )
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.decompress import ZlibDecompressorStream
@@ -446,36 +448,106 @@ def test_seek_rewind_when_seekable(case: Case, tmp_path: Path) -> None:
         _close(stream)
 
 
-@pytest.mark.skipif(not _WINDOWS, reason="Windows-only ground-truth probe for pipe seekability")
-def test_windows_pipe_is_not_silently_seekable(tmp_path: Path) -> None:
-    """Ground truth: does a Windows pipe that *claims* to be seekable actually rewind?
+def _patterned_pipe(blocks: int = 10, block_size: int = 1000) -> int:
+    """Return the read fd of a pipe whose byte at offset ``o`` has value ``o // block_size``.
 
-    On Windows `os.pipe()`'s reader reports `seekable()=True` (the CRT's lseek probe doesn't
-    fail on the pipe handle, unlike POSIX's ESPIPE). The risk is a *silent* lie: `seek(0)`
-    returns success but doesn't reposition, so the next read returns the wrong bytes. This
-    test fails iff that silent lie happens — in which case `is_seekable` should be hardened
-    to detect FIFOs (via `os.fstat`/`S_ISFIFO`) rather than trust `seekable()`. If the pipe
-    is honest (reports non-seekable, or `seek` raises, or `seek` genuinely rewinds), it
-    passes and the current behaviour stands.
+    Blocks of identical bytes (1000 zeros, then 1000 ones, …) make a read reveal the
+    reader's *actual* position, so a misbehaving seek is detectable. Written from a daemon
+    thread (see ``_os_pipe_reader`` for why a single in-thread write would deadlock).
     """
-    stream = _os_pipe_reader(tmp_path)
-    try:
-        first = stream.read(10)
-        assert first == CONTENT[:10]
-        if not is_seekable(stream):
-            return  # honest: claims non-seekable
+    import threading
+
+    data = bytes(k for k in range(blocks) for _ in range(block_size))
+
+    def _fill() -> None:
         try:
-            stream.seek(0)
-        except (OSError, ValueError, io.UnsupportedOperation):
-            return  # claims seekable but refuses to seek — loud, not a silent lie
-        after = stream.read(10)
-        assert after == first, (
-            f"Windows pipe silently lies about seekability: seekable()=True and seek(0) "
-            f"returned without error but did not rewind (first={first!r}, after={after!r}). "
-            f"is_seekable should detect FIFOs and return False."
-        )
-    finally:
-        _close(stream)
+            mv = memoryview(data)
+            while mv:
+                mv = mv[os.write(w, mv) :]
+        except OSError:
+            pass  # reader closed early; broken pipe is fine
+        finally:
+            os.close(w)
+
+    r, w = os.pipe()
+    threading.Thread(target=_fill, daemon=True).start()
+    return r
+
+
+def _probe_pipe_seek(stream: BinaryIO) -> tuple[list[str], bool | None]:
+    """Walk read/seek operations on a pipe stream; return (observations, seek_is_correct).
+
+    ``seek_is_correct`` is None when the stream honestly reports non-seekable, True when
+    forward+backward seeks return the expected patterned bytes, and False when a seek raises
+    or returns wrong bytes despite claiming to be seekable.
+    """
+    obs: list[str] = []
+    claims = is_seekable(stream)
+    obs.append(f"seekable()={stream.seekable()} is_seekable()={claims}")
+    obs.append(f"read(10)={list(read_exact(stream, 10))} (expect ten 0s)")
+    if not claims:
+        return obs, None
+
+    correct = True
+    try:
+        pos = stream.seek(5500)  # into block 5; past any read-ahead buffer
+        fwd = read_exact(stream, 5)
+        obs.append(f"seek(5500)->{pos}; read(5)={list(fwd)} (expect five 5s)")
+        correct = correct and fwd == bytes([5] * 5)
+    except Exception as e:  # noqa: BLE001 - characterizing arbitrary failure modes
+        obs.append(f"seek(5500) RAISED {type(e).__name__}: {e}")
+        correct = False
+    try:
+        pos = stream.seek(0)  # rewind backward across the buffer
+        back = read_exact(stream, 5)
+        obs.append(f"seek(0)->{pos}; read(5)={list(back)} (expect five 0s)")
+        correct = correct and back == bytes([0] * 5)
+    except Exception as e:  # noqa: BLE001
+        obs.append(f"seek(0) RAISED {type(e).__name__}: {e}")
+        correct = False
+    try:
+        pos = stream.seek(0, io.SEEK_END)  # archivey uses this for size detection
+        tail = stream.read(1)
+        obs.append(f"seek(0,END)->{pos}; read(1)={list(tail)} (expect empty)")
+    except Exception as e:  # noqa: BLE001
+        obs.append(f"seek(0,END) RAISED {type(e).__name__}: {e}")
+    return obs, correct
+
+
+@pytest.mark.skipif(not _WINDOWS, reason="Windows-only: characterize OS pipe seek behavior")
+def test_windows_pipe_seek_characterization() -> None:
+    """Determine *exactly* how a Windows pipe responds to seeking, and lock in the contract.
+
+    A Windows ``os.pipe()`` reader reports ``seekable()=True`` (unlike POSIX, where the CRT's
+    lseek probe fails). This emits a full behavioural report (read it in the CI "warnings
+    summary") for both the buffered and the raw reader, then asserts the contract archivey
+    relies on: **if ``is_seekable()`` promises seeking, real forward+backward seeks past the
+    read-ahead buffer must return the correct bytes** — never raise, never wrong data.
+
+    ``is_seekable`` inspects the *raw* object (it unwraps ``BufferedReader`` to ``.raw``), and
+    the raw reader has no buffer to mask a bad seek, so the raw probe is the authoritative
+    one. If it fails, ``is_seekable`` must be hardened to return False for pipes rather than
+    trust ``seekable()``.
+    """
+    lines: list[str] = []
+    raw_correct: bool | None = None
+    for label, factory in (
+        ("buffered", lambda fd: open(fd, "rb")),
+        ("raw", lambda fd: open(fd, "rb", buffering=0)),
+    ):
+        stream = factory(_patterned_pipe())
+        try:
+            obs, correct = _probe_pipe_seek(stream)
+        finally:
+            _close(stream)
+        lines.append(f"--- {label} ---")
+        lines.extend(obs)
+        if label == "raw":
+            raw_correct = correct
+
+    report = "WINDOWS PIPE SEEK REPORT::\n" + "\n".join(lines)
+    warnings.warn(report, stacklevel=1)
+    assert raw_correct in (None, True), report
 
 
 # --- nested archives: a member stream is itself the source for another reader -----------
