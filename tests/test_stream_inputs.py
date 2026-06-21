@@ -446,6 +446,38 @@ def test_seek_rewind_when_seekable(case: Case, tmp_path: Path) -> None:
         _close(stream)
 
 
+@pytest.mark.skipif(not _WINDOWS, reason="Windows-only ground-truth probe for pipe seekability")
+def test_windows_pipe_is_not_silently_seekable(tmp_path: Path) -> None:
+    """Ground truth: does a Windows pipe that *claims* to be seekable actually rewind?
+
+    On Windows `os.pipe()`'s reader reports `seekable()=True` (the CRT's lseek probe doesn't
+    fail on the pipe handle, unlike POSIX's ESPIPE). The risk is a *silent* lie: `seek(0)`
+    returns success but doesn't reposition, so the next read returns the wrong bytes. This
+    test fails iff that silent lie happens — in which case `is_seekable` should be hardened
+    to detect FIFOs (via `os.fstat`/`S_ISFIFO`) rather than trust `seekable()`. If the pipe
+    is honest (reports non-seekable, or `seek` raises, or `seek` genuinely rewinds), it
+    passes and the current behaviour stands.
+    """
+    stream = _os_pipe_reader(tmp_path)
+    try:
+        first = stream.read(10)
+        assert first == CONTENT[:10]
+        if not is_seekable(stream):
+            return  # honest: claims non-seekable
+        try:
+            stream.seek(0)
+        except (OSError, ValueError, io.UnsupportedOperation):
+            return  # claims seekable but refuses to seek — loud, not a silent lie
+        after = stream.read(10)
+        assert after == first, (
+            f"Windows pipe silently lies about seekability: seekable()=True and seek(0) "
+            f"returned without error but did not rewind (first={first!r}, after={after!r}). "
+            f"is_seekable should detect FIFOs and return False."
+        )
+    finally:
+        _close(stream)
+
+
 # --- nested archives: a member stream is itself the source for another reader -----------
 
 
