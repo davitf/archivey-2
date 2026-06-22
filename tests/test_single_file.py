@@ -2,7 +2,8 @@
 
 Covers name inference, the one-member shape, the gzip stored-name surface, per-format
 size rules, DIRECT/INDEXED cost, the unix-compress non-seekable rule, and the
-password-rejection rule. ZST/LZ4 standalone are deferred to Phase 8.
+password-rejection rule. ZST/LZ4 standalone are first-class here; only their
+seekable-decompressor refinements remain for Phase 8.
 """
 
 from __future__ import annotations

@@ -8,7 +8,8 @@ logic lives in a small **dispatch table of metadata hooks** (gzip's stored filen
 xz/lzip decompressed size), so a new standalone codec becomes readable by adding the codec
 + enum + detection entry — no new backend class (see ``format-single-file-compressors``).
 
-ZST/LZ4 standalone reading is deferred to Phase 8 and intentionally not in ``FORMATS``.
+ZST and LZ4 are first-class standalone formats here (their codecs already exist from
+Phase 2); only their *seekable-decompressor* refinements remain for Phase 8.
 """
 
 from __future__ import annotations
@@ -125,6 +126,13 @@ class SingleFileReader(BaseArchiveReader):
                 archive_name=archive_name,
             )
 
+        # A non-seekable source cannot be randomly accessed, so a random-access accelerator
+        # (rapidgzip/indexed_bzip2) would only fail trying to seek it — keep the codec in
+        # sequential mode for such a source regardless of the archive's streaming flag.
+        self._codec_config = StreamConfig(
+            streaming=self._streaming or not self._seekable
+        )
+
         self._member = self._build_member(archive_name)
 
     def _build_member(self, archive_name: str | None) -> ArchiveMember:
@@ -173,7 +181,7 @@ class SingleFileReader(BaseArchiveReader):
         if not isinstance(self._source, Path):
             return None
         try:
-            backend = resolve_codec(self._codec, StreamConfig(streaming=self._streaming))
+            backend = resolve_codec(self._codec, self._codec_config)
             stream = backend.open(str(self._source))
         except (ArchiveyError, OSError, ValueError):
             return None
@@ -198,7 +206,7 @@ class SingleFileReader(BaseArchiveReader):
         return open_codec_stream(
             self._codec,
             codec_source,
-            config=StreamConfig(streaming=self._streaming),
+            config=self._codec_config,
             stamp=lambda exc: self._stamp_error_context(exc, member.name),
         )
 
