@@ -196,7 +196,7 @@ All of `compressed-streams` and `seekable-decompressor-streams`.
 
 ---
 
-## Phase 3 — Indexed leaf formats: ZIP, directory, single-file, ISO
+## Phase 3 — Indexed leaf formats: ZIP, TAR (read), directory, single-file, ISO
 
 **Goal:** the seekable/indexed leaf backends run on the spine ABC; format
 detection covers them.
@@ -207,11 +207,20 @@ detection covers them.
 1. Port **ZIP**, **single-file compressors**, and **ISO** backends onto the new ABC
    (interface-only changes; the **directory** backend already landed in Phase 1).
    ISO namespace auto-selection (Rock Ridge → Joliet → plain) and optional `pycdlib`
-   graceful degradation.
-2. Port **format detection** magic table + extension fallback + conflict warning
-   for these formats; non-seekable peek/replay shared by the opener.
-3. Wire **CostReceipt** values for these formats; `archive-reading` random/by-name
-   access on indexed sources.
+   graceful degradation. Seek-heavy containers are **not** mounted over a compressor
+   (`.iso.xz`/`.zip.xz` are single-file-wrapped) — only TAR composes with compressors.
+2. Port the **TAR reader** (PAX/GNU/ustar) in **random-access mode** + compressed-TAR
+   detection/opening (`tar.gz`/`tar.bz2`/`tar.xz`/…). TAR's forward-only
+   `stream_members()` and the `ExtractionCoordinator`/safe-extraction stay in Phase 4;
+   only the reader lands here so the two stdlib formats and the inner-TAR detection
+   result cohere in one phase.
+3. Port **format detection** magic table + extension fallback + conflict warning +
+   inner-TAR probe for these formats; the new `PeekableStream` peek/replay shared by
+   the opener.
+4. Wire **CostReceipt** values for these formats; `archive-reading` random/by-name
+   access on indexed sources. Backend registry: always-register + tri-state
+   (FULL/PARTIAL/NONE) compositional availability (`list_supported_formats()` /
+   `list_known_formats()` / `format_availability()`).
 
 ### Tests added
 `format-zip`, `format-single-file-compressors`, `format-iso`
@@ -230,16 +239,19 @@ degradation).
 
 ---
 
-## Phase 4 — TAR, sequential streaming, and safe extraction
+## Phase 4 — TAR streaming, sequential access, and safe extraction
 
-**Goal:** TAR (all variants) reads; `stream_members()` bounded-memory streaming
-works on a non-seekable source; `ExtractionCoordinator` replaces the deferred
-state machine.
+**Goal:** `stream_members()` bounded-memory streaming works on a non-seekable
+source (exercised on TAR); `ExtractionCoordinator` replaces the deferred state
+machine. (The TAR **reader** and compressed-TAR detection already landed in Phase 3;
+this phase adds TAR's forward-only streaming and the extraction machinery.)
 
 **Entry criteria:** Phase 3 green.
 
 ### Tasks
-1. Port **TAR** (PAX, all variants); compressed-TAR detection (`tar.gz/bz2/xz`).
+1. **TAR forward-only streaming** — the non-seekable `tar.gz` path: override
+   `_iter_with_data()` for true sequential `stream_members()` (the random-access TAR
+   reader + variants + compressed-TAR detection are already in Phase 3).
 2. **`ExtractionCoordinator`** (written fresh — unified single ordered pass over
    `_iter_with_data()`; **no** `pending_*` dicts, **no** `can_move_file`, **no**
    `process_file_extracted`):
