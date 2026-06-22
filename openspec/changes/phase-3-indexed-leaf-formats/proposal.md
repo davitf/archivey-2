@@ -138,6 +138,28 @@ the work is plannable as concrete tasks:
   ZIP, TAR (random-access read), single-file (default + seekable-codec-lowered), and
   ISO; random / by-name access on these indexed sources.
 
+## Implementation stages
+
+This is a large phase, so it is implemented and reviewed in **four mergeable stages**
+(it stays a single OpenSpec change — the proposal and spec deltas here cover all four).
+Only Stage 1 touches the shared machinery; the rest are additive backends, so reviews
+get smaller as they go. Each stage ends green (pyrefly + ty + ruff + its new tests).
+See `tasks.md` → "Stage map" for the per-task breakdown.
+
+1. **Foundation + ZIP** — `PeekableStream`, `detect_format` core (magic + extension +
+   conflict), the registry rework (always-register + tri-state availability + query
+   API), `open_archive()` routing + `CostReceipt`, and the **ZIP** backend end-to-end.
+   The vertical slice that proves detect→select→open→read→cost on one format and
+   surfaces any ABC/detection/registry gaps early. Exercises FULL + PARTIAL support.
+2. **Single-file compressors** — the one multi-format `SingleFileBackend` + per-codec
+   metadata hooks, plus the Brotli content probe in detection.
+3. **TAR (read)** — the `tarfile` random-access reader + compressed-tar, plus the
+   inner-TAR detection probe (now openable).
+4. **ISO + degradation** — the `pycdlib` backend, the ISO extended-peek window, and the
+   optional-dependency graceful degradation exercised end-to-end (NONE support + hint).
+
+Stages 2 and 3 are swappable; Stage 1 is the only hard prerequisite.
+
 ## Specs
 
 This change carries **spec deltas** (it modifies behavior the specs describe):
