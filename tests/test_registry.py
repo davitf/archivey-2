@@ -148,10 +148,16 @@ def test_zip_partial_when_optional_codecs_missing(
     assert ArchiveFormat.ZIP in list_supported_formats()
 
 
-def test_zip_full_when_codecs_present() -> None:
-    # The dev/[all] test environment has the optional codecs installed.
+def test_zip_full_when_codecs_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force ZIP's optional member codecs present so FULL is asserted deterministically,
+    # regardless of which extras the test environment installed (the core-only CI legs
+    # have none). The PARTIAL direction is covered by
+    # test_zip_partial_when_optional_codecs_missing.
+    for sentinel in ("_inflate64", "_zstandard", "_pyppmd"):
+        monkeypatch.setattr(codecs_module, sentinel, object())
     avail = format_availability(ArchiveFormat.ZIP)
     assert avail.support is FormatSupport.FULL
+    assert avail.missing == ()
 
 
 # ---------------------------------------------------------------------------

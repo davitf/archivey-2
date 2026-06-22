@@ -62,7 +62,7 @@ class FormatAvailability:
 # multi-codec container still opens and lists). Single-codec RAW_STREAM formats are handled
 # separately (their sole codec missing makes them NONE, not PARTIAL).
 _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
-    ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD),
+    ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
 }
 
 # How each optional codec is obtained, for the install hint surfaced to the caller.

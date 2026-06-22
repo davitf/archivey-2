@@ -208,7 +208,7 @@ class ZipReader(BaseArchiveReader):
 
         link_target = None
         if member_type == MemberType.SYMLINK:
-            with self._archive.open(info) as f:
+            with self._archive.open(info, pwd=self._password) as f:
                 link_target = f.read().decode("utf-8", errors="surrogateescape")
 
         return ArchiveMember(
@@ -232,7 +232,12 @@ class ZipReader(BaseArchiveReader):
             # Materialize the member list so the name->ZipInfo map is populated (e.g. when
             # opening a member object without a prior listing pass).
             self._get_members_registered()
-        info = self._info_by_name[member.name]
+        try:
+            info = self._info_by_name[member.name]
+        except KeyError:
+            raise KeyError(
+                f"Member {member.name!r} not found in this ZIP archive"
+            ) from None
         raw = cast(
             "BinaryIO",
             self._archive.open(info, pwd=self._password),
