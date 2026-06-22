@@ -61,11 +61,15 @@ the work is plannable as concrete tasks:
 - **Single-file compressors** (`formats/single_file_reader.py`): **one**
   `SingleFileBackend` whose `FORMATS` is the standalone-codec set
   (gz/bz2/xz/lzip/zlib/brotli + unix-compress this phase; **zst/lz4 deferred to
-  Phase 8**). One `FILE` member, name inferred from the source filename (strip known
-  ext / append `.uncompressed` / default `"data"`), per-codec metadata hooks
-  (gzip `FNAME`→`raw_filename`; xz/zst header size; lz4 frame size; lzip trailer size;
-  gz size always `None`; bz2/zlib/br/Z size known only after full read). `SOLID`
-  default access, lowered when a seekable codec backend is active.
+  Phase 8**; needs `StreamFormat`/`ArchiveFormat` enum extensions — see Specs). One
+  `FILE` member, name inferred from the source filename (strip known ext / append
+  `.uncompressed` / default `"data"`), per-codec metadata hooks (gzip `FNAME` →
+  `extra["gzip.original_filename"]` decoded + `raw_name` undecoded; xz/zst header size;
+  lz4 frame size; lzip trailer size; gz size always `None`; bz2/zlib/br/Z size known
+  only after full read). `DIRECT` access cost (one member — no inter-member
+  dependency); whether the member *stream* can seek is a stream-level property, not the
+  archive `CostReceipt`. A non-seekable source raises only for unix-compress (`.Z`,
+  which needs random access); other single-file formats read fine non-seekable.
 - **ISO** (`formats/iso_reader.py`): `pycdlib` behind `[iso]`; richest-namespace
   auto-select (Rock Ridge > Joliet > plain) reported in
   `ArchiveInfo.extra["iso.namespace"]`; namespace-dependent metadata fidelity;
@@ -166,10 +170,19 @@ This change carries **spec deltas** (it modifies behavior the specs describe):
 
 - **`backend-registry`** (MODIFIED + ADDED): registration becomes "always register;
   mark availability"; new tri-state, compositional `FormatSupport` and the
-  availability query surface; degradation reworded against the tri-state.
-- **`format-single-file-compressors`** (ADDED): a single multi-format
-  `SingleFileBackend` with per-codec metadata hooks is the prescribed structure;
-  new standalone codecs become readable without new backend code.
+  availability query surface; degradation reworded against the tri-state; plus the
+  `MAGIC`/`EXTENSIONS` declaration shape so a multi-format backend can map each
+  magic/extension to its format (*proposed — pending confirmation, see review notes*).
+- **`format-single-file-compressors`** (ADDED + MODIFIED): a single multi-format
+  `SingleFileBackend` with per-codec metadata hooks is the prescribed structure; new
+  standalone codecs become readable without new backend code; the gzip stored filename
+  is surfaced via `extra["gzip.original_filename"]` + `raw_name` (there is no
+  `raw_filename` field); access cost is `DIRECT` (one member), superseding the earlier
+  `SOLID`-and-lowered framing.
+- **`archive-data-model`** (MODIFIED): extend `StreamFormat` with `LZIP`/`ZLIB`/
+  `BROTLI`/`UNIX_COMPRESS` and add named standalone `ArchiveFormat` constants
+  (`LZIP`/`ZLIB`/`BROTLI`/`Z`); uncommon container×codec combos are built on demand,
+  not predefined.
 
 It **implements** (no delta) already-written specs: `format-zip`, `format-iso`,
 `format-detection`, the **random-access read** parts of `format-tar` (its
