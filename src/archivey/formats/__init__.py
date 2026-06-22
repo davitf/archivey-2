@@ -4,3 +4,4 @@
 # bundled backends available for selection. Do not remove these imports — without
 # them the registry would be empty and `open_archive()` would find no backend.
 from archivey.formats import directory_reader as _directory_reader  # noqa: F401
+from archivey.formats import zip_reader as _zip_reader  # noqa: F401

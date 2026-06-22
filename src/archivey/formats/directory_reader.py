@@ -6,7 +6,7 @@ import os
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Iterator, Mapping
 
 from archivey.internal.cost import (
     AccessCost,
@@ -206,8 +206,8 @@ class DirectoryReadBackend(ReadBackend):
     """Backend factory for directory pseudo-archives."""
 
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.DIRECTORY,)
-    EXTENSIONS: tuple[str, ...] = ()
-    MAGIC: tuple[tuple[int, bytes], ...] = ()
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {}
+    MAGIC: tuple[tuple[int, bytes, ArchiveFormat], ...] = ()
     REQUIRES_SEEK = False
 
     def open_read(

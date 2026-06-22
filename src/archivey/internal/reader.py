@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterator
+from typing import BinaryIO, Callable, Iterator, Mapping
 
 from archivey.internal.cost import CostReceipt
 from archivey.internal.errors import (
@@ -26,13 +26,27 @@ MemberSelector = Callable[[ArchiveMember], bool] | None
 
 
 class ReadBackend(ABC):
-    """Stateless factory for creating ArchiveReader instances."""
+    """Stateless factory for creating ArchiveReader instances.
+
+    Each backend declares its magic and extensions **as data**, and every entry names
+    the :class:`ArchiveFormat` it implies, so a *multi-format* backend (the single
+    ``SingleFileBackend``, the TAR backend over ``TAR`` + its compressed combos) can map
+    each signal to the right format. The detector aggregates these across all registered
+    backends; backends carry no ``detect()`` method.
+    """
 
     FORMATS: tuple[ArchiveFormat, ...]
-    EXTENSIONS: tuple[str, ...]
-    MAGIC: tuple[tuple[int, bytes], ...]
+    # ".gz" -> ArchiveFormat.GZ
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {}
+    # (offset, magic bytes, format)
+    MAGIC: tuple[tuple[int, bytes, ArchiveFormat], ...] = ()
     REQUIRES_SEEK: bool = False
+    # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
+    # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
+    # Human-readable install hint surfaced when the dependency is absent
+    # (e.g. "pip install archivey[iso]").
+    INSTALL_HINT: str | None = None
 
     @abstractmethod
     def open_read(
