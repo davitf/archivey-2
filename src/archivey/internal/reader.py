@@ -52,11 +52,17 @@ class ReadBackend(ABC):
     def open_read(
         self,
         source: Path | BinaryIO,
+        format: ArchiveFormat,
         streaming: bool,
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
-    ) -> "BaseArchiveReader": ...
+    ) -> "BaseArchiveReader":
+        """Open ``source`` as ``format`` (the resolved format the registry selected this
+        backend for — either detected by ``open_archive`` or supplied by the caller). A
+        multi-format backend uses it to pick its concrete codec/variant rather than
+        re-inspecting the source."""
+        ...
 
 
 class WriteBackend(ABC):

@@ -43,7 +43,6 @@ from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
-    ContainerFormat,
     MemberType,
     StreamFormat,
 )
@@ -54,6 +53,8 @@ _EXTENSIONS: dict[str, ArchiveFormat] = {
     ".gz": ArchiveFormat.GZ,
     ".bz2": ArchiveFormat.BZ2,
     ".xz": ArchiveFormat.XZ,
+    ".zst": ArchiveFormat.ZST,
+    ".lz4": ArchiveFormat.LZ4,
     ".lz": ArchiveFormat.LZIP,
     ".zz": ArchiveFormat.ZLIB,
     ".br": ArchiveFormat.BROTLI,
@@ -67,6 +68,8 @@ _FORMATS: tuple[ArchiveFormat, ...] = (
     ArchiveFormat.GZ,
     ArchiveFormat.BZ2,
     ArchiveFormat.XZ,
+    ArchiveFormat.ZST,
+    ArchiveFormat.LZ4,
     ArchiveFormat.LZIP,
     ArchiveFormat.ZLIB,
     ArchiveFormat.BROTLI,
@@ -275,6 +278,8 @@ class SingleFileBackend(ReadBackend):
         (0, b"\x1f\x8b", ArchiveFormat.GZ),
         (0, b"BZh", ArchiveFormat.BZ2),
         (0, b"\xfd7zXZ\x00", ArchiveFormat.XZ),
+        (0, b"\x28\xb5\x2f\xfd", ArchiveFormat.ZST),
+        (0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),
         (0, b"LZIP", ArchiveFormat.LZIP),
         (0, b"\x1f\x9d", ArchiveFormat.Z),
         # zlib's 2-byte CMF/FLG header — a weak signal (see detection's _WEAK_MAGIC_FORMATS).
@@ -288,33 +293,17 @@ class SingleFileBackend(ReadBackend):
     def open_read(
         self,
         source: Path | BinaryIO,
+        format: ArchiveFormat,
         streaming: bool,
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
     ) -> SingleFileReader:
-        format = _detect_member_format(source, archive_name)
+        # `format` is the resolved single-file format (from detection or the caller); its
+        # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(
             source, format, streaming, password, encoding, archive_name
         )
-
-
-def _detect_member_format(source: Path | BinaryIO, archive_name: str | None) -> ArchiveFormat:
-    """Resolve which standalone codec this source is, for the reader's format.
-
-    ``open_archive`` selects this backend from a detected single-file format, but the
-    backend is also reachable directly; re-run detection to learn the concrete codec.
-    """
-    from archivey.internal.detection import detect_format
-
-    info = detect_format(source)
-    if info.format.container == ContainerFormat.RAW_STREAM:
-        return info.format
-    # Detection landed on something this backend does not serve (e.g. a bare container);
-    # fall back to the extension, else a generic error surfaces at decode time.
-    raise UnsupportedOperationError(
-        f"Source {archive_name!r} is not a single-file compressor (detected {info.format!r})."
-    )
 
 
 register_reader(SingleFileBackend)

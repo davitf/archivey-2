@@ -53,6 +53,7 @@ class ArchiveFormat:
     BZ2: ClassVar[ArchiveFormat]
     XZ: ClassVar[ArchiveFormat]
     ZST: ClassVar[ArchiveFormat]
+    LZ4: ClassVar[ArchiveFormat]
     LZIP: ClassVar[ArchiveFormat]
     ZLIB: ClassVar[ArchiveFormat]
     BROTLI: ClassVar[ArchiveFormat]
@@ -101,6 +102,7 @@ ArchiveFormat.GZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
 ArchiveFormat.BZ2 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
 ArchiveFormat.XZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)
 ArchiveFormat.ZST = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)
+ArchiveFormat.LZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZ4)
 ArchiveFormat.LZIP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP)
 ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
 ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)

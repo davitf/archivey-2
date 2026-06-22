@@ -27,11 +27,20 @@
 - [ ] 0.5 **Seek-heavy containers are not mounted over a compressor**: only TAR
       composes with stream compressors; `.iso.xz`/`.iso.gz`/`.zip.xz` are single-file
       compressors wrapping the inner image.
-- [ ] 0.6 Scope: unix-compress single-file lands here; **ZST/LZ4 → Phase 8**;
-      **SFX detection → Phase 7**; ISO raw-`.bin` stripping deferred (MAY-drop).
+- [x] 0.6 Scope: unix-compress single-file lands here; **ZST/LZ4 single-file also land
+      here** (revised — the codecs already exist from Phase 2, the magic bytes are known,
+      and `ZST` was already a named constant; only `ArchiveFormat.LZ4` + the detection
+      entries were missing, so there was no concrete blocker). **SFX detection → Phase 7**;
+      ISO raw-`.bin` stripping deferred (MAY-drop). (Phase 8 remains for ZST/LZ4 *seekable*
+      decompressor refinements, not basic single-file reading.)
 - [x] 0.7 No `config` param on `open_read` this phase: a backend opening a codec builds
       `StreamConfig(streaming=self._streaming)` itself so the accelerator `AUTO`
       resolves correctly. A public config surface arrives in Phase 5.
+- [x] 0.8 `open_read` **receives the resolved `format`** (detected by `open_archive` or
+      passed by the caller) rather than re-inspecting the source. A multi-format backend
+      (`SingleFileBackend`, TAR) uses it to pick its concrete codec/variant; this also
+      lets the caller's explicit `format=` truly bypass detection. (Spec delta:
+      `backend-registry` `open_read` signature.)
 
 ## Stage map (implementation order — one PR per stage)
 
@@ -146,14 +155,16 @@ incrementally — each as its format's stage lands.
 - [x] 4.0 **Extend the data model** (prerequisite): add `StreamFormat.LZIP` (`"lz"`),
       `ZLIB` (`"zz"`), `BROTLI` (`"br"`), `UNIX_COMPRESS` (`"Z"`); extend
       `_STREAM_FORMAT_CODECS` to map them to their `Codec`; add named standalone
-      `ArchiveFormat` constants (`LZIP`, `ZLIB`, `BROTLI`, `Z`). Uncommon **combos**
-      (e.g. `tar.lz`) get **no** predefined constant — they are built on demand as
-      `ArchiveFormat(container, stream)`. (Spec delta: `archive-data-model`.)
+      `ArchiveFormat` constants (`LZIP`, `ZLIB`, `BROTLI`, `Z`, and `LZ4` — `ZST`
+      already existed). Uncommon **combos** (e.g. `tar.lz`) get **no** predefined
+      constant — they are built on demand as `ArchiveFormat(container, stream)`.
+      (Spec delta: `archive-data-model`.)
 - [x] 4.1 `formats/single_file_reader.py` — one `SingleFileBackend`,
-      `FORMATS` = standalone-codec set available this phase
-      (gz/bz2/xz/lzip/zlib/brotli/unix-compress); decompression via
+      `FORMATS` = the full standalone-codec set
+      (gz/bz2/xz/zst/lz4/lzip/zlib/brotli/unix-compress); decompression via
       `open_codec_stream(codec_for_stream_format(fmt.stream), source,
-      config=StreamConfig(streaming=streaming))` (see 0.7).
+      config=StreamConfig(streaming=streaming))` (see 0.7). A missing optional codec
+      (zstandard/lz4) makes its single-file format NONE-support via the registry.
 - [x] 4.2 One `FILE` member; name inference (strip known compression ext / append
       `.uncompressed` / default `"data"`); no synthesized directories; exactly one
       member yielded.
@@ -236,7 +247,8 @@ incrementally — each as its format's stage lands.
 - [x] 8.2 **(S2)** `format-single-file-compressors` scenarios for this-phase codecs
       (name inference, one member, gzip stored name → `extra` + `raw_name`, per-format
       size rules, `DIRECT` cost, non-seekable `.Z` raises, password raises). ZST/LZ4
-      scenarios deferred to Phase 8.
+      single-file scenarios included here (skipped when their codec is absent); their
+      *seekable-decompressor* refinements remain Phase 8.
 - [ ] 8.3 **(S4)** `format-iso` scenarios (namespace auto-select + fidelity, write
       rejected, non-seekable rejected) — skip when `pycdlib` absent.
 - [ ] 8.4 `format-detection` scenarios, by stage: **(S1)** magic, extension, conflict

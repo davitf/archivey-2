@@ -38,7 +38,7 @@ class StreamFormat(StrEnum):
 ```
 
 Named standalone `ArchiveFormat` constants SHALL exist for the bare single-stream
-formats — `GZ`, `BZ2`, `XZ`, `ZST`, `LZIP`, `ZLIB`, `BROTLI`, `Z` (each
+formats — `GZ`, `BZ2`, `XZ`, `ZST`, `LZ4`, `LZIP`, `ZLIB`, `BROTLI`, `Z` (each
 `RAW_STREAM × <codec>`) — alongside the container constants (`ZIP`, `TAR`, `TAR_GZ`, …).
 Container × codec combinations that are **not in common practice** (e.g. `tar.lz`,
 `tar.br`) SHALL NOT get a predefined constant; they are constructed on demand as

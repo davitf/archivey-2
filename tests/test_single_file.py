@@ -228,3 +228,47 @@ def test_brotli_roundtrip() -> None:
     with open_archive(io.BytesIO(data)) as ar:
         assert ar.format == ArchiveFormat.BROTLI
         assert ar.read(ar.members()[0]) == b"brotli payload"
+
+
+# ---------------------------------------------------------------------------
+# zstd / lz4 standalone (now first-class single-file formats)
+# ---------------------------------------------------------------------------
+
+
+@requires("zstandard")
+def test_zstd_roundtrip(tmp_path: Path) -> None:
+    import zstandard
+
+    data = zstandard.ZstdCompressor().compress(b"zstd payload")
+    with open_archive(io.BytesIO(data)) as ar:
+        assert ar.format == ArchiveFormat.ZST
+        assert ar.members()[0].name == "data"
+        assert ar.read(ar.members()[0]) == b"zstd payload"
+
+    path = tmp_path / "file.bin.zst"
+    path.write_bytes(data)
+    with open_archive(path) as ar:
+        assert ar.members()[0].name == "file.bin"
+
+
+@requires("lz4")
+def test_lz4_roundtrip() -> None:
+    import lz4.frame
+
+    data = lz4.frame.compress(b"lz4 payload")
+    with open_archive(io.BytesIO(data)) as ar:
+        assert ar.format == ArchiveFormat.LZ4
+        assert ar.read(ar.members()[0]) == b"lz4 payload"
+
+
+# ---------------------------------------------------------------------------
+# The backend uses the resolved format it is given (no re-inspection)
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_format_bypasses_detection() -> None:
+    # Forcing format=GZ routes straight to the gzip codec without re-detecting the source.
+    data = gzip.compress(b"forced gzip")
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.GZ) as ar:
+        assert ar.format == ArchiveFormat.GZ
+        assert ar.read(ar.members()[0]) == b"forced gzip"

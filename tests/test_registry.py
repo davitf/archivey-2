@@ -160,6 +160,26 @@ def test_zip_full_when_codecs_present(monkeypatch: pytest.MonkeyPatch) -> None:
     assert avail.missing == ()
 
 
+def test_single_codec_format_none_when_codec_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A bare single-file compressor whose sole codec backend is missing is NONE (not
+    # PARTIAL): there is nothing to fall back to. ZST's codec is zstandard.
+    monkeypatch.setattr(codecs_module, "_zstandard", None)
+    avail = format_availability(ArchiveFormat.ZST)
+    assert avail.support is FormatSupport.NONE
+    assert avail.missing[0].name == "zstandard"
+    assert ArchiveFormat.ZST in list_known_formats()
+    assert ArchiveFormat.ZST not in list_supported_formats()
+
+
+def test_single_codec_format_full_when_codec_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codecs_module, "_zstandard", object())
+    assert format_availability(ArchiveFormat.ZST).support is FormatSupport.FULL
+
+
 # ---------------------------------------------------------------------------
 # Global registry: known includes everything; supported excludes NONE
 # ---------------------------------------------------------------------------

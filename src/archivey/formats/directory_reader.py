@@ -213,11 +213,14 @@ class DirectoryReadBackend(ReadBackend):
     def open_read(
         self,
         source: Path | BinaryIO,
+        format: ArchiveFormat,
         streaming: bool,
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
     ) -> DirectoryReader:
+        # `format` is always DIRECTORY here (single-format backend); accepted for the
+        # uniform ReadBackend signature.
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
         return DirectoryReader(source, streaming, archive_name or str(source))

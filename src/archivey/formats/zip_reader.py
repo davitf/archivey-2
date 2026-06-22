@@ -287,11 +287,14 @@ class ZipReadBackend(ReadBackend):
     def open_read(
         self,
         source: Path | BinaryIO,
+        format: ArchiveFormat,
         streaming: bool,
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
     ) -> ZipReader:
+        # `format` is always ZIP here (single-format backend); accepted for the uniform
+        # ReadBackend signature.
         return ZipReader(source, streaming, password, encoding, archive_name)
 
 

@@ -99,6 +99,7 @@ def open_archive(
     backend = backend_cls()
     return backend.open_read(
         open_source,
+        format=format,
         streaming=streaming,
         password=password,
         encoding=effective_encoding,
