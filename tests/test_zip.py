@@ -18,7 +18,11 @@ from archivey import (
     open_archive,
 )
 from archivey.internal.cost import AccessCost, ListingCost, StreamCapability
-from archivey.internal.errors import StreamNotSeekableError, UnsupportedFeatureError
+from archivey.internal.errors import (
+    CorruptionError,
+    StreamNotSeekableError,
+    UnsupportedFeatureError,
+)
 from tests.streams_util import NonSeekableBytesIO
 
 # ---------------------------------------------------------------------------
@@ -292,3 +296,39 @@ def test_read_roundtrip_from_stream_source(simple_zip: Path) -> None:
     data = simple_zip.read_bytes()
     with open_archive(io.BytesIO(data)) as ar:
         assert ar.read("hello.txt") == b"hello world"
+
+
+# ---------------------------------------------------------------------------
+# Corrupt / truncated input -> CorruptionError (with the original cause attached).
+# (Per-format slice of testing-contract's adversarial-corpus requirement, pulled
+# forward to lock down the backend's exception translation as it lands.)
+# ---------------------------------------------------------------------------
+
+
+def test_truncated_zip_raises_corruption() -> None:
+    # A ZIP whose central directory / EOCD has been cut off: the local-file-header magic
+    # still makes detection pick ZIP, but stdlib zipfile cannot parse it.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("hello.txt", b"hello world" * 100)
+    truncated = buf.getvalue()[: len(buf.getvalue()) // 2]
+
+    with pytest.raises(CorruptionError) as excinfo:
+        open_archive(io.BytesIO(truncated))
+    assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
+
+
+def test_corrupt_member_data_raises_corruption_on_read() -> None:
+    # A structurally valid ZIP whose stored member payload has been altered: listing
+    # succeeds, but reading the member trips the CRC check -> CorruptionError.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("data.txt", b"A" * 200)
+    raw = bytearray(buf.getvalue())
+    # STORED payload begins after the 30-byte local header + 8-byte name ("data.txt").
+    raw[50] ^= 0xFF
+
+    with open_archive(io.BytesIO(bytes(raw))) as ar:
+        assert ar.members()[0].name == "data.txt"  # listing is unaffected
+        with pytest.raises(CorruptionError):
+            ar.read("data.txt")

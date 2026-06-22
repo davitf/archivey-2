@@ -19,7 +19,12 @@ import pytest
 
 from archivey import ArchiveFormat, MemberType, open_archive
 from archivey.internal.cost import AccessCost, ListingCost
-from archivey.internal.errors import StreamNotSeekableError, UnsupportedOperationError
+from archivey.internal.errors import (
+    CorruptionError,
+    StreamNotSeekableError,
+    TruncatedError,
+    UnsupportedOperationError,
+)
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, make_lzip_member, make_unix_compress
 
@@ -273,3 +278,32 @@ def test_explicit_format_bypasses_detection() -> None:
     with open_archive(io.BytesIO(data), format=ArchiveFormat.GZ) as ar:
         assert ar.format == ArchiveFormat.GZ
         assert ar.read(ar.members()[0]) == b"forced gzip"
+
+
+# ---------------------------------------------------------------------------
+# Corrupt / truncated input -> CorruptionError / TruncatedError end-to-end.
+# (Per-format slice of testing-contract's adversarial-corpus requirement, pulled
+# forward so the backend wires the codec layer's translation through correctly.
+# gzip is used because it is always available: zero-dep stdlib.)
+# ---------------------------------------------------------------------------
+
+
+# A non-seekable source keeps the codec sequential (no rapidgzip/indexed_bzip2
+# accelerator), so these assert the backend's own stdlib translation deterministically,
+# independent of which optional accelerators the environment has installed.
+
+
+def test_truncated_gzip_raises_truncated() -> None:
+    full = gzip.compress(b"streamed payload" * 1000)
+    truncated = full[: len(full) // 2]  # gzip magic intact -> detection picks GZ
+    with open_archive(NonSeekableBytesIO(truncated)) as ar:
+        with pytest.raises(TruncatedError):
+            ar.read(ar.members()[0])
+
+
+def test_corrupt_gzip_raises_corruption() -> None:
+    data = bytearray(gzip.compress(b"streamed payload" * 100))
+    data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
+    with open_archive(NonSeekableBytesIO(bytes(data))) as ar:
+        with pytest.raises(CorruptionError):
+            ar.read(ar.members()[0])

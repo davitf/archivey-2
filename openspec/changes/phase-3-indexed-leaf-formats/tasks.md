@@ -262,6 +262,19 @@ incrementally — each as its format's stage lands.
       `streaming=False`): **(S1)** ZIP + non-seekable ZIP fail-fast; **(S3)** TAR.
 - [ ] 8.7 Retire the matching `tests/_dev_oracle/` coverage as each format transfers
       (per stage).
+- [~] 8.8 **Per-format corrupt/truncated handling** — opening or reading a corrupt /
+      truncated archive raises `CorruptionError` / `TruncatedError` (with the original
+      exception as `__cause__`), exercised **per backend as it lands** rather than
+      deferred wholesale to Phase 10. This pulls testing-contract's "Corrupt archive"
+      adversarial case forward so each backend's `_translate_exception` hook is locked
+      down when written. Done: **(S1)** ZIP (truncated archive; corrupt member CRC),
+      **(S2)** single-file (truncated/corrupt gzip, via a non-seekable source so the
+      stdlib path is deterministic). Pending: **(S3)** TAR, **(S4)** ISO. The full
+      adversarial corpus (traversal, bombs, every format) still consolidates in
+      Phase 10. **Follow-up (codec layer, pre-existing):** the `rapidgzip` accelerator
+      leaks a raw `RuntimeError` on a corrupt header and does not raise on truncation —
+      `_translate_rapidgzip` needs the corrupt-header pattern, and truncation detection
+      needs a decision (see review notes).
 
 ## 9. Verify — acceptance criteria
 
