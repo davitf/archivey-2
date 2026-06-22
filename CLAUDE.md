@@ -20,6 +20,27 @@ library: read, stream, and safely extract ZIP / TAR / RAR / 7z / ISO / directory
   behaviour-focused tests, red-green TDD, the pause-and-ask-on-discrepancies rule).
 - `IDEAS.md` — speculative future/backlog ideas (not committed, not in `PLAN.md`).
 
+## OpenSpec CLI
+
+The `openspec` CLI (used to list/validate the specs and changes under
+`openspec/`) is **not preinstalled** in the session container, and the container
+is ephemeral — reclone, so it must be reinstalled at the start of each session.
+It ships as the npm package `@fission-ai/openspec` (Node is available):
+
+```bash
+npm install -g @fission-ai/openspec
+```
+
+The bare `openspec` package on npm is an unrelated empty stub — install the
+`@fission-ai/...` scoped package, not that one. Verify with `openspec --version`
+(known-good: 1.4.1). Common commands, run from the repo root:
+
+```bash
+openspec list                 # in-flight changes + task progress
+openspec validate --all       # validate all specs and changes
+openspec validate --strict <item-name>
+```
+
 ## Reference repository: `archivey-dev`
 
 `archivey-dev` is the **v1 / DEV** codebase that v2 selectively ports from and
