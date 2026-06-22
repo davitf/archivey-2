@@ -1,9 +1,10 @@
 # Backend Registry — delta (Phase 3)
 
 This change reworks how the registry tracks availability. Optional backends are no
-longer dropped at import; they register unconditionally and carry an availability
-flag, so the registry can report a tri-state, compositional **format support** and
-produce the install-hint errors the capability already promises.
+longer dropped at import; they register unconditionally, and availability is derived
+from the module-or-`None` sentinel (`_optional(dep)`), so the registry can report a
+tri-state, compositional **format support** and produce the install-hint errors the
+capability already promises.
 
 ## MODIFIED Requirements
 
@@ -12,11 +13,14 @@ produce the install-hint errors the capability already promises.
 The system SHALL register **all** known core and optional backends when `archivey`
 is imported, without any user action. Optional, library-backed backends (ISO, ZST,
 LZ4) and the optional 7-Zip *writing* capability SHALL attempt their import inside a
-`try/except ImportError` guard and register **regardless of the outcome**, recording
-whether the dependency is present (an availability flag) together with the backend's
-`OPTIONAL_DEPENDENCY` and install hint. A missing dependency therefore makes a format
-*unavailable*, not *unknown*: the registry still knows the format exists and can name
-the package to install. Import MUST NOT raise when an optional dependency is absent.
+`try/except ImportError` guard and register **regardless of the outcome**. Each
+backend declares its `OPTIONAL_DEPENDENCY` (and install hint) as data; availability is
+derived centrally from whether that dependency imports — using the existing
+**module-or-`None` sentinel** idiom (`_optional("pycdlib")` returns the module or
+`None`), not a separate per-backend boolean. A missing dependency therefore makes a
+format *unavailable*, not *unknown*: the registry still knows the format exists and can
+name the package to install. Import MUST NOT raise when an optional dependency is
+absent.
 
 Note: 7-Zip and RAR *reading* are **native** and always available (no optional
 dependency). RAR data reads additionally require the external `unrar` binary at
@@ -26,35 +30,38 @@ works, data does not), handled at read time, not via an import guard (see
 
 ```python
 # formats/iso_reader.py
-try:
-    import pycdlib
-    _PYCDLIB_AVAILABLE = True
-except ImportError:
-    _PYCDLIB_AVAILABLE = False
+pycdlib = _optional("pycdlib")   # the module, or None when the [iso] extra is absent
 
 class IsoReadBackend(ReadBackend):
     FORMATS = (ArchiveFormat.ISO,)
     EXTENSIONS = (".iso",)
     MAGIC = ((32769, b"CD001"),)          # declared as data; the detector matches it
-    OPTIONAL_DEPENDENCY = "pycdlib"
-    def open_read(self, source, streaming, password, encoding, archive_name) -> ArchiveReader: ...
+    OPTIONAL_DEPENDENCY = "pycdlib"       # data; the registry derives availability from it
+    def open_read(self, source, streaming, password, encoding, archive_name) -> ArchiveReader:
+        assert pycdlib is not None        # open_read is only reached for an available backend
+        ...
 
-# Always registered; the registry records availability = _PYCDLIB_AVAILABLE so an
-# absent pycdlib yields a NONE-support ISO with an install hint rather than a silent
-# "unknown format".
-register_reader(IsoReadBackend, available=_PYCDLIB_AVAILABLE)
+# Always registered. The registry derives availability centrally as
+# `_optional("pycdlib") is not None`, so an absent pycdlib yields a NONE-support ISO
+# with an install hint rather than a silent "unknown format" — no per-backend boolean.
+register_reader(IsoReadBackend)
 ```
+
+`pycdlib` typed as `ModuleType | None` narrows cleanly under Pyrefly + ty: every use
+sits behind an `is not None` guard (or the `assert` above, since `open_read` is only
+selected for an available backend). This mirrors how the codec layer already handles
+its optional packages.
 
 #### Scenario: core backend available without extras
 
 - **WHEN** `import archivey` succeeds on a system with no optional extras installed
-- **THEN** ZIP, TAR (all variants), GZ, BZ2, XZ, Directory, and the native 7z and RAR readers are registered and appear in `BackendRegistry.list_formats()` with FULL or PARTIAL support
+- **THEN** ZIP, TAR (all variants), GZ, BZ2, XZ, Directory, and the native 7z and RAR readers are registered and appear in `BackendRegistry.list_supported_formats()` with FULL or PARTIAL support
 
 #### Scenario: optional backend absent at import is known but unavailable
 
 - **WHEN** `pycdlib` is not installed and `archivey` is imported
 - **THEN** no `ImportError` is raised during import
-- **AND** `ArchiveFormat.ISO` is absent from `BackendRegistry.list_formats()`
+- **AND** `ArchiveFormat.ISO` is absent from `BackendRegistry.list_supported_formats()`
 - **AND** `ArchiveFormat.ISO` is present in `BackendRegistry.list_known_formats()` with support `NONE` and a missing-component hint naming `pycdlib` / `pip install archivey[iso]`
 
 ### Requirement: Optional-dependency graceful degradation
@@ -81,9 +88,9 @@ metadata exposed by `format_availability()`.
 - **WHEN** a source with the ISO 9660 magic is passed to `archivey.open_archive()` and `pycdlib` is not installed
 - **THEN** `UnsupportedFormatError` is raised, its message names `pycdlib` and suggests `pip install archivey[iso]`, and no `ImportError` propagates
 
-#### Scenario: list_formats() excludes NONE-support formats
+#### Scenario: list_supported_formats() excludes NONE-support formats
 
-- **WHEN** `BackendRegistry.list_formats()` is called on a system where `pycdlib` is not installed
+- **WHEN** `BackendRegistry.list_supported_formats()` is called on a system where `pycdlib` is not installed
 - **THEN** `ArchiveFormat.ISO` is absent (support NONE)
 - **AND** the native 7z and RAR readers are present (FULL or PARTIAL), along with all formats whose dependencies are satisfied
 
@@ -132,11 +139,11 @@ class FormatAvailability:
     missing: tuple[MissingComponent, ...]   # empty when FULL
 
 def format_availability(format: ArchiveFormat) -> FormatAvailability: ...
-def list_formats() -> list[ArchiveFormat]:        # FULL ∪ PARTIAL (readable now)
+def list_supported_formats() -> list[ArchiveFormat]:  # FULL ∪ PARTIAL (readable now)
 def list_known_formats() -> list[ArchiveFormat]:  # every format the registry knows
 ```
 
-`list_formats()` SHALL return formats with support FULL or PARTIAL;
+`list_supported_formats()` SHALL return formats with support FULL or PARTIAL;
 `list_known_formats()` SHALL return every known format including NONE.
 
 #### Scenario: 7z without optional codecs is partial
