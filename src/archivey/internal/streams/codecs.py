@@ -203,6 +203,10 @@ _STREAM_FORMAT_CODECS: dict[StreamFormat, Codec] = {
     StreamFormat.XZ: Codec.XZ,
     StreamFormat.ZSTD: Codec.ZSTD,
     StreamFormat.LZ4: Codec.LZ4,
+    StreamFormat.LZIP: Codec.LZIP,
+    StreamFormat.ZLIB: Codec.ZLIB,
+    StreamFormat.BROTLI: Codec.BROTLI,
+    StreamFormat.UNIX_COMPRESS: Codec.UNIX_COMPRESS,
 }
 
 

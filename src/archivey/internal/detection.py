@@ -26,9 +26,20 @@ from typing import BinaryIO
 from archivey.internal.errors import FormatDetectionError
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
+from archivey.internal.streams.codecs import Codec, is_codec_available
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from archivey.internal.streams.streamtools import is_seekable, read_exact
 from archivey.internal.types import ArchiveFormat
+
+# The zlib 2-byte header (CMF/FLG) is not a true magic number — the same prefix begins
+# many raw-deflate streams and can occur in arbitrary data — so a zlib magic match is the
+# weakest entry in the table: it is consulted only after the stronger magics and the
+# content probe, and a conflicting extension overrides it (see ``format-detection``).
+_WEAK_MAGIC_FORMATS: frozenset[ArchiveFormat] = frozenset({ArchiveFormat.ZLIB})
+
+# Bytes fed to a content probe (e.g. Brotli) — enough to trip a malformed-stream error
+# without decompressing the whole payload.
+_PROBE_PREFIX = 256
 
 
 class DetectionConfidence(Enum):
@@ -79,12 +90,38 @@ def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
 
 
 def _match_magic(
-    data: bytes, magic_entries: list[tuple[int, bytes, ArchiveFormat]]
+    data: bytes,
+    magic_entries: list[tuple[int, bytes, ArchiveFormat]],
+    *,
+    weak: bool,
 ) -> ArchiveFormat | None:
+    """Return the first matching magic, considering only weak or only strong entries."""
     for offset, magic, fmt in magic_entries:
+        is_weak = fmt in _WEAK_MAGIC_FORMATS
+        if is_weak != weak:
+            continue
         if data[offset : offset + len(magic)] == magic:
             return fmt
     return None
+
+
+def _brotli_content_probe(data: bytes) -> bool:
+    """Whether a bounded prefix of ``data`` decompresses cleanly through Brotli.
+
+    Brotli has no magic bytes, so it is recognized structurally. Skipped (returns
+    ``False``, i.e. "no match") when the Brotli backend is not installed, so detection
+    falls through to the ``.br`` extension guess. Operates on the already-peeked bytes, so
+    it consumes nothing from the source.
+    """
+    if not is_codec_available(Codec.BROTLI):
+        return False
+    import brotli  # optional dep; guarded by is_codec_available above
+
+    try:
+        brotli.Decompressor().process(data[:_PROBE_PREFIX])
+        return True
+    except brotli.error:
+        return False
 
 
 def _match_extension(
@@ -118,21 +155,35 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
     )
     data = _peek_prefix(source, needed)
     name = _source_extension_name(source)
-
-    magic_fmt = _match_magic(data, magic_entries)
     ext_fmt = _match_extension(name, extension_map)
 
-    if magic_fmt is not None:
-        if ext_fmt is not None and ext_fmt != magic_fmt:
+    # 1. Strong (exact, multi-byte) magic wins, with a conflict warning vs the extension.
+    strong_fmt = _match_magic(data, magic_entries, weak=False)
+    if strong_fmt is not None:
+        if ext_fmt is not None and ext_fmt != strong_fmt:
             logger.warning(
                 "Format conflict for %r: extension suggests %r but magic bytes indicate "
                 "%r; using the magic-byte result.",
                 name,
                 ext_fmt,
-                magic_fmt,
+                strong_fmt,
             )
-        return FormatInfo(magic_fmt, DetectionConfidence.CERTAIN, "magic")
+        return FormatInfo(strong_fmt, DetectionConfidence.CERTAIN, "magic")
 
+    # 2. Weak magic (zlib's 2-byte header): a real but low-confidence signal. A conflicting
+    #    extension overrides it (no warning — the weakness is by design); otherwise report
+    #    it as PROBABLE rather than CERTAIN.
+    weak_fmt = _match_magic(data, magic_entries, weak=True)
+    if weak_fmt is not None:
+        if ext_fmt is not None and ext_fmt != weak_fmt:
+            return FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension")
+        return FormatInfo(weak_fmt, DetectionConfidence.PROBABLE, "magic")
+
+    # 3. Content probes for magic-less formats (Brotli). Skipped when the backend is absent.
+    if _brotli_content_probe(data):
+        return FormatInfo(ArchiveFormat.BROTLI, DetectionConfidence.PROBABLE, "content_probe")
+
+    # 4. Extension-only guess.
     if ext_fmt is not None:
         return FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension")
 

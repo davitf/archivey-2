@@ -17,7 +17,7 @@
 
 ## 0. Decisions locked in this change (no code, just honored below)
 
-- [ ] 0.1 Single-file = **one** multi-format `SingleFileBackend` + per-codec hooks.
+- [x] 0.1 Single-file = **one** multi-format `SingleFileBackend` + per-codec hooks.
 - [x] 0.2 Registry: **always register**; support is tri-state (FULL/PARTIAL/NONE),
       compositional over format backend + codec backends. Format backends stay 1:1.
 - [x] 0.3 Non-seekable ZIP **fails fast** (no implicit spool).
@@ -79,7 +79,7 @@ incrementally — each as its format's stage lands.
       when codec backend absent). These are **openable** once the TAR reader (§3b)
       lands. No inner-ISO / inner-ZIP probe — seek-heavy containers stay
       single-file-wrapped (0.5).
-- [ ] 2.5 **(S2)** Brotli **content probe** (`PROBABLE`); skipped when the Brotli
+- [x] 2.5 **(S2)** Brotli **content probe** (`PROBABLE`); skipped when the Brotli
       backend is missing (fall through to `.br` extension `GUESS`); each probe restores
       position.
 - [ ] 2.6 **(S4)** ISO probe: always attempt it as a **fallback** when the 4 KiB magic
@@ -143,35 +143,36 @@ incrementally — each as its format's stage lands.
 
 > **Stage 2.**
 
-- [ ] 4.0 **Extend the data model** (prerequisite): add `StreamFormat.LZIP` (`"lz"`),
+- [x] 4.0 **Extend the data model** (prerequisite): add `StreamFormat.LZIP` (`"lz"`),
       `ZLIB` (`"zz"`), `BROTLI` (`"br"`), `UNIX_COMPRESS` (`"Z"`); extend
       `_STREAM_FORMAT_CODECS` to map them to their `Codec`; add named standalone
       `ArchiveFormat` constants (`LZIP`, `ZLIB`, `BROTLI`, `Z`). Uncommon **combos**
       (e.g. `tar.lz`) get **no** predefined constant — they are built on demand as
       `ArchiveFormat(container, stream)`. (Spec delta: `archive-data-model`.)
-- [ ] 4.1 `formats/single_file_reader.py` — one `SingleFileBackend`,
+- [x] 4.1 `formats/single_file_reader.py` — one `SingleFileBackend`,
       `FORMATS` = standalone-codec set available this phase
       (gz/bz2/xz/lzip/zlib/brotli/unix-compress); decompression via
       `open_codec_stream(codec_for_stream_format(fmt.stream), source,
       config=StreamConfig(streaming=streaming))` (see 0.7).
-- [ ] 4.2 One `FILE` member; name inference (strip known compression ext / append
+- [x] 4.2 One `FILE` member; name inference (strip known compression ext / append
       `.uncompressed` / default `"data"`); no synthesized directories; exactly one
       member yielded.
-- [ ] 4.3 Per-codec metadata hooks (dispatch table, not `if`-chains): gzip `FNAME` →
+- [x] 4.3 Per-codec metadata hooks (dispatch table, not `if`-chains): gzip `FNAME` →
       `extra["gzip.original_filename"]` (decoded) **and** `raw_name` (undecoded bytes);
       `name` still derived from the source filename unless configured otherwise (+
       gzip mtime). Other size hooks: xz/zst header size; lz4 frame size; lzip trailer
       size; gz size always `None`; bz2/zlib/br/Z size `None` until full read (then may
-      update).
-- [ ] 4.4 Cost: `INDEXED` listing (always one member); `DIRECT` access (one member —
+      update). (xz/lzip size implemented via the seekable index/trailer; zst/lz4 are
+      Phase 8.)
+- [x] 4.4 Cost: `INDEXED` listing (always one member); `DIRECT` access (one member —
       no inter-member dependency, so `SOLID` does not apply). Whether the opened member
       *stream* can seek (xz block index, etc.) is a stream-level property
       (`seekable-decompressor-streams`), not the archive-level `CostReceipt`.
-- [ ] 4.5 unix-compress quirks honored: **requires a seekable source** — a non-seekable
+- [x] 4.5 unix-compress quirks honored: **requires a seekable source** — a non-seekable
       `.Z` raises `StreamNotSeekableError` at open (the unix-compress codec already
       raises this; other single-file formats stay readable on a non-seekable source).
       No truncation signal → a short stream yields fewer bytes with no error.
-- [ ] 4.6 A non-`None` `password` on a single-file open raises
+- [x] 4.6 A non-`None` `password` on a single-file open raises
       `UnsupportedOperationError` (single-file compressors have no encryption).
 
 ## 5. ISO backend
@@ -232,7 +233,7 @@ incrementally — each as its format's stage lands.
 - [ ] 8.1b **(S3)** `format-tar` random-access read scenarios (PAX/GNU/ustar mapping,
       compressed-tar `tar.gz`/`tar.xz`/…, cost). Streaming/`stream_members` scenarios
       deferred to Phase 4.
-- [ ] 8.2 **(S2)** `format-single-file-compressors` scenarios for this-phase codecs
+- [x] 8.2 **(S2)** `format-single-file-compressors` scenarios for this-phase codecs
       (name inference, one member, gzip stored name → `extra` + `raw_name`, per-format
       size rules, `DIRECT` cost, non-seekable `.Z` raises, password raises). ZST/LZ4
       scenarios deferred to Phase 8.

@@ -1,6 +1,6 @@
-"""Format-detection tests — Stage 1 scope (magic, extension, conflict, never-consumes).
+"""Format-detection tests — Stage 1 + Stage 2 (Brotli content probe, weak zlib).
 
-Brotli/inner-TAR/ISO probes and SFX scanning land with their backends in later stages.
+Inner-TAR / ISO probes and SFX scanning land with their backends in later stages.
 """
 
 from __future__ import annotations
@@ -8,12 +8,15 @@ from __future__ import annotations
 import io
 import logging
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
 
 from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.errors import FormatDetectionError
+from archivey.internal.streams import codecs as codecs_module
+from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 
 
@@ -163,3 +166,51 @@ def test_path_source_not_left_open(tmp_path: Path) -> None:
     # Detecting a path opens and closes its own handle; the file stays usable afterwards.
     detect_format(path)
     assert path.read_bytes()[:4] == b"\x50\x4b\x03\x04"
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Brotli content probe (magic-less) + weak zlib
+# ---------------------------------------------------------------------------
+
+
+@requires("brotli")
+def test_brotli_detected_by_content_probe() -> None:
+    import brotli
+
+    data = brotli.compress(b"some brotli payload to decode")
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.BROTLI
+    assert info.confidence == DetectionConfidence.PROBABLE
+    assert info.detected_by == "content_probe"
+
+
+def test_brotli_probe_skipped_when_backend_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With the Brotli backend absent, the probe is skipped and detection falls back to the
+    # .br extension guess rather than failing.
+    monkeypatch.setattr(codecs_module, "_brotli", None)
+    path = tmp_path / "thing.br"
+    path.write_bytes(b"not a brotli stream, just bytes")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.BROTLI
+    assert info.confidence == DetectionConfidence.GUESS
+    assert info.detected_by == "extension"
+
+
+def test_zlib_weak_magic_is_probable() -> None:
+    data = zlib.compress(b"zlib payload")
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.ZLIB
+    # zlib's 2-byte header is a weak signal -> PROBABLE, not CERTAIN.
+    assert info.confidence == DetectionConfidence.PROBABLE
+    assert info.detected_by == "magic"
+
+
+def test_zlib_weak_magic_overridden_by_conflicting_extension(tmp_path: Path) -> None:
+    # A conflicting extension overrides the weak zlib match (no warning, by design).
+    path = tmp_path / "thing.xz"
+    path.write_bytes(zlib.compress(b"payload"))
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.XZ
+    assert info.detected_by == "extension"

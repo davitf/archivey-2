@@ -29,6 +29,10 @@ class StreamFormat(str, Enum):
     XZ = "xz"
     ZSTD = "zst"
     LZ4 = "lz4"
+    LZIP = "lz"
+    ZLIB = "zz"
+    BROTLI = "br"
+    UNIX_COMPRESS = "Z"
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,10 @@ class ArchiveFormat:
     BZ2: ClassVar[ArchiveFormat]
     XZ: ClassVar[ArchiveFormat]
     ZST: ClassVar[ArchiveFormat]
+    LZIP: ClassVar[ArchiveFormat]
+    ZLIB: ClassVar[ArchiveFormat]
+    BROTLI: ClassVar[ArchiveFormat]
+    Z: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -93,6 +101,10 @@ ArchiveFormat.GZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
 ArchiveFormat.BZ2 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
 ArchiveFormat.XZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)
 ArchiveFormat.ZST = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)
+ArchiveFormat.LZIP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP)
+ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
+ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
+ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
