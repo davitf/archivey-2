@@ -29,6 +29,9 @@
       compressors wrapping the inner image.
 - [ ] 0.6 Scope: unix-compress single-file lands here; **ZST/LZ4 → Phase 8**;
       **SFX detection → Phase 7**; ISO raw-`.bin` stripping deferred (MAY-drop).
+- [ ] 0.7 No `config` param on `open_read` this phase: a backend opening a codec builds
+      `StreamConfig(streaming=self._streaming)` itself so the accelerator `AUTO`
+      resolves correctly. A public config surface arrives in Phase 5.
 
 ## Stage map (implementation order — one PR per stage)
 
@@ -115,12 +118,19 @@ incrementally — each as its format's stage lands.
 > **Stage 3.**
 
 - [ ] 3b.1 `formats/tar_reader.py` on the ABC (stdlib `tarfile`); `MAGIC` (`ustar` at
-      257) / `EXTENSIONS` declared as data; random-access reading on a seekable source
-      (scan-and-index → `_MEMBER_LIST_UPFRONT` after scan, `_SUPPORTS_RANDOM_ACCESS`).
+      257 → `TAR`) / `EXTENSIONS` declared as data; `FORMATS` includes `TAR` **and** the
+      compressed combos (`TAR_GZ`/`TAR_BZ2`/`TAR_XZ`/… + on-demand `(TAR, <codec>)`);
+      random-access reading on a seekable source (scan-and-index → `_MEMBER_LIST_UPFRONT`
+      after scan, `_SUPPORTS_RANDOM_ACCESS`).
 - [ ] 3b.2 `TarInfo` → `ArchiveMember` mapping across PAX / GNU / ustar variants
       (mode, mtime, uid/gid, type incl. symlink/hardlink/dir, size).
-- [ ] 3b.3 Compressed-tar (`tar.gz`/`tar.bz2`/`tar.xz`/`tar.lzip`/…) via the codec
-      layer; cost reflects the underlying codec (seekable vs SOLID).
+- [ ] 3b.3 Compressed-tar: the backend **opens the codec internally** —
+      `open_codec_stream(codec_for_stream_format(fmt.stream), source,
+      config=StreamConfig(streaming=streaming))` → `tarfile.open(fileobj=…, mode="r:")`.
+      (Our codec layer, not `tarfile`'s native `r:gz`/`r:bz2`/`r:xz`, so `tar.lzip`/
+      `tar.zst`/`tar.lz4` etc. work too. The opener stays generic — composition is the
+      backend's job, keeping the seek-heavy-container rule (0.5) per-backend.) Cost
+      reflects the underlying codec.
 - [ ] 3b.4 Cost: listing is `REQUIRES_SCANNING` for a plain tar / `REQUIRES_DECOMPRESSION`
       for a compressed tar (TAR has **no** central index — not `INDEXED`); `DIRECT`
       access on a seekable plain tar.
@@ -140,8 +150,9 @@ incrementally — each as its format's stage lands.
       `ArchiveFormat(container, stream)`. (Spec delta: `archive-data-model`.)
 - [ ] 4.1 `formats/single_file_reader.py` — one `SingleFileBackend`,
       `FORMATS` = standalone-codec set available this phase
-      (gz/bz2/xz/lzip/zlib/brotli/unix-compress); decompression via the
-      `compressed-streams` codec layer (resolve by `format.stream`).
+      (gz/bz2/xz/lzip/zlib/brotli/unix-compress); decompression via
+      `open_codec_stream(codec_for_stream_format(fmt.stream), source,
+      config=StreamConfig(streaming=streaming))` (see 0.7).
 - [ ] 4.2 One `FILE` member; name inference (strip known compression ext / append
       `.uncompressed` / default `"data"`); no synthesized directories; exactly one
       member yielded.

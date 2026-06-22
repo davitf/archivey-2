@@ -3,7 +3,9 @@
 Phase 3 reads standalone `lzip` / `zlib` / `brotli` / `unix-compress` streams, but the
 `StreamFormat` enum only defines `gz`/`bz2`/`xz`/`zst`/`lz4`, so those formats cannot be
 named. The enum is already documented as extensible ("new outer codecs are added here
-(lzip, brotli, …)"); this change makes that concrete.
+(lzip, brotli, …)"); this change makes that concrete. It also sharpens the definition of
+`raw_name` to "exactly what the archive stored," so the gzip case (where `name` is
+source-derived) has a well-defined home for the stored `FNAME` bytes.
 
 ## MODIFIED Requirements
 
@@ -59,3 +61,44 @@ pair. `file_extension()` derives from the codec for a `RAW_STREAM` (e.g. `Z` →
 - **WHEN** a `tar.lz` (tar wrapped in lzip) source is opened
 - **THEN** `ar.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP)` even though no `TAR_LZIP` class constant is predefined
 - **AND** `ar.format.file_extension() == "tar.lz"`
+
+### Requirement: ArchiveMember name normalization rules
+
+The system SHALL normalize `ArchiveMember.name` according to a deterministic set of rules, while preserving the verbatim stored bytes in `ArchiveMember.raw_name`. When normalization changes the logical path, a warning SHALL be emitted via the `archivey.normalization` logger.
+
+Normalization rules applied in order:
+1. Replace all `\` with `/`.
+2. Strip leading `/` and `./`.
+3. Collapse `//` and `foo/../bar` sequences.
+4. Append `/` for directory members if not already present.
+5. Never produce an empty string — the root directory becomes `"."`.
+
+`name` is produced by decoding the stored bytes (using the format's internal encoding
+signal where present, otherwise the resolved/auto-detected `encoding`) and then applying
+the rules above.
+
+`raw_name` holds **exactly what the archive stored** for the member's name — the
+verbatim, encoded, pre-normalization bytes — so the name can be re-decoded losslessly
+under a different encoding; it is `None` only when the format exposes no separate raw
+form. For formats where the logical `name` is **not** taken from archive content but
+derived elsewhere (a single-file compressor, whose `name` comes from the *source
+filename*), `raw_name` still holds the archive's stored name when one exists — e.g. a
+gzip stream's `FNAME` bytes — so `raw_name` may legitimately differ from a value
+`name` would decode to. Treating the source-filename derivation as the "normalization"
+step for these formats keeps one rule: `raw_name` is ground truth, `name` is the
+normalized presentation.
+
+#### Scenario: backslash conversion
+
+- **WHEN** an archive member is stored with the name bytes `b"foo\\bar\\baz.txt"`
+- **THEN** `member.name == "foo/bar/baz.txt"` and `member.raw_name == b"foo\\bar\\baz.txt"`
+
+#### Scenario: traversal sequence collapsed
+
+- **WHEN** an archive member has the name `"foo/../bar"`
+- **THEN** `member.name == "bar"` and a warning is emitted via `archivey.normalization`
+
+#### Scenario: raw_name carries the stored name even when name is source-derived
+
+- **WHEN** a `.gz` stream stores `FNAME = "report.csv"` and is opened from a path `archive.gz`
+- **THEN** `member.raw_name` holds the undecoded `FNAME` bytes while `member.name == "archive"` (from the source filename), and the decoded `FNAME` is also available in `member.extra["gzip.original_filename"]`

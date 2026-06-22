@@ -170,9 +170,9 @@ This change carries **spec deltas** (it modifies behavior the specs describe):
 
 - **`backend-registry`** (MODIFIED + ADDED): registration becomes "always register;
   mark availability"; new tri-state, compositional `FormatSupport` and the
-  availability query surface; degradation reworded against the tri-state; plus the
-  `MAGIC`/`EXTENSIONS` declaration shape so a multi-format backend can map each
-  magic/extension to its format (*proposed — pending confirmation, see review notes*).
+  availability query surface; degradation reworded against the tri-state; and the
+  `MAGIC`/`EXTENSIONS` declarations carry the `ArchiveFormat` each signal implies, so a
+  multi-format backend (single-file, TAR) maps each magic/extension to its format.
 - **`format-single-file-compressors`** (ADDED + MODIFIED): a single multi-format
   `SingleFileBackend` with per-codec metadata hooks is the prescribed structure; new
   standalone codecs become readable without new backend code; the gzip stored filename
@@ -182,7 +182,9 @@ This change carries **spec deltas** (it modifies behavior the specs describe):
 - **`archive-data-model`** (MODIFIED): extend `StreamFormat` with `LZIP`/`ZLIB`/
   `BROTLI`/`UNIX_COMPRESS` and add named standalone `ArchiveFormat` constants
   (`LZIP`/`ZLIB`/`BROTLI`/`Z`); uncommon container×codec combos are built on demand,
-  not predefined.
+  not predefined. Also clarify `raw_name` as *exactly what the archive stored* (encoded,
+  pre-normalization) — for gzip that is the `FNAME` bytes, even though `name` is derived
+  from the source filename.
 
 It **implements** (no delta) already-written specs: `format-zip`, `format-iso`,
 `format-detection`, the **random-access read** parts of `format-tar` (its

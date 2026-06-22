@@ -34,8 +34,8 @@ pycdlib = _optional("pycdlib")   # the module, or None when the [iso] extra is a
 
 class IsoReadBackend(ReadBackend):
     FORMATS = (ArchiveFormat.ISO,)
-    EXTENSIONS = (".iso",)
-    MAGIC = ((32769, b"CD001"),)          # declared as data; the detector matches it
+    EXTENSIONS = {".iso": ArchiveFormat.ISO}        # extension -> format
+    MAGIC = ((32769, b"CD001", ArchiveFormat.ISO),) # (offset, bytes, format)
     OPTIONAL_DEPENDENCY = "pycdlib"       # data; the registry derives availability from it
     def open_read(self, source, streaming, password, encoding, archive_name) -> ArchiveReader:
         assert pycdlib is not None        # open_read is only reached for an available backend
@@ -93,6 +93,56 @@ metadata exposed by `format_availability()`.
 - **WHEN** `BackendRegistry.list_supported_formats()` is called on a system where `pycdlib` is not installed
 - **THEN** `ArchiveFormat.ISO` is absent (support NONE)
 - **AND** the native 7z and RAR readers are present (FULL or PARTIAL), along with all formats whose dependencies are satisfied
+
+### Requirement: Separate ReadBackend and WriteBackend ABCs
+
+Reading and writing are different concerns with different state, lifecycles, and even
+availability, so the system SHALL define **two** abstract base classes — `ReadBackend`
+and `WriteBackend` — rather than one `Backend` with an optional write method. A format
+may have a read backend, a write backend, both, or (RAR) only a reader. They are
+registered in separate registries.
+
+Each `ReadBackend` declares its magic and extensions **as data**, and **every entry
+names the `ArchiveFormat` it implies**, so a *multi-format* backend (the single
+`SingleFileBackend`; the TAR backend over `TAR` + its compressed combos) can map each
+signal to the right format. The detector aggregates these across all registered
+backends into one table; backends carry no `detect(peek)` method (matching is
+centralized — see the detection/selection requirement).
+
+```python
+class ReadBackend(ABC):
+    FORMATS: tuple[ArchiveFormat, ...]                   # formats this backend reads
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {}         # ".gz" -> ArchiveFormat.GZ
+    MAGIC: tuple[tuple[int, bytes, ArchiveFormat], ...] = ()  # (offset, bytes, format)
+    REQUIRES_SEEK: bool = False                          # if True, non-seekable sources rejected
+    OPTIONAL_DEPENDENCY: str | None = None               # e.g. "pycdlib"
+
+    @abstractmethod
+    def open_read(self, source, streaming, password, encoding, archive_name) -> ArchiveReader: ...
+
+class WriteBackend(ABC):
+    FORMATS: tuple[ArchiveFormat, ...]
+    OPTIONAL_DEPENDENCY: str | None = None
+
+    @abstractmethod
+    def open_write(self, dest, compression, password, encoding) -> ArchiveWriter: ...
+```
+
+A magic-less format (e.g. Brotli) declares no `MAGIC` entry and is reached by its
+`EXTENSIONS` mapping plus the content probe (see `format-detection`). A format with no
+registered write backend is unwritable and the attempt raises `UnsupportedOperationError`
+(native-read-only RAR) or `UnsupportedFormatError` with an install hint (7z without
+`[7z-write]`).
+
+#### Scenario: a multi-format backend maps each magic to its format
+
+- **WHEN** the detector aggregates `SingleFileBackend.MAGIC`, which contains `(0, b"\x1f\x8b", ArchiveFormat.GZ)` and `(0, b"BZh", ArchiveFormat.BZ2)`
+- **THEN** a source beginning `1F 8B` resolves to `ArchiveFormat.GZ` and one beginning `42 5A 68` resolves to `ArchiveFormat.BZ2`, both served by the one `SingleFileBackend`
+
+#### Scenario: format with no write backend
+
+- **WHEN** `archivey.create()` is called for a format that has a read backend but no registered write backend (e.g. RAR)
+- **THEN** `UnsupportedOperationError` is raised with a message naming the format
 
 ## ADDED Requirements
 
