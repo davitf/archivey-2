@@ -112,24 +112,11 @@ jobs:
         if: matrix.install == 'all' && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar || true
 
-      - name: Diagnose macOS shutdown abort (temporary)
-        if: matrix.install == 'all'
-        run: |
-          set +e
-          for spec in rapidgzip indexed_bzip2 brotli lz4.frame zstandard pyzstd pyppmd inflate64 bcj py7zr pycdlib cryptography Cryptodome ncompress xz uncompresspy multivolumefile; do
-            uv run python -c "import $spec" >/dev/null 2>&1
-            echo "import $spec -> exit $?"
-          done
-          uv run python -c "import gzip,io,rapidgzip; rapidgzip.open(io.BytesIO(gzip.compress(b'x'*100000))).read()" >/dev/null 2>&1
-          echo "use rapidgzip -> exit $?"
-          uv run python -c "import bz2,io,indexed_bzip2; indexed_bzip2.open(io.BytesIO(bz2.compress(b'x'*100000))).read()" >/dev/null 2>&1
-          echo "use indexed_bzip2 -> exit $?"
-          exit 0
+      - name: (temp) macOS bisect — drop the threaded accelerators
+        if: matrix.install == 'all' && runner.os == 'macOS'
+        shell: bash
+        run: uv pip uninstall rapidgzip indexed_bzip2
 
       - name: Run tests
         if: matrix.install == 'all'
-        # PYTHONFAULTHANDLER dumps a C/thread traceback if the process aborts (e.g. a
-        # native extension crashing at interpreter shutdown), to diagnose the macOS SIGABRT.
-        env:
-          PYTHONFAULTHANDLER: "1"
         run: uv run pytest tests/ -q
