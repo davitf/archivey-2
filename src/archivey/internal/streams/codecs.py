@@ -74,12 +74,18 @@ _rapidgzip = _optional("rapidgzip")
 _indexed_bzip2 = _optional("indexed_bzip2")
 
 
-def _join_accelerator_threads(inner: object) -> None:
-    """Join a ``rapidgzip`` / ``indexed_bzip2`` object's worker threads (best effort).
+def _close_accelerator(inner: object) -> None:
+    """Close a ``rapidgzip`` / ``indexed_bzip2`` object so its worker threads are stopped.
 
     Used as a :func:`weakref.finalize` callback: it takes the raw accelerator object as an
     argument (never a closure over the wrapper), so ``finalize`` keeps that object alive
-    until the join runs.
+    until this runs.
+
+    ``join_threads()`` alone does **not** stop the worker thread — a stream that is only joined
+    but never closed still aborts the interpreter at finalization ("Detected Python finalization
+    from running … thread"). Only ``close()`` stops the thread, so the backstop must close the
+    object, not merely join it. We join first (cheap, and disarms anything in flight) and then
+    close; ``close()`` on an already-finalized object is a no-op.
     """
     join_threads = getattr(inner, "join_threads", None)
     if join_threads is not None:
@@ -87,31 +93,37 @@ def _join_accelerator_threads(inner: object) -> None:
             join_threads()
         except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
             pass
+    close = getattr(inner, "close", None)
+    if close is not None:
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
+            pass
 
 
 class _AcceleratorStream(io.RawIOBase, BinaryIO):
-    """Wrap a threaded accelerator (``rapidgzip`` / ``indexed_bzip2``) so its worker threads
-    are always joined before the underlying object is freed.
+    """Wrap a threaded accelerator (``rapidgzip`` / ``indexed_bzip2``) so its underlying object
+    is always *closed* before it is freed.
 
-    The accelerators spawn C++ ``std::thread``s (invisible to Python's ``threading`` module)
-    that must be joined while the owning object is alive; ``join_threads()`` (which both
-    expose) does this. If the object is instead finalized by the garbage collector without a
-    join — which happens when a corrupt/truncated read raises and the exception traceback
-    captures the stream in a reference cycle, where finalizer ordering is undefined — its
-    thread is *detached* and keeps running. A detached thread still alive at interpreter
-    finalization aborts the process with SIGABRT on macOS ("Detected Python finalization
-    from running rapidgzip thread" → "terminate called").
+    The accelerators spawn C++ ``std::thread``s (invisible to Python's ``threading`` module).
+    A worker thread still running when the interpreter finalizes aborts the process with
+    SIGABRT ("Detected Python finalization from running … thread" → "terminate called").
+    Crucially, ``join_threads()`` does **not** stop the thread — only ``close()`` does (the
+    libraries' own message says to "close all … objects"). So an object that is merely joined,
+    or that is finalized by the garbage collector without being closed — which happens when a
+    corrupt/truncated read raises and the exception traceback captures the stream in a reference
+    cycle, where finalizer ordering is undefined — still trips the abort.
 
-    A :func:`weakref.finalize` guard closes that window: it runs the join exactly once, when
-    this wrapper is collected (cyclically or not) or at interpreter exit, whichever comes
-    first, and holds a strong reference to the raw object so the join always runs *before*
-    that object is freed. ``close()`` simply triggers the same guard early.
+    A :func:`weakref.finalize` guard closes that window: it ``close()``s the raw object exactly
+    once, when this wrapper is collected (cyclically or not) or at interpreter exit, whichever
+    comes first, holding a strong reference to the raw object so the close always runs *before*
+    that object is freed. ``close()`` on the wrapper simply triggers the same guard early.
     """
 
     def __init__(self, inner: BinaryIO) -> None:
         super().__init__()
         self._inner = inner
-        self._join = weakref.finalize(self, _join_accelerator_threads, inner)
+        self._finalize = weakref.finalize(self, _close_accelerator, inner)
 
     def read(self, n: int = -1, /) -> bytes:
         return self._inner.read(n)
@@ -143,9 +155,8 @@ class _AcceleratorStream(io.RawIOBase, BinaryIO):
     def close(self) -> None:
         if self.closed:
             return
-        # Join first (the finalize guard runs once and is then disarmed), then close.
-        self._join()
-        self._inner.close()
+        # Run the guard (joins + closes the inner object) once; it is then disarmed.
+        self._finalize()
         super().close()
 
 

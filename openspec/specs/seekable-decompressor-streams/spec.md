@@ -77,36 +77,28 @@ conservative scan for a further gzip header, so a valid file is never misreporte
 - **THEN** it decompresses fully with no error, because the ISIZE backstop disambiguates the multi-member case rather than flagging the size mismatch
 
 The accelerator backends spawn **C++ worker threads** (invisible to Python's `threading`
-module). A worker thread still running when the interpreter finalizes trips the library's
-own guard and aborts the process with SIGABRT. The thread must therefore be joined while its
-owning object is alive — `join_threads()`, then `close()` — and never left to the garbage
-collector, which on a reference cycle (e.g. an exception traceback capturing the stream) can
-finalize the object in an order that detaches the thread instead of joining it. The system
-SHALL guarantee this with a `weakref.finalize` guard per accelerator stream: it runs the join
-exactly once — when the wrapper is collected (cyclically or not) or at interpreter exit,
-whichever comes first — holding a strong reference to the raw object so the join always
-completes before that object is freed.
+module). A worker thread still running when the interpreter finalizes trips the library's own
+guard and aborts the process with SIGABRT. Stopping the thread requires **closing** the object:
+`join_threads()` alone does not stop it — only `close()` does. The owning object must therefore
+be closed before it is freed, and never left to the garbage collector unclosed, which on a
+reference cycle (e.g. an exception traceback capturing the stream) can finalize it without
+closing. The system SHALL guarantee this with a `weakref.finalize` guard per accelerator stream:
+it **closes** the raw object exactly once — when the wrapper is collected (cyclically or not) or
+at interpreter exit, whichever comes first — holding a strong reference to the raw object so the
+close always completes before that object is freed.
 
-This deterministic close keeps **Linux** and **Windows** clean even under heavy accelerator
-use (including corrupt/truncated reads that raise and form traceback cycles). On **macOS**,
-however, the system SHALL NOT select an accelerator under `AUTO`: there the deterministic-close
-guarantee did not hold for every stream under real access patterns / GC timing, and the process
-still aborted at shutdown — so gzip/bzip2 fall back to the sequential stdlib backend on macOS.
-An explicit `ON` is still honoured (the caller's choice, carrying the shutdown-abort risk on
-macOS). This is tracked as an upstream issue with a canary test (which measures, in
-subprocesses, that a closed+joined object exits cleanly while one finalized by the cyclic GC or
-at interpreter shutdown aborts) that flips when a future accelerator release fixes it; see
-`docs/known-issues.md`.
+Because the guard closes the object, leaked, cyclically-collected, and never-closed streams all
+shut down cleanly on **every** platform, so `AUTO` MAY select an accelerator for random access
+on every platform (a forward-only `streaming=True` pass needs no seeking and stays on the
+sequential backend). The underlying behaviour — that a raw, never-closed accelerator object
+aborts at finalization — is tracked as an upstream quirk with a canary test (which measures, in
+subprocesses, that closed and guard-closed objects exit cleanly while a raw, never-closed object
+aborts) that flips when a future accelerator release stops aborting; see `docs/known-issues.md`.
 
-#### Scenario: an unclosed accelerator stream does not crash at shutdown (Linux/Windows)
+#### Scenario: a leaked accelerator stream does not crash at shutdown
 
-- **WHEN** a process opens an accelerator-backed stream through the library and exits without closing it, on Linux or Windows
-- **THEN** the process terminates cleanly, because the `weakref.finalize` guard joins the worker thread before the object is freed, rather than aborting from a thread still running at interpreter finalization
-
-#### Scenario: AUTO does not select an accelerator on macOS
-
-- **WHEN** a gzip or bzip2 stream is opened for random access on macOS with the accelerator mode left at `AUTO`
-- **THEN** the sequential stdlib backend is used (no accelerator), so the process cannot abort at shutdown — a rewinding seek is serviced slowly (and warns) rather than crashing
+- **WHEN** a process opens an accelerator-backed stream through the library and exits, or lets the garbage collector reclaim it (including via a reference cycle), without closing it explicitly
+- **THEN** the process terminates cleanly on every platform, because the `weakref.finalize` guard closes the raw object before it is freed, rather than aborting from a worker thread still running at interpreter finalization
 
 ### Requirement: Index-less codecs warn on a rewinding seek
 

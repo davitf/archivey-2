@@ -9,23 +9,8 @@ growing list of keyword arguments. A public surface is wired in a later phase (s
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from enum import Enum
-
-# The random-access accelerators (rapidgzip, indexed_bzip2) abort the process with SIGABRT
-# at interpreter shutdown on macOS: they spawn C++ worker threads that their macOS builds do
-# not reliably stop, even when the stream is closed and ``join_threads()`` is called, and a
-# thread still running at finalization trips their guard ("Detected Python finalization from
-# running … thread" → "terminate called"). This is an upstream platform bug, not something
-# the library can fix from Python (see ``docs/known-issues.md`` and the canary in
-# ``tests/test_accelerator_shutdown.py`` that detects when an upstream release fixes it).
-#
-# Until then, ``AUTO`` does not select an accelerator on macOS — gzip/bzip2 stay on the
-# sequential stdlib backend (a slow rewinding seek, warned about, beats crashing the
-# process). An explicit ``ON`` is still honoured: the caller asked for it, and on macOS that
-# carries the shutdown-abort risk.
-_ACCELERATORS_UNSAFE_PLATFORM = sys.platform == "darwin"
 
 
 class AcceleratorMode(Enum):
@@ -38,8 +23,7 @@ class AcceleratorMode(Enum):
       opened for random access (``streaming=False``). Under ``streaming=True`` a forward
       pass needs no seeking, so AUTO leaves the cheaper sequential backend in place. When
       AUTO would enable the accelerator but its package is absent, fall back to sequential
-      silently (it is an enhancement, not a requirement). On macOS, AUTO never selects an
-      accelerator (they crash the process at shutdown there — see ``_ACCELERATORS_UNSAFE_PLATFORM``).
+      silently (it is an enhancement, not a requirement).
     """
 
     AUTO = "auto"
@@ -58,9 +42,8 @@ class AcceleratorMode(Enum):
             return False
         if self is AcceleratorMode.ON:
             return True
-        # AUTO: random access wants seeking; a forward-only pass does not. On macOS the
-        # accelerators crash the process at shutdown, so AUTO never selects them there.
-        return available and not streaming and not _ACCELERATORS_UNSAFE_PLATFORM
+        # AUTO: random access wants seeking; a forward-only pass does not.
+        return available and not streaming
 
 
 @dataclass(frozen=True)
