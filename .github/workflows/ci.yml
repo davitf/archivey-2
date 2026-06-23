@@ -114,4 +114,8 @@ jobs:
 
       - name: Run tests
         if: matrix.install == 'all'
+        # PYTHONFAULTHANDLER dumps a C/thread traceback if the process aborts (e.g. a
+        # native extension crashing at interpreter shutdown), to diagnose the macOS SIGABRT.
+        env:
+          PYTHONFAULTHANDLER: "1"
         run: uv run pytest tests/ -q
