@@ -25,43 +25,41 @@ Process completed with exit code 134.
 Both libraries spawn **C++ worker threads** (`std::thread`s, invisible to Python's
 `threading` module — `threading.enumerate()` never lists them). Each library installs a guard
 that calls `std::terminate()` if one of its worker threads is still running when the Python
-interpreter is finalizing. So the abort happens whenever a worker thread outlives its owning
-Python object into interpreter shutdown.
+interpreter is finalizing. So the abort happens whenever a worker thread outlives an explicit
+join — i.e. whenever an accelerator object is **finalized without `join_threads()` having been
+called on it while it was alive**.
 
 What governs that, measured by the canary in `tests/test_accelerator_shutdown.py` (a matrix of
-both accelerators × intact / corrupt / truncated input × closed / unclosed, each in its own
-subprocess):
+both accelerators × intact / corrupt / truncated input × cleanup strategy, each in its own
+subprocess). The behaviour is **identical on Linux and macOS**, and the input variant makes
+**no** difference — only how the object is finalized matters:
 
-| Cleanup | Linux | Windows | macOS |
-|---|---|---|---|
-| **Unclosed** (finalized at interpreter shutdown) | abort | abort\* | abort |
-| **Closed + `join_threads()`** during the run | clean | clean | **abort** |
+| Cleanup strategy | Linux | macOS |
+|---|---|---|
+| **closed** — `read()`, `join_threads()`, `close()` during the run | clean | clean |
+| **cycle_gc** — object reclaimed by the cyclic GC mid-run (e.g. an exception traceback holds it in a cycle) | abort | abort |
+| **unclosed** — object finalized at interpreter shutdown | abort | abort |
 
-\* Windows behaviour is recorded by the canary; the asserted columns are Linux/Windows = clean
-and macOS = abort for the **closed** case.
+(Windows exit codes are recorded by the canary's warning but not yet asserted.)
 
-The input variant (intact / corrupt / truncated) makes **no** difference — only cleanup and
-platform do:
+The takeaway: **only an explicit, prompt `join_threads()` + `close()` is safe.** Leaving the
+object to *any* finalizer — the cyclic garbage collector or interpreter shutdown — orphans the
+worker thread and aborts the process, on every platform.
 
-- On **Linux/Windows**, closing the stream and calling `join_threads()` during the run stops
-  the worker thread, so shutdown is clean. archivey already closes accelerator streams
-  deterministically (see `_AcceleratorStream` / `weakref.finalize` in
-  `archivey.internal.streams.codecs`), so these platforms are unaffected in normal use.
-- On **macOS**, the abort happens **even for a properly closed + joined stream**:
-  `join_threads()` does not reliably stop the worker thread on the macOS builds. Nothing the
-  library can do from Python prevents it.
+### Why the workaround is macOS-only
 
-### What was tried (and did not fix macOS)
+archivey closes accelerator streams deterministically — `_AcceleratorStream` joins on
+`close()`, and a `weakref.finalize` guard joins on collection / at exit (see
+`archivey.internal.streams.codecs`). On **Linux** and **Windows** that is enough: the full
+test suite, which exercises the accelerators heavily (including corrupt/truncated reads that
+raise), runs clean. On **macOS** the suite nonetheless aborted at shutdown — under its access
+patterns and GC timing the deterministic-close guarantee did not hold for every stream, and we
+could not make it reliable from Python. (`atexit`-close, `join_threads()`-on-close, and the
+`weakref.finalize` guard were each tried; all are correct hygiene and are kept, but none made
+the macOS suite reliable.)
 
-1. `atexit` backstop closing any leaked stream — insufficient (close alone does not stop the
-   thread on macOS).
-2. `join_threads()` before `close()` on every stream — insufficient (`join_threads()` itself
-   does not stop the thread on macOS).
-3. `weakref.finalize` guaranteeing the join runs before the raw object is freed, even inside a
-   reference cycle — insufficient (same reason).
-
-All three are correct hygiene and are kept (they make Linux/Windows robust against the
-*unclosed* case), but none addresses the macOS-specific failure.
+Rather than ship a backend that can crash the process on one platform, AUTO disables the
+accelerators there.
 
 ### Workaround
 
@@ -74,7 +72,10 @@ in-process forced-`ON` tests are skipped there.
 ### Re-enabling (the canary)
 
 `tests/test_accelerator_shutdown.py` asserts the current state: the **closed** case exits
-cleanly off macOS and is **expected to abort on macOS**. If a future `rapidgzip` /
-`indexed_bzip2` release makes the closed case exit cleanly on macOS, the macOS assertion
-**fails** — that is the signal to revisit `_ACCELERATORS_UNSAFE_PLATFORM` and re-enable the
-accelerators (per-accelerator, since the canary characterises each one separately).
+cleanly (the cleanup contract archivey depends on), and the **cycle_gc** and **unclosed**
+cases — an object finalized without an explicit join — **abort**. If a future `rapidgzip` /
+`indexed_bzip2` release no longer aborts when an object is finalized by the GC or at shutdown
+(e.g. it joins its threads in the destructor, or makes them non-fatal at finalization), those
+assertions **fail** — that is the signal that relying on the runtime to clean up is safe, and
+to revisit `_ACCELERATORS_UNSAFE_PLATFORM` and re-enable the accelerators (per-accelerator,
+since the canary characterises each one separately).

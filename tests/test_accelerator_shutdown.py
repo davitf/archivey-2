@@ -30,19 +30,23 @@ import warnings
 
 import pytest
 
-from archivey.internal.config import _ACCELERATORS_UNSAFE_PLATFORM
-
 # (module, builder-format) for the two accelerators.
 _ACCELERATORS = [("rapidgzip", "gzip"), ("indexed_bzip2", "bz2")]
 _VARIANTS = ["intact", "corrupt", "truncated"]
-_CLEANUPS = ["closed", "unclosed"]
+# Cleanup strategies, in increasing "let the runtime do it" order:
+#   closed   — read, join_threads(), close() during the run (what archivey does).
+#   cycle_gc — drop the object into a reference cycle and reclaim it via the cyclic GC
+#              *mid-run* (the mechanism a corrupt/truncated read's exception traceback would
+#              create), to see whether cyclic finalization detaches the worker thread.
+#   unclosed — keep the object referenced so it is finalized at interpreter shutdown.
+_CLEANUPS = ["closed", "cycle_gc", "unclosed"]
 
 
 def _script(module: str, fmt: str, variant: str, cleanup: str) -> str:
     """A minimal standalone program that uses the accelerator *directly* (no archivey)."""
     return textwrap.dedent(
         f"""
-        import io, gzip, bz2
+        import gc, io, gzip, bz2
         import {module}
 
         payload = b'canary payload ' * 4000
@@ -57,12 +61,22 @@ def _script(module: str, fmt: str, variant: str, cleanup: str) -> str:
             f.read()
         except Exception:
             pass  # corrupt/truncated reads may raise; shutdown behaviour is what we measure
+
         if {cleanup!r} == 'closed':
             try:
                 f.join_threads()
             except Exception:
                 pass
             f.close()
+        elif {cleanup!r} == 'cycle_gc':
+            # Make `f` reachable only through a reference cycle, then reclaim it via the
+            # cyclic collector during the run (not at shutdown). If cyclic finalization runs
+            # the C++ destructor without joining, the worker thread is detached and survives.
+            box = []
+            box.append(box)
+            box.append(f)
+            del f
+            gc.collect()
         # 'unclosed': leave `f` referenced so it is finalized at interpreter shutdown.
         """
     )
@@ -92,17 +106,33 @@ def test_accelerator_shutdown_canary(module: str, fmt: str) -> None:
         stacklevel=1,
     )
 
-    # The asserted canary: a properly closed + joined stream. Use the intact input (the
-    # corrupt/truncated columns are in the warning above for the record).
-    closed_rc = matrix["intact/closed"]
-    if _ACCELERATORS_UNSAFE_PLATFORM:
-        assert closed_rc != 0, (
-            f"{module}: a closed+joined accelerator stream now exits cleanly on macOS "
-            f"(rc={closed_rc}). The upstream interpreter-shutdown abort may be fixed — "
-            f"revisit _ACCELERATORS_UNSAFE_PLATFORM and consider re-enabling accelerators."
+    # The measured behaviour (identical on Linux and macOS): the variant (intact / corrupt /
+    # truncated) is irrelevant — only how the object is finalized matters.
+
+    # 1. Cleanup contract: a stream closed with join_threads() during the run exits cleanly
+    #    on every platform. archivey relies on this; if it ever breaks, our close path is wrong.
+    for variant in _VARIANTS:
+        rc = matrix[f"{variant}/closed"]
+        assert rc == 0, (
+            f"{module}: a closed+joined {variant} stream aborted at shutdown on "
+            f"{sys.platform} (rc={rc}) — the accelerator cleanup contract is broken."
         )
-    else:
-        assert closed_rc == 0, (
-            f"{module}: a closed+joined accelerator stream aborted at shutdown on "
-            f"{sys.platform} (rc={closed_rc}), a platform archivey treats as safe."
-        )
+
+    # 2. The bug (the re-enable signal): an accelerator object finalized *without* an explicit
+    #    join — left to interpreter shutdown ('unclosed') or reclaimed by the cyclic GC
+    #    ('cycle_gc', the exception-traceback-cycle path) — aborts the process with SIGABRT.
+    #    This is why archivey must close accelerator streams deterministically and why AUTO
+    #    does not select them on macOS (where the suite's access patterns hit this). When a
+    #    future accelerator release no longer aborts here, these assertions fail — the signal
+    #    to revisit _ACCELERATORS_UNSAFE_PLATFORM and re-enable accelerators.
+    #
+    #    Asserted only on platforms whose behaviour is characterised here (Linux, macOS);
+    #    Windows exit codes are recorded in the warning above but not asserted yet.
+    if sys.platform in ("linux", "darwin"):
+        for ungraceful in ("unclosed", "cycle_gc"):
+            rc = matrix[f"intact/{ungraceful}"]
+            assert rc != 0, (
+                f"{module}: an {ungraceful} accelerator object now exits cleanly on "
+                f"{sys.platform} (rc={rc}). The upstream interpreter-finalization abort may "
+                f"be fixed — revisit _ACCELERATORS_UNSAFE_PLATFORM and consider re-enabling."
+            )

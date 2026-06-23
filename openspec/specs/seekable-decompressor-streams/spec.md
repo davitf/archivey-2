@@ -87,17 +87,20 @@ exactly once — when the wrapper is collected (cyclically or not) or at interpr
 whichever comes first — holding a strong reference to the raw object so the join always
 completes before that object is freed.
 
-On **macOS**, however, the abort happens **even for a properly closed and joined stream**:
-`join_threads()` does not reliably stop the worker thread on the macOS builds, and nothing
-the library can do from Python prevents it. The system SHALL therefore not select an
-accelerator under `AUTO` on macOS — gzip/bzip2 fall back to the sequential stdlib backend
-there. An explicit `ON` is still honoured (the caller's choice, carrying the shutdown-abort
-risk on macOS). This is tracked as an upstream issue with a canary test that flips when a
-future accelerator release fixes it; see `docs/known-issues.md`.
+This deterministic close keeps **Linux** and **Windows** clean even under heavy accelerator
+use (including corrupt/truncated reads that raise and form traceback cycles). On **macOS**,
+however, the system SHALL NOT select an accelerator under `AUTO`: there the deterministic-close
+guarantee did not hold for every stream under real access patterns / GC timing, and the process
+still aborted at shutdown — so gzip/bzip2 fall back to the sequential stdlib backend on macOS.
+An explicit `ON` is still honoured (the caller's choice, carrying the shutdown-abort risk on
+macOS). This is tracked as an upstream issue with a canary test (which measures, in
+subprocesses, that a closed+joined object exits cleanly while one finalized by the cyclic GC or
+at interpreter shutdown aborts) that flips when a future accelerator release fixes it; see
+`docs/known-issues.md`.
 
-#### Scenario: an unclosed accelerator stream does not crash at shutdown (non-macOS)
+#### Scenario: an unclosed accelerator stream does not crash at shutdown (Linux/Windows)
 
-- **WHEN** a process opens an accelerator-backed stream through the library and exits without closing it, on a platform where the accelerators are used (e.g. Linux, Windows)
+- **WHEN** a process opens an accelerator-backed stream through the library and exits without closing it, on Linux or Windows
 - **THEN** the process terminates cleanly, because the `weakref.finalize` guard joins the worker thread before the object is freed, rather than aborting from a thread still running at interpreter finalization
 
 #### Scenario: AUTO does not select an accelerator on macOS
