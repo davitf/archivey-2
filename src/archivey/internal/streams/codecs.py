@@ -75,21 +75,78 @@ _rapidgzip = _optional("rapidgzip")
 _indexed_bzip2 = _optional("indexed_bzip2")
 
 
-# rapidgzip / indexed_bzip2 spawn worker threads. If such an object is finalized by the
-# garbage collector at interpreter shutdown (rather than closed during the run), its
-# still-running threads abort the process with SIGABRT on macOS ("terminate called …
-# running rapidgzip thread"). Our streams normally close deterministically, but a caller
-# (or a test) that drops one without closing would otherwise rely on GC — fine on Linux,
-# fatal on macOS. As a backstop, track live accelerator objects weakly and close any that
-# survive to the orderly ``atexit`` phase, which runs before that shutdown GC.
-_live_accelerator_streams: "weakref.WeakSet[BinaryIO]" = weakref.WeakSet()
+# rapidgzip / indexed_bzip2 spawn worker threads, and merely *closing* their file object
+# does not reliably stop those threads on every platform: on macOS a worker thread can
+# still be running when the interpreter finalizes, which aborts the process with SIGABRT
+# ("Detected Python finalization from running rapidgzip thread" → "terminate called …").
+# Both libraries expose ``join_threads()`` to stop the workers deterministically on the
+# calling thread, so :class:`_AcceleratorStream` calls it before ``close()``. As a second
+# backstop (for a caller that drops a stream without closing it), live accelerator streams
+# are tracked weakly and closed during the orderly ``atexit`` phase, which runs before the
+# shutdown GC that would otherwise finalize them with threads still running.
+_live_accelerator_streams: "weakref.WeakSet[_AcceleratorStream]" = weakref.WeakSet()
 
 
-def _track_accelerator(stream: BinaryIO) -> BinaryIO:
-    try:
-        _live_accelerator_streams.add(stream)
-    except TypeError:  # not weak-referenceable — skip (falls back to GC cleanup)
-        pass
+class _AcceleratorStream(io.RawIOBase, BinaryIO):
+    """Wrap a threaded accelerator (``rapidgzip`` / ``indexed_bzip2``) so ``close()`` first
+    joins its worker threads.
+
+    The accelerators' own ``close()`` does not reliably stop their C++ worker threads on
+    macOS; a thread still alive at interpreter finalization aborts the process. Calling
+    ``join_threads()`` (which both expose) before ``close()`` guarantees the workers are
+    stopped on the closing thread, on every platform.
+    """
+
+    def __init__(self, inner: BinaryIO) -> None:
+        super().__init__()
+        self._inner = inner
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._inner.read(n)
+
+    def readinto(self, b: "WriteableBuffer", /) -> int:
+        raw_readinto = getattr(self._inner, "readinto", None)
+        if raw_readinto is not None:
+            return raw_readinto(b)
+        mv = memoryview(b).cast("B")
+        data = self._inner.read(len(mv))
+        mv[: len(data)] = data
+        return len(data)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return self._inner.seek(offset, whence)
+
+    def tell(self, /) -> int:
+        return self._inner.tell()
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return self._inner.seekable()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            join_threads = getattr(self._inner, "join_threads", None)
+            if join_threads is not None:
+                join_threads()
+        except Exception:  # noqa: BLE001 - best-effort; still close below
+            pass
+        finally:
+            self._inner.close()
+            super().close()
+
+
+def _track_accelerator(inner: BinaryIO) -> _AcceleratorStream:
+    """Wrap a raw accelerator file object so its threads are joined on close, and track it
+    weakly so the ``atexit`` backstop can close any stream a caller forgot to."""
+    stream = _AcceleratorStream(inner)
+    _live_accelerator_streams.add(stream)
     return stream
 
 

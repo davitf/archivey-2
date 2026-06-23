@@ -112,11 +112,6 @@ jobs:
         if: matrix.install == 'all' && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar || true
 
-      - name: (temp) macOS bisect — drop the threaded accelerators
-        if: matrix.install == 'all' && runner.os == 'macOS'
-        shell: bash
-        run: uv pip uninstall rapidgzip indexed_bzip2
-
       - name: Run tests
         if: matrix.install == 'all'
         run: uv run pytest tests/ -q
