@@ -76,6 +76,19 @@ conservative scan for a further gzip header, so a valid file is never misreporte
 - **WHEN** a concatenated multi-member gzip is read through `rapidgzip`
 - **THEN** it decompresses fully with no error, because the ISIZE backstop disambiguates the multi-member case rather than flagging the size mismatch
 
+The accelerator backends spawn worker threads, and finalizing such an object via the
+garbage collector at interpreter shutdown (rather than closing it during the run) aborts
+the process on some platforms (a SIGABRT from a still-running thread, observed on macOS).
+The system SHALL therefore close accelerator streams **deterministically**: streams are
+closed on normal use, and as a backstop any still-live accelerator stream is closed during
+the orderly `atexit` phase, so a caller that forgets to close one cannot crash the process
+at shutdown.
+
+#### Scenario: an unclosed accelerator stream does not crash at shutdown
+
+- **WHEN** a process opens an accelerator-backed stream and exits without closing it
+- **THEN** the process terminates cleanly (the stream is closed during `atexit`), rather than aborting from a thread still running at interpreter finalization
+
 ### Requirement: Index-less codecs warn on a rewinding seek
 
 A codec with no random-access index services a backward seek by re-decompressing the

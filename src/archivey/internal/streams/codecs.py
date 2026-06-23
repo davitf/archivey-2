@@ -14,12 +14,14 @@ codec streams in a pipeline.
 
 from __future__ import annotations
 
+import atexit
 import bz2
 import gzip
 import importlib
 import io
 import lzma
 import os
+import weakref
 import zlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -71,6 +73,33 @@ _pyppmd = _optional("pyppmd")
 _inflate64 = _optional("inflate64")
 _rapidgzip = _optional("rapidgzip")
 _indexed_bzip2 = _optional("indexed_bzip2")
+
+
+# rapidgzip / indexed_bzip2 spawn worker threads. If such an object is finalized by the
+# garbage collector at interpreter shutdown (rather than closed during the run), its
+# still-running threads abort the process with SIGABRT on macOS ("terminate called …
+# running rapidgzip thread"). Our streams normally close deterministically, but a caller
+# (or a test) that drops one without closing would otherwise rely on GC — fine on Linux,
+# fatal on macOS. As a backstop, track live accelerator objects weakly and close any that
+# survive to the orderly ``atexit`` phase, which runs before that shutdown GC.
+_live_accelerator_streams: "weakref.WeakSet[BinaryIO]" = weakref.WeakSet()
+
+
+def _track_accelerator(stream: BinaryIO) -> BinaryIO:
+    try:
+        _live_accelerator_streams.add(stream)
+    except TypeError:  # not weak-referenceable — skip (falls back to GC cleanup)
+        pass
+    return stream
+
+
+@atexit.register
+def _close_live_accelerator_streams() -> None:
+    for stream in list(_live_accelerator_streams):
+        try:
+            stream.close()
+        except Exception:  # noqa: BLE001 - best-effort shutdown cleanup
+            pass
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO
@@ -476,7 +505,7 @@ def _open_gzip(source: CodecSource, params: CodecParams, config: StreamConfig) -
                 "The 'rapidgzip' package is required for gzip random access "
                 "(install the 'seekable' extra)."
             )
-        stream = ensure_binaryio(_rapidgzip.open(source, parallelization=0))
+        stream = _track_accelerator(ensure_binaryio(_rapidgzip.open(source, parallelization=0)))
         # rapidgzip does not reliably surface truncation; add the ISIZE backstop when we
         # have a seekable path to read the trailer / scan for extra members.
         if isinstance(source, (str, os.PathLike)):
@@ -500,7 +529,7 @@ def _open_bzip2(source: CodecSource, params: CodecParams, config: StreamConfig) 
                 "The 'indexed_bzip2' package is required for bzip2 random access "
                 "(install the 'seekable' extra)."
             )
-        return ensure_binaryio(_indexed_bzip2.open(source, parallelization=0))
+        return _track_accelerator(ensure_binaryio(_indexed_bzip2.open(source, parallelization=0)))
     # stdlib bz2 can seek, but a rewind re-decompresses from the start; warn rather than
     # degrade silently (the [seekable] indexed_bzip2 accelerator gives real random access).
     return _SlowSeekWarningStream(
