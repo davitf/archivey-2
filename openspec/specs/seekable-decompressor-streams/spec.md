@@ -76,18 +76,34 @@ conservative scan for a further gzip header, so a valid file is never misreporte
 - **WHEN** a concatenated multi-member gzip is read through `rapidgzip`
 - **THEN** it decompresses fully with no error, because the ISIZE backstop disambiguates the multi-member case rather than flagging the size mismatch
 
-The accelerator backends spawn worker threads, and finalizing such an object via the
-garbage collector at interpreter shutdown (rather than closing it during the run) aborts
-the process on some platforms (a SIGABRT from a still-running thread, observed on macOS).
-The system SHALL therefore close accelerator streams **deterministically**: streams are
-closed on normal use, and as a backstop any still-live accelerator stream is closed during
-the orderly `atexit` phase, so a caller that forgets to close one cannot crash the process
-at shutdown.
+The accelerator backends spawn **C++ worker threads** (invisible to Python's `threading`
+module). A worker thread still running when the interpreter finalizes trips the library's
+own guard and aborts the process with SIGABRT. The thread must therefore be joined while its
+owning object is alive — `join_threads()`, then `close()` — and never left to the garbage
+collector, which on a reference cycle (e.g. an exception traceback capturing the stream) can
+finalize the object in an order that detaches the thread instead of joining it. The system
+SHALL guarantee this with a `weakref.finalize` guard per accelerator stream: it runs the join
+exactly once — when the wrapper is collected (cyclically or not) or at interpreter exit,
+whichever comes first — holding a strong reference to the raw object so the join always
+completes before that object is freed.
 
-#### Scenario: an unclosed accelerator stream does not crash at shutdown
+On **macOS**, however, the abort happens **even for a properly closed and joined stream**:
+`join_threads()` does not reliably stop the worker thread on the macOS builds, and nothing
+the library can do from Python prevents it. The system SHALL therefore not select an
+accelerator under `AUTO` on macOS — gzip/bzip2 fall back to the sequential stdlib backend
+there. An explicit `ON` is still honoured (the caller's choice, carrying the shutdown-abort
+risk on macOS). This is tracked as an upstream issue with a canary test that flips when a
+future accelerator release fixes it; see `docs/known-issues.md`.
 
-- **WHEN** a process opens an accelerator-backed stream and exits without closing it
-- **THEN** the process terminates cleanly (the stream is closed during `atexit`), rather than aborting from a thread still running at interpreter finalization
+#### Scenario: an unclosed accelerator stream does not crash at shutdown (non-macOS)
+
+- **WHEN** a process opens an accelerator-backed stream through the library and exits without closing it, on a platform where the accelerators are used (e.g. Linux, Windows)
+- **THEN** the process terminates cleanly, because the `weakref.finalize` guard joins the worker thread before the object is freed, rather than aborting from a thread still running at interpreter finalization
+
+#### Scenario: AUTO does not select an accelerator on macOS
+
+- **WHEN** a gzip or bzip2 stream is opened for random access on macOS with the accelerator mode left at `AUTO`
+- **THEN** the sequential stdlib backend is used (no accelerator), so the process cannot abort at shutdown — a rewinding seek is serviced slowly (and warns) rather than crashing
 
 ### Requirement: Index-less codecs warn on a rewinding seek
 
