@@ -14,7 +14,6 @@ codec streams in a pipeline.
 
 from __future__ import annotations
 
-import atexit
 import bz2
 import gzip
 import importlib
@@ -75,31 +74,44 @@ _rapidgzip = _optional("rapidgzip")
 _indexed_bzip2 = _optional("indexed_bzip2")
 
 
-# rapidgzip / indexed_bzip2 spawn worker threads, and merely *closing* their file object
-# does not reliably stop those threads on every platform: on macOS a worker thread can
-# still be running when the interpreter finalizes, which aborts the process with SIGABRT
-# ("Detected Python finalization from running rapidgzip thread" → "terminate called …").
-# Both libraries expose ``join_threads()`` to stop the workers deterministically on the
-# calling thread, so :class:`_AcceleratorStream` calls it before ``close()``. As a second
-# backstop (for a caller that drops a stream without closing it), live accelerator streams
-# are tracked weakly and closed during the orderly ``atexit`` phase, which runs before the
-# shutdown GC that would otherwise finalize them with threads still running.
-_live_accelerator_streams: "weakref.WeakSet[_AcceleratorStream]" = weakref.WeakSet()
+def _join_accelerator_threads(inner: object) -> None:
+    """Join a ``rapidgzip`` / ``indexed_bzip2`` object's worker threads (best effort).
+
+    Used as a :func:`weakref.finalize` callback: it takes the raw accelerator object as an
+    argument (never a closure over the wrapper), so ``finalize`` keeps that object alive
+    until the join runs.
+    """
+    join_threads = getattr(inner, "join_threads", None)
+    if join_threads is not None:
+        try:
+            join_threads()
+        except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
+            pass
 
 
 class _AcceleratorStream(io.RawIOBase, BinaryIO):
-    """Wrap a threaded accelerator (``rapidgzip`` / ``indexed_bzip2``) so ``close()`` first
-    joins its worker threads.
+    """Wrap a threaded accelerator (``rapidgzip`` / ``indexed_bzip2``) so its worker threads
+    are always joined before the underlying object is freed.
 
-    The accelerators' own ``close()`` does not reliably stop their C++ worker threads on
-    macOS; a thread still alive at interpreter finalization aborts the process. Calling
-    ``join_threads()`` (which both expose) before ``close()`` guarantees the workers are
-    stopped on the closing thread, on every platform.
+    The accelerators spawn C++ ``std::thread``s (invisible to Python's ``threading`` module)
+    that must be joined while the owning object is alive; ``join_threads()`` (which both
+    expose) does this. If the object is instead finalized by the garbage collector without a
+    join — which happens when a corrupt/truncated read raises and the exception traceback
+    captures the stream in a reference cycle, where finalizer ordering is undefined — its
+    thread is *detached* and keeps running. A detached thread still alive at interpreter
+    finalization aborts the process with SIGABRT on macOS ("Detected Python finalization
+    from running rapidgzip thread" → "terminate called").
+
+    A :func:`weakref.finalize` guard closes that window: it runs the join exactly once, when
+    this wrapper is collected (cyclically or not) or at interpreter exit, whichever comes
+    first, and holds a strong reference to the raw object so the join always runs *before*
+    that object is freed. ``close()`` simply triggers the same guard early.
     """
 
     def __init__(self, inner: BinaryIO) -> None:
         super().__init__()
         self._inner = inner
+        self._join = weakref.finalize(self, _join_accelerator_threads, inner)
 
     def read(self, n: int = -1, /) -> bytes:
         return self._inner.read(n)
@@ -131,32 +143,16 @@ class _AcceleratorStream(io.RawIOBase, BinaryIO):
     def close(self) -> None:
         if self.closed:
             return
-        try:
-            join_threads = getattr(self._inner, "join_threads", None)
-            if join_threads is not None:
-                join_threads()
-        except Exception:  # noqa: BLE001 - best-effort; still close below
-            pass
-        finally:
-            self._inner.close()
-            super().close()
+        # Join first (the finalize guard runs once and is then disarmed), then close.
+        self._join()
+        self._inner.close()
+        super().close()
 
 
 def _track_accelerator(inner: BinaryIO) -> _AcceleratorStream:
-    """Wrap a raw accelerator file object so its threads are joined on close, and track it
-    weakly so the ``atexit`` backstop can close any stream a caller forgot to."""
-    stream = _AcceleratorStream(inner)
-    _live_accelerator_streams.add(stream)
-    return stream
-
-
-@atexit.register
-def _close_live_accelerator_streams() -> None:
-    for stream in list(_live_accelerator_streams):
-        try:
-            stream.close()
-        except Exception:  # noqa: BLE001 - best-effort shutdown cleanup
-            pass
+    """Wrap a raw accelerator file object so its worker threads are always joined before it
+    is freed (see :class:`_AcceleratorStream`)."""
+    return _AcceleratorStream(inner)
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO

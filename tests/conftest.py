@@ -35,49 +35,6 @@ def requires(*packages: str) -> pytest.MarkDecorator:
     )
 
 
-def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """(temp diagnostic) Hunt the source of the macOS shutdown abort (exit 134).
-
-    The prior round proved our *tracked* streams are all gone by now (tracked-live=0), yet
-    macOS still aborts at interpreter finalization "from a running rapidgzip thread". So the
-    culprit is an orphaned worker thread (its Python object already collected) or an
-    untracked accelerator object surviving to shutdown. This scans the live GC graph for any
-    rapidgzip/indexed_bzip2 objects and reports leftover non-main threads, then forces a GC.
-    """
-    import gc
-    import sys
-    import threading
-
-    def _accel_type(o: object) -> bool:
-        tp = type(o)
-        mod = getattr(tp, "__module__", "")
-        mod = mod.lower() if isinstance(mod, str) else ""
-        return (
-            tp.__name__ in ("RapidgzipFile", "IndexedBzip2File")
-            or "rapidgzip" in mod
-            or "indexed_bzip2" in mod
-        )
-
-    gc.collect()
-    accel_objs = [o for o in gc.get_objects() if _accel_type(o)]
-    threads = [t for t in threading.enumerate() if t is not threading.main_thread()]
-    print(
-        f"[accel-diag] live-accel-objs={len(accel_objs)} "
-        f"types={sorted({type(o).__name__ for o in accel_objs})} "
-        f"nonmain-threads={len(threads)} names={[t.name for t in threads]}",
-        file=sys.stderr,
-    )
-    for o in accel_objs:
-        for meth in ("join_threads", "close"):
-            fn = getattr(o, meth, None)
-            if fn is not None:
-                try:
-                    fn()
-                except Exception as e:  # noqa: BLE001 - diagnostic only
-                    print(f"[accel-diag] {meth} raised: {e!r}", file=sys.stderr)
-    gc.collect()
-
-
 @pytest.fixture
 def test_dir(tmp_path: Path) -> Path:
     """Create a test directory with some files and subdirectories."""
