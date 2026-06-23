@@ -182,11 +182,14 @@ def _translate_rapidgzip(e: Exception) -> ArchiveyError | None:
         return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
     if isinstance(e, RuntimeError) and "IsalInflateWrapper" in text:
         return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
-    if isinstance(e, RuntimeError) and (
-        "Failed to parse gzip/zlib header" in text or "Invalid gzip/zlib wrapper" in text
+    if isinstance(e, (ValueError, RuntimeError)) and (
+        "gzip/zlib header" in text or "gzip magic" in text
     ):
-        # Raised for a corrupt header (the message varies by source type — file vs
-        # in-memory stream); the gzip magic matched at open, so this is corruption.
+        # Corrupt header. The type/message varies by platform backend (ISA-L on Linux vs
+        # the macOS fallback) and source type: RuntimeError "Failed to parse gzip/zlib
+        # header (… Invalid gzip/zlib wrapper)" or ValueError "Failed to read gzip/zlib
+        # header (… Invalid gzip magic bytes)". The gzip magic matched at open, so this is
+        # corruption.
         return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
     if isinstance(e, ValueError) and "Failed to detect a valid file format" in text:
         # The gzip magic was present when we opened it, so a detection failure now means

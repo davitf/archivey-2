@@ -42,6 +42,40 @@ The system SHALL support optional accelerator backends for formats that have no 
 - **THEN** gzip and bzip2 streams stay backed by the stdlib decoders, which service a seek only by re-decompressing from the start (O(n) per rewind)
 - **AND** a seek that rewinds the stream logs a warning naming the `[seekable]` accelerator, rather than degrading silently or failing
 
+### Requirement: Accelerator backends surface corruption and truncation uniformly
+
+An accelerator backend (`rapidgzip`, `indexed_bzip2`) has its own exception taxonomy that
+differs from the stdlib decoders' and **varies by platform** (e.g. `rapidgzip` raises a
+`RuntimeError` "Failed to parse gzip/zlib header" on Linux but a `ValueError` "… Invalid
+gzip magic bytes" on macOS for the same corrupt input). Regardless, corrupt or truncated
+input read through an accelerator SHALL surface as the same `compressed-streams` error
+types as the stdlib path — `CorruptionError` or `TruncatedError` — never as a raw
+third-party exception, per the error-translation contract.
+
+Truncation needs extra care for `rapidgzip`: it does **not** reliably report a truncated
+gzip — it raises for a cut that leaves a partially-decodable block, but for other cuts it
+silently returns short or zero output (its end-of-file condition does not always reach the
+caller). The system SHALL backstop this: when a gzip is read through `rapidgzip` from a
+seekable source, a full read to EOF compares the decompressed length (mod 2³²) against the
+gzip ISIZE trailer and raises `TruncatedError` on a mismatch. A concatenated multi-member
+gzip (whose trailer records only the *last* member's size) is disambiguated by a
+conservative scan for a further gzip header, so a valid file is never misreported.
+
+#### Scenario: corrupt input through an accelerator is translated
+
+- **WHEN** a corrupt gzip is read through `rapidgzip` (or a corrupt bzip2 through `indexed_bzip2`)
+- **THEN** a `CorruptionError` is raised (the raw accelerator exception is never propagated), on every platform
+
+#### Scenario: truncated gzip through rapidgzip is reported
+
+- **WHEN** a truncated gzip is read to EOF through `rapidgzip` from a seekable source
+- **THEN** the read raises `TruncatedError` (via the ISIZE backstop) or `CorruptionError` (when the accelerator itself detects the cut) — never a silent short read
+
+#### Scenario: a valid multi-member gzip is not misreported as truncated
+
+- **WHEN** a concatenated multi-member gzip is read through `rapidgzip`
+- **THEN** it decompresses fully with no error, because the ISIZE backstop disambiguates the multi-member case rather than flagging the size mismatch
+
 ### Requirement: Index-less codecs warn on a rewinding seek
 
 A codec with no random-access index services a backward seek by re-decompressing the

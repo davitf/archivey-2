@@ -45,12 +45,16 @@ def test_rapidgzip_corrupt_translates_to_corruption() -> None:
             s.read()
 
 
-def test_rapidgzip_truncation_detected_by_isize_backstop(tmp_path: Path) -> None:
+def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:
     pytest.importorskip("rapidgzip")
     full = gzip.compress(b"the quick brown fox " * 5000)
     path = _write(tmp_path, "truncated.gz", full[: len(full) // 2])
+    # Truncation must surface as a read error (testing-contract: "CorruptionError or
+    # TruncatedError"). Which one is platform-dependent: on Linux rapidgzip returns
+    # silently and the ISIZE backstop raises TruncatedError; on macOS rapidgzip itself
+    # raises (CorruptionError). Either satisfies the contract.
     with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
-        with pytest.raises(TruncatedError):
+        with pytest.raises((TruncatedError, CorruptionError)):
             s.read()
 
 
