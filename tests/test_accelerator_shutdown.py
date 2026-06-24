@@ -45,7 +45,8 @@ _ACCELERATORS = [
 ]
 _VARIANTS = ["intact", "corrupt", "truncated"]
 # Cleanup strategies, in increasing "let the runtime do it" order:
-#   closed         — read, join_threads(), close() during the run (what archivey does).
+#   closed         — read, then close() during the run (what archivey does; close() alone stops
+#                    the worker thread — an explicit join_threads() first is not needed).
 #   cycle_gc       — raw object dropped into a reference cycle and reclaimed by the cyclic GC
 #                    mid-run (the mechanism a corrupt/truncated read's exception traceback
 #                    creates), with no close.
@@ -74,14 +75,8 @@ def _script(fmt: str, opener: str, variant: str, cleanup: str) -> str:
         # A faithful copy of archivey's _AcceleratorStream guard: weakref.finalize holds the raw
         # object strongly and CLOSES it exactly once, when the wrapper is collected (cyclically or
         # not) or at interpreter exit — whichever comes first. close() (not join_threads()) is
-        # what actually stops the worker thread.
+        # what stops the worker thread, and is sufficient on its own.
         def _close(inner):
-            jt = getattr(inner, 'join_threads', None)
-            if jt is not None:
-                try:
-                    jt()
-                except Exception:
-                    pass
             try:
                 inner.close()
             except Exception:
@@ -107,11 +102,7 @@ def _script(fmt: str, opener: str, variant: str, cleanup: str) -> str:
         del reader
 
         if cleanup == 'closed':
-            try:
-                obj.join_threads()
-            except Exception:
-                pass
-            obj.close()
+            obj.close()  # close() alone stops the worker thread (no explicit join needed)
         elif cleanup in ('cycle_gc', 'guard_cycle_gc'):
             # Make `obj` reachable only through a reference cycle, then reclaim it via the cyclic
             # collector during the run (not at shutdown). For the raw object this detaches the

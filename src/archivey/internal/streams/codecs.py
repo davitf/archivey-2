@@ -80,24 +80,19 @@ _rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
 
 
 def _close_accelerator(inner: object) -> None:
-    """Close a ``rapidgzip`` / ``indexed_bzip2`` object so its worker threads are stopped.
+    """Close a ``rapidgzip`` accelerator object so its worker threads are stopped.
 
     Used as a :func:`weakref.finalize` callback: it takes the raw accelerator object as an
     argument (never a closure over the wrapper), so ``finalize`` keeps that object alive
     until this runs.
 
-    ``join_threads()`` alone does **not** stop the worker thread — a stream that is only joined
-    but never closed still aborts the interpreter at finalization ("Detected Python finalization
-    from running … thread"). Only ``close()`` stops the thread, so the backstop must close the
-    object, not merely join it. We join first (cheap, and disarms anything in flight) and then
-    close; ``close()`` on an already-finalized object is a no-op.
+    ``close()`` is what actually stops the worker thread — and it is sufficient on its own:
+    ``join_threads()`` alone does **not** stop it (a joined-but-not-closed object still aborts
+    the interpreter at finalization with "Detected Python finalization from running … thread"),
+    whereas ``close()`` reliably does, so we just close. The shutdown canary in
+    ``tests/test_accelerator_shutdown.py`` enforces this (a never-closed object aborts; a
+    closed/guard-closed one does not).
     """
-    join_threads = getattr(inner, "join_threads", None)
-    if join_threads is not None:
-        try:
-            join_threads()
-        except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
-            pass
     close = getattr(inner, "close", None)
     if close is not None:
         try:
