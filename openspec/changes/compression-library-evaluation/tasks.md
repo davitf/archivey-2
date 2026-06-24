@@ -26,13 +26,14 @@
 - [ ] 2.5 Decide: primary decode backend (validate/revise the `zstandard`→`pyzstd` intent) +
       the seekable-zstd story (indexed_zstd / SeekableZstdFile / none). Record the rationale.
 
-## 3. Investigate xz (own parser vs python-xz)
+## 3. xz (own parser vs python-xz) — decision already made, just carry it over
 
-- [ ] 3.1 Compare our `internal/streams/xz.py` (block-index random access, lzip-style trailer
-      handling) against `python-xz` (rogdham): feature parity, seeking, error reporting,
-      multi-stream/multi-block coverage, maintenance.
-- [ ] 3.2 Record why we keep our own parser (or decide to switch); either way resolve the
-      dangling `python-xz` `[all]` pin.
+- [ ] 3.1 Summarize the recorded DEV decision (`davitf/archivey-dev#214`) in the analysis
+      doc: native `xz.py` on stdlib `lzma` for block-index random access, efficient
+      `SEEK_END` (backwards index scan), correct multi-stream handling, per-stream fallback
+      for index-less/truncated files, and `DecompressorStream` uniformity with lzip. Link the PR.
+- [ ] 3.2 Note that v2 did **not** carry over DEV's disabled-by-default `python-xz`
+      comparison backend, so the `python-xz` `[all]` pin is dead — remove it (§5.2).
 
 ## 4. Record the rest
 

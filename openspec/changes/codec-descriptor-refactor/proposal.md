@@ -72,45 +72,15 @@ backs each codec — that is the separate `compression-library-evaluation` chang
 
 ## Specs
 
-Proposed deltas (kept here until accepted, per the "propose in `changes/`, don't edit
-shipped specs ad hoc" rule). Authoritative specs touched:
+The full delta requirements (with scenarios) live in this change's `specs/` directory and
+are what `openspec validate` checks:
 
-### compressed-streams — ADDED Requirement: A codec is described by one StreamCodec descriptor
+- `specs/compressed-streams/spec.md` — **ADDED** "A codec is described by one StreamCodec descriptor".
+- `specs/format-detection/spec.md` — **MODIFIED** magic/extension/probe tables aggregated from backends *and* codec descriptors.
+- `specs/backend-registry/spec.md` — **MODIFIED** codec availability + install hints come from the descriptor (drop `_CODEC_REQUIREMENT`).
+- `specs/format-single-file-compressors/spec.md` — **MODIFIED** per-codec metadata comes from the descriptor.
 
-The system SHALL represent each single-stream codec as a single descriptor object that
-carries its open function, exception translator, magic signatures (including the `weak`
-flag), whether it is recognized by a content probe, its standalone file extensions, an
-optional metadata extractor that fills `ArchiveMember` fields, and its optional-dependency
-requirement (package / extra / external tool + install hint + unlocked capability). A new
-standalone codec SHALL become fully readable and detectable by registering one descriptor,
-without edits to the detector, the single-file reader, or the registry's availability code.
-
-#### Scenario: adding a standalone codec is a one-descriptor change
-
-- **WHEN** a new single-stream codec descriptor is registered (open fn, translator, magic/probe, extension, requirement)
-- **THEN** `detect_format()` recognizes it, `SingleFileBackend` reads it as a one-member archive, and `format_availability()` reports its support — with no other code changes
-
-### format-detection — MODIFIED Requirement: Magic/extension/probe tables are aggregated from backends *and* codec descriptors
-
-The detector SHALL build its magic, extension, and content-probe tables from two data
-sources — the container format backends (`ReadBackend.MAGIC`/`EXTENSIONS`) and the
-stream-codec descriptors — with no per-format `detect()` logic in either. Stream-codec
-magic/probe rows that were previously declared on `SingleFileBackend` SHALL come from the
-descriptors instead, with identical results.
-
-### backend-registry — MODIFIED Requirement: Codec availability + install hints come from the descriptor
-
-A format's compositional support and its missing-component install hints SHALL be derived
-from the codec descriptors' `requirement` fields, replacing the separate
-`_CODEC_REQUIREMENT` table, so a codec's package/extra/hint is declared in exactly one
-place.
-
-### format-single-file-compressors — MODIFIED Requirement: Per-codec metadata comes from the descriptor
-
-The single multi-format `SingleFileBackend` SHALL obtain each format's metadata extraction
-from its codec descriptor's `extract_metadata` hook rather than a reader-local dispatch
-table, keeping the reader codec-agnostic (the "one backend, per-codec hooks" structure is
-preserved; only the hooks' home moves).
+All four are behavior-preserving rewordings of *where the per-codec data lives*.
 
 ## Impact
 

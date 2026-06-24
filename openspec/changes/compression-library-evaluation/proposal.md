@@ -19,12 +19,18 @@ not written down anywhere**, and a couple of the choices are now in doubt:
     format** (not arbitrary `.zst`), and pyzstd's own docs nudge toward the stdlib /
     `backports.zstd`; it is unclear whether those support efficient seeking at all.
 - **xz uses our own parser** (`internal/streams/xz.py`) rather than
-  [`python-xz`](https://github.com/rogdham/python-xz), which appears to do the same
-  thing (block-index random access). We *think* an own-vs-`python-xz` exploration happened,
-  but it is **not recorded**, and `python-xz` is still pinned in the `[all]` extra while
-  being **entirely unused** (no `src/` import, not even referenced by the dev test oracle).
-  `pyzstd` is likewise pinned in `[all]` but unused in `src/` (only the dev test oracle uses
-  it, to *generate* zstd fixtures).
+  [`python-xz`](https://github.com/rogdham/python-xz). This decision **was** made and is
+  recorded — in the DEV repo, [`davitf/archivey-dev#214`](https://github.com/davitf/archivey-dev/pull/214)
+  ("Implement XzDecompressorStream with block-level seeking"): the native parser (on stdlib
+  `lzma`) gives block-level random access via the XZ stream index, an efficient `SEEK_END`
+  via a backwards index scan, correct **multi-stream** handling (a case the prior path got
+  wrong), per-stream fallback scanning for truncated/index-less files, and architectural
+  uniformity with `LzipDecompressorStream`. DEV kept `python-xz` only as a *disabled-by-default
+  comparison/benchmark* backend. v2 carried over the native parser **but not** that
+  comparison backend, so the `python-xz` pin in `[all]` is now **entirely unused** (no `src/`
+  import, not even referenced by the dev test oracle). The decision just needs to be carried
+  into *this* repo's spec/docs (and the dead pin resolved). `pyzstd` is likewise pinned in
+  `[all]` but unused in `src/` (only the dev test oracle uses it, to *generate* zstd fixtures).
 
 So we have undocumented decisions, at least one intended migration, an unexplored
 seekable-zstd option, and dead dependencies. This change does the systematic comparison,
@@ -65,8 +71,11 @@ xz/lzma (stdlib `lzma`, our `xz.py`, `python-xz`), lzip (our `lzip.py`), zstd (`
   `SeekableZstdFile` vs. none), noting the trade-off that `SeekableZstdFile` only reads the
   Seekable Zstd container, not arbitrary `.zst`. Capture how the choice interacts with the
   3.14 stdlib so we can prefer the stdlib when available.
-- **xz:** record *why* we maintain our own `xz.py` instead of `python-xz` (or decide to
-  switch). Either way, resolve the dangling `python-xz` dependency.
+- **xz:** carry the already-made decision (DEV [`#214`](https://github.com/davitf/archivey-dev/pull/214))
+  into this repo's docs/spec — own `xz.py` for block-index random access, efficient
+  `SEEK_END`, correct multi-stream handling, and `DecompressorStream` uniformity — and
+  resolve the dangling `python-xz` `[all]` pin (v2 doesn't keep it even as a comparison
+  backend, so it should be removed).
 - **everything else:** record the chosen library + the rejected alternatives + the reason,
   so future contributors don't re-litigate (e.g. why `uncompresspy` for `.Z`, why
   `rapidgzip` for both gzip and bzip2 random access — the macOS single-accelerator
@@ -82,32 +91,16 @@ xz/lzma (stdlib `lzma`, our `xz.py`, `python-xz`), lzip (our `lzip.py`), zstd (`
 
 ## Specs
 
-Proposed deltas (kept here until accepted). This change is primarily a doc + packaging
-decision; the spec touchpoints are light.
+The full delta requirements (with scenarios) live in this change's `specs/` directory:
 
-### packaging-and-extras — MODIFIED Requirement: Optional extras map to exactly the libraries the code uses
+- `specs/packaging-and-extras/spec.md` — **MODIFIED** optional extras map to exactly the libraries the code uses (drop the dead `python-xz` / `pyzstd` pins).
+- `specs/documentation/spec.md` — **ADDED** per-format compression-library choices are documented in `docs/library-analysis.md`, citing already-recorded decisions (e.g. [`davitf/archivey-dev#214`](https://github.com/davitf/archivey-dev/pull/214) for XZ).
 
-The extras→capability mapping SHALL list only libraries the library actually imports; an
-extra MUST NOT pin a dependency that no code path uses. The per-codec library choice and
-its rationale SHALL be recorded in `docs/library-analysis.md`, which is the source of truth
-for why each library is used or rejected.
-
-#### Scenario: no dead optional dependency
-
-- **WHEN** the `[all]` extra (or any extra) is audited against `src/` imports
-- **THEN** every pinned package is reachable from some code path, or it is removed
-
-### documentation — ADDED Requirement: Library choices are documented
-
-The documentation SHALL include a per-format compression-library analysis that, for each
-codec, names the chosen library, the alternatives considered, and the criteria
-(non-seekable support, efficient seeking, corruption/truncation detection, error reporting,
-install/availability, maintenance) behind the decision.
-
-> The concrete backend-selection requirements in `compressed-streams` /
-> `seekable-decompressor-streams` are updated by the **follow-up** changes that implement
-> any chosen swap (e.g. zstd backend migration, seekable-zstd support); this change records
-> the decisions and criteria, not the swaps.
+This change is primarily a doc + packaging decision; the spec touchpoints are light. The
+concrete backend-selection requirements in `compressed-streams` /
+`seekable-decompressor-streams` are updated by the **follow-up** changes that implement any
+chosen swap (zstd migration, seekable-zstd support) — this change records the decisions and
+criteria, not the swaps.
 
 ## Impact
 
