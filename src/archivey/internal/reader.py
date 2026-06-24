@@ -39,12 +39,12 @@ class ReadBackend(ABC):
     FORMATS: tuple[ArchiveFormat, ...]
     # ".gz" -> ArchiveFormat.GZ
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
-    # Magic-byte signals as data (offset, bytes, format, weak); a ``weak`` entry (zlib's
-    # 2-byte header) is confirmed by a content probe before acceptance.
+    # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
     MAGIC: tuple[MagicSignature, ...] = ()
-    # Magic-less formats this backend reads that the detector confirms by a content probe
-    # (feeding a bounded prefix to the codec) — e.g. Brotli, which has no signature.
-    CONTENT_PROBE_FORMATS: tuple[ArchiveFormat, ...] = ()
+    # Formats this backend reads that have no exact magic and are recognized by a content
+    # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
+    # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
+    CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
     REQUIRES_SEEK: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.

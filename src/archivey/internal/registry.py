@@ -14,7 +14,7 @@ import importlib
 from dataclasses import dataclass
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from archivey.internal.reader import ReadBackend, WriteBackend
@@ -24,16 +24,33 @@ from archivey.internal.errors import (
     UnsupportedOperationError,
 )
 from archivey.internal.streams.codecs import (
+    SINGLE_FILE_CODECS,
+    STREAM_CODECS,
     Codec,
     codec_for_stream_format,
+    codec_requirement,
     is_codec_available,
 )
 from archivey.internal.types import (
     ArchiveFormat,
     ContainerFormat,
     MagicSignature,
+    MissingComponent,
     StreamFormat,
 )
+
+__all__ = [
+    "BackendRegistry",
+    "FormatAvailability",
+    "FormatSupport",
+    "MissingComponent",
+    "format_availability",
+    "get_registry",
+    "list_known_formats",
+    "list_supported_formats",
+    "register_reader",
+    "register_writer",
+]
 
 
 class FormatSupport(Enum):
@@ -42,15 +59,6 @@ class FormatSupport(Enum):
     FULL = "full"  # backend usable AND every optional codec/tool it can use is present
     PARTIAL = "partial"  # opens & lists; common members decode; some optional codec missing
     NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
-
-
-@dataclass(frozen=True)
-class MissingComponent:
-    """A package / extra / external tool a format is missing, and what it unlocks."""
-
-    name: str  # e.g. "pycdlib", "[7z]", "unrar"
-    install_hint: str  # e.g. "pip install archivey[iso]"
-    unlocks: tuple[str, ...] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
 
 
 @dataclass(frozen=True)
@@ -70,17 +78,9 @@ _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
     ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
 }
 
-# How each optional codec is obtained, for the install hint surfaced to the caller.
-_CODEC_REQUIREMENT: dict[Codec, MissingComponent] = {
-    Codec.ZSTD: MissingComponent("zstandard", "pip install archivey[zstd]", ("zstd",)),
-    Codec.LZ4: MissingComponent("lz4", "pip install archivey[lz4]", ("lz4",)),
-    Codec.BROTLI: MissingComponent("brotli", "pip install archivey[7z]", ("brotli",)),
-    Codec.UNIX_COMPRESS: MissingComponent(
-        "uncompresspy", "pip install archivey[unix-compress]", ("unix_compress",)
-    ),
-    Codec.PPMD: MissingComponent("pyppmd", "pip install archivey[7z]", ("ppmd",)),
-    Codec.DEFLATE64: MissingComponent("inflate64", "pip install archivey[7z]", ("deflate64",)),
-}
+# How each optional codec is obtained (install hint surfaced to the caller) now lives on
+# the codec descriptors; read via codec_requirement() so a codec's package / extra / hint
+# is declared in exactly one place (see ``backend-registry``).
 
 
 def _optional(name: str) -> ModuleType | None:
@@ -110,27 +110,44 @@ class BackendRegistry:
         for fmt in backend_cls.FORMATS:
             self._writers[fmt] = backend_cls
 
-    # --- detection tables (aggregated from backend data) ---------------------------------
+    # --- detection tables (aggregated from two sources) ----------------------------------
+    # The container format backends (`ReadBackend.MAGIC`/`EXTENSIONS`/`CONTENT_PROBES`) and
+    # the stream-codec objects (`STREAM_CODECS`). The detector reads both via these methods,
+    # so a new standalone codec is detectable by adding one `StreamCodec` — no edits here.
 
     def magic_entries(self) -> list[MagicSignature]:
-        """All magic signals (``MagicSignature``) across registered read backends."""
+        """All exact magic signals across registered backends and the stream codecs."""
         entries: list[MagicSignature] = []
         for cls in self._reader_classes:
             entries.extend(cls.MAGIC)
+        for codec in STREAM_CODECS:
+            entries.extend(codec.magic)
         return entries
 
-    def content_probe_formats(self) -> list[ArchiveFormat]:
-        """Magic-less formats reachable by a content probe, across registered backends."""
-        formats: list[ArchiveFormat] = []
+    def content_probes(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
+        """(format, probe) pairs for formats recognized by a content probe.
+
+        Drawn from the backends and from the stream codecs that override the no-op base
+        content probe (Brotli, which has no magic; zlib, whose 2-byte header is too
+        unspecific to trust on its own).
+        """
+        probes: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
         for cls in self._reader_classes:
-            formats.extend(cls.CONTENT_PROBE_FORMATS)
-        return formats
+            probes.extend(cls.CONTENT_PROBES)
+        for codec in SINGLE_FILE_CODECS:
+            if codec.probes_content and codec.single_file_format is not None:
+                probes.append((codec.single_file_format, codec.content_probe))
+        return probes
 
     def extension_map(self) -> dict[str, ArchiveFormat]:
-        """The merged ``extension -> format`` map across registered read backends."""
+        """The merged ``extension -> format`` map across backends and the stream codecs."""
         merged: dict[str, ArchiveFormat] = {}
         for cls in self._reader_classes:
             merged.update(cls.EXTENSIONS)
+        for codec in SINGLE_FILE_CODECS:
+            if codec.single_file_format is not None:
+                for ext in codec.extensions:
+                    merged[ext] = codec.single_file_format
         return merged
 
     # --- availability --------------------------------------------------------------------
@@ -159,7 +176,9 @@ class BackendRegistry:
         missing: list[MissingComponent] = []
         for codec in self._optional_codecs_for_format(fmt):
             if not is_codec_available(codec):
-                missing.append(_CODEC_REQUIREMENT[codec])
+                requirement = codec_requirement(codec)
+                assert requirement is not None  # an optional codec always declares one
+                missing.append(requirement)
 
         if not missing:
             return FormatAvailability(fmt, FormatSupport.FULL, ())
