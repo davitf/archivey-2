@@ -9,25 +9,8 @@ growing list of keyword arguments. A public surface is wired in a later phase (s
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from enum import Enum
-
-# The random-access accelerators (rapidgzip, indexed_bzip2) can abort the process with SIGABRT
-# at interpreter shutdown ("Detected Python finalization from running … thread"): they spawn
-# C++ worker threads, and a thread still running at finalization trips their guard. archivey
-# closes every accelerator stream via a weakref.finalize guard (see _AcceleratorStream in
-# streams/codecs.py), which makes isolated leaked / cyclically-collected / never-closed streams
-# shut down cleanly on *every* platform (proven by tests/test_accelerator_shutdown.py).
-#
-# However, the full test suite on macOS still aborts at shutdown once accelerators are active
-# in-process, even with that guard — a residual we have not yet root-caused (the isolated canary
-# does not reproduce it). Until it is understood, AUTO does not select an accelerator on macOS;
-# gzip/bzip2 stay on the sequential stdlib backend there (a slow rewinding seek, warned about,
-# beats crashing). An explicit ON is still honoured (the caller asked for it). See
-# docs/known-issues.md and scripts/macos_accelerator_debug.py (a standalone reproduction to run
-# on a real Mac to characterise the residual abort).
-_ACCELERATORS_UNSAFE_PLATFORM = sys.platform == "darwin"
 
 
 class AcceleratorMode(Enum):
@@ -40,8 +23,7 @@ class AcceleratorMode(Enum):
       opened for random access (``streaming=False``). Under ``streaming=True`` a forward
       pass needs no seeking, so AUTO leaves the cheaper sequential backend in place. When
       AUTO would enable the accelerator but its package is absent, fall back to sequential
-      silently (it is an enhancement, not a requirement). On macOS, AUTO never selects an
-      accelerator (the suite aborts at shutdown there — see ``_ACCELERATORS_UNSAFE_PLATFORM``).
+      silently (it is an enhancement, not a requirement).
     """
 
     AUTO = "auto"
@@ -60,9 +42,8 @@ class AcceleratorMode(Enum):
             return False
         if self is AcceleratorMode.ON:
             return True
-        # AUTO: random access wants seeking; a forward-only pass does not. On macOS the suite
-        # still aborts at shutdown with accelerators active, so AUTO does not select them there.
-        return available and not streaming and not _ACCELERATORS_UNSAFE_PLATFORM
+        # AUTO: random access wants seeking; a forward-only pass does not.
+        return available and not streaming
 
 
 @dataclass(frozen=True)

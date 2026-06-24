@@ -1,35 +1,32 @@
-"""Canary for the accelerator interpreter-shutdown abort and for archivey's guard against it
+"""Canary for the accelerator interpreter-shutdown abort and archivey's guard against it
 (see ``docs/known-issues.md`` and ``_AcceleratorStream`` in ``archivey.internal.streams.codecs``).
 
-``rapidgzip`` and ``indexed_bzip2`` spawn C++ worker threads. A thread still running when the
-interpreter finalizes trips their guard ("Detected Python finalization from running … thread")
-and aborts the process with SIGABRT. Critically, ``join_threads()`` does **not** stop the
-thread — only ``close()`` does — so a stream must be *closed*, not merely joined, before it is
-freed. Each scenario runs in its own subprocess so the abort is contained (the child crashes;
-this parent test inspects the exit code).
+archivey uses a single accelerator library, ``rapidgzip``, for both gzip (``RapidgzipFile``) and
+bzip2 (its bundled ``IndexedBzip2File``) — deliberately NOT the separate ``indexed_bzip2``
+package, because loading both into one process corrupts the heap and aborts on macOS (see
+``test_archivey_uses_single_accelerator_library`` below and ``docs/known-issues.md``).
 
-The matrix crosses both accelerators × intact / corrupt / truncated input × these cleanup
-strategies, and is emitted as a warning for the record:
+The accelerator spawns C++ worker threads. A thread still running when the interpreter finalizes
+trips the library's guard ("Detected Python finalization from running … thread") and aborts the
+process with SIGABRT. Critically, ``join_threads()`` does **not** stop the thread — only
+``close()`` does — so a stream must be *closed*, not merely joined, before it is freed.
+
+The matrix below crosses both codecs (each via rapidgzip) × intact / corrupt / truncated input ×
+cleanup strategy, each in its own subprocess (so any abort is contained), and is emitted as a
+warning for the record:
 
 - ``closed`` — ``read()`` then ``join_threads()`` + ``close()`` during the run.
-- ``cycle_gc`` / ``unclosed`` — the **raw** object finalized by the cyclic GC mid-run, or left
-  to interpreter shutdown, with **no** close. These abort on every platform measured — the
-  underlying-library bug archivey works around.
+- ``cycle_gc`` / ``unclosed`` — the **raw** object finalized by the cyclic GC mid-run, or left to
+  interpreter shutdown, with **no** close. These abort on every platform measured — the
+  underlying-library behaviour archivey works around.
 - ``guard_cycle_gc`` / ``guard_unclosed`` — the same two finalization paths but wrapped in a
   faithful copy of archivey's ``weakref.finalize`` guard, which **closes** the raw object when
-  the wrapper is reclaimed (cyclically or at exit). These exit cleanly, which is why the
-  accelerators are safe to use on every platform.
+  the wrapper is reclaimed. These exit cleanly, which is why the accelerator is safe to use.
 
-Asserted invariants (see the test): ``closed`` and the two ``guard_*`` paths exit cleanly on
-every platform (the cleanup contract archivey depends on), while the raw ``cycle_gc`` /
-``unclosed`` paths abort (the upstream bug; if a future release stops aborting there, the
-assertion flips, signalling the close-on-finalize guard is no longer load-bearing).
-
-Note: these isolated subprocess scenarios pass on macOS too — the guard *does* close cleanly
-there. Yet the full test suite on macOS still aborts at shutdown once accelerators are active
-in-process, a residual this isolated canary does not reproduce, which is why ``AUTO`` still
-disables the accelerators on macOS (see ``_ACCELERATORS_UNSAFE_PLATFORM`` and
-``scripts/macos_accelerator_debug.py``, a standalone reproduction to run on a real Mac).
+Asserted invariants: ``closed`` and the two ``guard_*`` paths exit cleanly on every platform (the
+cleanup contract archivey depends on), while the raw ``cycle_gc`` / ``unclosed`` paths abort (the
+upstream behaviour; if a future release stops aborting there, the assertion flips, signalling the
+close-on-finalize guard is no longer load-bearing).
 """
 
 from __future__ import annotations
@@ -41,26 +38,29 @@ import warnings
 
 import pytest
 
-# (module, builder-format) for the two accelerators.
-_ACCELERATORS = [("rapidgzip", "gzip"), ("indexed_bzip2", "bz2")]
+# (codec label, rapidgzip opener) — both codecs are driven through rapidgzip alone.
+_ACCELERATORS = [
+    ("gzip", "rapidgzip.RapidgzipFile"),
+    ("bzip2", "rapidgzip.IndexedBzip2File"),
+]
 _VARIANTS = ["intact", "corrupt", "truncated"]
 # Cleanup strategies, in increasing "let the runtime do it" order:
 #   closed         — read, join_threads(), close() during the run (what archivey does).
 #   cycle_gc       — raw object dropped into a reference cycle and reclaimed by the cyclic GC
 #                    mid-run (the mechanism a corrupt/truncated read's exception traceback
-#                    creates), with no join.
-#   guard_cycle_gc — same, but wrapped in archivey's weakref.finalize join guard.
-#   unclosed       — raw object finalized at interpreter shutdown, with no join.
-#   guard_unclosed — same, but wrapped in archivey's weakref.finalize join guard.
+#                    creates), with no close.
+#   guard_cycle_gc — same, but wrapped in archivey's weakref.finalize close guard.
+#   unclosed       — raw object finalized at interpreter shutdown, with no close.
+#   guard_unclosed — same, but wrapped in archivey's weakref.finalize close guard.
 _CLEANUPS = ["closed", "cycle_gc", "guard_cycle_gc", "unclosed", "guard_unclosed"]
 
 
-def _script(module: str, fmt: str, variant: str, cleanup: str) -> str:
-    """A minimal standalone program that uses the accelerator *directly* (no archivey)."""
+def _script(fmt: str, opener: str, variant: str, cleanup: str) -> str:
+    """A minimal standalone program that uses the rapidgzip accelerator *directly* (no archivey)."""
     return textwrap.dedent(
         f"""
         import gc, io, gzip, bz2, weakref
-        import {module}
+        import rapidgzip
 
         payload = b'canary payload ' * 4000
         data = bytearray(gzip.compress(payload) if {fmt!r} == 'gzip' else bz2.compress(payload))
@@ -71,9 +71,10 @@ def _script(module: str, fmt: str, variant: str, cleanup: str) -> str:
 
         cleanup = {cleanup!r}
 
-        # A faithful copy of archivey's _AcceleratorStream guard: weakref.finalize holds the
-        # raw object strongly and joins its threads exactly once, when the wrapper is collected
-        # (cyclically or not) or at interpreter exit — whichever comes first.
+        # A faithful copy of archivey's _AcceleratorStream guard: weakref.finalize holds the raw
+        # object strongly and CLOSES it exactly once, when the wrapper is collected (cyclically or
+        # not) or at interpreter exit — whichever comes first. close() (not join_threads()) is
+        # what actually stops the worker thread.
         def _close(inner):
             jt = getattr(inner, 'join_threads', None)
             if jt is not None:
@@ -82,7 +83,7 @@ def _script(module: str, fmt: str, variant: str, cleanup: str) -> str:
                 except Exception:
                     pass
             try:
-                inner.close()  # join_threads() alone does not stop the thread; close() does
+                inner.close()
             except Exception:
                 pass
 
@@ -91,7 +92,7 @@ def _script(module: str, fmt: str, variant: str, cleanup: str) -> str:
                 self._inner = inner
                 self._fin = weakref.finalize(self, _close, inner)
 
-        raw = {module}.open(io.BytesIO(bytes(data)), parallelization=0)
+        raw = {opener}(io.BytesIO(bytes(data)), parallelization=0)
         if cleanup.startswith('guard_'):
             obj = Guard(raw)
             del raw            # only the guard (and its finalize) reference the raw object
@@ -112,9 +113,9 @@ def _script(module: str, fmt: str, variant: str, cleanup: str) -> str:
                 pass
             obj.close()
         elif cleanup in ('cycle_gc', 'guard_cycle_gc'):
-            # Make `obj` reachable only through a reference cycle, then reclaim it via the
-            # cyclic collector during the run (not at shutdown). For the raw object this
-            # detaches the worker thread; for the guarded object the finalize must still join.
+            # Make `obj` reachable only through a reference cycle, then reclaim it via the cyclic
+            # collector during the run (not at shutdown). For the raw object this detaches the
+            # worker thread; for the guarded object the finalize must still close it.
             box = []
             box.append(box)
             box.append(obj)
@@ -125,27 +126,27 @@ def _script(module: str, fmt: str, variant: str, cleanup: str) -> str:
     )
 
 
-def _run(module: str, fmt: str, variant: str, cleanup: str) -> int:
+def _run(fmt: str, opener: str, variant: str, cleanup: str) -> int:
     """Run one scenario in a subprocess; return its exit code (negative == killed by signal)."""
     proc = subprocess.run(
-        [sys.executable, "-c", _script(module, fmt, variant, cleanup)],
+        [sys.executable, "-c", _script(fmt, opener, variant, cleanup)],
         capture_output=True,
         timeout=30,
     )
     return proc.returncode
 
 
-@pytest.mark.parametrize(("module", "fmt"), _ACCELERATORS, ids=[m for m, _ in _ACCELERATORS])
-def test_accelerator_shutdown_canary(module: str, fmt: str) -> None:
-    pytest.importorskip(module)
+@pytest.mark.parametrize(("fmt", "opener"), _ACCELERATORS, ids=[f for f, _ in _ACCELERATORS])
+def test_accelerator_shutdown_canary(fmt: str, opener: str) -> None:
+    pytest.importorskip("rapidgzip")
 
     matrix = {
-        f"{variant}/{cleanup}": _run(module, fmt, variant, cleanup)
+        f"{variant}/{cleanup}": _run(fmt, opener, variant, cleanup)
         for variant in _VARIANTS
         for cleanup in _CLEANUPS
     }
     warnings.warn(
-        f"[accel-shutdown] {module} (platform={sys.platform}) exit codes: {matrix}",
+        f"[accel-shutdown] rapidgzip {fmt} (platform={sys.platform}) exit codes: {matrix}",
         stacklevel=1,
     )
 
@@ -161,25 +162,66 @@ def test_accelerator_shutdown_canary(module: str, fmt: str) -> None:
         for safe in ("closed", "guard_cycle_gc", "guard_unclosed"):
             rc = matrix[f"{variant}/{safe}"]
             assert rc == 0, (
-                f"{module}: a {variant}/{safe} stream aborted on {sys.platform} (rc={rc}) — "
-                f"the accelerator cleanup contract is broken (close() should stop the thread)."
+                f"rapidgzip {fmt}: a {variant}/{safe} stream aborted on {sys.platform} (rc={rc}) "
+                f"— the accelerator cleanup contract is broken (close() should stop the thread)."
             )
 
-    # 2. The underlying-library bug, and the canary for it: a raw accelerator object finalized
-    #    *without* being closed — reclaimed by the cyclic GC ('cycle_gc', the exception-traceback
-    #    cycle path) or left to interpreter shutdown ('unclosed') — aborts with SIGABRT, because
-    #    join_threads() alone does not stop the C++ worker thread; only close() does. This is the
-    #    whole reason _AcceleratorStream's guard must close (not merely join) the object. When a
-    #    future accelerator release stops aborting here (e.g. it closes/joins in its destructor),
-    #    these assertions fail — the signal that the guard is no longer load-bearing.
-    #
-    #    Asserted on the characterised platforms (Linux, macOS); Windows codes are recorded in
-    #    the warning above but not asserted.
+    # 2. The underlying-library behaviour, and the canary for it: a raw accelerator object
+    #    finalized *without* being closed — reclaimed by the cyclic GC ('cycle_gc') or left to
+    #    interpreter shutdown ('unclosed') — aborts with SIGABRT, because join_threads() alone
+    #    does not stop the C++ worker thread; only close() does. This is the whole reason
+    #    _AcceleratorStream's guard must close (not merely join) the object. When a future
+    #    release stops aborting here, these assertions fail — the signal that the guard is no
+    #    longer load-bearing. Asserted on the characterised platforms (Linux, macOS).
     if sys.platform in ("linux", "darwin"):
         for ungraceful in ("cycle_gc", "unclosed"):
             rc = matrix[f"intact/{ungraceful}"]
             assert rc != 0, (
-                f"{module}: a raw (unguarded) {ungraceful} object now exits cleanly on "
+                f"rapidgzip {fmt}: a raw (unguarded) {ungraceful} object now exits cleanly on "
                 f"{sys.platform} (rc={rc}). The upstream interpreter-finalization abort may be "
                 f"fixed — _AcceleratorStream's close-on-finalize guard may no longer be needed."
             )
+
+
+_SINGLE_LIBRARY_SCRIPT = """
+import io, gzip, bz2, sys
+from archivey.internal.config import AcceleratorMode, StreamConfig
+from archivey.internal.streams.codecs import Codec, open_codec_stream
+
+payload = b'single accelerator library ' * 4000
+with open_codec_stream(
+    Codec.GZIP, io.BytesIO(gzip.compress(payload)),
+    config=StreamConfig(use_rapidgzip=AcceleratorMode.ON),
+) as s:
+    assert s.read() == payload
+with open_codec_stream(
+    Codec.BZIP2, io.BytesIO(bz2.compress(payload)),
+    config=StreamConfig(use_indexed_bzip2=AcceleratorMode.ON),
+) as s:
+    assert s.read() == payload
+
+# The crux: archivey must drive bzip2 through rapidgzip's bundled IndexedBzip2File, never the
+# standalone indexed_bzip2 package. Loading both libraries corrupts the heap on macOS.
+assert 'indexed_bzip2' not in sys.modules, 'archivey imported the conflicting indexed_bzip2 package'
+print('OK')
+"""
+
+
+def test_archivey_uses_single_accelerator_library() -> None:
+    """archivey decompresses gzip AND bzip2 via rapidgzip alone, never loading indexed_bzip2.
+
+    Run in a subprocess that exercises both codecs and exits: on macOS this would abort with
+    SIGABRT if archivey loaded both rapidgzip and indexed_bzip2 (the heap-corruption coexistence
+    bug); it also asserts the standalone indexed_bzip2 package is never imported.
+    """
+    pytest.importorskip("rapidgzip")
+    proc = subprocess.run(
+        [sys.executable, "-c", _SINGLE_LIBRARY_SCRIPT],
+        capture_output=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, (
+        f"using both codecs through archivey did not exit cleanly (rc={proc.returncode}): "
+        f"{proc.stderr.decode('utf-8', 'replace')[-400:]}"
+    )
+    assert proc.stdout.decode("utf-8", "replace").strip().endswith("OK")

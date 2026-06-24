@@ -1,11 +1,12 @@
 """Corrupt/truncated-input handling for the random-access accelerators.
 
-`test_codecs.py` only exercises the *stdlib* decompressor paths; these cover the
-optional `rapidgzip` / `indexed_bzip2` accelerators, whose exception taxonomies differ.
-The accelerators are forced ON (and skipped when their package is absent). Truncation is
-the interesting case: rapidgzip surfaces some truncations as exceptions but silently
-returns short/zero output for others, so a backstop in `_open_gzip` checks the gzip ISIZE
-trailer on a full read (disambiguating concatenated multi-member gzip).
+`test_codecs.py` only exercises the *stdlib* decompressor paths; these cover the optional
+`rapidgzip` accelerator, which backs both gzip (`RapidgzipFile`) and bzip2 (its bundled
+`IndexedBzip2File`) and whose exception taxonomy differs from the stdlib decoders'. The
+accelerators are forced ON (and skipped when `rapidgzip` is absent). Truncation is the
+interesting case: rapidgzip surfaces some truncations as exceptions but silently returns
+short/zero output for others, so a backstop in `_open_gzip` checks the gzip ISIZE trailer on a
+full read (disambiguating concatenated multi-member gzip).
 """
 
 from __future__ import annotations
@@ -18,20 +19,11 @@ from pathlib import Path
 import pytest
 
 from archivey.internal.config import (
-    _ACCELERATORS_UNSAFE_PLATFORM,
     AcceleratorMode,
     StreamConfig,
 )
 from archivey.internal.errors import CorruptionError, TruncatedError
 from archivey.internal.streams.codecs import Codec, open_codec_stream
-
-# Forcing an accelerator ON exercises it in-process. On macOS the process aborts at interpreter
-# shutdown once accelerators are active (see test_accelerator_shutdown.py and docs/known-issues.md),
-# so these in-process accelerator tests are skipped there. Linux and Windows exercise them fully.
-pytestmark = pytest.mark.skipif(
-    _ACCELERATORS_UNSAFE_PLATFORM,
-    reason="rapidgzip/indexed_bzip2 abort the process at shutdown on macOS (see test_accelerator_shutdown.py)",
-)
 
 _GZ_ON = StreamConfig(use_rapidgzip=AcceleratorMode.ON)
 _BZ_ON = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON)
@@ -88,11 +80,11 @@ def test_rapidgzip_multimember_not_flagged(tmp_path: Path) -> None:
         assert s.read() == b"A" * 4000 + b"B" * 2500
 
 
-# --- indexed_bzip2 ---------------------------------------------------------------------
+# --- bzip2 (via rapidgzip's bundled IndexedBzip2File) ----------------------------------
 
 
 def test_indexed_bzip2_corrupt_translates_to_corruption(tmp_path: Path) -> None:
-    pytest.importorskip("indexed_bzip2")
+    pytest.importorskip("rapidgzip")
     corrupt = bytearray(bz2.compress(b"payload " * 400))
     corrupt[20:45] = b"\x00" * 25  # clobber block data/header
     path = _write(tmp_path, "corrupt.bz2", bytes(corrupt))
@@ -102,7 +94,7 @@ def test_indexed_bzip2_corrupt_translates_to_corruption(tmp_path: Path) -> None:
 
 
 def test_indexed_bzip2_intact_reads_clean(tmp_path: Path) -> None:
-    pytest.importorskip("indexed_bzip2")
+    pytest.importorskip("rapidgzip")
     payload = b"payload " * 400
     path = _write(tmp_path, "ok.bz2", bz2.compress(payload))
     with open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s:

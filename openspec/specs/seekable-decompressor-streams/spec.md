@@ -24,33 +24,33 @@ The system SHALL support seekable random access within XZ and lzip compressed st
 
 ### Requirement: Optional accelerator backends for gzip and bzip2 random access
 
-The system SHALL support optional accelerator backends for formats that have no native block index. For gzip, the `rapidgzip` library may be used as a backend to enable random access. For bzip2, the `indexed_bzip2` library may be used. These backends are opt-in (controlled by `use_rapidgzip` and `use_indexed_bzip2` configuration flags, which in v2 will be tri-state `AUTO`/`ON`/`OFF` resolved against the caller's access mode — the `streaming` flag). When neither accelerator is available or enabled, gzip and bzip2 streams stay backed by the stdlib decoders, which still support seeking but service it by re-decompressing from the start (O(n) per rewind). The slow path is permitted — not every format can offer fast random access, and a slow seek beats failing — but it MUST NOT be silent: a seek that rewinds the stream SHALL log a warning naming the `[seekable]` accelerator.
+The system SHALL support optional accelerator backends for formats that have no native block index, using the `rapidgzip` library as the **single** accelerator backend for both codecs: gzip via `rapidgzip.RapidgzipFile` and bzip2 via rapidgzip's bundled `rapidgzip.IndexedBzip2File`. The system SHALL NOT use the standalone `indexed_bzip2` package — loading both `rapidgzip` and `indexed_bzip2` into one process corrupts the heap and aborts on macOS (their statically-linked C++ cores share symbols that collide under dyld), and the library author's own guidance is to "depend on rapidgzip" when both gzip and bzip2 are needed. These backends are opt-in (controlled by `use_rapidgzip` and `use_indexed_bzip2` configuration flags, tri-state `AUTO`/`ON`/`OFF` resolved against the caller's access mode — the `streaming` flag; `use_indexed_bzip2` now selects rapidgzip's bundled bzip2 decoder). When the accelerator is not available or not enabled, gzip and bzip2 streams stay backed by the stdlib decoders, which still support seeking but service it by re-decompressing from the start (O(n) per rewind). The slow path is permitted — not every format can offer fast random access, and a slow seek beats failing — but it MUST NOT be silent: a seek that rewinds the stream SHALL log a warning naming the `[seekable]` accelerator (`rapidgzip`).
 
 #### Scenario: gzip random access with rapidgzip enabled
 
 - **WHEN** `use_rapidgzip` is enabled and the `rapidgzip` package is installed
 - **THEN** a gzip-compressed stream supports seeking to arbitrary uncompressed offsets without decompressing from the start
 
-#### Scenario: bzip2 random access with indexed_bzip2 enabled
+#### Scenario: bzip2 random access via rapidgzip's bundled IndexedBzip2File
 
-- **WHEN** `use_indexed_bzip2` is enabled and the `indexed_bzip2` package is installed
-- **THEN** a bzip2-compressed stream supports seeking to arbitrary uncompressed offsets without decompressing from the start
+- **WHEN** `use_indexed_bzip2` is enabled and the `rapidgzip` package is installed
+- **THEN** a bzip2-compressed stream supports seeking to arbitrary uncompressed offsets without decompressing from the start, using `rapidgzip.IndexedBzip2File` (the standalone `indexed_bzip2` package is never imported)
 
 #### Scenario: accelerator backend absent
 
-- **WHEN** neither `rapidgzip` nor `indexed_bzip2` is installed, or the corresponding flag is `OFF`
+- **WHEN** `rapidgzip` is not installed, or the corresponding flag is `OFF`
 - **THEN** gzip and bzip2 streams stay backed by the stdlib decoders, which service a seek only by re-decompressing from the start (O(n) per rewind)
 - **AND** a seek that rewinds the stream logs a warning naming the `[seekable]` accelerator, rather than degrading silently or failing
 
 ### Requirement: Accelerator backends surface corruption and truncation uniformly
 
-An accelerator backend (`rapidgzip`, `indexed_bzip2`) has its own exception taxonomy that
-differs from the stdlib decoders' and **varies by platform** (e.g. `rapidgzip` raises a
-`RuntimeError` "Failed to parse gzip/zlib header" on Linux but a `ValueError` "… Invalid
-gzip magic bytes" on macOS for the same corrupt input). Regardless, corrupt or truncated
-input read through an accelerator SHALL surface as the same `compressed-streams` error
-types as the stdlib path — `CorruptionError` or `TruncatedError` — never as a raw
-third-party exception, per the error-translation contract.
+The `rapidgzip` accelerator (driving gzip via `RapidgzipFile` and bzip2 via its bundled
+`IndexedBzip2File`) has its own exception taxonomy that differs from the stdlib decoders' and
+**varies by platform** (e.g. `rapidgzip` raises a `RuntimeError` "Failed to parse gzip/zlib
+header" on Linux but a `ValueError` "… Invalid gzip magic bytes" on macOS for the same corrupt
+input). Regardless, corrupt or truncated input read through an accelerator SHALL surface as the
+same `compressed-streams` error types as the stdlib path — `CorruptionError` or `TruncatedError`
+— never as a raw third-party exception, per the error-translation contract.
 
 Truncation needs extra care for `rapidgzip`: it does **not** reliably report a truncated
 gzip — it raises for a cut that leaves a partially-decodable block, but for other cuts it
@@ -76,32 +76,41 @@ conservative scan for a further gzip header, so a valid file is never misreporte
 - **WHEN** a concatenated multi-member gzip is read through `rapidgzip`
 - **THEN** it decompresses fully with no error, because the ISIZE backstop disambiguates the multi-member case rather than flagging the size mismatch
 
-The accelerator backends spawn **C++ worker threads** (invisible to Python's `threading`
-module). A worker thread still running when the interpreter finalizes trips the library's own
-guard and aborts the process with SIGABRT. Stopping the thread requires **closing** the object:
-`join_threads()` alone does not stop it — only `close()` does. The owning object must therefore
-be closed before it is freed, and never left to the garbage collector unclosed, which on a
-reference cycle (e.g. an exception traceback capturing the stream) can finalize it without
-closing. The system SHALL guarantee this with a `weakref.finalize` guard per accelerator stream:
-it **closes** the raw object exactly once — when the wrapper is collected (cyclically or not) or
-at interpreter exit, whichever comes first — holding a strong reference to the raw object so the
-close always completes before that object is freed.
+The accelerator spawns **C++ worker threads** (invisible to Python's `threading` module). Two
+distinct failure modes must be handled for the accelerator to be safe at interpreter shutdown:
 
-Because the guard closes the object, an isolated leaked, cyclically-collected, or never-closed
-stream shuts down cleanly on **every** platform (verified by the canary in subprocesses, on Linux
-and macOS alike). On **macOS**, however, the full test suite still aborts at interpreter shutdown
-once accelerators run in-process — a residual the isolated reproductions do not capture. Until it
-is root-caused, the system SHALL NOT select an accelerator under `AUTO` on macOS: gzip/bzip2 fall
-back to the sequential stdlib backend there. An explicit `ON` is still honoured (the caller's
-choice). This is tracked with the canary test (which measures, in subprocesses, that closed and
-guard-closed objects exit cleanly while a raw, never-closed object aborts — the latter flipping
-when a future accelerator release stops aborting) and a standalone Mac reproduction; see
-`docs/known-issues.md` and `scripts/macos_accelerator_debug.py`.
+1. **Finalization without close.** A worker thread still running when the interpreter finalizes
+   trips the library's own guard and aborts the process with SIGABRT. Stopping the thread requires
+   **closing** the object: `join_threads()` alone does not stop it — only `close()` does. The
+   owning object must therefore be closed before it is freed, and never left to the garbage
+   collector unclosed, which on a reference cycle (e.g. an exception traceback capturing the
+   stream) can finalize it without closing. The system SHALL guarantee this with a
+   `weakref.finalize` guard per accelerator stream: it **closes** the raw object exactly once —
+   when the wrapper is collected (cyclically or not) or at interpreter exit, whichever comes first
+   — holding a strong reference to the raw object so the close always completes before it is freed.
 
-#### Scenario: a leaked accelerator stream does not crash at shutdown in isolation
+2. **Two accelerator libraries in one process.** Loading both `rapidgzip` and the standalone
+   `indexed_bzip2` into one process corrupts the heap and aborts (a `malloc … pointer being freed
+   was not allocated` double-free) on macOS, because their statically-linked C++ cores share weak
+   symbols that dyld coalesces across the two dynamic libraries. The system SHALL therefore use
+   `rapidgzip` as the only accelerator library — driving bzip2 through its bundled
+   `IndexedBzip2File` — and SHALL NOT import `indexed_bzip2`. This matches the library author's
+   guidance ("if you need to use both, depend on rapidgzip"). With a single accelerator library in
+   the process the collision cannot occur.
 
-- **WHEN** a process opens a single accelerator-backed stream through the library and exits, or lets the garbage collector reclaim it (including via a reference cycle), without closing it explicitly
+With both measures in place the accelerator runs cleanly on every platform, so `AUTO` MAY select
+it for random access on every platform (a forward-only `streaming=True` pass needs no seeking and
+stays on the sequential backend). See `docs/known-issues.md`.
+
+#### Scenario: a leaked accelerator stream does not crash at shutdown
+
+- **WHEN** a process opens an accelerator-backed stream through the library and exits, or lets the garbage collector reclaim it (including via a reference cycle), without closing it explicitly
 - **THEN** the process terminates cleanly on every platform, because the `weakref.finalize` guard closes the raw object before it is freed, rather than aborting from a worker thread still running at interpreter finalization
+
+#### Scenario: gzip and bzip2 accelerated in the same process do not corrupt the heap
+
+- **WHEN** a process decompresses both a gzip stream and a bzip2 stream through the accelerators
+- **THEN** both are served by `rapidgzip` alone (bzip2 via `rapidgzip.IndexedBzip2File`), the standalone `indexed_bzip2` package is never imported, and the process exits cleanly rather than aborting from a cross-library heap double-free
 
 #### Scenario: AUTO does not select an accelerator on macOS
 

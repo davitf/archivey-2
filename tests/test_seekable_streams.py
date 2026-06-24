@@ -185,7 +185,7 @@ def test_bzip2_accelerator_off_warns_on_rewind(
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == CONTENT[:10]
-    assert any("indexed_bzip2" in r.getMessage() for r in caplog.records)
+    assert any("rapidgzip" in r.getMessage() for r in caplog.records)
 
 
 # --- forward-only codecs without an accelerator: warn (generically) on a rewind ---------
@@ -270,8 +270,10 @@ def test_gzip_accelerator_on_without_package_raises() -> None:
 
 
 def test_bzip2_accelerator_on_without_package_raises() -> None:
-    if importlib.util.find_spec("indexed_bzip2") is not None:
-        pytest.skip("indexed_bzip2 is installed; cannot exercise the absent path")
+    # bzip2 random access is provided by rapidgzip's bundled IndexedBzip2File, so the absent
+    # path is only exercisable when rapidgzip is not installed.
+    if importlib.util.find_spec("rapidgzip") is not None:
+        pytest.skip("rapidgzip is installed; cannot exercise the absent path")
     config = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON)
     compressed = bz2.compress(CONTENT)
     with pytest.raises(PackageNotInstalledError):
@@ -279,16 +281,8 @@ def test_bzip2_accelerator_on_without_package_raises() -> None:
 
 
 def test_accelerator_mode_auto_resolution() -> None:
-    """AUTO enables only for random access (streaming=False) and only when available.
-
-    On macOS the suite aborts at shutdown with accelerators active, so AUTO never selects them
-    there regardless of availability (the sequential stdlib backend is used instead).
-    """
-    from archivey.internal.config import _ACCELERATORS_UNSAFE_PLATFORM
-
-    assert AcceleratorMode.AUTO.enabled_for(streaming=False, available=True) is (
-        not _ACCELERATORS_UNSAFE_PLATFORM
-    )
+    """AUTO enables only for random access (streaming=False) and only when available."""
+    assert AcceleratorMode.AUTO.enabled_for(streaming=False, available=True) is True
     assert not AcceleratorMode.AUTO.enabled_for(streaming=True, available=True)
     assert not AcceleratorMode.AUTO.enabled_for(streaming=False, available=False)
     assert AcceleratorMode.ON.enabled_for(streaming=True, available=True)

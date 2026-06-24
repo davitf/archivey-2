@@ -60,7 +60,7 @@ compression formats, and the CLI. The mapping is:
 | `[lz4]` | `lz4` | LZ4 (`.tar.lz4`) |
 | `[unix-compress]` | `uncompresspy` | unix-compress (`.Z`, `.tar.Z`) — LZW decompression |
 | `[cli]` | `tqdm` | the `archivey` command-line interface and its progress bar |
-| `[seekable]` | `rapidgzip`, `indexed_bzip2` | faster gzip/bzip2 decompression **and random access (seeking)** into gz/bz2 streams. Native C++ libs: install needs a prebuilt wheel, or a C++17 compiler where no wheel exists |
+| `[seekable]` | `rapidgzip` | faster gzip/bzip2 decompression **and random access (seeking)** into gz/bz2 streams. rapidgzip backs both codecs (bzip2 via its bundled `IndexedBzip2File`); the standalone `indexed_bzip2` package is deliberately not used (loading both corrupts the heap on macOS). Native C++ lib: install needs a prebuilt wheel, or a C++17 compiler where no wheel exists |
 | `[recommended-lite]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[unix-compress]` + `[cli]` | every format/codec with broadly-wheeled deps; **no build-finicky C++ libs**. Use when `[recommended]` won't install |
 | `[recommended]` | `[recommended-lite]` + `[seekable]` | the **recommended** install — everything in `[recommended-lite]` plus gz/bz2 seeking and speed |
 | `[all]` | `[recommended]` **plus** every alternative/secondary backend | everything, including redundant alternative backends — mainly for testing/benchmarking |
@@ -69,10 +69,10 @@ compression formats, and the CLI. The mapping is:
 format/codec with one primary backend each, plus the `[seekable]` backends that add
 gz/bz2 random access and speed. Almost all of these dependencies are native
 extensions, but the bundled ones ship broad manylinux/musllinux/macOS/Windows wheels
-and install without a compiler on mainstream platforms — **except** `rapidgzip` and
-`indexed_bzip2` (the `[seekable]` libs), which more often lack a wheel and fall back
+and install without a compiler on mainstream platforms — **except** `rapidgzip`
+(the `[seekable]` lib), which more often lacks a wheel and falls back
 to a C++17 source build. `[recommended-lite]` is therefore `[recommended]` minus only
-those two: it keeps every format and codec (`cryptography`, `pyppmd`, `zstandard`,
+that one: it keeps every format and codec (`cryptography`, `pyppmd`, `zstandard`,
 `lz4`, …) and just drops gz/bz2 seeking, so it installs reliably where the C++ build
 fails. A user who hits a build error on `[recommended]` can fall back to
 `[recommended-lite]` without losing any format support.
@@ -130,12 +130,12 @@ are pulled in by `uv sync` (or `pip install --group dev`) for contributors.
 
 - **WHEN** `pip install archivey[recommended]` is run
 - **THEN** every optional capability (7z PPMd/Deflate64/Zstd/Brotli/AES, encrypted RAR5 + Blake2sp verification, 7z write, ISO, ZST, LZ4, CLI) is available with one primary backend per capability
-- **AND** the `[seekable]` backends (`rapidgzip`, `indexed_bzip2`) are installed, enabling gz/bz2 random access and faster decompression
+- **AND** the `[seekable]` backend (`rapidgzip`, which also provides bzip2 via its bundled `IndexedBzip2File`) is installed, enabling gz/bz2 random access and faster decompression
 - **AND** no redundant alternative backend (e.g. a second xz/zstd implementation) is pulled in
 
 #### Scenario: `[recommended-lite]` keeps every format but drops the C++ seek libs
 
-- **WHEN** `pip install archivey[recommended-lite]` is run (e.g. because `[recommended]` failed to build `rapidgzip`/`indexed_bzip2`)
+- **WHEN** `pip install archivey[recommended-lite]` is run (e.g. because `[recommended]` failed to build `rapidgzip`)
 - **THEN** every format and codec still works (7z, RAR, ISO, ZST, LZ4, crypto, …) with no native-build risk
 - **AND** the only lost capability is gz/bz2 seeking and the speed boost from the `[seekable]` libs
 

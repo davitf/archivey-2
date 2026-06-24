@@ -71,7 +71,12 @@ _uncompresspy = _optional("uncompresspy")
 _pyppmd = _optional("pyppmd")
 _inflate64 = _optional("inflate64")
 _rapidgzip = _optional("rapidgzip")
-_indexed_bzip2 = _optional("indexed_bzip2")
+# bzip2 random access is provided by rapidgzip's *bundled* IndexedBzip2File, NOT the separate
+# ``indexed_bzip2`` package. Loading both rapidgzip and indexed_bzip2 into one process corrupts
+# the heap and aborts on macOS (they statically bundle an overlapping C++ core, whose symbols
+# collide under dyld). Routing both gzip and bzip2 through rapidgzip keeps a single accelerator
+# library in the process, which is safe on every platform. See docs/known-issues.md.
+_rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
 
 
 def _close_accelerator(inner: object) -> None:
@@ -586,20 +591,22 @@ def _open_gzip(source: CodecSource, params: CodecParams, config: StreamConfig) -
 
 def _open_bzip2(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
     if config.use_indexed_bzip2.enabled_for(
-        streaming=config.streaming, available=_indexed_bzip2 is not None
+        streaming=config.streaming, available=_rapidgzip_bzip2 is not None
     ):
-        if _indexed_bzip2 is None:
+        if _rapidgzip_bzip2 is None:
             raise PackageNotInstalledError(
-                "The 'indexed_bzip2' package is required for bzip2 random access "
+                "The 'rapidgzip' package is required for bzip2 random access "
                 "(install the 'seekable' extra)."
             )
-        return _track_accelerator(ensure_binaryio(_indexed_bzip2.open(source, parallelization=0)))
+        # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
+        # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
+        return _track_accelerator(ensure_binaryio(_rapidgzip_bzip2(source, parallelization=0)))
     # stdlib bz2 can seek, but a rewind re-decompresses from the start; warn rather than
-    # degrade silently (the [seekable] indexed_bzip2 accelerator gives real random access).
+    # degrade silently (the [seekable] rapidgzip accelerator gives real random access).
     return _SlowSeekWarningStream(
         ensure_binaryio(bz2.open(source, "rb")),
         codec_name="bzip2",
-        accelerator="indexed_bzip2",
+        accelerator="rapidgzip",
     )
 
 
@@ -828,7 +835,7 @@ def _gzip_uses_accelerator(config: StreamConfig) -> bool:
 
 
 def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
-    return _indexed_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
+    return _rapidgzip_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
         streaming=config.streaming, available=True
     )
 
