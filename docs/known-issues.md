@@ -2,8 +2,12 @@
 
 ## Random-access accelerators must be *closed* (not just joined) to avoid a shutdown abort
 
-**Status:** resolved in archivey (the stream wrapper closes the object on finalization); the
-underlying behaviour is an upstream quirk, watched by a canary test.
+**Status:** mitigated. The stream wrapper now *closes* (not merely joins) the object on
+finalization, which fixes every isolated case on Linux, Windows, **and macOS**. A residual
+remains: the **full test suite on macOS** still aborts at shutdown once accelerators run
+in-process, for a reason the isolated reproductions do not capture. Until that is understood,
+`AUTO` keeps the accelerators disabled on macOS. A standalone reproduction to run on a real Mac
+lives at `scripts/macos_accelerator_debug.py`.
 
 ### Symptom
 
@@ -53,14 +57,32 @@ wrapper is collected (cyclically or not) or at interpreter exit, whichever comes
 a strong reference to the raw object so the close always runs before it is freed. `close()` on
 the wrapper just triggers the same guard early.
 
-This makes leaked, cyclically-collected, and never-closed streams all shut down cleanly on
-**every** platform, so the accelerators are enabled under `AUTO` everywhere (random access only;
-a forward-only `streaming=True` pass stays on the sequential backend, which needs no seeking).
+This makes leaked, cyclically-collected, and never-closed streams all shut down cleanly in
+isolation on **every** platform, including macOS (the canary's `guard_*` cases pass on darwin).
 
 > Earlier the guard called `join_threads()` instead of `close()`. That is insufficient (see the
-> table), which is why the macOS test suite — where some streams reached the guard rather than an
-> explicit `close()` — aborted at shutdown. The fix was to make the guard close the object;
-> the macOS-only `AUTO` disable that briefly worked around it was then removed.
+> table), which explains much of the macOS abort: streams that reached the join-only guard rather
+> than an explicit `close()` were never actually stopped. Switching the guard to `close()` fixed
+> every isolated reproduction.
+
+### The unresolved residual (macOS)
+
+Even with the close-on-finalize guard, the **full pytest suite on macOS** still exits 134 *after*
+all tests pass, once accelerators are active in-process (forced-`ON` tests plus `AUTO`). The
+isolated subprocess canary does **not** reproduce this — its `arch_*` scenarios are all clean on
+macOS — so something about the full-process environment (many streams, retained tracebacks, or
+the `pytest-cov` `sys.settrace` C tracer shifting finalization timing) is the trigger.
+
+Until this is root-caused, `AUTO` does not select an accelerator on macOS
+(`_ACCELERATORS_UNSAFE_PLATFORM` in `archivey.internal.config`); gzip/bzip2 fall back to the
+sequential stdlib backend (a slow rewinding seek, warned about, beats crashing). An explicit
+`AcceleratorMode.ON` is still honoured, and the in-process forced-`ON` tests are skipped on macOS.
+
+`scripts/macos_accelerator_debug.py` is a self-contained reproduction to run on a real Mac: it
+prints the environment and runs a matrix (raw vs. archivey-wrapped × close / leaked-to-shutdown /
+cyclic-GC / exception-cycle / seek / many-streams), each in its own subprocess, with and without a
+tracer (`--trace`) and optionally under real `coverage`. Whichever `arch_*` scenario aborts there
+— especially if only under the tracer — is the minimal reproduction we need.
 
 ### The canary
 

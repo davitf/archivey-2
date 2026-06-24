@@ -279,8 +279,16 @@ def test_bzip2_accelerator_on_without_package_raises() -> None:
 
 
 def test_accelerator_mode_auto_resolution() -> None:
-    """AUTO enables only for random access (streaming=False) and only when available."""
-    assert AcceleratorMode.AUTO.enabled_for(streaming=False, available=True) is True
+    """AUTO enables only for random access (streaming=False) and only when available.
+
+    On macOS the suite aborts at shutdown with accelerators active, so AUTO never selects them
+    there regardless of availability (the sequential stdlib backend is used instead).
+    """
+    from archivey.internal.config import _ACCELERATORS_UNSAFE_PLATFORM
+
+    assert AcceleratorMode.AUTO.enabled_for(streaming=False, available=True) is (
+        not _ACCELERATORS_UNSAFE_PLATFORM
+    )
     assert not AcceleratorMode.AUTO.enabled_for(streaming=True, available=True)
     assert not AcceleratorMode.AUTO.enabled_for(streaming=False, available=False)
     assert AcceleratorMode.ON.enabled_for(streaming=True, available=True)

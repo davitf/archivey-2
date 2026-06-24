@@ -18,11 +18,20 @@ from pathlib import Path
 import pytest
 
 from archivey.internal.config import (
+    _ACCELERATORS_UNSAFE_PLATFORM,
     AcceleratorMode,
     StreamConfig,
 )
 from archivey.internal.errors import CorruptionError, TruncatedError
 from archivey.internal.streams.codecs import Codec, open_codec_stream
+
+# Forcing an accelerator ON exercises it in-process. On macOS the process aborts at interpreter
+# shutdown once accelerators are active (see test_accelerator_shutdown.py and docs/known-issues.md),
+# so these in-process accelerator tests are skipped there. Linux and Windows exercise them fully.
+pytestmark = pytest.mark.skipif(
+    _ACCELERATORS_UNSAFE_PLATFORM,
+    reason="rapidgzip/indexed_bzip2 abort the process at shutdown on macOS (see test_accelerator_shutdown.py)",
+)
 
 _GZ_ON = StreamConfig(use_rapidgzip=AcceleratorMode.ON)
 _BZ_ON = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON)

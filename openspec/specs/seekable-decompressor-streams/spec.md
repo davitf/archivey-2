@@ -87,18 +87,26 @@ it **closes** the raw object exactly once — when the wrapper is collected (cyc
 at interpreter exit, whichever comes first — holding a strong reference to the raw object so the
 close always completes before that object is freed.
 
-Because the guard closes the object, leaked, cyclically-collected, and never-closed streams all
-shut down cleanly on **every** platform, so `AUTO` MAY select an accelerator for random access
-on every platform (a forward-only `streaming=True` pass needs no seeking and stays on the
-sequential backend). The underlying behaviour — that a raw, never-closed accelerator object
-aborts at finalization — is tracked as an upstream quirk with a canary test (which measures, in
-subprocesses, that closed and guard-closed objects exit cleanly while a raw, never-closed object
-aborts) that flips when a future accelerator release stops aborting; see `docs/known-issues.md`.
+Because the guard closes the object, an isolated leaked, cyclically-collected, or never-closed
+stream shuts down cleanly on **every** platform (verified by the canary in subprocesses, on Linux
+and macOS alike). On **macOS**, however, the full test suite still aborts at interpreter shutdown
+once accelerators run in-process — a residual the isolated reproductions do not capture. Until it
+is root-caused, the system SHALL NOT select an accelerator under `AUTO` on macOS: gzip/bzip2 fall
+back to the sequential stdlib backend there. An explicit `ON` is still honoured (the caller's
+choice). This is tracked with the canary test (which measures, in subprocesses, that closed and
+guard-closed objects exit cleanly while a raw, never-closed object aborts — the latter flipping
+when a future accelerator release stops aborting) and a standalone Mac reproduction; see
+`docs/known-issues.md` and `scripts/macos_accelerator_debug.py`.
 
-#### Scenario: a leaked accelerator stream does not crash at shutdown
+#### Scenario: a leaked accelerator stream does not crash at shutdown in isolation
 
-- **WHEN** a process opens an accelerator-backed stream through the library and exits, or lets the garbage collector reclaim it (including via a reference cycle), without closing it explicitly
+- **WHEN** a process opens a single accelerator-backed stream through the library and exits, or lets the garbage collector reclaim it (including via a reference cycle), without closing it explicitly
 - **THEN** the process terminates cleanly on every platform, because the `weakref.finalize` guard closes the raw object before it is freed, rather than aborting from a worker thread still running at interpreter finalization
+
+#### Scenario: AUTO does not select an accelerator on macOS
+
+- **WHEN** a gzip or bzip2 stream is opened for random access on macOS with the accelerator mode left at `AUTO`
+- **THEN** the sequential stdlib backend is used (no accelerator), because the full-process shutdown abort on macOS is not yet resolved — a rewinding seek is serviced slowly (and warns) rather than risking a crash
 
 ### Requirement: Index-less codecs warn on a rewinding seek
 

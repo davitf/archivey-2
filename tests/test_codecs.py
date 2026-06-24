@@ -12,6 +12,7 @@ import zlib
 import pytest
 
 from archivey.internal.config import (
+    _ACCELERATORS_UNSAFE_PLATFORM,
     AcceleratorMode,
     StreamConfig,
 )
@@ -182,6 +183,10 @@ def test_truncated_gzip_translates_to_truncated() -> None:
             stream.read()
 
 
+@pytest.mark.skipif(
+    _ACCELERATORS_UNSAFE_PLATFORM,
+    reason="rapidgzip aborts the process at shutdown on macOS (see test_accelerator_shutdown.py)",
+)
 def test_accelerator_path_translates_errors_no_raw_leak() -> None:
     """When rapidgzip is the active backend, its errors still surface as ArchiveyError."""
     if importlib.util.find_spec("rapidgzip") is None:

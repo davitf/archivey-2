@@ -24,6 +24,12 @@ Asserted invariants (see the test): ``closed`` and the two ``guard_*`` paths exi
 every platform (the cleanup contract archivey depends on), while the raw ``cycle_gc`` /
 ``unclosed`` paths abort (the upstream bug; if a future release stops aborting there, the
 assertion flips, signalling the close-on-finalize guard is no longer load-bearing).
+
+Note: these isolated subprocess scenarios pass on macOS too — the guard *does* close cleanly
+there. Yet the full test suite on macOS still aborts at shutdown once accelerators are active
+in-process, a residual this isolated canary does not reproduce, which is why ``AUTO`` still
+disables the accelerators on macOS (see ``_ACCELERATORS_UNSAFE_PLATFORM`` and
+``scripts/macos_accelerator_debug.py``, a standalone reproduction to run on a real Mac).
 """
 
 from __future__ import annotations
