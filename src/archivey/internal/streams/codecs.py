@@ -20,6 +20,7 @@ import importlib
 import io
 import lzma
 import os
+import weakref
 import zlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -70,7 +71,79 @@ _uncompresspy = _optional("uncompresspy")
 _pyppmd = _optional("pyppmd")
 _inflate64 = _optional("inflate64")
 _rapidgzip = _optional("rapidgzip")
-_indexed_bzip2 = _optional("indexed_bzip2")
+# bzip2 random access is provided by rapidgzip's *bundled* IndexedBzip2File, NOT the separate
+# ``indexed_bzip2`` package. Loading both rapidgzip and indexed_bzip2 into one process corrupts
+# the heap and aborts on macOS (they statically bundle an overlapping C++ core, whose symbols
+# collide under dyld). Routing both gzip and bzip2 through rapidgzip keeps a single accelerator
+# library in the process, which is safe on every platform. See docs/known-issues.md.
+_rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
+
+
+class _AcceleratorStream(io.RawIOBase, BinaryIO):
+    """Wrap a threaded accelerator (``rapidgzip`` / ``indexed_bzip2``) so its underlying object
+    is always *closed* before it is freed.
+
+    The accelerators spawn C++ ``std::thread``s (invisible to Python's ``threading`` module).
+    A worker thread still running when the interpreter finalizes aborts the process with
+    SIGABRT ("Detected Python finalization from running … thread" → "terminate called").
+    Crucially, ``join_threads()`` does **not** stop the thread — only ``close()`` does (the
+    libraries' own message says to "close all … objects"). So an object that is merely joined,
+    or that is finalized by the garbage collector without being closed — which happens when a
+    corrupt/truncated read raises and the exception traceback captures the stream in a reference
+    cycle, where finalizer ordering is undefined — still trips the abort.
+
+    A :func:`weakref.finalize` guard closes that window: it ``close()``s the raw object exactly
+    once, when this wrapper is collected (cyclically or not) or at interpreter exit, whichever
+    comes first, holding a strong reference to the raw object so the close always runs *before*
+    that object is freed. ``close()`` on the wrapper simply triggers the same guard early.
+    """
+
+    def __init__(self, inner: object) -> None:
+        super().__init__()
+        self._inner: BinaryIO = ensure_binaryio(inner)
+        # The finalize callback must NOT reference self — a bound method would pin the wrapper
+        # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
+        self._finalize = weakref.finalize(self, self._close_inner, self._inner)
+
+    @staticmethod
+    def _close_inner(inner: BinaryIO) -> None:
+        # close() — not join_threads() — stops the C++ worker thread, and must run before the
+        # interpreter finalizes or the process aborts. Best-effort; the guard runs it once.
+        try:
+            inner.close()
+        except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
+            pass
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._inner.read(n)
+
+    def readinto(self, b: "WriteableBuffer", /) -> int:
+        # ensure_binaryio() guarantees a readinto-capable object (readinto is in the required IO
+        # method set, and BinaryIOWrapper implements it) — but typing.BinaryIO does not *declare*
+        # readinto, so it is reached via getattr to satisfy the type-checkers without a cast.
+        return getattr(self._inner, "readinto")(b)  # noqa: B009
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return self._inner.seek(offset, whence)
+
+    def tell(self, /) -> int:
+        return self._inner.tell()
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return self._inner.seekable()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        # Trigger the finalize guard (closes the raw object) once; it is then disarmed.
+        self._finalize()
+        super().close()
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO
@@ -182,6 +255,15 @@ def _translate_rapidgzip(e: Exception) -> ArchiveyError | None:
         return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
     if isinstance(e, RuntimeError) and "IsalInflateWrapper" in text:
         return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
+    if isinstance(e, (ValueError, RuntimeError)) and (
+        "gzip/zlib header" in text or "gzip magic" in text
+    ):
+        # Corrupt header. The type/message varies by platform backend (ISA-L on Linux vs
+        # the macOS fallback) and source type: RuntimeError "Failed to parse gzip/zlib
+        # header (… Invalid gzip/zlib wrapper)" or ValueError "Failed to read gzip/zlib
+        # header (… Invalid gzip magic bytes)". The gzip magic matched at open, so this is
+        # corruption.
+        return CorruptionError(f"Error reading gzip stream (rapidgzip): {e!r}")
     if isinstance(e, ValueError) and "Failed to detect a valid file format" in text:
         # The gzip magic was present when we opened it, so a detection failure now means
         # the stream is truncated/corrupt rather than not-a-gzip.
@@ -204,7 +286,9 @@ def _translate_indexed_bzip2(e: Exception) -> ArchiveyError | None:
         return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {e!r}")
     if isinstance(e, RuntimeError) and text in ("std::exception", "Unknown exception"):
         return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {e!r}")
-    if isinstance(e, ValueError) and "[BZip2 block data]" in text:
+    if "[BZip2 block" in text:
+        # Corrupt block data or block header (e.g. "[BZip2 block header] Invalid Huffman
+        # coding group count"); surfaced as ValueError or RuntimeError depending on where.
         return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {e!r}")
     if isinstance(e, ValueError) and "has no valid fileno" in text:
         return StreamNotSeekableError("indexed_bzip2 does not support non-seekable streams")
@@ -366,6 +450,108 @@ def _open_stored(source: CodecSource, params: CodecParams, config: StreamConfig)
     return ensure_binaryio(source)
 
 
+class _GzipTruncationCheckStream(io.RawIOBase, BinaryIO):
+    """Backstop truncation detection for the rapidgzip accelerator.
+
+    rapidgzip surfaces some truncations as exceptions but silently returns short/zero
+    output for others (notably a cut that leaves no fully-decodable block — its
+    ``EndOfFileReached`` does not always reach Python). On a full sequential read to EOF,
+    this compares the total decompressed length (mod 2**32) against the gzip ISIZE trailer;
+    a mismatch means truncation — unless the file is multi-member (the trailer is only the
+    *last* member's size), which is disambiguated by scanning for a further gzip header.
+
+    Only used for a seekable **path** source, where the trailer and the scan are cheaply
+    available via an independent handle; a caller ``seek`` disables the check (the
+    sequential byte total is then meaningless, and partial reads are never verified).
+    """
+
+    def __init__(self, inner: BinaryIO, source_path: str) -> None:
+        super().__init__()
+        self._inner = inner
+        self._source_path = source_path
+        self._total = 0
+        self._checked = False
+        self._verify = True
+
+    def read(self, size: int = -1, /) -> bytes:
+        data = self._inner.read(size)
+        if data:
+            self._total += len(data)
+        elif self._verify and not self._checked:
+            self._checked = True
+            self._verify_not_truncated()
+        return data
+
+    def readinto(self, b: "WriteableBuffer", /) -> int:
+        mv = memoryview(b).cast("B")
+        data = self.read(len(mv))
+        mv[: len(data)] = data
+        return len(data)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self._verify = False  # random access invalidates the sequential byte total
+        return self._inner.seek(offset, whence)
+
+    def _verify_not_truncated(self) -> None:
+        try:
+            with open(self._source_path, "rb") as f:
+                size = f.seek(0, io.SEEK_END)
+                if size < 18:  # header(10) + min deflate + trailer(8): too small to trust
+                    return
+                f.seek(-4, io.SEEK_END)
+                isize = int.from_bytes(f.read(4), "little")
+        except OSError:
+            return
+        if self._total % (1 << 32) == isize:
+            return
+        # Mismatch: truncation, unless this is a concatenated multi-member gzip (then the
+        # trailer is only the last member's size). A conservative scan: any further gzip
+        # header means "treat as multi-member" and do not raise (a false match only costs a
+        # missed truncation, never a false positive on a valid file).
+        if self._has_additional_gzip_member():
+            return
+        raise TruncatedError(
+            "gzip stream is truncated: the decompressed size does not match the ISIZE "
+            "trailer (the rapidgzip accelerator does not surface this truncation itself)"
+        )
+
+    def _has_additional_gzip_member(self) -> bool:
+        # Scan in fixed-size blocks (never read the whole file into memory), carrying a small
+        # overlap so a header split across a block boundary is still found. Start one byte in so
+        # this member's own header at offset 0 is not matched.
+        magic = b"\x1f\x8b\x08"
+        block = 1 << 20
+        try:
+            with open(self._source_path, "rb") as f:
+                f.seek(1)
+                tail = b""
+                while True:
+                    chunk = f.read(block)
+                    if not chunk:
+                        return False
+                    if magic in tail + chunk:
+                        return True
+                    tail = chunk[-(len(magic) - 1) :]
+        except OSError:
+            return True  # cannot rule out a second member -> do not raise
+
+    def tell(self, /) -> int:
+        return self._inner.tell()
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return self._inner.seekable()
+
+    def close(self) -> None:
+        self._inner.close()
+        super().close()
+
+
 def _open_gzip(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
     if config.use_rapidgzip.enabled_for(
         streaming=config.streaming, available=_rapidgzip is not None
@@ -375,7 +561,12 @@ def _open_gzip(source: CodecSource, params: CodecParams, config: StreamConfig) -
                 "The 'rapidgzip' package is required for gzip random access "
                 "(install the 'seekable' extra)."
             )
-        return ensure_binaryio(_rapidgzip.open(source, parallelization=0))
+        stream = _AcceleratorStream(_rapidgzip.open(source, parallelization=0))
+        # rapidgzip does not reliably surface truncation; add the ISIZE backstop when we
+        # have a seekable path to read the trailer / scan for extra members.
+        if isinstance(source, (str, os.PathLike)):
+            return _GzipTruncationCheckStream(stream, os.fspath(source))
+        return stream
     if isinstance(source, (str, os.PathLike)):
         gz: BinaryIO = ensure_binaryio(gzip.open(source, "rb"))
     else:
@@ -387,20 +578,22 @@ def _open_gzip(source: CodecSource, params: CodecParams, config: StreamConfig) -
 
 def _open_bzip2(source: CodecSource, params: CodecParams, config: StreamConfig) -> BinaryIO:
     if config.use_indexed_bzip2.enabled_for(
-        streaming=config.streaming, available=_indexed_bzip2 is not None
+        streaming=config.streaming, available=_rapidgzip_bzip2 is not None
     ):
-        if _indexed_bzip2 is None:
+        if _rapidgzip_bzip2 is None:
             raise PackageNotInstalledError(
-                "The 'indexed_bzip2' package is required for bzip2 random access "
+                "The 'rapidgzip' package is required for bzip2 random access "
                 "(install the 'seekable' extra)."
             )
-        return ensure_binaryio(_indexed_bzip2.open(source, parallelization=0))
+        # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
+        # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
+        return _AcceleratorStream(_rapidgzip_bzip2(source, parallelization=0))
     # stdlib bz2 can seek, but a rewind re-decompresses from the start; warn rather than
-    # degrade silently (the [seekable] indexed_bzip2 accelerator gives real random access).
+    # degrade silently (the [seekable] rapidgzip accelerator gives real random access).
     return _SlowSeekWarningStream(
         ensure_binaryio(bz2.open(source, "rb")),
         codec_name="bzip2",
-        accelerator="indexed_bzip2",
+        accelerator="rapidgzip",
     )
 
 
@@ -629,7 +822,7 @@ def _gzip_uses_accelerator(config: StreamConfig) -> bool:
 
 
 def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
-    return _indexed_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
+    return _rapidgzip_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
         streaming=config.streaming, available=True
     )
 

@@ -48,9 +48,12 @@ unix-compress = [
 cli = [
     "tqdm>=4.67.0",
 ]
+# rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
+# separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into
+# one process corrupts the heap and aborts on macOS (overlapping statically-linked C++ symbols).
+# >=0.16.0 is the floor known to expose IndexedBzip2File. See docs/known-issues.md.
 seekable = [
-    "rapidgzip>=0.14.0",
-    "indexed_bzip2>=1.6.0",
+    "rapidgzip>=0.16.0",
 ]
 recommended-lite = [
     "archivey[7z,rar,7z-write,iso,zstd,lz4,unix-compress,cli]",

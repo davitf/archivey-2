@@ -11,7 +11,10 @@ import zlib
 
 import pytest
 
-from archivey.internal.config import AcceleratorMode, StreamConfig
+from archivey.internal.config import (
+    AcceleratorMode,
+    StreamConfig,
+)
 from archivey.internal.errors import (
     ArchiveyError,
     CorruptionError,

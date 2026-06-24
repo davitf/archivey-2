@@ -84,7 +84,7 @@ The default access cost is SOLID — plain decompression must run from the start
 reach a given offset. However, several formats and backends support **limited or
 full random access** within the single stream, and the access cost SHALL reflect the
 backend actually in use: e.g. xz with its block index, bzip2 with a block index
-(`indexed_bzip2`), gzip via `rapidgzip`, and seekable-zstd. These are provided by the
+(`rapidgzip`'s bundled `IndexedBzip2File`), gzip via `rapidgzip`, and seekable-zstd. These are provided by the
 `seekable-decompressor-streams` capability; when such a backend is active the reader
 MAY serve random reads without re-decompressing from the start, and reports the
 corresponding (non-SOLID) access cost and `seekable` flag.
@@ -96,7 +96,7 @@ corresponding (non-SOLID) access cost and `seekable` flag.
 
 #### Scenario: seek-capable backend lowers the access cost
 
-- **WHEN** the archive is opened with a seek-capable backend (e.g. `indexed_bzip2` for `.bz2`, or an xz stream with a block index)
+- **WHEN** the archive is opened with a seek-capable backend (e.g. `rapidgzip`'s `IndexedBzip2File` for `.bz2`, or an xz stream with a block index)
 - **THEN** the reported `cost.access_cost` reflects the random-access capability rather than `AccessCost.SOLID`, per `seekable-decompressor-streams`
 
 ### Requirement: Report member size with format-specific caveats
