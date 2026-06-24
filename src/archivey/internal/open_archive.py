@@ -5,9 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.internal.errors import FormatDetectionError
+from archivey.internal.detection import FormatInfo, detect_format
+from archivey.internal.errors import StreamNotSeekableError
 from archivey.internal.reader import ArchiveReader
 from archivey.internal.registry import get_registry
+from archivey.internal.streams.peekable import PeekableStream
+from archivey.internal.streams.streamtools import is_seekable, is_stream
 from archivey.internal.types import ArchiveFormat
 
 
@@ -38,8 +41,10 @@ def open_archive(
     time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
     access (works on any source, but disables random-access methods).
 
-    If source is a directory path, opens it as a directory pseudo-archive.
-    Format detection (Phase 3) is not yet wired; only DIRECTORY is auto-detected here.
+    The format is auto-detected from the source's magic bytes (then its extension) unless
+    ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
+    A non-seekable stream is wrapped in a :class:`PeekableStream` so detection never
+    consumes bytes the backend still needs.
     """
     # Import formats package to ensure backends are registered
     import archivey.formats  # noqa: F401
@@ -49,23 +54,54 @@ def open_archive(
 
     archive_name = source_name(source)
 
-    if isinstance(source, (str, Path)) and Path(source).is_dir():
-        format = ArchiveFormat.DIRECTORY
+    # A path source: normalize str -> Path; a directory short-circuits detection.
+    open_source: Path | BinaryIO
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if path.is_dir():
+            format = ArchiveFormat.DIRECTORY
+        open_source = path
+    else:
+        open_source = source
 
+    detected: FormatInfo | None = None
     if format is None:
-        raise FormatDetectionError(
-            "Format detection not yet implemented (Phase 3). "
-            "Pass format= explicitly, or open a directory.",
-            archive_name=archive_name,
-        )
+        # Non-seekable streams must be wrapped before detection so the peeked prefix is
+        # replayed to the backend; the same wrapper is then handed over.
+        if is_stream(open_source) and not is_seekable(open_source):
+            open_source = PeekableStream(open_source)
+        detected = detect_format(open_source)
+        format = detected.format
 
     registry = get_registry()
     backend_cls = registry.reader_for_format(format)
+
+    # Fail fast for a seek-requiring backend on a non-seekable source (the access-mode
+    # contract: streaming=False does not implicitly buffer).
+    if (
+        backend_cls.REQUIRES_SEEK
+        and is_stream(open_source)
+        and not is_seekable(open_source)
+    ):
+        raise StreamNotSeekableError(
+            f"Format {format!r} requires a seekable source, but the given stream is not "
+            f"seekable. Buffer it to disk or a BytesIO and reopen.",
+            source_format=format,
+            archive_name=archive_name,
+        )
+
+    # Thread the encoding: an explicit caller encoding wins, else the detector's hint, else
+    # None (the backend auto-detects).
+    effective_encoding = encoding
+    if effective_encoding is None and detected is not None:
+        effective_encoding = detected.encoding_hint
+
     backend = backend_cls()
     return backend.open_read(
-        Path(source) if isinstance(source, str) else source,
+        open_source,
+        format=format,
         streaming=streaming,
         password=password,
-        encoding=encoding,
+        encoding=effective_encoding,
         archive_name=archive_name,
     )

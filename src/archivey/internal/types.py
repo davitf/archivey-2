@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple
 
 if TYPE_CHECKING:
     from archivey.internal.cost import CostReceipt
@@ -29,6 +29,10 @@ class StreamFormat(str, Enum):
     XZ = "xz"
     ZSTD = "zst"
     LZ4 = "lz4"
+    LZIP = "lz"
+    ZLIB = "zz"
+    BROTLI = "br"
+    UNIX_COMPRESS = "Z"
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,11 @@ class ArchiveFormat:
     BZ2: ClassVar[ArchiveFormat]
     XZ: ClassVar[ArchiveFormat]
     ZST: ClassVar[ArchiveFormat]
+    LZ4: ClassVar[ArchiveFormat]
+    LZIP: ClassVar[ArchiveFormat]
+    ZLIB: ClassVar[ArchiveFormat]
+    BROTLI: ClassVar[ArchiveFormat]
+    Z: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -93,6 +102,11 @@ ArchiveFormat.GZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
 ArchiveFormat.BZ2 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
 ArchiveFormat.XZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)
 ArchiveFormat.ZST = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)
+ArchiveFormat.LZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZ4)
+ArchiveFormat.LZIP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP)
+ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
+ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
+ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
@@ -106,6 +120,21 @@ _FORMAT_NAMES: dict[ArchiveFormat, str] = {
     for name, value in vars(ArchiveFormat).items()
     if isinstance(value, ArchiveFormat)
 }
+
+
+class MagicSignature(NamedTuple):
+    """One magic-byte signal a backend declares as data, with the format it implies.
+
+    ``weak`` marks a signal too short/unspecific to trust on its own (the zlib 2-byte
+    CMF/FLG header): the detector only accepts a weak match after a content probe confirms
+    the stream actually decodes (see ``format-detection``). Strong signals are accepted on
+    the byte match alone.
+    """
+
+    offset: int
+    magic: bytes
+    format: "ArchiveFormat"
+    weak: bool = False
 
 
 class MemberType(Enum):
@@ -256,6 +285,10 @@ class ArchiveMember:
     # Private internal fields (not part of the public contract)
     _member_id: int | None = field(default=None, repr=False, compare=False)
     _archive_id: str | None = field(default=None, repr=False, compare=False)
+    _raw: Any = field(default=None, repr=False, compare=False)
+    """Opaque backend handle carried on the member (e.g. the stdlib ``ZipInfo`` /
+    ``TarInfo``), so a backend can open the member's data straight from the member without
+    a separate name/id lookup table. Not part of the public contract."""
 
     # Mutable members are intentionally unhashable. Annotated `-> int` (the call
     # always raises) so the override stays compatible with object.__hash__.

@@ -1,17 +1,94 @@
-"""Backend registry: maps ArchiveFormat to ReadBackend/WriteBackend classes."""
+"""Backend registry: maps ArchiveFormat to ReadBackend/WriteBackend classes.
+
+Registration is **unconditional**: every known backend — core and optional alike —
+registers when its module is imported. Availability is then derived centrally from the
+optional dependency's module-or-``None`` sentinel, so the registry can report a tri-state,
+compositional :class:`FormatSupport` (FULL / PARTIAL / NONE) and produce install-hint
+errors, rather than silently dropping a format whose dependency is absent (see
+``backend-registry``).
+"""
 
 from __future__ import annotations
 
+import importlib
+from dataclasses import dataclass
+from enum import Enum
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from archivey.internal.reader import ReadBackend, WriteBackend
-    from archivey.internal.types import ArchiveFormat
 
 from archivey.internal.errors import (
     UnsupportedFormatError,
     UnsupportedOperationError,
 )
+from archivey.internal.streams.codecs import (
+    Codec,
+    codec_for_stream_format,
+    is_codec_available,
+)
+from archivey.internal.types import (
+    ArchiveFormat,
+    ContainerFormat,
+    MagicSignature,
+    StreamFormat,
+)
+
+
+class FormatSupport(Enum):
+    """Tri-state readability of a known format (see ``backend-registry``)."""
+
+    FULL = "full"  # backend usable AND every optional codec/tool it can use is present
+    PARTIAL = "partial"  # opens & lists; common members decode; some optional codec missing
+    NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
+
+
+@dataclass(frozen=True)
+class MissingComponent:
+    """A package / extra / external tool a format is missing, and what it unlocks."""
+
+    name: str  # e.g. "pycdlib", "[7z]", "unrar"
+    install_hint: str  # e.g. "pip install archivey[iso]"
+    unlocks: tuple[str, ...] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
+
+
+@dataclass(frozen=True)
+class FormatAvailability:
+    """The support level of a format plus the components needed to raise it."""
+
+    format: ArchiveFormat
+    support: FormatSupport
+    missing: tuple[MissingComponent, ...] = ()  # empty when FULL
+
+
+# Optional member-codecs each container can use, beyond the always-present stdlib codecs.
+# A format is FULL when all of these are available, PARTIAL when some are missing (a
+# multi-codec container still opens and lists). Single-codec RAW_STREAM formats are handled
+# separately (their sole codec missing makes them NONE, not PARTIAL).
+_CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
+    ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
+}
+
+# How each optional codec is obtained, for the install hint surfaced to the caller.
+_CODEC_REQUIREMENT: dict[Codec, MissingComponent] = {
+    Codec.ZSTD: MissingComponent("zstandard", "pip install archivey[zstd]", ("zstd",)),
+    Codec.LZ4: MissingComponent("lz4", "pip install archivey[lz4]", ("lz4",)),
+    Codec.BROTLI: MissingComponent("brotli", "pip install archivey[7z]", ("brotli",)),
+    Codec.UNIX_COMPRESS: MissingComponent(
+        "uncompresspy", "pip install archivey[unix-compress]", ("unix_compress",)
+    ),
+    Codec.PPMD: MissingComponent("pyppmd", "pip install archivey[7z]", ("ppmd",)),
+    Codec.DEFLATE64: MissingComponent("inflate64", "pip install archivey[7z]", ("deflate64",)),
+}
+
+
+def _optional(name: str) -> ModuleType | None:
+    """Return the named module, or ``None`` when it (the optional extra) is not installed."""
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
 
 
 class BackendRegistry:
@@ -20,8 +97,12 @@ class BackendRegistry:
     def __init__(self) -> None:
         self._readers: dict[ArchiveFormat, type[ReadBackend]] = {}
         self._writers: dict[ArchiveFormat, type[WriteBackend]] = {}
+        # Unique reader classes in registration order (a class may serve several formats).
+        self._reader_classes: list[type[ReadBackend]] = []
 
     def register_reader(self, backend_cls: type[ReadBackend]) -> None:
+        if backend_cls not in self._reader_classes:
+            self._reader_classes.append(backend_cls)
         for fmt in backend_cls.FORMATS:
             self._readers[fmt] = backend_cls
 
@@ -29,10 +110,93 @@ class BackendRegistry:
         for fmt in backend_cls.FORMATS:
             self._writers[fmt] = backend_cls
 
+    # --- detection tables (aggregated from backend data) ---------------------------------
+
+    def magic_entries(self) -> list[MagicSignature]:
+        """All magic signals (``MagicSignature``) across registered read backends."""
+        entries: list[MagicSignature] = []
+        for cls in self._reader_classes:
+            entries.extend(cls.MAGIC)
+        return entries
+
+    def content_probe_formats(self) -> list[ArchiveFormat]:
+        """Magic-less formats reachable by a content probe, across registered backends."""
+        formats: list[ArchiveFormat] = []
+        for cls in self._reader_classes:
+            formats.extend(cls.CONTENT_PROBE_FORMATS)
+        return formats
+
+    def extension_map(self) -> dict[str, ArchiveFormat]:
+        """The merged ``extension -> format`` map across registered read backends."""
+        merged: dict[str, ArchiveFormat] = {}
+        for cls in self._reader_classes:
+            merged.update(cls.EXTENSIONS)
+        return merged
+
+    # --- availability --------------------------------------------------------------------
+
+    def _backend_available(self, backend_cls: type[ReadBackend]) -> bool:
+        dep = backend_cls.OPTIONAL_DEPENDENCY
+        return dep is None or _optional(dep) is not None
+
+    def format_availability(self, fmt: ArchiveFormat) -> FormatAvailability:
+        """Compute the tri-state support of ``fmt`` compositionally (see ``backend-registry``)."""
+        backend_cls = self._readers.get(fmt)
+        if backend_cls is None:
+            return FormatAvailability(fmt, FormatSupport.NONE, ())
+
+        if not self._backend_available(backend_cls):
+            dep = backend_cls.OPTIONAL_DEPENDENCY
+            assert dep is not None  # _backend_available only returns False when dep is set
+            hint = backend_cls.INSTALL_HINT or f"install {dep}"
+            return FormatAvailability(
+                fmt,
+                FormatSupport.NONE,
+                (MissingComponent(dep, hint),),
+            )
+
+        # Backend itself is usable; fold in the optional codecs the format can use.
+        missing: list[MissingComponent] = []
+        for codec in self._optional_codecs_for_format(fmt):
+            if not is_codec_available(codec):
+                missing.append(_CODEC_REQUIREMENT[codec])
+
+        if not missing:
+            return FormatAvailability(fmt, FormatSupport.FULL, ())
+
+        # A single-codec format (a bare RAW_STREAM single-file compressor) whose sole codec
+        # is missing is unreadable -> NONE; a multi-codec container still opens -> PARTIAL.
+        support = (
+            FormatSupport.NONE
+            if fmt.container == ContainerFormat.RAW_STREAM
+            else FormatSupport.PARTIAL
+        )
+        return FormatAvailability(fmt, support, tuple(missing))
+
+    def _optional_codecs_for_format(self, fmt: ArchiveFormat) -> tuple[Codec, ...]:
+        if fmt.container == ContainerFormat.RAW_STREAM:
+            # A single-file compressor's readability hinges on its one stream codec.
+            if fmt.stream == StreamFormat.UNCOMPRESSED:
+                return ()
+            return (codec_for_stream_format(fmt.stream),)
+        return _CONTAINER_OPTIONAL_CODECS.get(fmt.container, ())
+
+    # --- selection -----------------------------------------------------------------------
+
     def reader_for_format(self, fmt: ArchiveFormat) -> type[ReadBackend]:
-        if fmt not in self._readers:
+        availability = self.format_availability(fmt)
+        if availability.support is FormatSupport.NONE:
+            backend_cls = self._readers.get(fmt)
+            if backend_cls is None:
+                raise UnsupportedFormatError(
+                    f"No read backend registered for format {fmt!r}",
+                    source_format=fmt,
+                )
+            hints = "; ".join(
+                f"{m.name} ({m.install_hint})" for m in availability.missing
+            )
             raise UnsupportedFormatError(
-                f"No read backend registered for format {fmt!r}",
+                f"Format {fmt!r} is not available: missing {hints}",
                 source_format=fmt,
             )
         return self._readers[fmt]
@@ -45,8 +209,19 @@ class BackendRegistry:
             )
         return self._writers[fmt]
 
-    def list_formats(self) -> list[ArchiveFormat]:
+    # --- queries -------------------------------------------------------------------------
+
+    def list_known_formats(self) -> list[ArchiveFormat]:
+        """Every format the registry knows, including those with support NONE."""
         return list(self._readers.keys())
+
+    def list_supported_formats(self) -> list[ArchiveFormat]:
+        """Formats readable now — support FULL or PARTIAL (NONE excluded)."""
+        return [
+            fmt
+            for fmt in self._readers
+            if self.format_availability(fmt).support is not FormatSupport.NONE
+        ]
 
     def list_writable_formats(self) -> list[ArchiveFormat]:
         return list(self._writers.keys())
@@ -66,3 +241,18 @@ def register_writer(backend_cls: type[WriteBackend]) -> None:
 
 def get_registry() -> BackendRegistry:
     return _registry
+
+
+def format_availability(fmt: ArchiveFormat) -> FormatAvailability:
+    """Public query: the tri-state support level of ``fmt`` and its missing components."""
+    return _registry.format_availability(fmt)
+
+
+def list_supported_formats() -> list[ArchiveFormat]:
+    """Public query: formats readable now (support FULL or PARTIAL)."""
+    return _registry.list_supported_formats()
+
+
+def list_known_formats() -> list[ArchiveFormat]:
+    """Public query: every format the registry knows, including support NONE."""
+    return _registry.list_known_formats()

@@ -59,9 +59,11 @@ the work is plannable as concrete tasks:
   `ExtractionCoordinator` / safe-extraction. This is the *only* container that composes
   with stream compressors (see the seek-heavy-container note under ISO).
 - **Single-file compressors** (`formats/single_file_reader.py`): **one**
-  `SingleFileBackend` whose `FORMATS` is the standalone-codec set
-  (gz/bz2/xz/lzip/zlib/brotli + unix-compress this phase; **zst/lz4 deferred to
-  Phase 8**; needs `StreamFormat`/`ArchiveFormat` enum extensions — see Specs). One
+  `SingleFileBackend` whose `FORMATS` is the full standalone-codec set
+  (gz/bz2/xz/zst/lz4/lzip/zlib/brotli + unix-compress; needs `StreamFormat`/
+  `ArchiveFormat` enum extensions — see Specs). zst/lz4 are included now (their codecs
+  already exist from Phase 2 and there was no concrete blocker); Phase 8 is left for their
+  *seekable-decompressor* refinements only. One
   `FILE` member, name inferred from the source filename (strip known ext / append
   `.uncompressed` / default `"data"`), per-codec metadata hooks (gzip `FNAME` →
   `extra["gzip.original_filename"]` decoded + `raw_name` undecoded; xz/zst header size;
@@ -211,7 +213,8 @@ is realized in Phase 7, not here.
   frozen-oracle coverage as it transfers.
 - **Deferred (recorded, not built here):** TAR forward-only `stream_members()` +
   `ExtractionCoordinator` / safe-extraction (Phase 4), SFX detection (Phase 7), ZST/LZ4
-  single-file (Phase 8), ISO raw-`.bin` sector stripping (optional/MAY-drop), mounting
+  *seekable-decompressor* refinements (Phase 8 — basic ZST/LZ4 single-file reading is
+  included here), ISO raw-`.bin` sector stripping (optional/MAY-drop), mounting
   compressed seek-heavy containers (`.iso.xz`/`.zip.xz` — single-file-wrapped instead),
   multiple *format* backends per format, explicit ZIP `spool_max_size` opt-in.
 - **Risk:** `PeekableStream` is the one fresh primitive (not a port) — get the

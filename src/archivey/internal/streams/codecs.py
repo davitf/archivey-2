@@ -203,12 +203,37 @@ _STREAM_FORMAT_CODECS: dict[StreamFormat, Codec] = {
     StreamFormat.XZ: Codec.XZ,
     StreamFormat.ZSTD: Codec.ZSTD,
     StreamFormat.LZ4: Codec.LZ4,
+    StreamFormat.LZIP: Codec.LZIP,
+    StreamFormat.ZLIB: Codec.ZLIB,
+    StreamFormat.BROTLI: Codec.BROTLI,
+    StreamFormat.UNIX_COMPRESS: Codec.UNIX_COMPRESS,
 }
 
 
 def codec_for_stream_format(stream_format: StreamFormat) -> Codec:
     """Map a single-file/TAR ``StreamFormat`` to its codec."""
     return _STREAM_FORMAT_CODECS[stream_format]
+
+
+def is_codec_available(codec: Codec) -> bool:
+    """Whether ``codec``'s decompression backend is importable right now.
+
+    Codecs served by the stdlib (stored/gzip/bzip2/xz/lzip/lzma/deflate/zlib) are always
+    available; the optional codecs report on their backing package's presence. Used by the
+    registry to compute a format's tri-state support compositionally over the codecs it can
+    use. Reads the module-level sentinels live, so it reflects test monkeypatching.
+    """
+    optional_sentinels: dict[Codec, ModuleType | None] = {
+        Codec.ZSTD: _zstandard,
+        Codec.LZ4: _lz4_frame,
+        Codec.BROTLI: _brotli,
+        Codec.UNIX_COMPRESS: _uncompresspy,
+        Codec.PPMD: _pyppmd,
+        Codec.DEFLATE64: _inflate64,
+    }
+    if codec in optional_sentinels:
+        return optional_sentinels[codec] is not None
+    return True
 
 
 @dataclass(frozen=True)

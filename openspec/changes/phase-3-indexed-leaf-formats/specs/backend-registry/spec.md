@@ -37,7 +37,7 @@ class IsoReadBackend(ReadBackend):
     EXTENSIONS = {".iso": ArchiveFormat.ISO}        # extension -> format
     MAGIC = ((32769, b"CD001", ArchiveFormat.ISO),) # (offset, bytes, format)
     OPTIONAL_DEPENDENCY = "pycdlib"       # data; the registry derives availability from it
-    def open_read(self, source, streaming, password, encoding, archive_name) -> ArchiveReader:
+    def open_read(self, source, format, streaming, password, encoding, archive_name) -> ArchiveReader:
         assert pycdlib is not None        # open_read is only reached for an available backend
         ...
 
@@ -110,15 +110,28 @@ backends into one table; backends carry no `detect(peek)` method (matching is
 centralized — see the detection/selection requirement).
 
 ```python
+class MagicSignature(NamedTuple):
+    offset: int
+    magic: bytes
+    format: ArchiveFormat
+    weak: bool = False   # a too-short/unspecific signal (zlib's 2-byte header): the
+                         # detector confirms it with a content probe before accepting it
+
 class ReadBackend(ABC):
     FORMATS: tuple[ArchiveFormat, ...]                   # formats this backend reads
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}         # ".gz" -> ArchiveFormat.GZ
-    MAGIC: tuple[tuple[int, bytes, ArchiveFormat], ...] = ()  # (offset, bytes, format)
+    MAGIC: tuple[MagicSignature, ...] = ()               # magic signals declared as data
+    CONTENT_PROBE_FORMATS: tuple[ArchiveFormat, ...] = ()  # magic-less formats (Brotli)
+                         # the detector confirms by decoding a bounded prefix through the codec
     REQUIRES_SEEK: bool = False                          # if True, non-seekable sources rejected
     OPTIONAL_DEPENDENCY: str | None = None               # e.g. "pycdlib"
 
     @abstractmethod
-    def open_read(self, source, streaming, password, encoding, archive_name) -> ArchiveReader: ...
+    def open_read(self, source, format, streaming, password, encoding, archive_name) -> ArchiveReader: ...
+    # `format` is the resolved ArchiveFormat the registry selected this backend for —
+    # detected by open_archive() or passed explicitly by the caller. A multi-format
+    # backend (SingleFileBackend, TAR) uses it to pick its concrete codec/variant instead
+    # of re-inspecting the source; single-format backends ignore it.
 
 class WriteBackend(ABC):
     FORMATS: tuple[ArchiveFormat, ...]

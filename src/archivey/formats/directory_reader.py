@@ -6,7 +6,7 @@ import os
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Iterator, Mapping
 
 from archivey.internal.cost import (
     AccessCost,
@@ -21,6 +21,7 @@ from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    MagicSignature,
     MemberType,
 )
 
@@ -206,18 +207,21 @@ class DirectoryReadBackend(ReadBackend):
     """Backend factory for directory pseudo-archives."""
 
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.DIRECTORY,)
-    EXTENSIONS: tuple[str, ...] = ()
-    MAGIC: tuple[tuple[int, bytes], ...] = ()
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {}
+    MAGIC: tuple[MagicSignature, ...] = ()
     REQUIRES_SEEK = False
 
     def open_read(
         self,
         source: Path | BinaryIO,
+        format: ArchiveFormat,
         streaming: bool,
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
     ) -> DirectoryReader:
+        # `format` is always DIRECTORY here (single-format backend); accepted for the
+        # uniform ReadBackend signature.
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
         return DirectoryReader(source, streaming, archive_name or str(source))
