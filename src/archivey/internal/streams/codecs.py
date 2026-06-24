@@ -79,7 +79,7 @@ _rapidgzip = _optional("rapidgzip")
 _rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
 
 
-def _close_accelerator(inner: object) -> None:
+def _close_accelerator(inner: BinaryIO) -> None:
     """Close a ``rapidgzip`` accelerator object so its worker threads are stopped.
 
     Used as a :func:`weakref.finalize` callback: it takes the raw accelerator object as an
@@ -92,13 +92,15 @@ def _close_accelerator(inner: object) -> None:
     whereas ``close()`` reliably does, so we just close. The shutdown canary in
     ``tests/test_accelerator_shutdown.py`` enforces this (a never-closed object aborts; a
     closed/guard-closed one does not).
+
+    ``inner`` is a :class:`BinaryIO` (the accelerator object after ``ensure_binaryio``), so
+    ``close()`` is guaranteed to exist; the ``try`` only guards against it *raising* during
+    finalization, where a propagated exception would just become unraisable-hook noise.
     """
-    close = getattr(inner, "close", None)
-    if close is not None:
-        try:
-            close()
-        except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
-            pass
+    try:
+        inner.close()
+    except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
+        pass
 
 
 class _AcceleratorStream(io.RawIOBase, BinaryIO):
