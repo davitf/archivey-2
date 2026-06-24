@@ -45,11 +45,14 @@
 
 - [ ] 5.1 Add `docs/library-analysis.md` with the filled matrix + per-codec decisions; add a
       nav entry in `mkdocs.yml`; cross-link from `docs/known-issues.md` / `COMPARISON.md`.
-- [ ] 5.2 Audit `pyproject.toml` extras against `src/` imports; remove `python-xz` and
-      `pyzstd` from `[all]` (confirmed unused in `src/`) or justify keeping each; ensure
-      `[zstd]` matches the decision.
-- [ ] 5.3 Add a `tests/check_zero_dep_core.py`-style or unit guard that every package pinned
-      in an extra is importable-and-reachable (no dead optional deps), so this can't regress.
+- [ ] 5.2 Audit `pyproject.toml` against `src/` imports and sort each dep into the right
+      bucket: **remove** `python-xz` from `[all]` (imported nowhere); **move** `pyzstd` from
+      `[all]` to the `dev` group (test-only fixture generator) unless the evaluation promotes
+      it to the runtime `[zstd]` backend; confirm the existing test-only oracles
+      (`rarfile`, `py7zr`, `ncompress`) stay in `dev`; ensure `[zstd]` matches the decision.
+- [ ] 5.3 Add a guard (a `check_zero_dep_core.py`-style script or unit test) that every
+      package pinned in a **user-facing extra** is imported by some `src/` code path, so a
+      dead/test-only dep can't slip back into an extra.
 
 ## 6. Verify + hand off
 

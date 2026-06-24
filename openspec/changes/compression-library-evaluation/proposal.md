@@ -83,11 +83,18 @@ xz/lzma (stdlib `lzma`, our `xz.py`, `python-xz`), lzip (our `lzip.py`), zstd (`
 
 ### 3. Dependency cleanup
 
-- Remove `python-xz` and `pyzstd` from the `[all]` extra **if** confirmed unused (they are,
-  in `src/`), or wire them up if the evaluation says to keep them. Whatever the outcome,
-  `[all]` should contain no dependency the library never imports.
+User-facing extras must not pin a library only `src/` *doesn't* use, and **test-only**
+libraries (decode oracles `rarfile`/`py7zr`; fixture generators `ncompress`, and `pyzstd`
+while it only *writes* fixtures) belong in the `dev` dependency group, not in an extra.
+Concretely:
+
+- `python-xz` — imported nowhere (not `src/`, not the tests): **remove** from `[all]`.
+- `pyzstd` — used only by the dev test oracle to generate zstd fixtures: **move** from
+  `[all]` to the `dev` group (or, if the evaluation promotes it to the runtime zstd backend,
+  to the `[zstd]` extra).
 - Ensure the `[zstd]` extra points at whatever the evaluation selects (and add an extra for
   a seekable-zstd backend if one is adopted).
+- Add a guard so a user-facing extra can never again pin a package no `src/` code imports.
 
 ## Specs
 
