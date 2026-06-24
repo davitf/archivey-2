@@ -79,30 +79,6 @@ _rapidgzip = _optional("rapidgzip")
 _rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
 
 
-def _close_accelerator(inner: BinaryIO) -> None:
-    """Close a ``rapidgzip`` accelerator object so its worker threads are stopped.
-
-    Used as a :func:`weakref.finalize` callback: it takes the raw accelerator object as an
-    argument (never a closure over the wrapper), so ``finalize`` keeps that object alive
-    until this runs.
-
-    ``close()`` is what actually stops the worker thread — and it is sufficient on its own:
-    ``join_threads()`` alone does **not** stop it (a joined-but-not-closed object still aborts
-    the interpreter at finalization with "Detected Python finalization from running … thread"),
-    whereas ``close()`` reliably does, so we just close. The shutdown canary in
-    ``tests/test_accelerator_shutdown.py`` enforces this (a never-closed object aborts; a
-    closed/guard-closed one does not).
-
-    ``inner`` is a :class:`BinaryIO` (the accelerator object after ``ensure_binaryio``), so
-    ``close()`` is guaranteed to exist; the ``try`` only guards against it *raising* during
-    finalization, where a propagated exception would just become unraisable-hook noise.
-    """
-    try:
-        inner.close()
-    except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
-        pass
-
-
 class _AcceleratorStream(io.RawIOBase, BinaryIO):
     """Wrap a threaded accelerator (``rapidgzip`` / ``indexed_bzip2``) so its underlying object
     is always *closed* before it is freed.
@@ -122,22 +98,30 @@ class _AcceleratorStream(io.RawIOBase, BinaryIO):
     that object is freed. ``close()`` on the wrapper simply triggers the same guard early.
     """
 
-    def __init__(self, inner: BinaryIO) -> None:
+    def __init__(self, inner: object) -> None:
         super().__init__()
-        self._inner = inner
-        self._finalize = weakref.finalize(self, _close_accelerator, inner)
+        self._inner: BinaryIO = ensure_binaryio(inner)
+        # The finalize callback must NOT reference self — a bound method would pin the wrapper
+        # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
+        self._finalize = weakref.finalize(self, self._close_inner, self._inner)
+
+    @staticmethod
+    def _close_inner(inner: BinaryIO) -> None:
+        # close() — not join_threads() — stops the C++ worker thread, and must run before the
+        # interpreter finalizes or the process aborts. Best-effort; the guard runs it once.
+        try:
+            inner.close()
+        except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
+            pass
 
     def read(self, n: int = -1, /) -> bytes:
         return self._inner.read(n)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        raw_readinto = getattr(self._inner, "readinto", None)
-        if raw_readinto is not None:
-            return raw_readinto(b)
-        mv = memoryview(b).cast("B")
-        data = self._inner.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        # ensure_binaryio() guarantees a readinto-capable object (readinto is in the required IO
+        # method set, and BinaryIOWrapper implements it) — but typing.BinaryIO does not *declare*
+        # readinto, so it is reached via getattr to satisfy the type-checkers without a cast.
+        return getattr(self._inner, "readinto")(b)  # noqa: B009
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         return self._inner.seek(offset, whence)
@@ -157,15 +141,9 @@ class _AcceleratorStream(io.RawIOBase, BinaryIO):
     def close(self) -> None:
         if self.closed:
             return
-        # Run the guard (joins + closes the inner object) once; it is then disarmed.
+        # Trigger the finalize guard (closes the raw object) once; it is then disarmed.
         self._finalize()
         super().close()
-
-
-def _track_accelerator(inner: BinaryIO) -> _AcceleratorStream:
-    """Wrap a raw accelerator file object so its worker threads are always joined before it
-    is freed (see :class:`_AcceleratorStream`)."""
-    return _AcceleratorStream(inner)
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO
@@ -538,12 +516,24 @@ class _GzipTruncationCheckStream(io.RawIOBase, BinaryIO):
         )
 
     def _has_additional_gzip_member(self) -> bool:
+        # Scan in fixed-size blocks (never read the whole file into memory), carrying a small
+        # overlap so a header split across a block boundary is still found. Start one byte in so
+        # this member's own header at offset 0 is not matched.
+        magic = b"\x1f\x8b\x08"
+        block = 1 << 20
         try:
             with open(self._source_path, "rb") as f:
-                blob = f.read()
+                f.seek(1)
+                tail = b""
+                while True:
+                    chunk = f.read(block)
+                    if not chunk:
+                        return False
+                    if magic in tail + chunk:
+                        return True
+                    tail = chunk[-(len(magic) - 1) :]
         except OSError:
             return True  # cannot rule out a second member -> do not raise
-        return blob.find(b"\x1f\x8b\x08", 1) != -1
 
     def tell(self, /) -> int:
         return self._inner.tell()
@@ -571,7 +561,7 @@ def _open_gzip(source: CodecSource, params: CodecParams, config: StreamConfig) -
                 "The 'rapidgzip' package is required for gzip random access "
                 "(install the 'seekable' extra)."
             )
-        stream = _track_accelerator(ensure_binaryio(_rapidgzip.open(source, parallelization=0)))
+        stream = _AcceleratorStream(_rapidgzip.open(source, parallelization=0))
         # rapidgzip does not reliably surface truncation; add the ISIZE backstop when we
         # have a seekable path to read the trailer / scan for extra members.
         if isinstance(source, (str, os.PathLike)):
@@ -597,7 +587,7 @@ def _open_bzip2(source: CodecSource, params: CodecParams, config: StreamConfig) 
             )
         # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
         # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
-        return _track_accelerator(ensure_binaryio(_rapidgzip_bzip2(source, parallelization=0)))
+        return _AcceleratorStream(_rapidgzip_bzip2(source, parallelization=0))
     # stdlib bz2 can seek, but a rewind re-decompresses from the start; warn rather than
     # degrade silently (the [seekable] rapidgzip accelerator gives real random access).
     return _SlowSeekWarningStream(
