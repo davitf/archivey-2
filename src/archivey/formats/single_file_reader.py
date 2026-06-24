@@ -118,9 +118,11 @@ class SingleFileReader(BaseArchiveReader):
         self._codec = codec_for_stream_format(format.stream)
         self._seekable = not is_stream(source) or is_seekable(source)
 
-        # A non-seekable source cannot be randomly accessed, so a random-access accelerator
-        # (rapidgzip/indexed_bzip2) would only fail trying to seek it — keep the codec in
-        # sequential mode for such a source regardless of the archive's streaming flag.
+        # A non-seekable source cannot be randomly accessed, so engaging a random-access
+        # accelerator (rapidgzip) is pointless — and would in fact fail at *open*: rapidgzip
+        # needs either a seekable stream or a real OS fileno, and archivey wraps a non-seekable
+        # source in a PeekableStream that has neither (so it raises StreamNotSeekableError).
+        # Keep the codec sequential for such a source regardless of the archive's streaming flag.
         self._codec_config = StreamConfig(streaming=self._streaming or not self._seekable)
 
         self._member = self._build_member(archive_name)
