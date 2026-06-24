@@ -42,6 +42,7 @@ from archivey.internal.types import (
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
+    MagicSignature,
     MemberType,
 )
 
@@ -73,36 +74,52 @@ def _decode_with_fallback(data: bytes) -> str:
     return data.decode("latin-1")
 
 
-def _zip_modified(info: zipfile.ZipInfo) -> datetime | None:
-    """Return the member's modification time.
+def _zip_timestamps(
+    info: zipfile.ZipInfo,
+) -> tuple[datetime | None, datetime | None, datetime | None]:
+    """Return ``(modified, accessed, created)`` for a member.
 
-    An Extended Timestamp extra field (0x5455) records a real Unix timestamp and takes
-    precedence over the 2-second-granularity DOS ``date_time``; when present, the result is
-    a timezone-aware UTC ``datetime``. Otherwise a naive ``datetime`` from ``date_time`` is
-    returned (``None`` for the "no timestamp" sentinel year 1980-00-00).
+    The DOS ``date_time`` gives a 2-second-granularity modification time (``None`` for the
+    "no timestamp" sentinel year 1980). An Extended Timestamp extra field (0x5455) records
+    real Unix timestamps and takes precedence: its flags byte signals which of
+    modification/access/creation times follow (in that order), each a signed 32-bit Unix
+    time interpreted as UTC. The central directory typically carries only the modification
+    time even when the flags advertise more, so access/creation are often ``None``.
     """
     if info.date_time == (1980, 0, 0, 0, 0, 0):
-        dos_modtime = None
+        modified: datetime | None = None
     else:
         try:
-            dos_modtime = datetime(*info.date_time)
+            modified = datetime(*info.date_time)
         except ValueError:
             logger.warning("Invalid ZIP date_time for %r: %r", info.filename, info.date_time)
-            dos_modtime = None
+            modified = None
+    accessed: datetime | None = None
+    created: datetime | None = None
 
-    pos = 0
     extra = info.extra or b""
+    pos = 0
     while pos + 4 <= len(extra):
         tag, length = struct.unpack("<HH", extra[pos : pos + 4])
-        if tag == 0x5455 and length >= 5:  # Extended Timestamp, with flags + at least mtime
-            flags = extra[pos + 4]
-            if flags & 0x01:  # modification time present
-                mod_time = int.from_bytes(extra[pos + 5 : pos + 9], "little")
-                if mod_time > 0:
-                    return datetime.fromtimestamp(mod_time, tz=timezone.utc)
+        field = extra[pos + 4 : pos + 4 + length]
+        if tag == 0x5455 and field:  # Extended Timestamp: flags byte + present times
+            flags = field[0]
+            cursor = 1
+            for bit in (0x01, 0x02, 0x04):  # mtime, atime, ctime, in order
+                if flags & bit and cursor + 4 <= len(field):
+                    ts = int.from_bytes(field[cursor : cursor + 4], "little", signed=True)
+                    when = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    if bit == 0x01:
+                        modified = when
+                    elif bit == 0x02:
+                        accessed = when
+                    else:
+                        created = when
+                    cursor += 4
+            break
         pos += 4 + length
 
-    return dos_modtime
+    return modified, accessed, created
 
 
 class ZipReader(BaseArchiveReader):
@@ -122,23 +139,18 @@ class ZipReader(BaseArchiveReader):
         super().__init__(ArchiveFormat.ZIP, streaming, archive_name)
         self._password = password
         self._encoding = encoding
-        # Normalized member name -> ZipInfo, for O(1) data access without re-deriving the
-        # stored filename. Populated as members are materialized in _iter_members().
-        self._info_by_name: dict[str, zipfile.ZipInfo] = {}
 
         if is_stream(source) and not is_seekable(source):
             raise StreamNotSeekableError(
-                "ZIP archives cannot be read from a non-seekable source (the central "
-                "directory lives at the end of the file). Buffer the source to disk or a "
-                "BytesIO and reopen.",
+                "ZIP archives cannot be read from a non-seekable source: the central "
+                "directory lives at the end of the file.",
                 archive_name=archive_name,
             )
 
         # A split-set segment (name.z01, name.z42, …) cannot be read by stdlib zipfile.
         if archive_name and _SPLIT_SEGMENT_RE.search(archive_name):
             raise UnsupportedFeatureError(
-                "Multi-volume (split/spanned) ZIP archives are not supported. Rejoin the "
-                "volumes first (e.g. `zip -s 0 split.zip --out whole.zip`) and reopen.",
+                "Multi-volume (split/spanned) ZIP archives are not supported.",
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
@@ -149,8 +161,7 @@ class ZipReader(BaseArchiveReader):
         except zipfile.BadZipFile as exc:
             if _looks_like_multivolume(exc):
                 raise UnsupportedFeatureError(
-                    "This ZIP appears to span multiple disks/volumes, which is not "
-                    "supported. Rejoin the volumes first and reopen.",
+                    "This ZIP spans multiple disks/volumes, which is not supported.",
                     archive_name=archive_name,
                     source_format=ArchiveFormat.ZIP,
                 ) from exc
@@ -194,7 +205,6 @@ class ZipReader(BaseArchiveReader):
 
         decoded = info.filename
         name = normalize_member_name(decoded.replace("\\", "/"), member_type)
-        self._info_by_name[name] = info
         raw_name = info.orig_filename.encode(
             "utf-8" if info.flag_bits & 0x800 else "cp437", errors="surrogateescape"
         )
@@ -211,13 +221,16 @@ class ZipReader(BaseArchiveReader):
             with self._archive.open(info, pwd=self._password) as f:
                 link_target = f.read().decode("utf-8", errors="surrogateescape")
 
+        modified, accessed, created = _zip_timestamps(info)
         return ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
             size=info.file_size,
             compressed_size=info.compress_size,
-            modified=_zip_modified(info),
+            modified=modified,
+            accessed=accessed,
+            created=created,
             mode=mode,
             compression=(CompressionMethod(algo=algo),),
             is_encrypted=bool(info.flag_bits & 0x1),
@@ -225,19 +238,14 @@ class ZipReader(BaseArchiveReader):
             create_system=create_system,
             link_target=link_target,
             extra={"zip.compress_type": info.compress_type},
+            _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )
 
     def _open_member(self, member: ArchiveMember) -> BinaryIO:
-        if not self._info_by_name:
-            # Materialize the member list so the name->ZipInfo map is populated (e.g. when
-            # opening a member object without a prior listing pass).
-            self._get_members_registered()
-        try:
-            info = self._info_by_name[member.name]
-        except KeyError:
-            raise KeyError(
-                f"Member {member.name!r} not found in this ZIP archive"
-            ) from None
+        # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map
+        # — and a duplicate member name can't resolve to the wrong entry.
+        info = member._raw
+        assert isinstance(info, zipfile.ZipInfo), "ZIP member is missing its ZipInfo handle"
         raw = cast(
             "BinaryIO",
             self._archive.open(info, pwd=self._password),
@@ -277,10 +285,10 @@ class ZipReadBackend(ReadBackend):
 
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.ZIP,)
     EXTENSIONS: Mapping[str, ArchiveFormat] = {".zip": ArchiveFormat.ZIP}
-    MAGIC: tuple[tuple[int, bytes, ArchiveFormat], ...] = (
-        (0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),  # standard local file header
-        (0, b"\x50\x4b\x05\x06", ArchiveFormat.ZIP),  # empty archive (EOCD)
-        (0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned / data-descriptor marker
+    MAGIC: tuple[MagicSignature, ...] = (
+        MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),  # standard local header
+        MagicSignature(0, b"\x50\x4b\x05\x06", ArchiveFormat.ZIP),  # empty archive (EOCD)
+        MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
     )
     REQUIRES_SEEK = True
 

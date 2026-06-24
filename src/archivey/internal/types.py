@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple
 
 if TYPE_CHECKING:
     from archivey.internal.cost import CostReceipt
@@ -120,6 +120,21 @@ _FORMAT_NAMES: dict[ArchiveFormat, str] = {
     for name, value in vars(ArchiveFormat).items()
     if isinstance(value, ArchiveFormat)
 }
+
+
+class MagicSignature(NamedTuple):
+    """One magic-byte signal a backend declares as data, with the format it implies.
+
+    ``weak`` marks a signal too short/unspecific to trust on its own (the zlib 2-byte
+    CMF/FLG header): the detector only accepts a weak match after a content probe confirms
+    the stream actually decodes (see ``format-detection``). Strong signals are accepted on
+    the byte match alone.
+    """
+
+    offset: int
+    magic: bytes
+    format: "ArchiveFormat"
+    weak: bool = False
 
 
 class MemberType(Enum):
@@ -270,6 +285,10 @@ class ArchiveMember:
     # Private internal fields (not part of the public contract)
     _member_id: int | None = field(default=None, repr=False, compare=False)
     _archive_id: str | None = field(default=None, repr=False, compare=False)
+    _raw: Any = field(default=None, repr=False, compare=False)
+    """Opaque backend handle carried on the member (e.g. the stdlib ``ZipInfo`` /
+    ``TarInfo``), so a backend can open the member's data straight from the member without
+    a separate name/id lookup table. Not part of the public contract."""
 
     # Mutable members are intentionally unhashable. Annotated `-> int` (the call
     # always raises) so the override stays compatible with object.__hash__.

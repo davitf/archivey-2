@@ -26,7 +26,7 @@ from archivey.internal.errors import UnsupportedFormatError
 from archivey.internal.reader import ReadBackend
 from archivey.internal.registry import BackendRegistry
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.types import ContainerFormat
+from archivey.internal.types import ContainerFormat, MagicSignature
 
 # ---------------------------------------------------------------------------
 # Synthetic backends, registered into a *fresh* registry (no global pollution)
@@ -36,7 +36,7 @@ from archivey.internal.types import ContainerFormat
 class _CoreBackend(ReadBackend):
     FORMATS = (ArchiveFormat.TAR,)
     EXTENSIONS: Mapping[str, ArchiveFormat] = {".tar": ArchiveFormat.TAR}
-    MAGIC = ((257, b"ustar", ArchiveFormat.TAR),)
+    MAGIC = (MagicSignature(257, b"ustar", ArchiveFormat.TAR),)
 
     def open_read(self, source, streaming, password, encoding, archive_name):  # pragma: no cover
         raise NotImplementedError
@@ -123,7 +123,7 @@ def test_reader_for_unknown_format_raises(registry: BackendRegistry) -> None:
 
 
 def test_magic_and_extension_tables_aggregate(registry: BackendRegistry) -> None:
-    assert (257, b"ustar", ArchiveFormat.TAR) in registry.magic_entries()
+    assert MagicSignature(257, b"ustar", ArchiveFormat.TAR) in registry.magic_entries()
     assert registry.extension_map()[".tar"] == ArchiveFormat.TAR
 
 

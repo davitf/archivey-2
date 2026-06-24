@@ -18,6 +18,7 @@ from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    MagicSignature,
     MemberType,
 )
 
@@ -38,8 +39,12 @@ class ReadBackend(ABC):
     FORMATS: tuple[ArchiveFormat, ...]
     # ".gz" -> ArchiveFormat.GZ
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
-    # (offset, magic bytes, format)
-    MAGIC: tuple[tuple[int, bytes, ArchiveFormat], ...] = ()
+    # Magic-byte signals as data (offset, bytes, format, weak); a ``weak`` entry (zlib's
+    # 2-byte header) is confirmed by a content probe before acceptance.
+    MAGIC: tuple[MagicSignature, ...] = ()
+    # Magic-less formats this backend reads that the detector confirms by a content probe
+    # (feeding a bounded prefix to the codec) — e.g. Brotli, which has no signature.
+    CONTENT_PROBE_FORMATS: tuple[ArchiveFormat, ...] = ()
     REQUIRES_SEEK: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.

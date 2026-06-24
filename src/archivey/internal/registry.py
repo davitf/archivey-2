@@ -28,7 +28,12 @@ from archivey.internal.streams.codecs import (
     codec_for_stream_format,
     is_codec_available,
 )
-from archivey.internal.types import ArchiveFormat, ContainerFormat, StreamFormat
+from archivey.internal.types import (
+    ArchiveFormat,
+    ContainerFormat,
+    MagicSignature,
+    StreamFormat,
+)
 
 
 class FormatSupport(Enum):
@@ -107,12 +112,19 @@ class BackendRegistry:
 
     # --- detection tables (aggregated from backend data) ---------------------------------
 
-    def magic_entries(self) -> list[tuple[int, bytes, ArchiveFormat]]:
-        """All ``(offset, magic, format)`` magic signals across registered read backends."""
-        entries: list[tuple[int, bytes, ArchiveFormat]] = []
+    def magic_entries(self) -> list[MagicSignature]:
+        """All magic signals (``MagicSignature``) across registered read backends."""
+        entries: list[MagicSignature] = []
         for cls in self._reader_classes:
             entries.extend(cls.MAGIC)
         return entries
+
+    def content_probe_formats(self) -> list[ArchiveFormat]:
+        """Magic-less formats reachable by a content probe, across registered backends."""
+        formats: list[ArchiveFormat] = []
+        for cls in self._reader_classes:
+            formats.extend(cls.CONTENT_PROBE_FORMATS)
+        return formats
 
     def extension_map(self) -> dict[str, ArchiveFormat]:
         """The merged ``extension -> format`` map across registered read backends."""

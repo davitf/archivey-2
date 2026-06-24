@@ -21,6 +21,7 @@ from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    MagicSignature,
     MemberType,
 )
 
@@ -207,7 +208,7 @@ class DirectoryReadBackend(ReadBackend):
 
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.DIRECTORY,)
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
-    MAGIC: tuple[tuple[int, bytes, ArchiveFormat], ...] = ()
+    MAGIC: tuple[MagicSignature, ...] = ()
     REQUIRES_SEEK = False
 
     def open_read(

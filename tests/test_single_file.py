@@ -111,6 +111,20 @@ def test_gzip_stored_filename_surfaced(tmp_path: Path) -> None:
         assert member.raw_name == b"report.csv"
 
 
+def test_gzip_stored_filename_non_ascii_is_latin1(tmp_path: Path) -> None:
+    # RFC 1952 specifies FNAME as ISO-8859-1 (Latin-1). The gzip tooling stores
+    # "café.txt" as the bytes b"caf\xe9.txt"; decoding those as UTF-8 would mangle them
+    # (0xE9 is not valid UTF-8), so the decoded value must use Latin-1.
+    path = tmp_path / "archive.gz"
+    gz = gzip.GzipFile(filename="café.txt", mode="wb", fileobj=open(path, "wb"), mtime=0)
+    gz.write(b"payload")
+    gz.close()
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        assert member.raw_name == b"caf\xe9.txt"  # verbatim stored bytes
+        assert member.extra["gzip.original_filename"] == "café.txt"
+
+
 def test_gzip_without_stored_filename() -> None:
     # gzip.compress writes no FNAME -> no extra key, raw_name stays None.
     with open_archive(io.BytesIO(gzip.compress(b"x"))) as ar:

@@ -238,6 +238,38 @@ def test_extended_timestamp_precedence(tmp_path: Path) -> None:
         assert member.modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
 
 
+def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
+    # An Extended Timestamp (0x5455) with flags 0x07 carries modification, access and
+    # creation times (in that order); all three should populate the member.
+    mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
+    extra = struct.pack("<HHB iii", 0x5455, 13, 0x07, mtime, atime, ctime)
+    path = tmp_path / "ts3.zip"
+    info = zipfile.ZipInfo("t.txt")
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar["t.txt"]
+        assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
+        assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
+        assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
+
+
+def test_duplicate_member_names_read_independently(tmp_path: Path) -> None:
+    # Two members stored under the same name: each must read its own data. The reader keys
+    # off the member's own ZipInfo handle (member._raw), not a name map, so there is no
+    # collision.
+    path = tmp_path / "dup.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("dup.txt", b"first")
+        z.writestr("dup.txt", b"second")
+    with open_archive(path) as ar:
+        members = ar.members()
+        assert len(members) == 2
+        assert ar.read(members[0]) == b"first"
+        assert ar.read(members[1]) == b"second"
+
+
 # ---------------------------------------------------------------------------
 # Non-seekable source fails fast
 # ---------------------------------------------------------------------------
@@ -263,12 +295,12 @@ def test_non_seekable_zip_fails_fast_via_detection(simple_zip: Path) -> None:
 
 
 def test_split_segment_name_rejected(tmp_path: Path) -> None:
-    # A .z01 segment of a split set is rejected by name with a "rejoin first" hint.
+    # A .z01 segment of a split set is rejected by name as an unsupported multi-volume ZIP.
     segment = tmp_path / "archive.z01"
     segment.write_bytes(b"\x50\x4b\x03\x04" + b"\x00" * 64)
     with pytest.raises(UnsupportedFeatureError) as excinfo:
         open_archive(segment, format=ArchiveFormat.ZIP)
-    assert "rejoin" in str(excinfo.value).lower()
+    assert "multi-volume" in str(excinfo.value).lower()
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import pytest
 from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.errors import FormatDetectionError
 from archivey.internal.streams import codecs as codecs_module
+from archivey.internal.types import MagicSignature
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 
@@ -100,7 +101,7 @@ def test_magic_wins_over_conflicting_extension(
 
     class _MagicBackend(ReadBackend):
         FORMATS = (ArchiveFormat.SEVEN_Z,)
-        MAGIC = ((0, b"\x37\x7a\xbc\xaf\x27\x1c", ArchiveFormat.SEVEN_Z),)
+        MAGIC = (MagicSignature(0, b"\x37\x7a\xbc\xaf\x27\x1c", ArchiveFormat.SEVEN_Z),)
 
         def open_read(self, *a, **k):  # pragma: no cover
             raise NotImplementedError
@@ -198,19 +199,30 @@ def test_brotli_probe_skipped_when_backend_missing(
     assert info.detected_by == "extension"
 
 
-def test_zlib_weak_magic_is_probable() -> None:
+def test_zlib_weak_magic_confirmed_by_content_probe() -> None:
     data = zlib.compress(b"zlib payload")
     info = detect_format(io.BytesIO(data))
     assert info.format == ArchiveFormat.ZLIB
-    # zlib's 2-byte header is a weak signal -> PROBABLE, not CERTAIN.
+    # The weak 2-byte header is confirmed by a content probe -> PROBABLE / content_probe.
     assert info.confidence == DetectionConfidence.PROBABLE
-    assert info.detected_by == "magic"
+    assert info.detected_by == "content_probe"
 
 
-def test_zlib_weak_magic_overridden_by_conflicting_extension(tmp_path: Path) -> None:
-    # A conflicting extension overrides the weak zlib match (no warning, by design).
+def test_zlib_probe_wins_over_misleading_extension(tmp_path: Path) -> None:
+    # A genuine zlib stream named .xz: the content probe confirms zlib, so the (wrong)
+    # extension does not override it.
     path = tmp_path / "thing.xz"
     path.write_bytes(zlib.compress(b"payload"))
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.ZLIB
+    assert info.detected_by == "content_probe"
+
+
+def test_weak_zlib_magic_without_valid_stream_falls_through(tmp_path: Path) -> None:
+    # A 0x78 0x9c prefix on non-zlib data: the weak magic matches but the content probe
+    # fails, so detection falls through to the extension guess instead of claiming zlib.
+    path = tmp_path / "thing.xz"
+    path.write_bytes(b"\x78\x9c" + b"\xff" * 200)  # zlib header byte, then garbage
     info = detect_format(path)
     assert info.format == ArchiveFormat.XZ
     assert info.detected_by == "extension"

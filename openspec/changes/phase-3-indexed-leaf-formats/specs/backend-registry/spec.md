@@ -110,10 +110,19 @@ backends into one table; backends carry no `detect(peek)` method (matching is
 centralized — see the detection/selection requirement).
 
 ```python
+class MagicSignature(NamedTuple):
+    offset: int
+    magic: bytes
+    format: ArchiveFormat
+    weak: bool = False   # a too-short/unspecific signal (zlib's 2-byte header): the
+                         # detector confirms it with a content probe before accepting it
+
 class ReadBackend(ABC):
     FORMATS: tuple[ArchiveFormat, ...]                   # formats this backend reads
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}         # ".gz" -> ArchiveFormat.GZ
-    MAGIC: tuple[tuple[int, bytes, ArchiveFormat], ...] = ()  # (offset, bytes, format)
+    MAGIC: tuple[MagicSignature, ...] = ()               # magic signals declared as data
+    CONTENT_PROBE_FORMATS: tuple[ArchiveFormat, ...] = ()  # magic-less formats (Brotli)
+                         # the detector confirms by decoding a bounded prefix through the codec
     REQUIRES_SEEK: bool = False                          # if True, non-seekable sources rejected
     OPTIONAL_DEPENDENCY: str | None = None               # e.g. "pycdlib"
 
