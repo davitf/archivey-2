@@ -111,9 +111,49 @@ the one genuinely-different adapter honest.
   `readinto` passthrough must keep `ArchiveStream`'s per-call translation, so `ArchiveStream`
   deliberately does not use `DelegatingStream`.
 
+## Can any wrappers merge? (ArchiveStream is the public surface)
+
+**Decision:** the object handed back to callers is always an `ArchiveStream`, so cross-cutting,
+*presentation*-level stream features (rewind-is-slow warnings, and later seek cost, a seek-point
+list, etc.) have one home to grow in. `open_codec_stream()` already guarantees this; the internal
+`backend.open()` (`resolve_codec(...).open()`) stays a deliberate escape hatch for transient
+internal opens (`SingleFileReader._probe_decompressed_size` today; the TAR / 7z folder pipelines
+later), which manage the raw stream themselves.
+
+That single fact — `ArchiveStream` is *always* present on the public path but *not* on
+`backend.open()` — decides each merge:
+
+- **Fold `_SlowSeekWarningStream` into `ArchiveStream`. ✅** The warning is presentation, and the
+  stakes of missing it are just a log line. `ArchiveStream` takes an optional "rewind is O(n)"
+  signal (codec name + accelerator name, ideally sourced from the codec descriptor) and warns
+  once when a `seek` lands before the current position. This removes a class *and* a wrapper
+  layer, and it's the natural first tenant of the "seek-aware presentation" features the public
+  `ArchiveStream` is meant to grow. Internal `backend.open()` callers simply don't warn — fine,
+  they're transient and internal.
+
+- **Do NOT fold the accelerator close-guard into `ArchiveStream`. ❌** It must attach where the
+  rapidgzip object is *created*, because `backend.open()` can hand out an accelerator object with
+  no `ArchiveStream` around it (the size probe today; TAR/7z member opens later) — moving the
+  guard up would let those paths reach interpreter finalization with a live C++ worker thread and
+  re-introduce the macOS SIGABRT. Safety belongs at the object's birth, not at an outer layer some
+  callers skip. Keep it as the thin `_AcceleratorStream` (a `DelegatingStream` whose only job is
+  the `weakref.finalize` close guard). Note this is *not* general "always close" hygiene —
+  ordinary streams already close via `io.IOBase.__del__`; the finalize guard exists only because
+  rapidgzip's thread must be stopped deterministically even under cyclic GC / at shutdown, where
+  `__del__` ordering is unreliable, and the callback must avoid referencing the wrapper (a bound
+  `self.close` would pin it and prevent GC-time finalization).
+
+Net wrapper inventory after this change **+** the bases above: `ArchiveStream` (lifecycle +
+exception translation + rewind warning + future seek metadata), the `ReadOnlyIOStream` /
+`DelegatingStream` bases, `_AcceleratorStream` (close guard only), `_GzipTruncationCheckStream`,
+`_ZstdReopenStream`, `SlicingStream`, `PeekableStream`, `VerifyingStream`, `DecompressorStream`,
+`BinaryIOWrapper` — with **`_SlowSeekWarningStream` removed**.
+
 ## Specs
 
-No requirement changes — the `compressed-streams` contract is unchanged. If desired, a single
-clarifying line can be added to `compressed-streams` noting that read-only stream wrappers share
-an internal base that provides the read-only surface and a canonical `readinto`; otherwise this
-is implementation-only.
+No behavioral requirement changes — the `compressed-streams` contract is unchanged. Two small
+clarifying lines are warranted: (1) that read-only stream wrappers share an internal base
+providing the read-only surface + a canonical `readinto`, and (2) that the public/codec-stream
+surface is always an `ArchiveStream` (the documented place for stream-level metadata to grow).
+Otherwise this is implementation-only.
+

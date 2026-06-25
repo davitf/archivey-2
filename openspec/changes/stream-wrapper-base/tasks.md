@@ -22,7 +22,9 @@
 
 ## 2. Migrate the delegating wrappers (each: drop boilerplate, keep its one method)
 
-- [ ] 2.1 `_SlowSeekWarningStream` → `DelegatingStream`, override `seek` only.
+- [ ] 2.1 Remove `_SlowSeekWarningStream`; fold its warn-once-on-rewind into `ArchiveStream`
+      (see 3.2). `open_codec_stream` passes the per-codec "rewind is O(n)" signal (codec name +
+      accelerator name, sourced from the descriptor) through to the `ArchiveStream` it builds.
 - [ ] 2.2 `_ZstdReopenStream` → `DelegatingStream`, override `seek` only.
 - [ ] 2.3 `_GzipTruncationCheckStream` → `DelegatingStream`, override `read` + `seek`.
 - [ ] 2.4 `_AcceleratorStream` → `DelegatingStream`, keep the `weakref.finalize` close guard
@@ -35,8 +37,15 @@
 - [ ] 3.1 `SlicingStream`, `PeekableStream` → `ReadOnlyIOStream`; keep their offset-remap /
       prefix-buffer `read`/`seek` and their explicit `seekable()` (Peekable stays non-seekable).
 - [ ] 3.2 `ArchiveStream` → `ReadOnlyIOStream`; keep per-call exception translation and lazy
-      open (does NOT use `DelegatingStream` — translation must wrap every call).
-- [ ] 3.3 `DecompressorStream` → `ReadOnlyIOStream`; keep its decompressor ownership and
+      open (does NOT use `DelegatingStream` — translation must wrap every call). Add the
+      rewind warning here: accept an optional slow-seek signal and warn once when a `seek` lands
+      before the current position (absorbing `_SlowSeekWarningStream`). This is the public
+      surface where seek cost / seek-point metadata will later live.
+- [ ] 3.3 Confirm the accelerator close-guard stays at creation (codec level), NOT in
+      `ArchiveStream`: `backend.open()` can create a rapidgzip object with no `ArchiveStream`
+      (the size probe; future TAR/7z), so the guard must attach where the object is born or the
+      macOS shutdown abort returns for those paths.
+- [ ] 3.4 `DecompressorStream` → `ReadOnlyIOStream`; keep its decompressor ownership and
       seek-by-redecompress.
 
 ## 4. `BinaryIOWrapper`
