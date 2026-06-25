@@ -54,6 +54,7 @@ from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.internal.types import (
     ArchiveFormat,
     ArchiveMember,
+    ContainerFormat,
     MagicSignature,
     MissingComponent,
     StreamFormat,
@@ -535,28 +536,50 @@ class StreamCodec:
 
     Subclasses override the behavior methods (:meth:`open`, :meth:`translate`, optionally
     :meth:`translator` / :meth:`extract_metadata` / :meth:`content_probe`) and declare the
-    detection data as class attributes (``magic`` / ``extensions`` / ``single_file_format``)
-    plus an optional-dependency ``requirement``. Instances are collected in
-    :data:`STREAM_CODECS`, which the detector, the single-file reader, and the registry read
-    directly — so a new standalone codec is a single subclass, with no edits to those
-    consumers (see ``compressed-streams``). Container-only / filter-only codecs override just
-    ``open`` + ``translate``.
+    detection data as class attributes (``stream_format`` / ``magic``) plus an
+    optional-dependency ``requirement``. The standalone single-file ``ArchiveFormat`` and its
+    file extension are *derived* from ``stream_format`` (see the properties below). Instances
+    are collected in :data:`STREAM_CODECS`, which the detector, the single-file reader, and
+    the registry read directly — so a new standalone codec is a single subclass, with no edits
+    to those consumers (see ``compressed-streams``). Container-only / filter-only codecs
+    override just ``open`` + ``translate``.
     """
 
     codec: ClassVar[Codec]
     # The single-file/TAR StreamFormat this codec decodes, when it is a stream format at all
-    # (raw container coders such as DEFLATE/LZMA have none).
+    # (raw container coders such as DEFLATE/LZMA have none). This drives the derived
+    # single-file format + extension below.
     stream_format: ClassVar[StreamFormat | None] = None
-    # The standalone single-file ArchiveFormat (RAW_STREAM + stream_format) when this codec is
-    # presented as a bare one-member archive; ``None`` for container-only codecs.
-    single_file_format: ClassVar[ArchiveFormat | None] = None
     # Exact magic signals for the standalone format, aggregated by the detector.
     magic: ClassVar[tuple[MagicSignature, ...]] = ()
-    # Standalone file extensions, for member-name inference and extension detection.
-    extensions: ClassVar[tuple[str, ...]] = ()
     # The optional-dependency requirement (package / extra / hint + unlocked capability);
     # ``None`` for codecs served by the stdlib, which are always available.
     requirement: ClassVar[MissingComponent | None] = None
+
+    # --- derived single-file identity ---
+
+    @property
+    def single_file_format(self) -> ArchiveFormat | None:
+        """The standalone single-file ``ArchiveFormat`` (``RAW_STREAM`` + ``stream_format``).
+
+        ``None`` for a container-only codec (no ``stream_format``) and for ``STORED`` (a bare
+        uncompressed stream is not a standalone single-file format).
+        """
+        sf = self.stream_format
+        if sf is None or sf is StreamFormat.UNCOMPRESSED:
+            return None
+        return ArchiveFormat(ContainerFormat.RAW_STREAM, sf)
+
+    @property
+    def extensions(self) -> tuple[str, ...]:
+        """Standalone file extension(s), derived from the format (e.g. ``GZIP`` → ``.gz``).
+
+        One canonical extension per codec, taken from ``ArchiveFormat.file_extension()``.
+        Extension *aliases* (e.g. ``.zstd``) are intentionally not a per-codec concern; they
+        belong in a format-level alias map if/when they are needed.
+        """
+        fmt = self.single_file_format
+        return (f".{fmt.file_extension()}",) if fmt is not None else ()
 
     # --- behavior (overridden by subclasses) ---
 
@@ -642,9 +665,7 @@ class StoredCodec(StreamCodec):
 class GzipCodec(StreamCodec):
     codec = Codec.GZIP
     stream_format = StreamFormat.GZIP
-    single_file_format = ArchiveFormat.GZ
     magic = (MagicSignature(0, b"\x1f\x8b", ArchiveFormat.GZ),)
-    extensions = (".gz",)
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -744,9 +765,7 @@ class GzipCodec(StreamCodec):
 class Bzip2Codec(StreamCodec):
     codec = Codec.BZIP2
     stream_format = StreamFormat.BZIP2
-    single_file_format = ArchiveFormat.BZ2
     magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
-    extensions = (".bz2",)
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -821,9 +840,7 @@ class _SizedLzmaCodec(_LzmaErrorCodec):
 class XzCodec(_SizedLzmaCodec):
     codec = Codec.XZ
     stream_format = StreamFormat.XZ
-    single_file_format = ArchiveFormat.XZ
     magic = (MagicSignature(0, b"\xfd7zXZ\x00", ArchiveFormat.XZ),)
-    extensions = (".xz",)
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -834,9 +851,7 @@ class XzCodec(_SizedLzmaCodec):
 class LzipCodec(_SizedLzmaCodec):
     codec = Codec.LZIP
     stream_format = StreamFormat.LZIP
-    single_file_format = ArchiveFormat.LZIP
     magic = (MagicSignature(0, b"LZIP", ArchiveFormat.LZIP),)
-    extensions = (".lz",)
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -896,10 +911,8 @@ class DeflateCodec(_ZlibErrorCodec):
 class ZlibCodec(_ZlibErrorCodec):
     codec = Codec.ZLIB
     stream_format = StreamFormat.ZLIB
-    single_file_format = ArchiveFormat.ZLIB
     # No exact magic: zlib's 2-byte header is too unspecific, so it is recognized by a content
     # probe that gates on that header before decoding.
-    extensions = (".zz",)
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -917,9 +930,7 @@ class ZlibCodec(_ZlibErrorCodec):
 class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD
     stream_format = StreamFormat.ZSTD
-    single_file_format = ArchiveFormat.ZST
     magic = (MagicSignature(0, b"\x28\xb5\x2f\xfd", ArchiveFormat.ZST),)
-    extensions = (".zst",)
     requirement = MissingComponent("zstandard", "pip install archivey[zstd]", ("zstd",))
 
     def _backend_present(self) -> bool:
@@ -949,9 +960,7 @@ class ZstdCodec(StreamCodec):
 class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
     stream_format = StreamFormat.LZ4
-    single_file_format = ArchiveFormat.LZ4
     magic = (MagicSignature(0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),)
-    extensions = (".lz4",)
     requirement = MissingComponent("lz4", "pip install archivey[lz4]", ("lz4",))
 
     def _backend_present(self) -> bool:
@@ -980,9 +989,7 @@ class Lz4Codec(StreamCodec):
 class BrotliCodec(StreamCodec):
     codec = Codec.BROTLI
     stream_format = StreamFormat.BROTLI
-    single_file_format = ArchiveFormat.BROTLI
     # Brotli has no signature; the detector recognizes it by decoding a bounded prefix.
-    extensions = (".br",)
     requirement = MissingComponent("brotli", "pip install archivey[7z]", ("brotli",))
 
     def _backend_present(self) -> bool:
@@ -1014,9 +1021,7 @@ class BrotliCodec(StreamCodec):
 class UnixCompressCodec(StreamCodec):
     codec = Codec.UNIX_COMPRESS
     stream_format = StreamFormat.UNIX_COMPRESS
-    single_file_format = ArchiveFormat.Z
     magic = (MagicSignature(0, b"\x1f\x9d", ArchiveFormat.Z),)
-    extensions = (".Z",)
     requirement = MissingComponent(
         "uncompresspy", "pip install archivey[unix-compress]", ("unix_compress",)
     )

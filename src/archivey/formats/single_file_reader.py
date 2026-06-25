@@ -99,6 +99,9 @@ class SingleFileReader(BaseArchiveReader):
         # Keep the codec sequential for such a source regardless of the archive's streaming flag.
         self._codec_config = StreamConfig(streaming=self._streaming or not self._seekable)
 
+        # The compressed-source header, read at most once and cached (only the gzip metadata
+        # hook needs it; codecs without header metadata never trigger a read). See _peek_header.
+        self._header_cache: bytes | None = None
         self._member = self._build_member(archive_name)
         # Open the decompression stream eagerly so format/seekability errors (e.g. a
         # non-seekable unix-compress source, which the codec rejects via the translator)
@@ -135,7 +138,18 @@ class SingleFileReader(BaseArchiveReader):
         )
 
     def _peek_header(self, length: int) -> bytes:
-        """The first ``length`` bytes of the compressed stream, without consuming the source."""
+        """The first ``length`` bytes of the compressed source, read once and cached.
+
+        The first call (or one needing more than is cached) reads the source a single time;
+        later calls serve from the cache without re-opening or re-seeking. For a non-seekable
+        source this reuses the prefix detection already buffered in the ``PeekableStream``; for
+        a path it opens a fresh handle; for a seekable stream it reads and rewinds once.
+        """
+        if self._header_cache is None or len(self._header_cache) < length:
+            self._header_cache = self._read_source_prefix(length)
+        return self._header_cache[:length]
+
+    def _read_source_prefix(self, length: int) -> bytes:
         from archivey.internal.streams.peekable import PeekableStream
 
         src = self._source

@@ -58,9 +58,9 @@ def _install_synthetic(
     class SyntheticCodec(codecs.StreamCodec):
         codec = _SyntheticCodecId.SYNTHETIC  # type: ignore[assignment]
         stream_format = _SyntheticStream.SYNTHETIC  # type: ignore[assignment]
-        single_file_format = _FORMAT
+        # single_file_format (== _FORMAT) and extensions (".syn") are derived from
+        # stream_format by the base class — no need to declare them.
         magic = (MagicSignature(0, _MAGIC, _FORMAT),)
-        extensions = (".syn",)
 
         def open(self, source, params, config):  # type: ignore[no-untyped-def]
             if isinstance(source, (str, os.PathLike)):
