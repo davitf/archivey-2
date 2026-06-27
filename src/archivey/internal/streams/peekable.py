@@ -14,11 +14,9 @@ This is the fresh v2 replacement for DEV's ``RecordableStream`` /
 
 from __future__ import annotations
 
-import io
-from typing import TYPE_CHECKING, BinaryIO
+from typing import BinaryIO
 
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
+from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
 # Default amount buffered for detection (matches ``format-detection``'s DETECTION_LIMIT).
 # The buffer grows on demand up to whatever ``peek(n)`` asks for — e.g. 32 774 bytes when
@@ -26,7 +24,7 @@ if TYPE_CHECKING:
 DETECTION_LIMIT = 4096
 
 
-class PeekableStream(io.RawIOBase, BinaryIO):
+class PeekableStream(ReadOnlyIOStream):
     """A read-only ``BinaryIO`` over a non-seekable source with a peekable prefix.
 
     ``peek(n)`` returns the first ``n`` unconsumed bytes without advancing the read
@@ -75,18 +73,6 @@ class PeekableStream(io.RawIOBase, BinaryIO):
         del self._buffer[:size]
         self._pos += len(data)
         return data
-
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
 
     def seekable(self) -> bool:
         # A peekable stream is forward-only by construction (it wraps a non-seekable

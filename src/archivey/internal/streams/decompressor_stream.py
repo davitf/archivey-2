@@ -17,7 +17,6 @@ import io
 import os
 from dataclasses import dataclass, field
 from typing import (
-    TYPE_CHECKING,
     Any,
     BinaryIO,
     Callable,
@@ -29,10 +28,7 @@ from typing import (
 
 from archivey.internal.errors import CorruptionError, TruncatedError
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.streamtools import ensure_bufferedio
-
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
+from archivey.internal.streams.streamtools import ReadOnlyIOStream, ensure_bufferedio
 
 
 @dataclass(order=True)
@@ -62,8 +58,12 @@ class _SegmentDecompressor(Protocol):
 _SDT = TypeVar("_SDT", bound=_SegmentDecompressor)
 
 
-class DecompressorStream(io.RawIOBase, BinaryIO, Generic[DecompressorT]):
-    """Seekable decompressor stream with optional seek-point-based random access."""
+class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
+    """Seekable decompressor stream with optional seek-point-based random access.
+
+    ``readable``/``writable``/``write``/``readinto`` come from :class:`ReadOnlyIOStream`
+    (``readinto`` is built on this class's ``read``); subclasses provide the decode primitives.
+    """
 
     def __init__(self, path: str | os.PathLike[str] | BinaryIO) -> None:
         super().__init__()
@@ -100,12 +100,6 @@ class DecompressorStream(io.RawIOBase, BinaryIO, Generic[DecompressorT]):
 
     @abc.abstractmethod
     def _is_decompressor_finished(self) -> bool: ...
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
 
     def seekable(self) -> bool:
         return self._inner.seekable()
@@ -180,12 +174,6 @@ class DecompressorStream(io.RawIOBase, BinaryIO, Generic[DecompressorT]):
         del self._buffer[:n]
         self._pos += len(data)
         return data
-
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
 
     def close(self) -> None:
         if self._should_close:

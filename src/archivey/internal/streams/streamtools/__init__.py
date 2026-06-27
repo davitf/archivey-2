@@ -11,6 +11,10 @@ individual modules.
 
 from __future__ import annotations
 
+from archivey.internal.streams.streamtools.base import (
+    DelegatingStream,
+    ReadOnlyIOStream,
+)
 from archivey.internal.streams.streamtools.binaryio import (
     BinaryIOWrapper,
     ReadableStream,
@@ -28,6 +32,8 @@ from archivey.internal.streams.streamtools.slice import (
 
 __all__ = [
     "BinaryIOWrapper",
+    "DelegatingStream",
+    "ReadOnlyIOStream",
     "ReadableStream",
     "SlicingStream",
     "ensure_binaryio",

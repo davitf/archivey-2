@@ -8,15 +8,13 @@ origin for codec libraries that assume it.
 from __future__ import annotations
 
 import io
-from typing import TYPE_CHECKING, BinaryIO
+from typing import BinaryIO
 
+from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import is_seekable
 
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
 
-
-class SlicingStream(io.RawIOBase, BinaryIO):
+class SlicingStream(ReadOnlyIOStream):
     """A view over ``[start, start+length)`` of an underlying binary stream.
 
     Seekable underlying stream:
@@ -69,12 +67,6 @@ class SlicingStream(io.RawIOBase, BinaryIO):
         self._pos += len(data)
         return data
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
-
     def tell(self, /) -> int:
         return self._pos
 
@@ -112,12 +104,6 @@ class SlicingStream(io.RawIOBase, BinaryIO):
         self._stream.seek(start_abs + new_relative)
         self._pos = new_relative
         return self._pos
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
 
     def seekable(self) -> bool:
         return self._seekable

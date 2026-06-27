@@ -38,14 +38,19 @@ from archivey.internal.errors import (
     StreamNotSeekableError,
     TruncatedError,
 )
-from archivey.internal.logs import streams as logger
-from archivey.internal.streams.archive_stream import ArchiveStream, ExceptionTranslator
+from archivey.internal.streams.archive_stream import (
+    ArchiveStream,
+    ExceptionTranslator,
+    RewindWarning,
+)
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
     ZlibDecompressorStream,
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.streamtools import (
+    DelegatingStream,
+    ReadOnlyIOStream,
     ensure_binaryio,
     ensure_bufferedio,
     is_seekable,
@@ -89,9 +94,9 @@ _rapidgzip = _optional("rapidgzip")
 _rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
 
 
-class _AcceleratorStream(io.RawIOBase, BinaryIO):
-    """Wrap a threaded accelerator (``rapidgzip`` / ``indexed_bzip2``) so its underlying object
-    is always *closed* before it is freed.
+class _AcceleratorStream(DelegatingStream):
+    """Wrap a threaded accelerator (``rapidgzip``) so its underlying object is always *closed*
+    before it is freed (read/seek/etc. are inherited delegation; this adds only the guard).
 
     The accelerators spawn C++ ``std::thread``s (invisible to Python's ``threading`` module).
     A worker thread still running when the interpreter finalizes aborts the process with
@@ -105,12 +110,14 @@ class _AcceleratorStream(io.RawIOBase, BinaryIO):
     A :func:`weakref.finalize` guard closes that window: it ``close()``s the raw object exactly
     once, when this wrapper is collected (cyclically or not) or at interpreter exit, whichever
     comes first, holding a strong reference to the raw object so the close always runs *before*
-    that object is freed. ``close()`` on the wrapper simply triggers the same guard early.
+    that object is freed. ``close()`` on the wrapper simply triggers the same guard early. This
+    guard lives at the codec's object-creation point (not in the outer ``ArchiveStream``) because
+    a raw accelerator object can also be produced via ``backend.open()`` with no ``ArchiveStream``
+    around it — the guard must attach where the object is born.
     """
 
     def __init__(self, inner: object) -> None:
-        super().__init__()
-        self._inner: BinaryIO = ensure_binaryio(inner)
+        super().__init__(ensure_binaryio(inner))
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
         self._finalize = weakref.finalize(self, self._close_inner, self._inner)
@@ -124,36 +131,12 @@ class _AcceleratorStream(io.RawIOBase, BinaryIO):
         except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
             pass
 
-    def read(self, n: int = -1, /) -> bytes:
-        return self._inner.read(n)
-
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        # ensure_binaryio() guarantees a readinto-capable object (readinto is in the required IO
-        # method set, and BinaryIOWrapper implements it) — but typing.BinaryIO does not *declare*
-        # readinto, so it is reached via getattr to satisfy the type-checkers without a cast.
-        return getattr(self._inner, "readinto")(b)  # noqa: B009
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        return self._inner.seek(offset, whence)
-
-    def tell(self, /) -> int:
-        return self._inner.tell()
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
-
-    def seekable(self) -> bool:
-        return self._inner.seekable()
-
     def close(self) -> None:
         if self.closed:
             return
         # Trigger the finalize guard (closes the raw object) once; it is then disarmed.
         self._finalize()
-        super().close()
+        super(DelegatingStream, self).close()
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO
@@ -240,79 +223,7 @@ def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
 # rather than nested in a single codec class.
 
 
-class _SlowSeekWarningStream(io.RawIOBase, BinaryIO):
-    """Delegate to a forward-only decoder, warning once on a rewinding seek.
-
-    Several codecs *can* seek but service a backward seek by re-decompressing the stream
-    from the start — O(n) per rewind — because they carry no random-access index: gzip/bz2
-    (stdlib), brotli, lz4, and zlib. We don't forbid that (a slow seek beats failing, and
-    not every format can offer fast random access), but we don't let it pass silently
-    either: the first rewinding seek logs a warning. When an accelerator backend exists
-    (gzip → ``rapidgzip``, bz2 → ``indexed_bzip2``, both in the ``[seekable]`` extra), the
-    warning names it; otherwise it just states the codec re-decompresses from the start.
-    Forward seeks (linear decompression) and no-op seeks stay quiet.
-    """
-
-    def __init__(
-        self, inner: BinaryIO, *, codec_name: str, accelerator: str | None = None
-    ) -> None:
-        super().__init__()
-        self._inner = inner
-        self._codec_name = codec_name
-        self._accelerator = accelerator
-        self._warned = False
-
-    def read(self, n: int = -1, /) -> bytes:
-        return self._inner.read(n)
-
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        raw_readinto = getattr(self._inner, "readinto", None)
-        if raw_readinto is not None:
-            return raw_readinto(b)
-        mv = memoryview(b).cast("B")
-        data = self._inner.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        before = self._inner.tell()
-        result = self._inner.seek(offset, whence)
-        if not self._warned and result < before:
-            if self._accelerator is not None:
-                logger.warning(
-                    "Seeking backward in a %s stream without a random-access accelerator "
-                    "re-decompresses from the start (O(n) per rewind). Install the "
-                    "'seekable' extra (%s) for indexed random access.",
-                    self._codec_name,
-                    self._accelerator,
-                )
-            else:
-                logger.warning(
-                    "Seeking backward in a %s stream re-decompresses from the start "
-                    "(O(n) per rewind): this codec has no random-access index.",
-                    self._codec_name,
-                )
-            self._warned = True
-        return result
-
-    def tell(self, /) -> int:
-        return self._inner.tell()
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
-
-    def seekable(self) -> bool:
-        return self._inner.seekable()
-
-    def close(self) -> None:
-        self._inner.close()
-        super().close()
-
-
-class _GzipTruncationCheckStream(io.RawIOBase, BinaryIO):
+class _GzipTruncationCheckStream(DelegatingStream):
     """Backstop truncation detection for the rapidgzip accelerator.
 
     rapidgzip surfaces some truncations as exceptions but silently returns short/zero
@@ -328,8 +239,7 @@ class _GzipTruncationCheckStream(io.RawIOBase, BinaryIO):
     """
 
     def __init__(self, inner: BinaryIO, source_path: str) -> None:
-        super().__init__()
-        self._inner = inner
+        super().__init__(inner)
         self._source_path = source_path
         self._total = 0
         self._checked = False
@@ -345,14 +255,13 @@ class _GzipTruncationCheckStream(io.RawIOBase, BinaryIO):
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        # Route through this class's read() (not DelegatingStream's zero-copy passthrough) so the
+        # byte-total tracking and the EOF truncation check still run on readinto-driven reads.
+        return ReadOnlyIOStream.readinto(self, b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._verify = False  # random access invalidates the sequential byte total
-        return self._inner.seek(offset, whence)
+        return super().seek(offset, whence)
 
     def _verify_not_truncated(self) -> None:
         try:
@@ -397,37 +306,21 @@ class _GzipTruncationCheckStream(io.RawIOBase, BinaryIO):
         except OSError:
             return True  # cannot rule out a second member -> do not raise
 
-    def tell(self, /) -> int:
-        return self._inner.tell()
 
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
-
-    def seekable(self) -> bool:
-        return self._inner.seekable()
-
-    def close(self) -> None:
-        self._inner.close()
-        super().close()
-
-
-class _ZstdReopenStream(io.RawIOBase, BinaryIO):
+class _ZstdReopenStream(DelegatingStream):
     """A zstd decoder that services a backward seek by reopening from the start.
 
     zstandard's reader raises ``OSError`` on a backward seek. To give zstd the same
     forward-only-but-rewindable behaviour as the other index-less codecs (brotli/lz4/zlib),
     a backward seek closes the reader, rewinds the source, and reopens a fresh decoder, then
-    re-decompresses forward to the target. The O(n) rewind cost is surfaced by the
-    ``_SlowSeekWarningStream`` the opener wraps around this, so this class stays quiet.
+    re-decompresses forward to the target. The O(n) rewind cost is surfaced by the rewind
+    warning the outer ``ArchiveStream`` carries, so this class stays quiet. Read/tell/close are
+    inherited delegation; only the reopen-on-backward-seek logic is overridden here.
     """
 
     def __init__(self, source: CodecSource) -> None:
-        super().__init__()
         self._source = source
-        self._inner = self._open()
+        super().__init__(self._open())
         self._size: int | None = None
 
     def _open(self) -> BinaryIO:
@@ -441,18 +334,6 @@ class _ZstdReopenStream(io.RawIOBase, BinaryIO):
         if not isinstance(self._source, (str, os.PathLike)):
             self._source.seek(0)
         self._inner = self._open()
-
-    def read(self, n: int = -1, /) -> bytes:
-        return self._inner.read(n)
-
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        raw_readinto = getattr(self._inner, "readinto", None)
-        if raw_readinto is not None:
-            return raw_readinto(b)
-        mv = memoryview(b).cast("B")
-        data = self._inner.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if whence == io.SEEK_SET:
@@ -477,24 +358,11 @@ class _ZstdReopenStream(io.RawIOBase, BinaryIO):
                 return self._inner.seek(new_pos)
             raise
 
-    def tell(self, /) -> int:
-        return self._inner.tell()
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
-
     def seekable(self) -> bool:
         # A path can always be reopened; a stream source only if it can be rewound.
         if isinstance(self._source, (str, os.PathLike)):
             return True
         return is_seekable(self._source)
-
-    def close(self) -> None:
-        self._inner.close()
-        super().close()
 
 
 # --- single-file metadata + content probes ---------------------------------------------
@@ -612,6 +480,15 @@ class StreamCodec:
         """
         return False
 
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        """A :class:`RewindWarning` when a backward seek re-decompresses from the start, else None.
+
+        Default ``None`` (the codec has a native random-access index, or none is needed). Codecs
+        whose rewind is O(n) override this; gzip/bzip2 return ``None`` when their accelerator is
+        active. The outer ``ArchiveStream`` carries this and warns once on the first rewind.
+        """
+        return None
+
     # --- availability ---
 
     @property
@@ -684,13 +561,12 @@ class GzipCodec(StreamCodec):
             if isinstance(source, (str, os.PathLike)):
                 return _GzipTruncationCheckStream(stream, os.fspath(source))
             return stream
+        # stdlib gzip can seek, but a rewind re-decompresses from the start; the outer
+        # ArchiveStream warns about that (see rewind_warning). The [seekable] rapidgzip
+        # accelerator (above) gives real random access.
         if isinstance(source, (str, os.PathLike)):
-            gz: BinaryIO = ensure_binaryio(gzip.open(source, "rb"))
-        else:
-            gz = ensure_binaryio(gzip.GzipFile(fileobj=ensure_bufferedio(source), mode="rb"))
-        # stdlib gzip can seek, but a rewind re-decompresses from the start; warn rather than
-        # degrade silently (the [seekable] rapidgzip accelerator gives real random access).
-        return _SlowSeekWarningStream(gz, codec_name="gzip", accelerator="rapidgzip")
+            return ensure_binaryio(gzip.open(source, "rb"))
+        return ensure_binaryio(gzip.GzipFile(fileobj=ensure_bufferedio(source), mode="rb"))
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
@@ -703,6 +579,12 @@ class GzipCodec(StreamCodec):
         if _gzip_uses_accelerator(config):
             return self._translate_accelerator
         return self.translate
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        # The accelerator gives indexed random access; only the stdlib fallback rewinds slowly.
+        if _gzip_uses_accelerator(config):
+            return None
+        return RewindWarning("gzip", accelerator="rapidgzip")
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the rapidgzip accelerator's exceptions to the library's error types."""
@@ -781,13 +663,10 @@ class Bzip2Codec(StreamCodec):
             # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
             return _AcceleratorStream(_rapidgzip_bzip2(source, parallelization=0))
-        # stdlib bz2 can seek, but a rewind re-decompresses from the start; warn rather than
-        # degrade silently (the [seekable] rapidgzip accelerator gives real random access).
-        return _SlowSeekWarningStream(
-            ensure_binaryio(bz2.open(source, "rb")),
-            codec_name="bzip2",
-            accelerator="rapidgzip",
-        )
+        # stdlib bz2 can seek, but a rewind re-decompresses from the start; the outer
+        # ArchiveStream warns about that (see rewind_warning). The [seekable] accelerator
+        # (above) gives real random access.
+        return ensure_binaryio(bz2.open(source, "rb"))
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
@@ -800,6 +679,11 @@ class Bzip2Codec(StreamCodec):
         if _bzip2_uses_accelerator(config):
             return self._translate_accelerator
         return self.translate
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        if _bzip2_uses_accelerator(config):
+            return None
+        return RewindWarning("bzip2", accelerator="rapidgzip")
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the indexed_bzip2 accelerator's exceptions to the library's error types."""
@@ -917,10 +801,12 @@ class ZlibCodec(_ZlibErrorCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        # zlib has no random-access index, so a backward seek re-decodes from the start; warn.
-        return _SlowSeekWarningStream(
-            ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS), codec_name="zlib"
-        )
+        # zlib has no random-access index; a backward seek re-decodes from the start (the outer
+        # ArchiveStream warns — see rewind_warning).
+        return ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS)
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        return RewindWarning("zlib")
 
     def content_probe(self, prefix: bytes) -> bool:
         """Recognize a zlib stream: a known CMF/FLG header (fail-fast) that then decodes."""
@@ -945,9 +831,9 @@ class ZstdCodec(StreamCodec):
                 "(install the 'zstd' extra)."
             )
         # zstd's reader raises on a backward seek; reopen-from-start gives it the same
-        # rewindable forward-only behaviour as the other index-less codecs, and the wrapper
-        # warns on the (O(n)) rewind.
-        return _SlowSeekWarningStream(_ZstdReopenStream(source), codec_name="zstd")
+        # rewindable forward-only behaviour as the other index-less codecs (the outer
+        # ArchiveStream warns on the O(n) rewind — see rewind_warning).
+        return _ZstdReopenStream(source)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if _zstandard is not None and isinstance(exc, _zstandard.ZstdError):
@@ -955,6 +841,9 @@ class ZstdCodec(StreamCodec):
         if isinstance(exc, EOFError):
             return TruncatedError(f"zstandard stream is truncated: {exc!r}")
         return None
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        return RewindWarning("zstd")
 
 
 class Lz4Codec(StreamCodec):
@@ -973,10 +862,9 @@ class Lz4Codec(StreamCodec):
             raise PackageNotInstalledError(
                 "The 'lz4' package is required for lz4 streams (install the 'lz4' extra)."
             )
-        # lz4's frame reader seeks by re-decompressing from the start; warn on a rewind.
-        return _SlowSeekWarningStream(
-            ensure_binaryio(_lz4_frame.open(source, "rb")), codec_name="lz4"
-        )
+        # lz4's frame reader seeks by re-decompressing from the start (the outer ArchiveStream
+        # warns on a rewind — see rewind_warning).
+        return ensure_binaryio(_lz4_frame.open(source, "rb"))
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, RuntimeError) and str(exc).startswith("LZ4"):
@@ -984,6 +872,9 @@ class Lz4Codec(StreamCodec):
         if isinstance(exc, EOFError):
             return TruncatedError(f"lz4 stream is truncated: {exc!r}")
         return None
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        return RewindWarning("lz4")
 
 
 class BrotliCodec(StreamCodec):
@@ -1002,8 +893,9 @@ class BrotliCodec(StreamCodec):
             raise PackageNotInstalledError(
                 "The 'brotli' package is required for Brotli streams (install the '7z' extra)."
             )
-        # Brotli has no random-access index, so a backward seek re-decodes from the start; warn.
-        return _SlowSeekWarningStream(BrotliDecompressorStream(source), codec_name="brotli")
+        # Brotli has no random-access index; a backward seek re-decodes from the start (the
+        # outer ArchiveStream warns — see rewind_warning).
+        return BrotliDecompressorStream(source)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         # brotli raises its own brotli.error for corrupt data; a truncated stream doesn't
@@ -1012,6 +904,9 @@ class BrotliCodec(StreamCodec):
         if _brotli is not None and isinstance(exc, _brotli.error):
             return CorruptionError(f"Error reading brotli stream: {exc!r}")
         return None
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        return RewindWarning("brotli")
 
     def content_probe(self, prefix: bytes) -> bool:
         """Recognize a raw Brotli stream — which has no magic — by decoding a bounded prefix."""
@@ -1184,6 +1079,7 @@ class CodecBackend:
     codec: Codec
     config: StreamConfig
     translate: ExceptionTranslator
+    rewind_warning: RewindWarning | None
     _open: Callable[[CodecSource, CodecParams, StreamConfig], BinaryIO] = field(repr=False)
 
     def open(self, source: CodecSource, params: CodecParams = _DEFAULT_PARAMS) -> BinaryIO:
@@ -1196,13 +1092,20 @@ def resolve_codec(codec: Codec, config: StreamConfig = DEFAULT_STREAM_CONFIG) ->
     The translator must match the *active* backend: when an accelerator
     (``rapidgzip`` / ``indexed_bzip2``) is the chosen backend, its exception taxonomy
     differs from stdlib's, so the codec's :meth:`StreamCodec.translator` selects the right one.
+    The ``rewind_warning`` is likewise config-dependent (an active accelerator gives indexed
+    random access, so it carries none); it is attached to the ``ArchiveStream`` by
+    :func:`open_codec_stream`.
 
     Raises ``KeyError`` for a filter-only codec (Delta/BCJ), which is composed into a raw
     LZMA chain rather than opened standalone.
     """
     sc = _BY_CODEC[codec]
     return CodecBackend(
-        codec=codec, config=config, translate=sc.translator(config), _open=sc.open
+        codec=codec,
+        config=config,
+        translate=sc.translator(config),
+        rewind_warning=sc.rewind_warning(config),
+        _open=sc.open,
     )
 
 
@@ -1227,4 +1130,5 @@ def open_codec_stream(
         translate=backend.translate,
         stamp=stamp,
         lazy=False,
+        rewind_warning=backend.rewind_warning,
     )
