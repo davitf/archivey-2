@@ -8,15 +8,13 @@ origin for codec libraries that assume it.
 from __future__ import annotations
 
 import io
-from typing import TYPE_CHECKING, BinaryIO
+from typing import BinaryIO
 
+from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import is_seekable
 
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
 
-
-class SlicingStream(io.RawIOBase, BinaryIO):
+class SlicingStream(ReadOnlyIOStream):
     """A view over ``[start, start+length)`` of an underlying binary stream.
 
     Seekable underlying stream:
@@ -28,6 +26,13 @@ class SlicingStream(io.RawIOBase, BinaryIO):
     Non-seekable underlying stream:
       - ``start`` must be ``None`` (the slice begins at the current position).
       - ``length`` caps how many bytes may be read; seeking is unsupported.
+
+    It is a :class:`ReadOnlyIOStream`, not a :class:`DelegatingStream`: every operation is
+    *transformed*, not forwarded — ``read`` clamps to the slice bounds, and ``seek``/``tell``
+    are relative to the slice start, not the underlying offset. And critically it is a
+    *non-owning view*: it must NOT close the underlying stream (the container owns it), whereas
+    ``DelegatingStream.close`` closes its inner. So delegation would be both useless (almost
+    everything is overridden) and unsafe (the close default).
     """
 
     def __init__(
@@ -69,12 +74,6 @@ class SlicingStream(io.RawIOBase, BinaryIO):
         self._pos += len(data)
         return data
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
-
     def tell(self, /) -> int:
         return self._pos
 
@@ -112,12 +111,6 @@ class SlicingStream(io.RawIOBase, BinaryIO):
         self._stream.seek(start_abs + new_relative)
         self._pos = new_relative
         return self._pos
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
 
     def seekable(self) -> bool:
         return self._seekable

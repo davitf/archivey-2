@@ -66,6 +66,30 @@
 
 ## Performance & robustness
 
+- **rapidgzip for zlib / raw-deflate streams** — give zlib- and deflate-compressed streams
+  the same fast random access rapidgzip already gives gzip. This is especially valuable for the
+  future native **ZIP** parser: ZIP members are raw deflate, so a seekable deflate backend means
+  random access *within* a large member, not just to its start. Investigate whether rapidgzip can
+  consume zlib/raw-deflate **directly** (it already handles gzip/zlib framing; raw deflate, wbits
+  -15, may need a hint or may be unsupported). If not, **synthesize a gzip stream** from the
+  source — wrap raw deflate (or zlib, after dropping its 2-byte header + adler32 trailer) in a
+  minimal 10-byte gzip header + 8-byte trailer so rapidgzip will index it; check whether it needs
+  a *valid* CRC32/ISIZE trailer or just well-formed framing to build the seek index. No
+  coexistence concern — archivey already uses rapidgzip as its single accelerator library (see
+  `docs/known-issues.md`). Pairs with **seek-index persistence** below.
+
+- **Compressed-passthrough transcoding (no recompress)** — when writing a member from a source
+  that is itself an archive/compressed stream, and the destination format can carry the source's
+  *compressed* representation as-is (e.g. a deflate member from a ZIP/gzip → a ZIP entry, both raw
+  deflate), copy the already-compressed bytes straight through instead of decompress→recompress.
+  Skips the most expensive part of a format conversion entirely. Needs internal coordination
+  between the read and write paths: the reader must be able to hand out the *raw compressed* block
+  (codec + parameters + the bytes) rather than only a decompressed stream, and the writer must
+  accept a pre-compressed payload and emit the right container framing/headers (and decide what to
+  do about checksums — reuse the stored CRC vs. recompute). Only valid when codecs + parameters
+  match (e.g. deflate↔deflate; not deflate→zstd), so it's an opportunistic fast path with a
+  decompress-recompress fallback. Pairs with the native ZIP parser (raw-deflate access) above.
+
 - **Parallel extraction** — extract independent members concurrently for
   `AccessCost.DIRECT` archives (bounded by I/O). Also applies to **solid archives with
   multiple independent blocks** — e.g. a 7z with several solid folders can decompress

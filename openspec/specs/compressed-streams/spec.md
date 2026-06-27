@@ -189,6 +189,28 @@ Constraints:
 
 ---
 
+### Requirement: Read-only stream wrappers share an internal base; the public surface is an ArchiveStream
+
+The read-only stream wrappers in this layer SHALL share an internal base that provides the
+read-only `BinaryIO` surface (`readable`/`writable`/`write`) and a single canonical
+`readinto`/`readall` built on each wrapper's `read`, so that primitive is defined once rather
+than re-implemented per wrapper. The object returned on the public/codec-stream path SHALL
+always be an `ArchiveStream` — the single, stable surface where stream-level presentation
+metadata (e.g. a rewind-is-slow warning, and future seek-cost information) lives; transient
+internal opens (`backend.open()`) MAY return the raw backend stream without this wrapper.
+
+#### Scenario: read-only wrappers expose a uniform read-only surface
+
+- **WHEN** any read-only stream wrapper in this layer is used
+- **THEN** its `readable()`/`writable()`/`write()` and `readinto`/`readall` come from the shared base, defined once rather than re-implemented per wrapper
+
+#### Scenario: the public codec stream is an ArchiveStream
+
+- **WHEN** a codec stream is opened on the public path
+- **THEN** the returned object is an `ArchiveStream` carrying any stream-level presentation metadata (such as a rewind-is-slow warning)
+
+---
+
 ### Requirement: Backend dispatch is separable from opening
 
 The system SHALL allow the open function and its exception translator for a given

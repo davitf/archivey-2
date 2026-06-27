@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import io
 import threading
-from typing import TYPE_CHECKING, Any, BinaryIO, Callable, NoReturn
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, BinaryIO, Callable, NoReturn
 
 from archivey.internal.errors import ArchiveyError
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.streamtools import is_seekable
+from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -26,11 +27,26 @@ ExceptionTranslator = Callable[[Exception], ArchiveyError | None]
 ErrorStamp = Callable[[ArchiveyError], None]
 
 
+@dataclass(frozen=True)
+class RewindWarning:
+    """Signals that this codec services a backward seek by re-decompressing from the start.
+
+    Carried by :class:`ArchiveStream` so the public stream handle can warn once, on the first
+    rewinding seek, that random access is O(n) here. ``codec_name`` names the format; when an
+    ``accelerator`` package (the ``[seekable]`` extra) would provide indexed random access, the
+    warning names it. Codecs with a native random-access index (or an active accelerator) carry
+    no ``RewindWarning``.
+    """
+
+    codec_name: str
+    accelerator: str | None = None
+
+
 def _noop_stamp(_exc: ArchiveyError) -> None:
     return None
 
 
-class ArchiveStream(io.RawIOBase, BinaryIO):
+class ArchiveStream(ReadOnlyIOStream):
     """Translate exceptions from an underlying binary stream into ``ArchiveyError``s.
 
     The wrapped stream may be opened lazily (on first use) so callers can hand out a
@@ -46,6 +62,7 @@ class ArchiveStream(io.RawIOBase, BinaryIO):
         stamp: ErrorStamp | None = None,
         lazy: bool = False,
         seekable: bool = True,
+        rewind_warning: RewindWarning | None = None,
     ) -> None:
         super().__init__()
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
@@ -54,6 +71,8 @@ class ArchiveStream(io.RawIOBase, BinaryIO):
         self._inner: BinaryIO | None = None
         self._open_lock = threading.Lock()
         self._seekable_hint = seekable
+        self._rewind_warning = rewind_warning
+        self._rewind_warned = False
         if not lazy:
             self._ensure_open()
 
@@ -106,9 +125,34 @@ class ArchiveStream(io.RawIOBase, BinaryIO):
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         try:
-            return self._ensure_open().seek(offset, whence)
+            inner = self._ensure_open()
+            before = inner.tell()
+            result = inner.seek(offset, whence)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail(e)
+        self._maybe_warn_rewind(before, result)
+        return result
+
+    def _maybe_warn_rewind(self, before: int, after: int) -> None:
+        """Warn once when a backward seek will re-decompress from the start (O(n))."""
+        warning = self._rewind_warning
+        if warning is None or self._rewind_warned or after >= before:
+            return
+        self._rewind_warned = True
+        if warning.accelerator is not None:
+            logger.warning(
+                "Seeking backward in a %s stream without a random-access accelerator "
+                "re-decompresses from the start (O(n) per rewind). Install the 'seekable' "
+                "extra (%s) for indexed random access.",
+                warning.codec_name,
+                warning.accelerator,
+            )
+        else:
+            logger.warning(
+                "Seeking backward in a %s stream re-decompresses from the start (O(n) per "
+                "rewind): this codec has no random-access index.",
+                warning.codec_name,
+            )
 
     def tell(self, /) -> int:
         if self.closed:
@@ -117,19 +161,11 @@ class ArchiveStream(io.RawIOBase, BinaryIO):
             return 0
         return self._inner.tell()
 
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
-
     def seekable(self) -> bool:
+        # readable()/writable()/write() come from ReadOnlyIOStream.
         if self._inner is not None:
             return is_seekable(self._inner)
         return self._seekable_hint
-
-    def write(self, data: Any, /) -> int:
-        raise io.UnsupportedOperation("ArchiveStream is not writable")
 
     def close(self) -> None:
         if self._inner is not None:

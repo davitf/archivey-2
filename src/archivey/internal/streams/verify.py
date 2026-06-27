@@ -23,15 +23,12 @@ over the decompressed bytes.
 from __future__ import annotations
 
 import hashlib
-import io
 import zlib
-from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
+from typing import BinaryIO, Callable, Mapping, Protocol
 
 from archivey.internal.errors import CorruptionError
 from archivey.internal.logs import integrity as logger
-
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
+from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
 
 class _IncrementalHasher(Protocol):
@@ -86,8 +83,12 @@ def _expected_as_bytes(value: int | bytes, hasher: _IncrementalHasher) -> bytes:
     return value
 
 
-class VerifyingStream(io.RawIOBase, BinaryIO):
-    """Wrap ``inner`` and verify ``expected`` digests at clean end-of-stream."""
+class VerifyingStream(ReadOnlyIOStream):
+    """Wrap ``inner`` and verify ``expected`` digests at clean end-of-stream.
+
+    Sequential-only: ``read`` hashes the bytes it returns; ``readinto``/``readall`` come from
+    :class:`ReadOnlyIOStream` (built on this ``read``, so they hash too).
+    """
 
     def __init__(
         self,
@@ -136,27 +137,6 @@ class VerifyingStream(io.RawIOBase, BinaryIO):
         if not self._verified:
             self._verify()
         return data
-
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
-
-    def readall(self) -> bytes:
-        chunks = bytearray()
-        while True:
-            chunk = self.read(io.DEFAULT_BUFFER_SIZE)
-            if not chunk:
-                break
-            chunks.extend(chunk)
-        return bytes(chunks)
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
 
     def seekable(self) -> bool:
         # Verification only makes sense on a forward read; do not advertise seeking even if
