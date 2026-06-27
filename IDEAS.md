@@ -78,6 +78,18 @@
   coexistence concern — archivey already uses rapidgzip as its single accelerator library (see
   `docs/known-issues.md`). Pairs with **seek-index persistence** below.
 
+- **Compressed-passthrough transcoding (no recompress)** — when writing a member from a source
+  that is itself an archive/compressed stream, and the destination format can carry the source's
+  *compressed* representation as-is (e.g. a deflate member from a ZIP/gzip → a ZIP entry, both raw
+  deflate), copy the already-compressed bytes straight through instead of decompress→recompress.
+  Skips the most expensive part of a format conversion entirely. Needs internal coordination
+  between the read and write paths: the reader must be able to hand out the *raw compressed* block
+  (codec + parameters + the bytes) rather than only a decompressed stream, and the writer must
+  accept a pre-compressed payload and emit the right container framing/headers (and decide what to
+  do about checksums — reuse the stored CRC vs. recompute). Only valid when codecs + parameters
+  match (e.g. deflate↔deflate; not deflate→zstd), so it's an opportunistic fast path with a
+  decompress-recompress fallback. Pairs with the native ZIP parser (raw-deflate access) above.
+
 - **Parallel extraction** — extract independent members concurrently for
   `AccessCost.DIRECT` archives (bounded by I/O). Also applies to **solid archives with
   multiple independent blocks** — e.g. a 7z with several solid folders can decompress
