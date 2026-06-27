@@ -26,6 +26,13 @@ class SlicingStream(ReadOnlyIOStream):
     Non-seekable underlying stream:
       - ``start`` must be ``None`` (the slice begins at the current position).
       - ``length`` caps how many bytes may be read; seeking is unsupported.
+
+    It is a :class:`ReadOnlyIOStream`, not a :class:`DelegatingStream`: every operation is
+    *transformed*, not forwarded — ``read`` clamps to the slice bounds, and ``seek``/``tell``
+    are relative to the slice start, not the underlying offset. And critically it is a
+    *non-owning view*: it must NOT close the underlying stream (the container owns it), whereas
+    ``DelegatingStream.close`` closes its inner. So delegation would be both useless (almost
+    everything is overridden) and unsafe (the close default).
     """
 
     def __init__(

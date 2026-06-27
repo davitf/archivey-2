@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar
+from typing import BinaryIO, Callable, ClassVar
 
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.errors import (
@@ -50,7 +50,6 @@ from archivey.internal.streams.decompress import (
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
-    ReadOnlyIOStream,
     ensure_binaryio,
     ensure_bufferedio,
     is_seekable,
@@ -64,9 +63,6 @@ from archivey.internal.types import (
     MissingComponent,
     StreamFormat,
 )
-
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
 
 
 # Optional packages: resolved once via importlib (rather than static imports) because
@@ -239,7 +235,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
     """
 
     def __init__(self, inner: BinaryIO, source_path: str) -> None:
-        super().__init__(inner)
+        # readinto_passthrough=False routes readinto through this class's read(), so the
+        # byte-total tracking and the EOF truncation check still run on readinto-driven reads.
+        super().__init__(inner, readinto_passthrough=False)
         self._source_path = source_path
         self._total = 0
         self._checked = False
@@ -253,11 +251,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
             self._checked = True
             self._verify_not_truncated()
         return data
-
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        # Route through this class's read() (not DelegatingStream's zero-copy passthrough) so the
-        # byte-total tracking and the EOF truncation check still run on readinto-driven reads.
-        return ReadOnlyIOStream.readinto(self, b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._verify = False  # random access invalidates the sequential byte total

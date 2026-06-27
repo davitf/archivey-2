@@ -34,9 +34,14 @@ def test_readonly_base_derives_readinto_readall_and_flags() -> None:
         s.write(b"x")
 
 
-def test_readonly_base_read_is_abstract() -> None:
+def test_readonly_base_read_is_the_runtime_guard() -> None:
+    # read() is @abstractmethod (a static/intent signal) but io.RawIOBase's C __new__ does not
+    # enforce it, so the NotImplementedError body is the real guard if a subclass calls super().
+    class _ForgotRead(ReadOnlyIOStream):
+        pass
+
     with pytest.raises(NotImplementedError):
-        ReadOnlyIOStream().read()
+        _ForgotRead().read()
 
 
 def test_delegating_base_forwards_to_inner() -> None:
@@ -75,3 +80,24 @@ def test_delegating_base_readinto_falls_back_without_inner_readinto() -> None:
     buf = bytearray(2)
     assert s.readinto(buf) == 2
     assert bytes(buf) == b"xy"
+
+
+def test_delegating_readinto_passthrough_false_routes_through_read() -> None:
+    """With readinto_passthrough=False, readinto goes through the subclass's read() (so a
+    side-effecting read override is not bypassed) — even when the inner has its own readinto."""
+    reads: list[int] = []
+
+    class _Tracking(DelegatingStream):
+        def __init__(self, inner: io.BytesIO) -> None:
+            super().__init__(inner, readinto_passthrough=False)
+
+        def read(self, n: int = -1, /) -> bytes:
+            data = self._inner.read(n)
+            reads.append(len(data))  # side effect that must run on readinto too
+            return data
+
+    s = _Tracking(io.BytesIO(b"abcdef"))
+    buf = bytearray(4)
+    assert s.readinto(buf) == 4
+    assert bytes(buf) == b"abcd"
+    assert reads == [4]  # read() ran (passthrough would have left this empty)

@@ -13,24 +13,40 @@
   ``read``/``readinto``/``seek``/``tell``/``seekable``/``close`` to it, so a wrapper that only
   changes one operation overrides just that method.
 
-This module is part of the codec-/format-agnostic ``streamtools`` core: it imports nothing from
-the rest of ``archivey``.
+This module is part of the codec-/format-agnostic ``streamtools`` core: it imports only from
+``streamtools`` itself (``is_seekable``), nothing from the rest of ``archivey``.
 """
 
 from __future__ import annotations
 
+import abc
 import io
 from typing import TYPE_CHECKING, Any, BinaryIO
+
+from archivey.internal.streams.streamtools.binaryio import is_seekable
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
 
 class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
-    """Base for a read-only ``BinaryIO``: subclasses implement ``read`` (and what they change)."""
+    """Base for a read-only ``BinaryIO``: subclasses implement ``read`` (and what they change).
 
+    Deliberately defines only the *read-only surface* (``read``/``readinto``/``readall`` +
+    ``readable``/``writable``/``write``). It does **not** define ``seek``/``tell``/``seekable``/
+    ``close``: those genuinely vary per wrapper — sequential vs. seekable, owns-its-inner vs. a
+    non-owning view — so subclasses declare them, or inherit ``RawIOBase``'s non-seekable
+    defaults (``seekable()->False``, ``seek`` raising). :class:`DelegatingStream` supplies the
+    forwarding versions for wrappers that do own one inner stream.
+    """
+
+    @abc.abstractmethod
     def read(self, n: int = -1, /) -> bytes:
-        raise NotImplementedError  # a subclass must provide read()
+        # @abstractmethod is an intent/static-check signal that subclasses must provide read().
+        # It does NOT prevent instantiation here: io.RawIOBase's C-level __new__ ignores
+        # __abstractmethods__ (a subclass without read() still constructs), so this body is the
+        # actual runtime guard — a forgotten read() fails loudly instead of looping via RawIOBase.
+        raise NotImplementedError
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
         """Canonical ``readinto``: read into ``b`` via the subclass's ``read``."""
@@ -63,20 +79,33 @@ class DelegatingStream(ReadOnlyIOStream):
 
     Subclasses override only the method whose behavior they change (e.g. just ``seek`` to add a
     warning, or just ``close`` to add a cleanup guard).
+
+    **Consistency caveat (``readinto_passthrough``).** By default ``readinto`` forwards straight
+    to ``inner.readinto`` (zero-copy), which *bypasses this class's ``read``*. That is correct
+    for a plain delegator, but a subclass that overrides ``read`` with a side effect (tracking
+    bytes, hashing, a check at EOF) would have that side effect skipped on ``readinto``-driven
+    reads. Such a subclass MUST pass ``readinto_passthrough=False``, which routes ``readinto``
+    through ``read`` (the :class:`ReadOnlyIOStream` implementation) so the override always runs.
+    (We use an explicit flag rather than auto-detecting an overridden ``read``: a plain
+    pass-through override of ``read`` should keep the zero-copy path, and silent auto-detection
+    would make that choice invisible and bug-prone.)
     """
 
-    def __init__(self, inner: BinaryIO) -> None:
+    def __init__(self, inner: BinaryIO, *, readinto_passthrough: bool = True) -> None:
         super().__init__()
         self._inner = inner
+        self._readinto_passthrough = readinto_passthrough
 
     def read(self, n: int = -1, /) -> bytes:
         return self._inner.read(n)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        # Zero-copy passthrough when the inner exposes readinto; else the read()-based base.
-        inner_readinto = getattr(self._inner, "readinto", None)
-        if inner_readinto is not None:
-            return inner_readinto(b)
+        # Zero-copy passthrough when allowed and the inner exposes readinto; otherwise route
+        # through self.read() (the read()-based base), so an overridden read() is not bypassed.
+        if self._readinto_passthrough:
+            inner_readinto = getattr(self._inner, "readinto", None)
+            if inner_readinto is not None:
+                return inner_readinto(b)
         return super().readinto(b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
@@ -86,7 +115,9 @@ class DelegatingStream(ReadOnlyIOStream):
         return self._inner.tell()
 
     def seekable(self) -> bool:
-        return self._inner.seekable()
+        # is_seekable() handles the edge cases a bare inner.seekable() misses (a BufferedReader
+        # over a non-seekable raw; a pipe that reports seekable()=True but cannot reposition).
+        return is_seekable(self._inner)
 
     def close(self) -> None:
         if self.closed:

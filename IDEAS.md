@@ -66,6 +66,18 @@
 
 ## Performance & robustness
 
+- **rapidgzip for zlib / raw-deflate streams** — give zlib- and deflate-compressed streams
+  the same fast random access rapidgzip already gives gzip. This is especially valuable for the
+  future native **ZIP** parser: ZIP members are raw deflate, so a seekable deflate backend means
+  random access *within* a large member, not just to its start. Investigate whether rapidgzip can
+  consume zlib/raw-deflate **directly** (it already handles gzip/zlib framing; raw deflate, wbits
+  -15, may need a hint or may be unsupported). If not, **synthesize a gzip stream** from the
+  source — wrap raw deflate (or zlib, after dropping its 2-byte header + adler32 trailer) in a
+  minimal 10-byte gzip header + 8-byte trailer so rapidgzip will index it; check whether it needs
+  a *valid* CRC32/ISIZE trailer or just well-formed framing to build the seek index. No
+  coexistence concern — archivey already uses rapidgzip as its single accelerator library (see
+  `docs/known-issues.md`). Pairs with **seek-index persistence** below.
+
 - **Parallel extraction** — extract independent members concurrently for
   `AccessCost.DIRECT` archives (bounded by I/O). Also applies to **solid archives with
   multiple independent blocks** — e.g. a 7z with several solid folders can decompress
