@@ -34,8 +34,8 @@ rest of the library needs to know about it:
 | `codec` / `stream_format` | `Codec`, `_STREAM_FORMAT_CODECS` | everywhere |
 | `open(source, params, config)` | `_CodecSpec.open` | `open_codec_stream` |
 | `translate(exc)` | `_CodecSpec.translate` | `ArchiveStream` |
-| `magic: tuple[MagicSignature, ...]` (incl. `weak`) | backend `MAGIC` entries for stream codecs | detection |
-| `content_probe: bool` (or a probe fn) | `CONTENT_PROBE_FORMATS` | detection |
+| `magic: tuple[MagicSignature, ...]` (exact only) | backend `MAGIC` entries for stream codecs | detection |
+| `content_probe: Callable[[bytes], bool] \| None` | `CONTENT_PROBE_FORMATS` + the detector's generic `_content_probe` + the `weak` magic flag | detection |
 | `extensions: tuple[str, ...]` | backend `EXTENSIONS` for stream codecs | detection / naming |
 | `extract_metadata(reader_ctx, member)` | `SingleFileReader._METADATA_HOOKS` | single-file reader |
 | `requirement: MissingComponent \| None` | `registry._CODEC_REQUIREMENT` + `is_codec_available` sentinel | registry availability |
@@ -48,7 +48,7 @@ truth. Then:
   (ZIP's `PK..`, TAR's `ustar`, ISO's `CD001`). Container vs. stream-codec detection
   stays one combined table; only the source of the stream-codec rows moves.
 - **`SingleFileBackend` / `SingleFileReader`** derive `FORMATS` / `EXTENSIONS` /
-  `MAGIC` / `CONTENT_PROBE_FORMATS` and the metadata extraction from the descriptors
+  `MAGIC` / `CONTENT_PROBES` and the metadata extraction from the descriptors
   instead of hand-listing them. The reader becomes codec-agnostic: infer the member
   shell, then call `descriptor.extract_metadata(...)`.
 - **`backend-registry`** computes a single-file format's tri-state support and install
@@ -56,9 +56,18 @@ truth. Then:
   table. The compositional ZIP/7z/TAR-over-codec rules are unchanged — they already
   read codec availability through the same descriptors.
 
-This is a **behavior-preserving refactor**: same detection results, same availability,
-same metadata, same errors. It is explicitly *not* a place to change which library
-backs each codec — that is the separate `compression-library-evaluation` change.
+As part of making the descriptor the single source of a codec's recognition, the
+`content_probe` is the **actual probe function** (not a bool flag), and the two ways a
+single-file codec was recognized are unified into one: the `weak` `MagicSignature` flag is
+**removed**, and zlib — its only user — moves to a `content_probe` that gates on its 2-byte
+CMF/FLG header before decoding (the same decode-a-prefix mechanism Brotli already used).
+Detection becomes: exact magic, then content probes, then extension.
+
+This is **observably behavior-preserving**: same detected formats, confidence, and
+`detected_by`; same availability, metadata, and errors. The *mechanism* by which zlib is
+recognized changes (probe instead of weak-magic + probe), but every detection outcome is
+identical. It is explicitly *not* a place to change which library backs each codec — that
+is the separate `compression-library-evaluation` change.
 
 ### Scope boundaries
 
@@ -76,11 +85,13 @@ The full delta requirements (with scenarios) live in this change's `specs/` dire
 are what `openspec validate` checks:
 
 - `specs/compressed-streams/spec.md` — **ADDED** "A codec is described by one StreamCodec descriptor".
-- `specs/format-detection/spec.md` — **MODIFIED** magic/extension/probe tables aggregated from backends *and* codec descriptors.
+- `specs/format-detection/spec.md` — **MODIFIED** magic/extension/probe tables aggregated from backends *and* codec descriptors; the content probe is a per-format function; the `weak` magic flag is removed and zlib is recognized by a content probe (magic-byte table + content-probe requirements updated accordingly).
 - `specs/backend-registry/spec.md` — **MODIFIED** codec availability + install hints come from the descriptor (drop `_CODEC_REQUIREMENT`).
 - `specs/format-single-file-compressors/spec.md` — **MODIFIED** per-codec metadata comes from the descriptor.
 
-All four are behavior-preserving rewordings of *where the per-codec data lives*.
+All four preserve observable behavior (same detection outcomes, availability, metadata,
+errors); they reword *where the per-codec data lives* and unify the two single-file
+recognition paths into one function-based content probe.
 
 ## Impact
 

@@ -11,36 +11,27 @@ streams are read and rewound to position 0; a non-seekable stream must be wrappe
 :class:`~archivey.internal.streams.peekable.PeekableStream` first (the opener does this),
 which detection inspects via ``peek``.
 
-Magic-less / weak-magic formats are confirmed by a **content probe** (decoding a bounded
-prefix through the codec): Brotli (no signature) and zlib (a 2-byte header too unspecific
-to trust). Both the weak-magic flag and the magic-less probe formats are declared by the
-backends as data, so the detector stays format-agnostic. The inner-TAR probe, the ISO
-extended window, and SFX scanning arrive with the backends they feed in later stages.
+Formats without an exact magic are recognized by a **content probe**: Brotli (no signature
+at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on that
+header before decoding). Each probe is a function the backends declare as data — for the
+stream codecs, on the codec descriptor — so the detector stays format-agnostic. The
+inner-TAR probe, the ISO extended window, and SFX scanning arrive with the backends they
+feed in later stages.
 """
 
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.internal.errors import ArchiveyError, FormatDetectionError, TruncatedError
+from archivey.internal.errors import FormatDetectionError
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
-from archivey.internal.streams.codecs import (
-    codec_for_stream_format,
-    is_codec_available,
-    open_codec_stream,
-)
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from archivey.internal.streams.streamtools import is_seekable, read_exact
 from archivey.internal.types import ArchiveFormat, MagicSignature
-
-# Bytes fed to a content probe — enough to trip a malformed-stream error without
-# decompressing the whole payload.
-_PROBE_PREFIX = 256
 
 
 class DetectionConfidence(Enum):
@@ -93,38 +84,12 @@ def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
 def _match_magic(
     data: bytes,
     magic_entries: list[MagicSignature],
-    *,
-    weak: bool,
 ) -> ArchiveFormat | None:
-    """Return the first matching magic, considering only weak or only strong entries."""
+    """Return the format of the first exact magic signature matching ``data``."""
     for entry in magic_entries:
-        if entry.weak != weak:
-            continue
         if data[entry.offset : entry.offset + len(entry.magic)] == entry.magic:
             return entry.format
     return None
-
-
-def _content_probe(fmt: ArchiveFormat, data: bytes) -> bool:
-    """Whether a bounded prefix of ``data`` decodes cleanly through ``fmt``'s codec.
-
-    Used both for magic-less formats (Brotli) and to confirm a weak magic match (zlib): a
-    valid stream decodes some output (or runs out of the prefix → ``TruncatedError``),
-    while a non-matching one raises a corruption error. Skipped (returns ``False``) when the
-    codec backend is absent, so detection falls through to the extension guess. Operates on
-    the already-peeked bytes, so it consumes nothing from the source.
-    """
-    codec = codec_for_stream_format(fmt.stream)
-    if not is_codec_available(codec):
-        return False
-    try:
-        with open_codec_stream(codec, io.BytesIO(data[:_PROBE_PREFIX])) as stream:
-            stream.read(_PROBE_PREFIX)
-        return True
-    except TruncatedError:
-        return True  # decoded fine, just ran out of the bounded prefix
-    except ArchiveyError:
-        return False
 
 
 def _match_extension(
@@ -160,33 +125,27 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
     name = _source_extension_name(source)
     ext_fmt = _match_extension(name, extension_map)
 
-    # 1. Strong (exact, multi-byte) magic wins, with a conflict warning vs the extension.
-    strong_fmt = _match_magic(data, magic_entries, weak=False)
-    if strong_fmt is not None:
-        if ext_fmt is not None and ext_fmt != strong_fmt:
+    # 1. Exact magic wins, with a conflict warning vs the extension.
+    magic_fmt = _match_magic(data, magic_entries)
+    if magic_fmt is not None:
+        if ext_fmt is not None and ext_fmt != magic_fmt:
             logger.warning(
                 "Format conflict for %r: extension suggests %r but magic bytes indicate "
                 "%r; using the magic-byte result.",
                 name,
                 ext_fmt,
-                strong_fmt,
+                magic_fmt,
             )
-        return FormatInfo(strong_fmt, DetectionConfidence.CERTAIN, "magic")
+        return FormatInfo(magic_fmt, DetectionConfidence.CERTAIN, "magic")
 
-    # 2. Weak magic (zlib's 2-byte header): accepted only when a content probe confirms the
-    #    stream actually decodes through that codec — otherwise the 2-byte prefix is too
-    #    unspecific to trust.
-    weak_fmt = _match_magic(data, magic_entries, weak=True)
-    if weak_fmt is not None and _content_probe(weak_fmt, data):
-        return FormatInfo(weak_fmt, DetectionConfidence.PROBABLE, "content_probe")
-
-    # 3. Magic-less formats confirmed by a content probe (Brotli). Skipped when the codec
+    # 2. Formats without an exact magic, recognized by a content probe (Brotli decodes a
+    #    prefix; zlib gates on its 2-byte header then decodes). A probe is skipped when its
     #    backend is absent, so detection falls through to the extension guess.
-    for probe_fmt in registry.content_probe_formats():
-        if _content_probe(probe_fmt, data):
+    for probe_fmt, probe in registry.content_probes():
+        if probe(data):
             return FormatInfo(probe_fmt, DetectionConfidence.PROBABLE, "content_probe")
 
-    # 4. Extension-only guess.
+    # 3. Extension-only guess.
     if ext_fmt is not None:
         return FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension")
 

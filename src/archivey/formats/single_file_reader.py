@@ -16,9 +16,8 @@ Phase 2); only their *seekable-decompressor* refinements remain for Phase 8.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Callable, ClassVar, Iterator, Mapping
+from typing import BinaryIO, Iterator
 
 from archivey.internal.config import StreamConfig
 from archivey.internal.cost import (
@@ -34,9 +33,11 @@ from archivey.internal.errors import (
 from archivey.internal.reader import BaseArchiveReader, ReadBackend
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.codecs import (
-    codec_for_stream_format,
+    SINGLE_FILE_CODECS,
+    MetadataContext,
     open_codec_stream,
     resolve_codec,
+    stream_codec_for_format,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.streams.streamtools import is_seekable, is_stream
@@ -44,43 +45,15 @@ from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
-    MagicSignature,
     MemberType,
-    StreamFormat,
 )
 
-# Standalone-stream extensions recognized for member-name inference + extension detection.
-# (The combined `tar.gz`/`.tgz` names are a format-detection concern, not single-file naming.)
-_EXTENSIONS: dict[str, ArchiveFormat] = {
-    ".gz": ArchiveFormat.GZ,
-    ".bz2": ArchiveFormat.BZ2,
-    ".xz": ArchiveFormat.XZ,
-    ".zst": ArchiveFormat.ZST,
-    ".lz4": ArchiveFormat.LZ4,
-    ".lz": ArchiveFormat.LZIP,
-    ".zz": ArchiveFormat.ZLIB,
-    ".br": ArchiveFormat.BROTLI,
-    ".Z": ArchiveFormat.Z,
-}
-
-# Lowercased recognized compression extensions, for the "strip vs append .uncompressed" rule.
-_COMPRESSION_EXTS: frozenset[str] = frozenset(ext.lower() for ext in _EXTENSIONS)
-
-_FORMATS: tuple[ArchiveFormat, ...] = (
-    ArchiveFormat.GZ,
-    ArchiveFormat.BZ2,
-    ArchiveFormat.XZ,
-    ArchiveFormat.ZST,
-    ArchiveFormat.LZ4,
-    ArchiveFormat.LZIP,
-    ArchiveFormat.ZLIB,
-    ArchiveFormat.BROTLI,
-    ArchiveFormat.Z,
+# Lowercased standalone-compression extensions, for the "strip vs append .uncompressed" rule
+# in member-name inference. Sourced from the codec objects. (The combined `tar.gz`/`.tgz`
+# names are a format-detection concern, not single-file naming.)
+_COMPRESSION_EXTS: frozenset[str] = frozenset(
+    ext.lower() for c in SINGLE_FILE_CODECS for ext in c.extensions
 )
-
-# How many header bytes to peek for cheap metadata (gzip FNAME/mtime). Long stored names
-# beyond this are simply not surfaced.
-_HEADER_PEEK = 512
 
 
 def _infer_member_name(archive_name: str | None) -> str:
@@ -115,7 +88,8 @@ class SingleFileReader(BaseArchiveReader):
             )
         super().__init__(format, streaming, archive_name)
         self._source = source
-        self._codec = codec_for_stream_format(format.stream)
+        self._stream_codec = stream_codec_for_format(format.stream)
+        self._codec = self._stream_codec.codec
         self._seekable = not is_stream(source) or is_seekable(source)
 
         # A non-seekable source cannot be randomly accessed, so engaging a random-access
@@ -125,6 +99,9 @@ class SingleFileReader(BaseArchiveReader):
         # Keep the codec sequential for such a source regardless of the archive's streaming flag.
         self._codec_config = StreamConfig(streaming=self._streaming or not self._seekable)
 
+        # The compressed-source header, read at most once and cached (only the gzip metadata
+        # hook needs it; codecs without header metadata never trigger a read). See _peek_header.
+        self._header_cache: bytes | None = None
         self._member = self._build_member(archive_name)
         # Open the decompression stream eagerly so format/seekability errors (e.g. a
         # non-seekable unix-compress source, which the codec rejects via the translator)
@@ -146,67 +123,43 @@ class SingleFileReader(BaseArchiveReader):
             compressed_size=compressed_size,
             modified=None,
         )
-        hook = self._METADATA_HOOKS.get(self._format.stream)
-        if hook is not None:
-            hook(self, member)
+        # Per-codec metadata extraction lives on the codec object (gzip FNAME/mtime, xz/lzip
+        # decompressed size); the reader stays codec-agnostic and just supplies the
+        # source-reading hooks the extractor may need (the base method is a no-op).
+        self._stream_codec.extract_metadata(self._metadata_context(), member)
         return member
-
-    # --- per-codec metadata hooks (dispatch table, not an if/elif chain) ------------------
-
-    def _gzip_metadata(self, member: ArchiveMember) -> None:
-        """Surface gzip's stored filename (FNAME) and mtime from the fixed/optional header.
-
-        RFC 1952 specifies the FNAME field as ISO-8859-1 (Latin-1), so the decoded value in
-        ``extra`` uses that encoding; ``raw_name`` keeps the verbatim stored bytes.
-        """
-        header = self._peek_header()
-        if len(header) < 10 or header[:2] != b"\x1f\x8b":
-            return
-        flg = header[3]
-        mtime = int.from_bytes(header[4:8], "little")
-        if mtime != 0:
-            member.modified = datetime.fromtimestamp(mtime, tz=timezone.utc)
-
-        pos = 10
-        if flg & 0x04:  # FEXTRA: 2-byte length + data
-            if pos + 2 > len(header):
-                return
-            xlen = int.from_bytes(header[pos : pos + 2], "little")
-            pos += 2 + xlen
-        if flg & 0x08:  # FNAME: null-terminated stored filename (Latin-1 per RFC 1952)
-            end = header.find(b"\x00", pos)
-            if end != -1:
-                name_bytes = header[pos:end]
-                member.raw_name = name_bytes
-                member.extra["gzip.original_filename"] = name_bytes.decode("latin-1")
-
-    def _sized_stream_metadata(self, member: ArchiveMember) -> None:
-        """Fill the decompressed size for formats whose index/trailer records it (xz, lzip)."""
-        member.size = self._probe_decompressed_size()
-
-    # StreamFormat -> metadata hook. A codec with no extra metadata registers no hook.
-    _METADATA_HOOKS: ClassVar[
-        dict[StreamFormat, Callable[["SingleFileReader", ArchiveMember], None]]
-    ] = {
-        StreamFormat.GZIP: _gzip_metadata,
-        StreamFormat.XZ: _sized_stream_metadata,
-        StreamFormat.LZIP: _sized_stream_metadata,
-    }
 
     # --- metadata helpers ----------------------------------------------------------------
 
-    def _peek_header(self) -> bytes:
-        """The first bytes of the compressed stream, without consuming the source."""
+    def _metadata_context(self) -> MetadataContext:
+        return MetadataContext(
+            peek_header=self._peek_header,
+            probe_decompressed_size=self._probe_decompressed_size,
+        )
+
+    def _peek_header(self, length: int) -> bytes:
+        """The first ``length`` bytes of the compressed source, read once and cached.
+
+        The first call (or one needing more than is cached) reads the source a single time;
+        later calls serve from the cache without re-opening or re-seeking. For a non-seekable
+        source this reuses the prefix detection already buffered in the ``PeekableStream``; for
+        a path it opens a fresh handle; for a seekable stream it reads and rewinds once.
+        """
+        if self._header_cache is None or len(self._header_cache) < length:
+            self._header_cache = self._read_source_prefix(length)
+        return self._header_cache[:length]
+
+    def _read_source_prefix(self, length: int) -> bytes:
         from archivey.internal.streams.peekable import PeekableStream
 
         src = self._source
         if isinstance(src, Path):
             with open(src, "rb") as f:
-                return f.read(_HEADER_PEEK)
+                return f.read(length)
         if isinstance(src, PeekableStream):
-            return src.peek(_HEADER_PEEK)
+            return src.peek(length)
         if is_seekable(src):
-            data = src.read(_HEADER_PEEK)
+            data = src.read(length)
             src.seek(0)
             return data
         return b""
@@ -286,26 +239,18 @@ class SingleFileReader(BaseArchiveReader):
 
 
 class SingleFileBackend(ReadBackend):
-    """One backend serving every standalone single-file compressor."""
+    """One backend serving every standalone single-file compressor.
 
-    FORMATS: tuple[ArchiveFormat, ...] = _FORMATS
-    EXTENSIONS: Mapping[str, ArchiveFormat] = _EXTENSIONS
-    MAGIC: tuple[MagicSignature, ...] = (
-        MagicSignature(0, b"\x1f\x8b", ArchiveFormat.GZ),
-        MagicSignature(0, b"BZh", ArchiveFormat.BZ2),
-        MagicSignature(0, b"\xfd7zXZ\x00", ArchiveFormat.XZ),
-        MagicSignature(0, b"\x28\xb5\x2f\xfd", ArchiveFormat.ZST),
-        MagicSignature(0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),
-        MagicSignature(0, b"LZIP", ArchiveFormat.LZIP),
-        MagicSignature(0, b"\x1f\x9d", ArchiveFormat.Z),
-        # zlib's 2-byte CMF/FLG header: weak — the detector confirms it with a content probe.
-        MagicSignature(0, b"\x78\x01", ArchiveFormat.ZLIB, weak=True),
-        MagicSignature(0, b"\x78\x5e", ArchiveFormat.ZLIB, weak=True),
-        MagicSignature(0, b"\x78\x9c", ArchiveFormat.ZLIB, weak=True),
-        MagicSignature(0, b"\x78\xda", ArchiveFormat.ZLIB, weak=True),
+    Only the format list is declared here, derived from the codec objects. The detection
+    tables (magic, extensions, content probes) are not duplicated onto this backend — the
+    detector reads them straight from ``STREAM_CODECS`` via the registry — so adding a
+    standalone codec is a single ``StreamCodec`` subclass (see ``compressed-streams`` /
+    ``format-detection``).
+    """
+
+    FORMATS: tuple[ArchiveFormat, ...] = tuple(
+        c.single_file_format for c in SINGLE_FILE_CODECS if c.single_file_format is not None
     )
-    # Brotli has no signature; the detector confirms it by decoding a bounded prefix.
-    CONTENT_PROBE_FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.BROTLI,)
     REQUIRES_SEEK = False  # only unix-compress needs seek; the codec rejects a bad source
 
     def open_read(

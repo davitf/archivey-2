@@ -122,19 +122,32 @@ _FORMAT_NAMES: dict[ArchiveFormat, str] = {
 }
 
 
-class MagicSignature(NamedTuple):
-    """One magic-byte signal a backend declares as data, with the format it implies.
+@dataclass(frozen=True)
+class MissingComponent:
+    """A package / extra / external tool a format is missing, and what it unlocks.
 
-    ``weak`` marks a signal too short/unspecific to trust on its own (the zlib 2-byte
-    CMF/FLG header): the detector only accepts a weak match after a content probe confirms
-    the stream actually decodes (see ``format-detection``). Strong signals are accepted on
-    the byte match alone.
+    Lives here (a leaf module) rather than in the registry so the codec descriptors that
+    declare a codec's ``requirement`` can reference it without a registry↔codecs import
+    cycle. Re-exported from ``internal.registry`` for the public API.
+    """
+
+    name: str  # e.g. "pycdlib", "[7z]", "unrar"
+    install_hint: str  # e.g. "pip install archivey[iso]"
+    unlocks: tuple[str, ...] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
+
+
+class MagicSignature(NamedTuple):
+    """One exact magic-byte signal a backend declares as data, with the format it implies.
+
+    A match is accepted on the byte comparison alone. Formats too unspecific for an exact
+    magic (zlib's 2-byte CMF/FLG header) or with no signature at all (Brotli) are recognized
+    by a content probe instead — see the codec descriptor's ``content_probe`` and
+    ``format-detection``.
     """
 
     offset: int
     magic: bytes
     format: "ArchiveFormat"
-    weak: bool = False
 
 
 class MemberType(Enum):
