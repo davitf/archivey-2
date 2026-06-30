@@ -273,6 +273,14 @@ def test_corrupt_tar_header_raises() -> None:
     assert isinstance(excinfo.value.__cause__, tarfile.ReadError)
 
 
+def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
+    # A genuine OSError (missing file) is not archive corruption: it must propagate
+    # unchanged, not be reclassified as CorruptionError (error-handling spec).
+    missing = tmp_path / "does-not-exist.tar"
+    with pytest.raises(FileNotFoundError):
+        open_archive(missing, format=ArchiveFormat.TAR)
+
+
 def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> None:
     # A gzip-wrapped tar whose deflate body is mangled: the corruption surfaces through the
     # codec layer as a CorruptionError while scanning/reading (not a raw zlib.error).

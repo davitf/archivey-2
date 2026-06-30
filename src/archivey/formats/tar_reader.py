@@ -125,7 +125,10 @@ class TarReader(BaseArchiveReader):
 
         try:
             self._tar = self._open_tarfile(source, format, streaming)
-        except (tarfile.TarError, OSError) as exc:
+        except tarfile.TarError as exc:
+            # Only tarfile's own (format) errors are translated; a genuine OSError from the
+            # underlying handle propagates unchanged (see error-handling: "Genuine runtime
+            # and I/O errors are not reclassified").
             raise self._translate_open_error(exc) from exc
 
     def _open_tarfile(
@@ -188,7 +191,8 @@ class TarReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         try:
             members = self._tar.getmembers()  # forces the full header scan
-        except (tarfile.TarError, OSError) as exc:
+        except tarfile.TarError as exc:
+            # A genuine OSError from the source is not caught here, so it propagates unchanged.
             translated = self._translate_exception(exc)
             if translated is not None:
                 self._stamp_error_context(translated)
@@ -254,7 +258,8 @@ class TarReader(BaseArchiveReader):
         assert isinstance(info, tarfile.TarInfo), "TAR member is missing its TarInfo handle"
         try:
             raw = self._tar.extractfile(info)
-        except (tarfile.TarError, OSError) as exc:
+        except tarfile.TarError as exc:
+            # A genuine OSError from the source is not caught here, so it propagates unchanged.
             translated = self._translate_exception(exc)
             if translated is not None:
                 self._stamp_error_context(translated, member.name)

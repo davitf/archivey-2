@@ -67,10 +67,12 @@ def _optional(name: str) -> ModuleType | None:
 pycdlib = _optional("pycdlib")
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 
-# Errors raised while opening/reading an image: pycdlib's own exception plus OS errors from
-# the underlying handle. Built defensively so the module imports even without pycdlib.
-_ISO_ERRORS: tuple[type[Exception], ...] = (
-    (_pycdlib_exc.PyCdlibException, OSError) if _pycdlib_exc is not None else (OSError,)
+# Only pycdlib's *own* exception is translated to an ArchiveyError. A genuine OSError from
+# the underlying handle (file not found, permission, physical media error) is unrelated to
+# ISO decoding and MUST propagate unchanged (see error-handling: "Genuine runtime and I/O
+# errors are not reclassified"). Built defensively so the module imports without pycdlib.
+_PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
+    (_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ()
 )
 
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
@@ -106,13 +108,14 @@ class _PyCdlibStream(io.RawIOBase):
     ``PyCdlibIO`` must be *entered* (its context manager sets up the read offset), and its
     ``readinto`` mis-signals EOF when wrapped in a ``BufferedReader`` — it keeps reading into
     the ISO sector padding past the file's logical end. Routing ``readinto`` through
-    ``read`` (which clamps to the logical length) avoids that. Closing exits the underlying
-    context manager.
+    ``read`` (which clamps to the logical length) avoids that. Entering happens in
+    ``__init__`` and exiting in ``close()``, so the context lifecycle lives in one place.
     """
 
     def __init__(self, raw: Any) -> None:
         super().__init__()
         self._raw = raw
+        raw.__enter__()  # sets up the read offset; close() exits the context
 
     def readable(self) -> bool:
         return True
@@ -181,7 +184,7 @@ class IsoReader(BaseArchiveReader):
                 self._iso.open(str(source))
             else:
                 self._iso.open_fp(source)
-        except _ISO_ERRORS as exc:
+        except _PYCDLIB_ERRORS as exc:
             raise self._open_error(exc) from exc
 
         # Auto-select the richest namespace: Rock Ridge > Joliet > plain ISO 9660.
@@ -231,7 +234,7 @@ class IsoReader(BaseArchiveReader):
                     yield self._make_member(self._join(dirpath, name))
                 for name in filenames:
                     yield self._make_member(self._join(dirpath, name))
-        except _ISO_ERRORS as exc:
+        except _PYCDLIB_ERRORS as exc:
             translated = self._translate_exception(exc)
             if translated is not None:
                 self._stamp_error_context(translated)
@@ -326,7 +329,7 @@ class IsoReader(BaseArchiveReader):
             return None
         try:
             target = rr.symlink_path()
-        except _ISO_ERRORS:
+        except _PYCDLIB_ERRORS:
             return None
         return target.decode("utf-8", errors="surrogateescape") if target else None
 
@@ -337,14 +340,16 @@ class IsoReader(BaseArchiveReader):
         assert isinstance(ns_path, str), "ISO member is missing its namespace path"
         try:
             raw = self._iso.open_file_from_iso(**{self._path_kw: ns_path})
-            raw.__enter__()  # sets up the read offset; _PyCdlibStream.close() exits it
-        except _ISO_ERRORS as exc:
+            # Construct inside the try so any enter-time pycdlib error is translated too;
+            # _PyCdlibStream enters the PyCdlibIO context in its __init__.
+            stream = _PyCdlibStream(raw)
+        except _PYCDLIB_ERRORS as exc:
             translated = self._translate_exception(exc)
             if translated is not None:
                 self._stamp_error_context(translated, member.name)
                 raise translated from exc
             raise
-        return self._wrap_member_stream(cast("BinaryIO", _PyCdlibStream(raw)), member.name)
+        return self._wrap_member_stream(cast("BinaryIO", stream), member.name)
 
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(

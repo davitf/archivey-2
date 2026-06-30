@@ -197,6 +197,14 @@ def test_corrupt_iso_raises() -> None:
         open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
 
 
+def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
+    # A genuine OSError (missing file) is unrelated to ISO decoding and must propagate
+    # unchanged, not be reclassified as CorruptionError (error-handling spec).
+    missing = tmp_path / "does-not-exist.iso"
+    with pytest.raises(FileNotFoundError):
+        open_archive(missing, format=ArchiveFormat.ISO)
+
+
 # ---------------------------------------------------------------------------
 # Availability (FULL when pycdlib is present)
 # ---------------------------------------------------------------------------
