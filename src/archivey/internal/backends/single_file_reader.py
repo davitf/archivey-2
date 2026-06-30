@@ -19,18 +19,18 @@ import os
 from pathlib import Path
 from typing import BinaryIO, Iterator
 
-from archivey.internal.config import StreamConfig
-from archivey.internal.cost import (
+from archivey.cost import (
     AccessCost,
     CostReceipt,
     ListingCost,
     StreamCapability,
 )
-from archivey.internal.errors import (
+from archivey.exceptions import (
     ArchiveyError,
     UnsupportedOperationError,
 )
-from archivey.internal.reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.config import StreamConfig
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
@@ -41,7 +41,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.streams.streamtools import is_seekable, is_stream
-from archivey.internal.types import (
+from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,

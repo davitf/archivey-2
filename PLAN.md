@@ -11,6 +11,32 @@
 > new tests green. **"Done" for a phase = the listed spec scenarios are covered by
 > passing tests in the new suite** — not "the diff looks finished."
 
+### Phase ↔ specs ↔ OpenSpec changes
+
+The authoritative capability list lives in `openspec/project.md` (capability map +
+implementation-order table). This table ties each **PLAN** phase to the specs it must
+cover and the matching **OpenSpec change** (under `openspec/changes/`; completed phases
+are archived to `openspec/changes/archive/`). Phases without a change yet need a proposal
+(`openspec-propose` skill) before implementation (`openspec-apply-change` skill).
+
+| Phase | Theme | Primary specs (`openspec/specs/`) | OpenSpec change |
+|-------|-------|-----------------------------------|-----------------|
+| 1 | Scaffold + spine + test harness + directory | `packaging-and-extras`, `backend-registry`, `archive-data-model`, `error-handling`, `access-mode-and-cost` (types), `format-directory`, `logging`, `testing-contract` (foundations) | `archive/2026-06-19-phase-1-scaffold-and-spine` ✓ |
+| 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams` | `archive/2026-06-21-phase-2-stream-layer` ✓ |
+| 3 | Indexed leaf formats + detection | `format-zip`, `format-tar` (random-access read), `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry`, `access-mode-and-cost` | `archive/2026-06-30-phase-3-indexed-leaf-formats` ✓ |
+| 4 | TAR streaming + safe extraction | `format-tar` (forward-only `stream_members`, hardlinks, truncation), `safe-extraction`, `archive-reading` (sequential + `stream_members`), `format-detection` (gzip-wrapped tar regression), `testing-contract` (adversarial + non-seekable `tar.gz`) | `archive/2026-06-30-package-layout-restructure` ✓ → `phase-4-tar-streaming` + `phase-4-safe-extraction` |
+| 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | — |
+| 6 | Writing support | `archive-writing`, `format-zip` / `format-tar` (writers) | — |
+| 7 | Native 7z + RAR read | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
+| 8 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` | — |
+| 9 | CLI | `cli` | — |
+| 10 | Polish + oracle retirement | `packaging-and-extras` (finalize), `cli`, `testing-contract` (full corpus) | — |
+
+**In-flight changes unrelated to a PLAN phase** (do not block Phase 4, but may land
+alongside): `codec-descriptor-refactor`, `compression-library-evaluation`,
+`seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`,
+`zstd-stdlib-backend-migration` (Phase 8 / stream-layer follow-ons).
+
 ---
 
 ## Clean-slate, but layered
@@ -240,6 +266,12 @@ degradation).
 ---
 
 ## Phase 4 — TAR streaming, sequential access, and safe extraction
+
+**Specs:** `format-tar` (streaming + extraction semantics), `safe-extraction` (all),
+`archive-reading` (forward iteration, `stream_members`, streaming-mode enforcement),
+`format-detection` (gzip-wrapped tar — regression), `testing-contract` (adversarial corpus,
+non-seekable `tar.gz`). **OpenSpec changes:** `package-layout-restructure` (merge before
+Phase 4 implementation) → `phase-4-tar-streaming` + `phase-4-safe-extraction`.
 
 **Goal:** `stream_members()` bounded-memory streaming works on a non-seekable
 source (exercised on TAR); `ExtractionCoordinator` replaces the deferred state

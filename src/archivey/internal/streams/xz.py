@@ -27,7 +27,7 @@ import zlib
 from dataclasses import dataclass
 from typing import BinaryIO
 
-from archivey.internal.errors import CorruptionError, TruncatedError
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,

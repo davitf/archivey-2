@@ -27,23 +27,23 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, cast
 if TYPE_CHECKING:
     from pycdlib.pycdlibio import PyCdlibIO
 
-from archivey.internal.cost import (
+from archivey.cost import (
     AccessCost,
     CostReceipt,
     ListingCost,
     StreamCapability,
 )
-from archivey.internal.errors import (
+from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
     UnsupportedOperationError,
 )
+from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.naming import normalize_member_name
-from archivey.internal.reader import BaseArchiveReader, ReadBackend
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.streamtools import DelegatingStream
-from archivey.internal.types import (
+from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,

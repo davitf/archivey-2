@@ -11,16 +11,16 @@ import zlib
 
 import pytest
 
-from archivey.internal.config import (
-    AcceleratorMode,
-    StreamConfig,
-)
-from archivey.internal.errors import (
+from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
+)
+from archivey.internal.config import (
+    AcceleratorMode,
+    StreamConfig,
 )
 from archivey.internal.streams import crypto
 from archivey.internal.streams.codecs import (
@@ -31,7 +31,7 @@ from archivey.internal.streams.codecs import (
     resolve_codec,
 )
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.internal.types import StreamFormat
+from archivey.types import StreamFormat
 from tests.conftest import requires
 from tests.streams_util import (
     NonSeekableBytesIO,

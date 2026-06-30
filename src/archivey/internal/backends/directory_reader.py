@@ -8,15 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping
 
-from archivey.internal.cost import (
+from archivey.cost import (
     AccessCost,
     CostReceipt,
     ListingCost,
     StreamCapability,
 )
-from archivey.internal.reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.registry import register_reader
-from archivey.internal.types import (
+from archivey.types import (
     EXTRA_IS_JUNCTION,
     ArchiveFormat,
     ArchiveInfo,

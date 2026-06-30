@@ -13,15 +13,15 @@ from typing import BinaryIO, Iterator
 
 import pytest
 
-from archivey.internal.cost import (
+from archivey.cost import (
     AccessCost,
     CostReceipt,
     ListingCost,
     StreamCapability,
 )
-from archivey.internal.errors import ArchiveyError, CorruptionError
-from archivey.internal.reader import BaseArchiveReader
-from archivey.internal.types import (
+from archivey.exceptions import ArchiveyError, CorruptionError
+from archivey.internal.base_reader import BaseArchiveReader
+from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,

@@ -13,7 +13,7 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO, Callable, NoReturn
 
-from archivey.internal.errors import ArchiveyError
+from archivey.exceptions import ArchiveyError
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
 

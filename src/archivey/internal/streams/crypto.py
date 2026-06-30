@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Protocol
 
-from archivey.internal.errors import PackageNotInstalledError
+from archivey.exceptions import PackageNotInstalledError
 
 # The package name surfaced to users (matches the [crypto] extra).
 CRYPTO_PACKAGE = "cryptography"

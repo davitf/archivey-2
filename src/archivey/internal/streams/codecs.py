@@ -30,14 +30,14 @@ from enum import Enum
 from types import ModuleType
 from typing import BinaryIO, Callable, ClassVar
 
-from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
-from archivey.internal.errors import (
+from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
 )
+from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.streams.archive_stream import (
     ArchiveStream,
     ExceptionTranslator,
@@ -55,7 +55,7 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
 )
 from archivey.internal.streams.xz import XzDecompressorStream
-from archivey.internal.types import (
+from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     ContainerFormat,

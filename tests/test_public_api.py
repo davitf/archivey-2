@@ -30,7 +30,7 @@ def test_public_interface_hides_internal_hooks() -> None:
     The concrete machinery (``_open_member`` etc.) lives on the internal
     ``BaseArchiveReader`` helper; the public interface declares only the public contract.
     """
-    from archivey.internal.reader import BaseArchiveReader
+    from archivey.internal.base_reader import BaseArchiveReader
 
     assert issubclass(BaseArchiveReader, archivey.ArchiveReader)
     internal_hooks = {

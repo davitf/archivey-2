@@ -8,7 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple
 
 if TYPE_CHECKING:
-    from archivey.internal.cost import CostReceipt
+    from archivey.cost import CostReceipt
 
 
 class ContainerFormat(str, Enum):

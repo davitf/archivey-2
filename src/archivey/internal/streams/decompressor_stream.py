@@ -26,7 +26,7 @@ from typing import (
     cast,
 )
 
-from archivey.internal.errors import CorruptionError, TruncatedError
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, ensure_bufferedio
 

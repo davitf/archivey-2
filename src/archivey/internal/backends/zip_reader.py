@@ -17,25 +17,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, cast
 
-from archivey.internal.cost import (
+from archivey.cost import (
     AccessCost,
     CostReceipt,
     ListingCost,
     StreamCapability,
 )
-from archivey.internal.errors import (
+from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
+from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import normalize_member_name
-from archivey.internal.reader import BaseArchiveReader, ReadBackend
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.streamtools import is_seekable, is_stream
-from archivey.internal.types import (
+from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,

@@ -27,12 +27,12 @@ from enum import Enum
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.internal.errors import ArchiveyError, FormatDetectionError
+from archivey.exceptions import ArchiveyError, FormatDetectionError
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from archivey.internal.streams.streamtools import is_seekable, read_exact
-from archivey.internal.types import (
+from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     MagicSignature,

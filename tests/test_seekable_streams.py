@@ -12,8 +12,8 @@ import zlib
 
 import pytest
 
+from archivey.exceptions import PackageNotInstalledError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
-from archivey.internal.errors import PackageNotInstalledError, TruncatedError
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_backwards
 from archivey.internal.streams.xz import XzDecompressorStream, _read_xz_index_backwards
