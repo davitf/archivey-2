@@ -96,19 +96,57 @@
   folders in parallel (py7zr does this); members *within* one solid block stay
   sequential. No benefit for a single-block solid archive.
 
-- **Seek-index persistence** — save/load the gzip/bz2/xz seek points (the index built by
-  `seekable-decompressor-streams`; `rapidgzip`/`indexed_bzip2` already expose import/export)
-  to disk so repeated random access into the same file is cheap across runs. **Must guard
-  against staleness:** key/validate the stored index against the archive's identity
-  (mtime + size, ideally a content hash) so an index is never reused for a modified
-  archive.
+- **Efficient seekable zstd — probably a *native* frame-index reader, not `indexed_zstd`.**
+  zstd currently has *no* fast random access: a backward seek re-decompresses from the start
+  (rewind + warning), like brotli/lz4/zlib. The obvious candidate,
+  [`indexed_zstd`](https://github.com/martinellimarco/indexed_zstd) (martinellimarco; the zstd
+  backend ratarmount uses, wrapping `libzstd-seek`), is a heavy Cython/C++17 extension that
+  statically bundles a C++ core "based on `indexed_bzip2`" — so it carries the *same class* of
+  macOS dual-load symbol-collision risk that forced archivey onto a single accelerator library
+  (`docs/known-issues.md`) and would need its own coexistence canary.
 
-- **Archive repair / recovery mode** — best-effort extraction of corrupt or truncated
-  archives, returning what is readable rather than failing the whole operation.
-  Synergizes with the native streaming ZIP reader and `OnError.CONTINUE`. (We already have
-  concrete real-world ZIPs that no existing reader repairs but ours plausibly could.)
+  **But first check whether it actually buys us anything our own infrastructure can't.**
+  `libzstd-seek`'s jump table maps **frame boundaries only** — its own header says records map a
+  compressed to an uncompressed position where "both positions refer to frame boundaries", giving
+  "constant-time random access **at zstd frame granularity**". A seek into the middle of a frame
+  jumps to that frame's start and decodes forward; there is **no** intra-frame state
+  checkpointing (unlike `rapidgzip`, which snapshots the inflate window mid-stream). That is
+  *exactly* the granularity our `_SegmentedDecompressorStream` already delivers for **xz** (block
+  index) and **lzip** (member/trailer scan): seek = jump to the segment containing the offset,
+  decode forward within it. So the likely-better path is a **small native zstd reader** that
+  reuses that infrastructure — build a frame index by scanning frame headers (compressed size
+  per frame from its header; decompressed size from the frame's optional `Frame_Content_Size`
+  field or, when present, the *Seekable Zstd* skippable-frame seek table) — getting the same
+  frame-granularity seeking **for free**, with zero new heavy dependency and no macOS risk. This
+  is the zstd analogue of why we wrote `xz.py`/`lzip.py` instead of depending on `python-xz`.
 
-- **Integrity-verify mode** — verify every member against its stored checksum without
-  writing to disk. Marginal value (it's essentially `stream_members()` reading each stream
-  fully and discarding, which already triggers digest verification at EOF), but trivial to
-  add as a named convenience.
+  Things to confirm before committing to the native route:
+  - **Does `indexed_zstd` do anything a frame-index reader wouldn't?** From the docs, no — it is
+    frame-granularity only (no intra-frame seeking). If that holds, the native reader loses
+    nothing. (`rapidgzip`-style intra-member seeking would be the only reason to prefer a heavy
+    lib, and `libzstd-seek` does not do it.)
+  - **Benchmark the candidates — "same granularity" doesn't mean "same speed".** Even at equal
+    seek granularity, the C++ lib might still win on raw throughput (e.g. faster libzstd decode
+    of the forward run within a frame, cheaper jump-table construction, less Python-level
+    overhead) enough to justify adding it as an *accelerator* (the way `rapidgzip` is, behind an
+    extra) rather than rejecting it. Decide with numbers, not just the feature comparison: build a
+    representative large `.zst` (and a multi-frame / *Seekable Zstd* variant), then time several
+    access patterns — cold full sequential read, `SEEK_END` + tail read, a scattered set of random
+    seeks-then-reads, and a backward rewind — across the **stdlib `compression.zstd` reader**, the
+    **native frame-index wrapper**, and **`indexed_zstd`**, measuring wall time, peak memory, and
+    index-build cost. If the native wrapper is within a small constant of `indexed_zstd`, prefer it
+    (no heavy dep, no macOS risk); if `indexed_zstd` is dramatically faster on a real workload,
+    weigh it as an optional accelerator. A `benchmarks/`-style script (cf. DEV's `bench_xz.py`) is
+    the natural home.
+  - **The benefit only exists for multi-frame `.zst`.** A single-frame stream — the common
+    default from the `zstd` CLI and most writers — has exactly one frame, so frame-granularity
+    seeking yields a single seek point (offset 0) and helps neither approach; the win is real
+    only for *Seekable Zstd* files or anything compressed with frame splitting (e.g. `.tar.zst`
+    written that way). Worth measuring how often multi-frame `.zst` actually occurs before
+    investing in either.
+  - **Frames without `Frame_Content_Size`** can't be indexed without decoding them (this is also
+    `libzstd-seek`'s slow fallback). The native reader can simply build the index only when sizes
+    are available (header field or seek table) and otherwise fall back to the rewind path.
+
+  Note `pyzstd.SeekableZstdFile` is **not** a substitute either: it reads only the *Seekable
+  Zstd* container, not plain `.zst`. See `docs/library-analysis.md` (zstd).

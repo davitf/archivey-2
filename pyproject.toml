@@ -61,10 +61,16 @@ recommended-lite = [
 recommended = [
     "archivey[recommended-lite,seekable]",
 ]
+# [all] is the "everything" alias. It currently equals [recommended]: after the
+# compression-library evaluation (docs/library-analysis.md) the two dead alternative
+# backends that used to live here were dropped — python-xz (v2 reads XZ with its own
+# native xz.py over stdlib lzma; archivey-dev#214 — never imported) and pyzstd (the zstd
+# decode decision is stdlib compression.zstd / backports.zstd, not pyzstd; it was only a
+# test-fixture generator and is now in the dev group). A future alternative/secondary
+# backend would be re-added here behind its own extra. tests/test_extras_imported.py guards
+# against a dead dependency slipping back into any user-facing extra.
 all = [
     "archivey[recommended]",
-    "python-xz>=0.5.0",
-    "pyzstd>=0.17.0",
 ]
 
 [dependency-groups]

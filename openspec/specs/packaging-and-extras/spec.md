@@ -63,7 +63,7 @@ compression formats, and the CLI. The mapping is:
 | `[seekable]` | `rapidgzip` | faster gzip/bzip2 decompression **and random access (seeking)** into gz/bz2 streams. rapidgzip backs both codecs (bzip2 via its bundled `IndexedBzip2File`); the standalone `indexed_bzip2` package is deliberately not used (loading both corrupts the heap on macOS). Native C++ lib: install needs a prebuilt wheel, or a C++17 compiler where no wheel exists |
 | `[recommended-lite]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[unix-compress]` + `[cli]` | every format/codec with broadly-wheeled deps; **no build-finicky C++ libs**. Use when `[recommended]` won't install |
 | `[recommended]` | `[recommended-lite]` + `[seekable]` | the **recommended** install — everything in `[recommended-lite]` plus gz/bz2 seeking and speed |
-| `[all]` | `[recommended]` **plus** every alternative/secondary backend | everything, including redundant alternative backends — mainly for testing/benchmarking |
+| `[all]` | `[recommended]` **plus** every alternative/secondary backend (currently none) | everything, including any redundant alternative backends — mainly for testing/benchmarking |
 
 `[recommended]` is the sensible "give me everything useful" install: every
 format/codec with one primary backend each, plus the `[seekable]` backends that add
@@ -77,13 +77,16 @@ that one: it keeps every format and codec (`cryptography`, `pyppmd`, `zstandard`
 fails. A user who hits a build error on `[recommended]` can fall back to
 `[recommended-lite]` without losing any format support.
 
-`[all]` is a superset of `[recommended]` that additionally pulls the **alternative**
+`[all]` is a superset of `[recommended]` that additionally pulls any **alternative**
 backends — performance or compatibility variants that duplicate a capability already
-covered (e.g. `python-xz` as an alternative xz backend, or a second zstd library
-alongside the primary one). Those alternatives are each available behind their own
-extra and exist mainly so the test suite and benchmarks can exercise them; **most
-users should install `[recommended]` (or `[recommended-lite]`), not `[all]`**, because
-the extra alternative libraries add install weight without adding capability.
+covered. **At present there are none**, so `[all]` currently resolves to exactly
+`[recommended]`: the two alternatives that used to live here (`python-xz` as an alternative
+xz backend, and `pyzstd` as a second zstd library) were dropped by the compression-library
+evaluation (`docs/library-analysis.md`) — v2 reads XZ with its own native parser
+(`davitf/archivey-dev#214`) and uses the stdlib zstd line, so neither alternative is
+imported by `src/`. The `[all]` alias is kept so a future alternative backend can be
+re-added behind it without churn; **most users should install `[recommended]` (or
+`[recommended-lite]`), not `[all]`**.
 
 `[7z]` and `[rar]` are **format bundles**: installing `[7z]` enables every 7z
 reading feature and `[rar]` every RAR reading feature that needs a Python package,
@@ -115,9 +118,10 @@ runtime extra. This contract is package-manager-agnostic — `pip install
 archivey[iso]` and `uv add archivey --extra iso` (or `uv pip install`) honor the
 same extras.
 
-Development-only tooling (test / lint / type-check) and the test-oracle libraries
-(`py7zr`, `rarfile`) are NOT runtime extras. They are declared as a PEP 735
-`[dependency-groups]` entry (`dev`), so they are never installed for end users and
+Development-only tooling (test / lint / type-check), the test-oracle libraries
+(`py7zr`, `rarfile`), and the fixture-generator libraries (`ncompress`, an LZW
+*compressor* used to produce `.Z` fixtures) are NOT runtime extras. They are declared as a
+PEP 735 `[dependency-groups]` entry (`dev`), so they are never installed for end users and
 are pulled in by `uv sync` (or `pip install --group dev`) for contributors.
 
 #### Scenario: installing an extra enables exactly its capability
@@ -142,12 +146,44 @@ are pulled in by `uv sync` (or `pip install --group dev`) for contributors.
 #### Scenario: `[all]` additionally pulls alternative backends
 
 - **WHEN** `pip install archivey[all]` is run
-- **THEN** everything in `[recommended]` is installed **plus** the alternative/secondary backends (e.g. `python-xz`, a second zstd library), which add no new capability and are intended for testing and benchmarking
+- **THEN** everything in `[recommended]` is installed **plus** any alternative/secondary backends that add no new capability — of which there are currently none, so `[all]` resolves to exactly `[recommended]` (the dropped `python-xz` / `pyzstd` alternatives are no longer pinned; see `docs/library-analysis.md`)
 
 #### Scenario: RAR reading requires only the system unrar binary
 
 - **WHEN** a core install is used to read RAR data but no `unrar` binary is on PATH
 - **THEN** RAR listing still works (native metadata), but RAR data reads fail with a clear error indicating the external `unrar` tool is required — no pip extra would fix this
+
+---
+
+### Requirement: Optional extras map to exactly the libraries the code uses
+
+User-facing optional **extras** (`[7z]`, `[zstd]`, `[all]`, …) SHALL list only libraries
+that `src/` imports at runtime for that capability; an extra MUST NOT pin a dependency that
+no `src/` code path uses. Libraries needed **only by the test suite** — decode oracles
+(`rarfile`, `py7zr`) and fixture generators (`ncompress`, and `pyzstd` while it is only used
+to *write* zstd fixtures) — SHALL live in the `dev` dependency group, never in a user-facing
+extra. The per-codec library choice and its rationale SHALL be recorded in
+`docs/library-analysis.md`, the source of truth for why each library is used or rejected.
+
+A guard (a unit test or check script) SHALL enforce this so a dead or test-only dependency
+cannot slip back into an extra. A library pinned in an extra **ahead of** its
+implementation phase (e.g. `tqdm` for `[cli]`, `py7zr` for `[7z-write]`) is permitted only
+via an explicit, documented allowlist in that guard.
+
+#### Scenario: no dead optional dependency in a user-facing extra
+
+- **WHEN** the `[all]` extra (or any user-facing extra) is audited against `src/` imports
+- **THEN** every pinned package is reachable from some `src/` code path (or an explicitly allowlisted not-yet-implemented capability), or it is removed
+
+#### Scenario: a test-only library lives in the dev group, not an extra
+
+- **WHEN** a library is imported only by the test suite (an oracle or a fixture generator), e.g. `rarfile`, `py7zr`, `ncompress`, or fixture-only `pyzstd`
+- **THEN** it is declared in the `dev` dependency group and is absent from every user-facing extra
+
+#### Scenario: the zstd extra matches the chosen backend
+
+- **WHEN** the evaluation selects the zstd decode backend
+- **THEN** the `[zstd]` extra pins exactly that package (plus any adopted seekable-zstd backend), and `docs/library-analysis.md` records the choice
 
 ---
 

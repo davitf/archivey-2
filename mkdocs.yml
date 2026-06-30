@@ -5,6 +5,7 @@ site_url: https://davitf.github.io/archivey/
 nav:
   - Home: index.md
   - API reference: api.md
+  - Compression-library analysis: library-analysis.md
   - Known issues: known-issues.md
 
 plugins:
