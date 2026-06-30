@@ -33,9 +33,9 @@ with `StreamNotSeekableError`.
 
 ### Requirement: Truncation check at end of streaming pass
 
-When `strict_eof` is configured on open, the truncation check defined in *Detect truncated
-TAR archives* SHALL run at the end of a forward-only streaming pass as well as after a full
-random-access scan, using the same warn-vs-raise rules.
+The system SHALL run the truncation check defined in *Detect truncated TAR archives* at the
+end of a forward-only streaming pass as well as after a full random-access scan when
+`strict_eof` is configured on open, using the same warn-vs-raise rules.
 
 #### Scenario: truncated streaming tar warns by default
 
