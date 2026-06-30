@@ -110,9 +110,13 @@ class _PyCdlibStream(DelegatingStream):
     so this enters it in ``__init__`` and relies on ``DelegatingStream.close()`` (which calls
     ``inner.close()``, the exact equivalent of ``PyCdlibIO.__exit__``) to exit it, keeping the
     enter/exit lifecycle paired. ``readinto_passthrough=False`` routes ``readinto`` through
-    ``read``: ``PyCdlibIO.readinto`` mis-signals EOF inside a ``BufferedReader`` (it reads into
-    the ISO sector padding past the file's logical end), while ``PyCdlibIO.read`` clamps to the
-    logical length. Read/seek/tell/seekable are inherited delegation.
+    ``read``: on the supported pycdlib floor (verified on 1.14.0) ``PyCdlibIO.readinto``
+    mis-signals EOF — at the member's logical end it returns sector-padding bytes instead of
+    0, so repeated ``readinto`` (e.g. a ``BufferedReader`` over it) reads up to the 2 KiB
+    sector boundary — while ``PyCdlibIO.read`` always clamps to the logical length. (Newer
+    pycdlib, e.g. 1.16, clamps both; the workaround stays for the ``>=1.14`` range and is
+    pinned by the cross-format member-stream contract suite.) Read/seek/tell/seekable are
+    inherited delegation.
     """
 
     def __init__(self, raw: "PyCdlibIO") -> None:
