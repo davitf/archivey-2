@@ -270,8 +270,10 @@ degradation).
 **Specs:** `format-tar` (streaming + extraction semantics), `safe-extraction` (all),
 `archive-reading` (forward iteration, `stream_members`, streaming-mode enforcement),
 `format-detection` (gzip-wrapped tar — regression), `testing-contract` (adversarial corpus,
-non-seekable `tar.gz`). **OpenSpec changes:** `package-layout-restructure` (merge before
-Phase 4 implementation) → `phase-4-tar-streaming` + `phase-4-safe-extraction`.
+non-seekable `tar.gz`). **OpenSpec changes:** `archive/2026-06-30-package-layout-restructure` ✓ →
+`phase-4-tar-streaming` (read/stream path, `strict_eof`) + `phase-4-safe-extraction`
+(`ExtractionCoordinator`, bomb limits) — mergeable in either order; pipe `tar.gz` extract
+needs both.
 
 **Goal:** `stream_members()` bounded-memory streaming works on a non-seekable
 source (exercised on TAR); `ExtractionCoordinator` replaces the deferred state
