@@ -1,5 +1,9 @@
 # Known issues
 
+> See also [Compression-library analysis](library-analysis.md) for which library backs each
+> codec and why — including why `rapidgzip` is the single accelerator library (the issue below)
+> and why an `indexed_zstd` zstd accelerator would face the same constraint.
+
 ## Random-access accelerators on macOS (resolved)
 
 **Status:** resolved. archivey uses a single accelerator library — `rapidgzip` — for both gzip

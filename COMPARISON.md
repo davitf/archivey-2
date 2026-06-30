@@ -26,7 +26,7 @@ The two designs converged on most fundamentals — unified member model, magic-b
 Where they differ, **DEV is ahead on reading depth** and **CSP is ahead on scope and a few safety/ergonomics ideas**:
 
 - DEV solved the solid-archive streaming problem *properly* — true bounded-memory streaming via a background thread + queue for 7z and a single `unrar p` pipe demultiplexer for RAR. CSP's per-block `SpooledTemporaryFile` caching is strictly worse and should be discarded.
-- DEV has an entire subsystem CSP never conceived: **seekable decompressor streams** (XZ block index, lzip trailer scan, rapidgzip/indexed_bzip2 backends) giving random access *inside* compressed streams.
+- DEV has an entire subsystem CSP never conceived: **seekable decompressor streams** (XZ block index, lzip trailer scan, rapidgzip/indexed_bzip2 backends) giving random access *inside* compressed streams. (For the per-codec library choices behind this layer — including the native XZ parser and the zstd backend decision — see [`docs/library-analysis.md`](docs/library-analysis.md).)
 - DEV's test harness (declarative sample archives × format matrix × backend configs ≈ 1,000+ effective cases) is far beyond CSP's plan.
 - CSP has **writing + conversion**, which DEV lacks entirely, plus **decompression-bomb protection** (absent in DEV), and a crisper **cost/access-mode model** — which DEV's own in-progress `openspec` changes (`access-intent`, `base-reader-architecture-extensions`) independently arrived at but have not implemented.
 
