@@ -238,6 +238,23 @@ def test_extended_timestamp_precedence(tmp_path: Path) -> None:
         assert member.modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
 
 
+def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
+    # An unknown extra field (0x1234) preceding the Extended Timestamp (0x5455): the
+    # extra-field walk must skip the unknown field by its declared length and still reach
+    # and parse the timestamp (regression for the field-walking loop).
+    unix_time = 1_600_000_000
+    extra = struct.pack("<HH4s", 0x1234, 4, b"abcd") + struct.pack(
+        "<HHBI", 0x5455, 5, 0x01, unix_time
+    )
+    path = tmp_path / "extra.zip"
+    info = zipfile.ZipInfo("file.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        assert ar["file.txt"].modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
+
+
 def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
     # An Extended Timestamp (0x5455) with flags 0x07 carries modification, access and
     # creation times (in that order); all three should populate the member.

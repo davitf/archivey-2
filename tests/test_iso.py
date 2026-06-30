@@ -11,6 +11,8 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    CompressionAlgorithm,
+    CompressionMethod,
     MemberType,
     detect_format,
     format_availability,
@@ -46,6 +48,13 @@ def _build_iso(*, rock_ridge: bool, joliet: bool) -> bytes:
         "/FILE.TXT;1",
         rr_name="file.txt" if rock_ridge else None,
         joliet_path="/file.txt" if joliet else None,
+    )
+    iso.add_fp(
+        io.BytesIO(b""),
+        0,
+        "/EMPTY.TXT;1",
+        rr_name="empty.txt" if rock_ridge else None,
+        joliet_path="/empty.txt" if joliet else None,
     )
     iso.add_directory(
         "/DIR",
@@ -160,6 +169,43 @@ def test_read_from_seekable_stream() -> None:
     data = _build_iso(rock_ridge=True, joliet=False)
     with open_archive(io.BytesIO(data)) as ar:
         assert ar.read("file.txt") == b"hello world"
+
+
+def test_read_empty_member(rock_ridge_iso: Path) -> None:
+    with open_archive(rock_ridge_iso) as ar:
+        assert ar.read("empty.txt") == b""
+
+
+def test_seek_within_opened_member(rock_ridge_iso: Path) -> None:
+    # The opened member stream is seekable (PyCdlibIO via _PyCdlibStream/DelegatingStream).
+    with open_archive(rock_ridge_iso) as ar:
+        with ar.open("file.txt") as f:
+            assert f.read(5) == b"hello"
+            f.seek(0)
+            assert f.read() == b"hello world"
+
+
+def test_streaming_over_seekable_iso(rock_ridge_iso: Path) -> None:
+    # ISO is random-access, but a streaming=True (forward-only) pass over a seekable source
+    # still works and yields the members with their data.
+    with open_archive(rock_ridge_iso, streaming=True) as ar:
+        collected = {
+            m.name: (s.read() if s is not None else None) for m, s in ar.stream_members()
+        }
+        assert collected["file.txt"] == b"hello world"
+        assert collected["empty.txt"] == b""
+
+
+def test_file_member_storage_attributes(rock_ridge_iso: Path) -> None:
+    # ISO members are stored uncompressed and unencrypted, with no per-member checksum.
+    with open_archive(rock_ridge_iso) as ar:
+        m = ar["file.txt"]
+        assert m.type == MemberType.FILE
+        assert m.size == len(b"hello world")
+        assert m.compressed_size == m.size
+        assert m.compression == (CompressionMethod(algo=CompressionAlgorithm.STORED),)
+        assert m.is_encrypted is False
+        assert not m.hashes
 
 
 # ---------------------------------------------------------------------------

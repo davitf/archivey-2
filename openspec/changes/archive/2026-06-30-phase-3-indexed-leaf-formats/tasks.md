@@ -262,8 +262,16 @@ incrementally — each as its format's stage lands.
       ISO-without-pycdlib error + hint (end-to-end degradation).
 - [x] 8.6 `access-mode-and-cost` indexed-listing / random-access (default
       `streaming=False`): **(S1)** ZIP + non-seekable ZIP fail-fast; **(S3)** TAR.
-- [ ] 8.7 Retire the matching `tests/_dev_oracle/` coverage as each format transfers
-      (per stage).
+- [~] 8.7 Retire the matching `tests/_dev_oracle/` coverage as each format transfers
+      (per stage). Done: the single-concern oracle files for formats fully migrated this
+      phase — `test_iso_reader.py` (→ `tests/test_iso.py`) and `test_zip_extra_fields.py`
+      (→ `tests/test_zip.py`, incl. the unknown-extra-field-before-timestamp case) —
+      retired, after confirming the v2 suite covers their special cases (member attributes,
+      non-ASCII filenames, truncation/corruption). Carried forward: the multi-format harness
+      files (`test_read_archives.py`, `test_nested_compressed_archives.py`,
+      `test_corrupted_archives.py`, `test_open_nonseekable.py`, …) still exercise unported
+      formats (7z/RAR → Phase 7) and Phase-4 streaming/extraction, so they retire as those
+      land. The exhaustive corrupt/truncated matrix likewise consolidates in Phase 10 (8.8).
 - [~] 8.8 **Per-format corrupt/truncated handling** — opening or reading a corrupt /
       truncated archive raises `CorruptionError` / `TruncatedError` (with the original
       exception as `__cause__`), exercised **per backend as it lands** rather than

@@ -13,6 +13,8 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    CompressionAlgorithm,
+    CompressionMethod,
     MemberType,
     open_archive,
 )
@@ -149,6 +151,9 @@ def test_member_metadata(plain_tar: Path) -> None:
         assert f.uname == "alice" and f.gname == "staff"
         assert f.modified == datetime.fromtimestamp(1_600_000_000, tz=timezone.utc)
         assert f.modified.tzinfo is not None  # tz-aware UTC
+        # tar stores members uncompressed; no encryption.
+        assert f.compression == (CompressionMethod(algo=CompressionAlgorithm.STORED),)
+        assert f.is_encrypted is False
 
 
 def test_directory_and_symlink_types(plain_tar: Path) -> None:
@@ -213,7 +218,29 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
     path = tmp_path / "u.tar"
     path.write_bytes(buf.getvalue())
     with open_archive(path) as ar:
-        assert ar["café.txt"].raw_name == "café.txt".encode("utf-8")
+        m = ar["café.txt"]
+        assert m.name == "café.txt"  # decoded name round-trips
+        assert m.raw_name == "café.txt".encode("utf-8")  # verbatim stored bytes
+
+
+def test_pax_atime_ctime(tmp_path: Path) -> None:
+    # PAX access/creation times live only in pax_headers (tarfile does not fold them into
+    # TarInfo like mtime); the backend surfaces them as accessed/created.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo("p.txt")
+        info.size = 1
+        info.pax_headers["atime"] = "1600000100.5"
+        info.pax_headers["ctime"] = "1600000200.25"
+        t.addfile(info, io.BytesIO(b"x"))
+    path = tmp_path / "pax_times.tar"
+    path.write_bytes(buf.getvalue())
+    with open_archive(path) as ar:
+        m = ar["p.txt"]
+        assert m.accessed is not None
+        assert abs(m.accessed.timestamp() - 1_600_000_100.5) < 1e-3
+        assert m.created is not None
+        assert abs(m.created.timestamp() - 1_600_000_200.25) < 1e-3
 
 
 # ---------------------------------------------------------------------------
