@@ -43,6 +43,11 @@ new backend code.
 - **THEN** that format is readable as a single-file archive through the existing `SingleFileBackend` without adding a new `ReadBackend` subclass
 - **AND** its availability is reported by `format_availability()` from the new codec backend's presence
 
+## RENAMED Requirements
+
+- FROM: `### Requirement: Surface the gzip stored filename in `raw_filename``
+- TO: `### Requirement: Surface the gzip stored filename`
+
 ## MODIFIED Requirements
 
 ### Requirement: Surface the gzip stored filename

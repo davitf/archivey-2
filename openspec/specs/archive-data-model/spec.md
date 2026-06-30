@@ -3,82 +3,59 @@
 ## Purpose
 
 Defines the core data types that flow through the entire Archivey public API: the compositional `ArchiveFormat` `(container, stream)` model and member-type enumerations, the compression algorithm model, the mutable `ArchiveMember` dataclass that represents a single archive entry, and the `ArchiveInfo` dataclass that carries archive-level metadata. These types are the shared contract between readers, writers, backends, and callers.
-
 ## Requirements
-
 ### Requirement: Archive format identity (ArchiveFormat)
 
-The system SHALL model a format as the combination of a **container** and a
-**stream** codec, rather than a single flat enum. `ContainerFormat` names the member
-layout (zip, tar, 7z, …) and `StreamFormat` names the outer single-stream codec the
-container is wrapped in (gzip, xz, … or `UNCOMPRESSED`). `ArchiveFormat` is a frozen
+The system SHALL model a format as the combination of a **container** and a **stream**
+codec, rather than a single flat enum. `ContainerFormat` names the member layout (zip,
+tar, 7z, …) and `StreamFormat` names the outer single-stream codec the container is
+wrapped in (gzip, xz, … or `UNCOMPRESSED`). `ArchiveFormat` is a frozen
 `(container, stream)` dataclass; the familiar named formats (`ZIP`, `TAR_GZ`,
 `SEVEN_Z`, …) are predefined class-var instances, so callers keep writing
-`ArchiveFormat.TAR_GZ` while the model underneath is compositional. This is the DEV
-model and lets `tar` × {gzip, bzip2, xz, zstd, lz4, …} be expressed without a
-combinatorial enum.
+`ArchiveFormat.TAR_GZ` while the model underneath is compositional.
+
+`StreamFormat` SHALL cover every outer single-stream codec the library can read as a
+standalone stream, so that single-file and `tar.<codec>` formats are all expressible:
 
 ```python
-class ContainerFormat(StrEnum):
-    ZIP        = "zip"
-    TAR        = "tar"
-    RAR        = "rar"
-    SEVEN_Z    = "7z"
-    ISO        = "iso"
-    DIRECTORY  = "directory"   # plain filesystem directory
-    RAW_STREAM = "raw_stream"  # a bare single-file compressed stream (no container)
-    UNKNOWN    = "unknown"
-
 class StreamFormat(StrEnum):
-    UNCOMPRESSED = "uncompressed"
-    GZIP         = "gz"
-    BZIP2        = "bz2"
-    XZ           = "xz"
-    ZSTD         = "zst"     # requires [zstd] extra
-    LZ4          = "lz4"     # requires [lz4] extra
-    # extensible: new outer codecs are added here (lzip, brotli, …)
-
-@dataclass(frozen=True)
-class ArchiveFormat:
-    container: ContainerFormat
-    stream: StreamFormat
-
-    def file_extension(self) -> str: ...   # e.g. ("tar","gz") -> "tar.gz"
-
-    # Predefined named instances (class vars):
-    ZIP       = ArchiveFormat(ContainerFormat.ZIP,        StreamFormat.UNCOMPRESSED)
-    TAR       = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.UNCOMPRESSED)
-    TAR_GZ    = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.GZIP)
-    TAR_BZ2   = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.BZIP2)
-    TAR_XZ    = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.XZ)
-    TAR_ZST   = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.ZSTD)   # [zstd]
-    TAR_LZ4   = ArchiveFormat(ContainerFormat.TAR,        StreamFormat.LZ4)    # [lz4]
-    GZ        = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
-    BZ2       = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
-    XZ        = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)
-    ZST       = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)   # [zstd]
-    SEVEN_Z   = ArchiveFormat(ContainerFormat.SEVEN_Z,    StreamFormat.UNCOMPRESSED)  # read native; write [7z-write]
-    RAR       = ArchiveFormat(ContainerFormat.RAR,        StreamFormat.UNCOMPRESSED)  # native metadata + system `unrar`
-    ISO       = ArchiveFormat(ContainerFormat.ISO,        StreamFormat.UNCOMPRESSED)  # [iso]
-    DIRECTORY = ArchiveFormat(ContainerFormat.DIRECTORY,  StreamFormat.UNCOMPRESSED)
-    UNKNOWN   = ArchiveFormat(ContainerFormat.UNKNOWN,    StreamFormat.UNCOMPRESSED)
+    UNCOMPRESSED  = "uncompressed"
+    GZIP          = "gz"
+    BZIP2         = "bz2"
+    XZ            = "xz"
+    ZSTD          = "zst"     # requires [zstd] extra
+    LZ4           = "lz4"     # requires [lz4] extra
+    LZIP          = "lz"
+    ZLIB          = "zz"
+    BROTLI        = "br"
+    UNIX_COMPRESS = "Z"       # requires [unix-compress] extra
+    # extensible: further outer codecs are added here
 ```
 
-Because `ArchiveFormat` is `frozen=True` it remains hashable and usable as a dict key
-and in `==` comparisons. The predefined class-vars compare equal to any structurally
-equal pair, so `ArchiveFormat.TAR_GZ == ArchiveFormat(ContainerFormat.TAR, StreamFormat.GZIP)`.
+Named standalone `ArchiveFormat` constants SHALL exist for the bare single-stream
+formats — `GZ`, `BZ2`, `XZ`, `ZST`, `LZ4`, `LZIP`, `ZLIB`, `BROTLI`, `Z` (each
+`RAW_STREAM × <codec>`) — alongside the container constants (`ZIP`, `TAR`, `TAR_GZ`, …).
+Container × codec combinations that are **not in common practice** (e.g. `tar.lz`,
+`tar.br`) SHALL NOT get a predefined constant; they are constructed on demand as
+`ArchiveFormat(container, stream)` and compare equal to any other instance with the same
+pair. `file_extension()` derives from the codec for a `RAW_STREAM` (e.g. `Z` → `"Z"`,
+`LZIP` → `"lz"`) and from `container.codec` for a container (e.g. `TAR × LZIP` → `"tar.lz"`).
 
-#### Scenario: format identity in reader metadata
-
-- **WHEN** an archive is opened successfully
-- **THEN** `ar.format` returns the `ArchiveFormat` value matching the detected or specified format (e.g. `ArchiveFormat.TAR_GZ`, whose `container == ContainerFormat.TAR` and `stream == StreamFormat.GZIP`)
-
-#### Scenario: compositional equality
+#### Scenario: format identity round-trips through the (container, stream) pair
 
 - **WHEN** a caller compares `ar.format` against `ArchiveFormat(ContainerFormat.TAR, StreamFormat.GZIP)`
-- **THEN** it equals `ArchiveFormat.TAR_GZ` because the format is the `(container, stream)` pair, not an opaque enum member
+- **THEN** it is equal to `ArchiveFormat.TAR_GZ`
 
----
+#### Scenario: a standalone lzip stream has a named format
+
+- **WHEN** a `.lz` (lzip) stream is opened
+- **THEN** `ar.format == ArchiveFormat.LZIP`, whose `container == ContainerFormat.RAW_STREAM` and `stream == StreamFormat.LZIP`
+
+#### Scenario: an uncommon container×codec combination is built on demand
+
+- **WHEN** a `tar.lz` (tar wrapped in lzip) source is opened
+- **THEN** `ar.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP)` even though no `TAR_LZIP` class constant is predefined
+- **AND** `ar.format.file_extension() == "tar.lz"`
 
 ### Requirement: ArchiveMember type taxonomy (MemberType)
 
@@ -315,75 +292,70 @@ Normalization rules applied in order:
 5. Never produce an empty string — the root directory becomes `"."`.
 
 `name` is produced by decoding the stored bytes (using the format's internal encoding
-signal where present, otherwise the resolved/auto-detected `encoding`) and then
-applying the rules above. `raw_name` holds the **verbatim bytes as stored**, before any
-decode or normalization, so the name can be re-decoded losslessly under a different
-encoding; it is `None` only when the format exposes no separate raw form.
+signal where present, otherwise the resolved/auto-detected `encoding`) and then applying
+the rules above.
+
+`raw_name` holds **exactly what the archive stored** for the member's name — the
+verbatim, encoded, pre-normalization bytes — so the name can be re-decoded losslessly
+under a different encoding; it is `None` only when the format exposes no separate raw
+form. For formats where the logical `name` is **not** taken from archive content but
+derived elsewhere (a single-file compressor, whose `name` comes from the *source
+filename*), `raw_name` still holds the archive's stored name when one exists — e.g. a
+gzip stream's `FNAME` bytes — so `raw_name` may legitimately differ from a value
+`name` would decode to. Treating the source-filename derivation as the "normalization"
+step for these formats keeps one rule: `raw_name` is ground truth, `name` is the
+normalized presentation.
 
 #### Scenario: backslash conversion
 
 - **WHEN** an archive member is stored with the name bytes `b"foo\\bar\\baz.txt"`
 - **THEN** `member.name == "foo/bar/baz.txt"` and `member.raw_name == b"foo\\bar\\baz.txt"`
 
-#### Scenario: leading slash stripped
-
-- **WHEN** an archive member has the name `"/etc/passwd"`
-- **THEN** `member.name == "etc/passwd"`
-
 #### Scenario: traversal sequence collapsed
 
 - **WHEN** an archive member has the name `"foo/../bar"`
 - **THEN** `member.name == "bar"` and a warning is emitted via `archivey.normalization`
 
-#### Scenario: directory trailing slash appended
+#### Scenario: raw_name carries the stored name even when name is source-derived
 
-- **WHEN** a directory member has the name `"mydir"` without a trailing slash
-- **THEN** `member.name == "mydir/"`
-
-#### Scenario: root directory becomes dot
-
-- **WHEN** normalization would produce an empty string (e.g. name was `"/"`)
-- **THEN** `member.name == "."`
-
----
+- **WHEN** a `.gz` stream stores `FNAME = "report.csv"` and is opened from a path `archive.gz`
+- **THEN** `member.raw_name` holds the undecoded `FNAME` bytes while `member.name == "archive"` (from the source filename), and the decoded `FNAME` is also available in `member.extra["gzip.original_filename"]`
 
 ### Requirement: Archive-level metadata (ArchiveInfo)
 
-The system SHALL define an `ArchiveInfo` frozen dataclass that carries archive-level descriptive metadata. It SHALL be available immediately after `open_archive()` without triggering a full member scan.
+The system SHALL define an `ArchiveInfo` frozen dataclass that carries archive-level
+descriptive metadata, available immediately after `open_archive()` without triggering a
+full member scan. In addition to the core descriptive fields (`format`, `format_version`,
+`is_solid`, `member_count`, `comment`, `is_encrypted`, `is_multivolume`, `cost`),
+`ArchiveInfo` SHALL carry an `extra` mapping for **format-specific archive-level
+metadata**, mirroring `ArchiveMember.extra`:
 
 ```python
 @dataclass(frozen=True)
 class ArchiveInfo:
     format: ArchiveFormat
-    format_version: str | None        # e.g. "4.5" for ZIP, "5" for RAR5
-    is_solid: bool                    # see definition below
-    member_count: int | None          # None if requires full scan to determine
+    format_version: str | None
+    is_solid: bool
+    member_count: int | None        # None if a count requires a full scan
     comment: str | None
-    is_encrypted: bool                # header encryption (7z, RAR5)
+    is_encrypted: bool              # header-level encryption (7z, RAR5)
     is_multivolume: bool
     cost: CostReceipt
     extra: dict[str, Any] = field(default_factory=dict, compare=False)
 ```
 
-`is_solid` means the archive is **solid**: decompressing one member may require
-decompressing other members before it (members share a compression stream / solid
-block). It is the canonical solidity flag and lives here on `ArchiveInfo`; the embedded
-`CostReceipt` does **not** repeat it (it carries `access_cost` and `solid_block_count`
-instead). `member_count` SHALL be `None` when the format has no central directory and a
-count requires scanning the entire archive. `is_encrypted` refers to header-level
-encryption (as in 7z or RAR5), distinct from per-member encryption indicated by
-`ArchiveMember.is_encrypted`. `cost` embeds a `CostReceipt` (defined in the
-access-mode-and-cost capability) describing listing and access costs. `extra` carries
-format-specific archive-level metadata under namespaced keys (e.g.
-`extra["iso.namespace"]`), mirroring `ArchiveMember.extra`; like it, `extra` is excluded
-from `__eq__`.
+Keys in `extra` SHALL be namespaced strings (e.g. `"iso.namespace"`), and `extra` SHALL be
+excluded from `__eq__` (format-specific archive metadata does not affect logical identity),
+matching `ArchiveMember.extra`. `member_count` SHALL be `None` when the format has no
+central directory and a count would require scanning the whole archive.
 
-#### Scenario: member_count is None for streaming formats
+#### Scenario: member_count is None for a scan-only format
 
 - **WHEN** a TAR archive (no central directory) is opened
 - **THEN** `ar.info.member_count` is `None`
 
-#### Scenario: is_encrypted reflects header encryption
+#### Scenario: format-specific archive metadata is exposed via extra
 
-- **WHEN** a RAR5 archive with header encryption is opened
-- **THEN** `ar.info.is_encrypted == True` and listing the archive requires the password
+- **WHEN** an ISO 9660 image whose richest namespace is Joliet is opened
+- **THEN** `ar.info.extra["iso.namespace"] == "joliet"`
+
