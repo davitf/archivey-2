@@ -564,6 +564,12 @@ class GzipCodec(StreamCodec):
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
             return CorruptionError(f"Error reading gzip stream: {exc!r}")
+        if isinstance(exc, zlib.error):
+            # Corruption inside the deflate body (a valid gzip header, then bad data) is
+            # raised by stdlib gzip as a raw zlib.error rather than BadGzipFile. zlib does
+            # not flag truncation distinctly here (a short stream surfaces as EOFError
+            # below), so any zlib.error at this point is corruption.
+            return CorruptionError(f"Error reading gzip stream: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"gzip stream is truncated: {exc!r}")
         return None
@@ -585,6 +591,11 @@ class GzipCodec(StreamCodec):
         if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
             return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
         if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
+            return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
+        if isinstance(exc, ValueError) and "Failed to decode deflate block" in text:
+            # Corrupt deflate body. On Linux this surfaces via the ISA-L wrapper above; the
+            # non-ISA-L backend (e.g. macOS) instead raises ValueError "Failed to decode
+            # deflate block … The backreferenced distance lies outside the window buffer!".
             return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
         if isinstance(exc, (ValueError, RuntimeError)) and (
             "gzip/zlib header" in text or "gzip magic" in text

@@ -21,17 +21,27 @@ feed in later stages.
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.internal.errors import FormatDetectionError
+from archivey.internal.errors import ArchiveyError, FormatDetectionError
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from archivey.internal.streams.streamtools import is_seekable, read_exact
-from archivey.internal.types import ArchiveFormat, MagicSignature
+from archivey.internal.types import (
+    ArchiveFormat,
+    ContainerFormat,
+    MagicSignature,
+    StreamFormat,
+)
+
+# Decompressed bytes needed to see a TAR ``ustar`` signature at offset 257 (one 512-byte
+# header block covers it).
+_INNER_TAR_PROBE_BYTES = 512
 
 
 class DetectionConfidence(Enum):
@@ -105,6 +115,86 @@ def _match_extension(
     return None
 
 
+def _probe_inner_tar(prefix: bytes, stream_format: StreamFormat) -> bool:
+    """Whether decompressing ``prefix`` yields a TAR (``ustar`` at offset 257).
+
+    The codec layer decodes a bounded prefix; the inner ``ustar`` magic confirms a tarball
+    wrapped in the compressor. Returns ``False`` (deferring the determination to open time)
+    when the codec backend is absent or the prefix does not decode to a TAR header.
+    """
+    # Imported here rather than at module load to avoid a detection<->codecs import cycle.
+    from archivey.internal.streams.codecs import (
+        codec_for_stream_format,
+        is_codec_available,
+        open_codec_stream,
+    )
+
+    try:
+        codec = codec_for_stream_format(stream_format)
+    except KeyError:
+        return False
+    if not is_codec_available(codec):
+        return False
+    try:
+        with open_codec_stream(codec, io.BytesIO(prefix)) as stream:
+            head = stream.read(_INNER_TAR_PROBE_BYTES)
+    except (ArchiveyError, OSError, ValueError):
+        return False
+    return head[257:262] == b"ustar"
+
+
+def _resolve_single_file_or_tar(
+    data: bytes,
+    fmt: ArchiveFormat,
+    base_confidence: "DetectionConfidence",
+    base_detected_by: str,
+) -> FormatInfo:
+    """Upgrade a single-file-compressor match to its TAR combo when the payload is a tarball.
+
+    A ``RAW_STREAM`` compressor (``.gz``/``.bz2``/``.xz``/…) is probed for an inner TAR; on a
+    hit it becomes ``(TAR, <stream>)`` (e.g. ``TAR_GZ``) reported as ``PROBABLE`` /
+    ``content_probe`` (the inner-TAR test is structural, weaker than an exact magic).
+    Otherwise the original single-file/container match stands.
+    """
+    if fmt.container == ContainerFormat.RAW_STREAM and fmt.stream != StreamFormat.UNCOMPRESSED:
+        if _probe_inner_tar(data, fmt.stream):
+            tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
+            return FormatInfo(tar_fmt, DetectionConfidence.PROBABLE, "content_probe")
+    return FormatInfo(fmt, base_confidence, base_detected_by)
+
+
+def _is_deferred_inner_tar(ext_fmt: ArchiveFormat, resolved: ArchiveFormat) -> bool:
+    """Whether a TAR-combo extension over a bare-compressor result is a *benign* mismatch.
+
+    ``foo.tar.gz`` (extension → ``TAR_GZ``) reported as bare ``GZ`` is the documented
+    deferred case: the inner-TAR probe could not run (codec backend absent) or found no tar,
+    so the bare compressor is reported and the inner-TAR determination is left to open time.
+    That is not a real conflict, so it must not emit a warning.
+    """
+    return (
+        resolved.container == ContainerFormat.RAW_STREAM
+        and ext_fmt.container == ContainerFormat.TAR
+        and ext_fmt.stream == resolved.stream
+    )
+
+
+def _warn_on_conflict(
+    name: str | None, ext_fmt: ArchiveFormat | None, resolved: ArchiveFormat
+) -> None:
+    if (
+        ext_fmt is not None
+        and ext_fmt != resolved
+        and not _is_deferred_inner_tar(ext_fmt, resolved)
+    ):
+        logger.warning(
+            "Format conflict for %r: extension suggests %r but magic bytes indicate "
+            "%r; using the magic-byte result.",
+            name,
+            ext_fmt,
+            resolved,
+        )
+
+
 def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
 
@@ -114,38 +204,51 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
     extension_map = registry.extension_map()
-
-    # Read enough to cover the deepest magic offset (e.g. TAR's ustar at 257, ISO's CD001
-    # at 32 769), but at least the default detection window.
-    needed = max(
-        DETECTION_LIMIT,
-        max((e.offset + len(e.magic) for e in magic_entries), default=0),
-    )
-    data = _peek_prefix(source, needed)
     name = _source_extension_name(source)
     ext_fmt = _match_extension(name, extension_map)
 
-    # 1. Exact magic wins, with a conflict warning vs the extension.
-    magic_fmt = _match_magic(data, magic_entries)
+    # Magic signals split by where they live: "near" ones fit in the default window; "far"
+    # ones (ISO's CD001 at 32 769) need an extended peek that is only taken on demand, so the
+    # common case never reads 32 KiB just to identify a ZIP/gz/tar in the first few bytes.
+    near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
+    far = [e for e in magic_entries if e.offset + len(e.magic) > DETECTION_LIMIT]
+    near_needed = max(
+        DETECTION_LIMIT, max((e.offset + len(e.magic) for e in near), default=0)
+    )
+    data = _peek_prefix(source, near_needed)
+
+    # 1. Exact magic in the default window. A single-file compressor is additionally probed
+    #    for an inner TAR (so .tar.gz → TAR_GZ, not bare GZ).
+    magic_fmt = _match_magic(data, near)
     if magic_fmt is not None:
-        if ext_fmt is not None and ext_fmt != magic_fmt:
-            logger.warning(
-                "Format conflict for %r: extension suggests %r but magic bytes indicate "
-                "%r; using the magic-byte result.",
-                name,
-                ext_fmt,
-                magic_fmt,
-            )
-        return FormatInfo(magic_fmt, DetectionConfidence.CERTAIN, "magic")
+        info = _resolve_single_file_or_tar(
+            data, magic_fmt, DetectionConfidence.CERTAIN, "magic"
+        )
+        _warn_on_conflict(name, ext_fmt, info.format)
+        return info
 
     # 2. Formats without an exact magic, recognized by a content probe (Brotli decodes a
     #    prefix; zlib gates on its 2-byte header then decodes). A probe is skipped when its
-    #    backend is absent, so detection falls through to the extension guess.
+    #    backend is absent, so detection falls through. A matching compressor is likewise
+    #    probed for an inner TAR (so .tar.br → TAR_BROTLI).
     for probe_fmt, probe in registry.content_probes():
         if probe(data):
-            return FormatInfo(probe_fmt, DetectionConfidence.PROBABLE, "content_probe")
+            return _resolve_single_file_or_tar(
+                data, probe_fmt, DetectionConfidence.PROBABLE, "content_probe"
+            )
 
-    # 3. Extension-only guess.
+    # 3. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on
+    #    demand. A stream shorter than the window simply yields no match and falls through —
+    #    it is never rejected solely for being too short for the ISO probe.
+    if far:
+        far_needed = max(e.offset + len(e.magic) for e in far)
+        far_data = _peek_prefix(source, far_needed)
+        far_fmt = _match_magic(far_data, far)
+        if far_fmt is not None:
+            _warn_on_conflict(name, ext_fmt, far_fmt)
+            return FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic")
+
+    # 4. Extension-only guess.
     if ext_fmt is not None:
         return FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension")
 

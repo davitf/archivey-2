@@ -13,9 +13,7 @@ length or checksum trailer, so a cut stream simply yields fewer bytes with no er
 Deflate and raw LZMA1/LZMA2 are **not** standalone formats: they carry no self-framing and
 only ever appear inside a container (ZIP/7z), so they are reachable through
 `compressed-streams` but not as single-file compressors here.
-
 ## Requirements
-
 ### Requirement: Present a single-file compressor as a one-member archive
 
 The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, or Z source as an archive containing exactly one `ArchiveMember` of type `MemberType.FILE`. No directory members are synthesized.
@@ -48,56 +46,34 @@ The recognized compression extensions are exactly the standalone-stream extensio
 - **WHEN** any GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, or Z source is opened
 - **THEN** iterating the reader yields exactly one `ArchiveMember`
 
-### Requirement: Surface the gzip stored filename in `raw_filename`
-
-The gzip format optionally records the original filename in its header (the `FNAME`
-field). When present, the system SHALL expose it in the member's `raw_filename`. By
-default the member `name` is still inferred from the *source* filename (stripping the
-`.gz` extension); the embedded name is not automatically trusted as the logical name,
-since it may disagree with the container filename. A configuration option MAY direct
-the reader to prefer the gzip-stored name for `name`. The other single-file
-compressors (BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z) carry no embedded filename, so their
-`raw_filename` is `None`.
-
-#### Scenario: gzip with a stored filename
-
-- **WHEN** a `.gz` stream whose header carries `FNAME = "report.csv"` is opened from a path like `archive.gz`
-- **THEN** the member's `raw_filename` is `"report.csv"`, while `name` remains `"archive"` (derived from the source filename) by default
-
-#### Scenario: gzip without a stored filename
-
-- **WHEN** a `.gz` stream has no `FNAME` header field
-- **THEN** the member's `raw_filename` is `None` and `name` is derived from the source filename
-
 ### Requirement: Report single-file compressor format properties
 
-The system SHALL expose the following cost and capability properties for every opened single-file compressor archive:
+The system SHALL expose the following cost and capability properties for every opened
+single-file compressor archive:
 
 | Property | Value |
 |----------|-------|
-| Listing cost | O(1) — one member always |
-| Access cost | SOLID by default; reduced when a seek-capable backend is active (see note) |
+| Listing cost | `INDEXED` — exactly one member, always |
+| Access cost | `DIRECT` — a single member has no inter-member (solid-block) dependency |
 | Supports write | Yes |
-| Requires seek | No |
+| Requires seek | No (except unix-compress `.Z`, which needs a seekable source) |
 
-The default access cost is SOLID — plain decompression must run from the start to
-reach a given offset. However, several formats and backends support **limited or
-full random access** within the single stream, and the access cost SHALL reflect the
-backend actually in use: e.g. xz with its block index, bzip2 with a block index
-(`rapidgzip`'s bundled `IndexedBzip2File`), gzip via `rapidgzip`, and seekable-zstd. These are provided by the
-`seekable-decompressor-streams` capability; when such a backend is active the reader
-MAY serve random reads without re-decompressing from the start, and reports the
-corresponding (non-SOLID) access cost and `seekable` flag.
+The access cost is `DIRECT` because the archive holds a single member, so the
+`AccessCost.SOLID` notion ("reading member N may require decompressing earlier members")
+does not apply. Whether the member's decompressed *stream* supports cheap random access
+(xz block index, bzip2 via `indexed_bzip2`, gzip via `rapidgzip`, seekable-zstd) is a
+property of the **member stream** provided by `seekable-decompressor-streams`, surfaced
+when the stream is opened — not a field of the archive-level `CostReceipt`.
 
-#### Scenario: CostReceipt on open with the default backend
+#### Scenario: CostReceipt on open
 
-- **WHEN** a GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, or Z archive is opened with the default (non-seeking) backend
-- **THEN** `cost.listing_cost` is `ListingCost.INDEXED` and `cost.access_cost` is `AccessCost.SOLID`
+- **WHEN** a GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, or Z archive is opened
+- **THEN** `cost.listing_cost` is `ListingCost.INDEXED` and `cost.access_cost` is `AccessCost.DIRECT`
 
-#### Scenario: seek-capable backend lowers the access cost
+#### Scenario: unix-compress requires a seekable source
 
-- **WHEN** the archive is opened with a seek-capable backend (e.g. `rapidgzip`'s `IndexedBzip2File` for `.bz2`, or an xz stream with a block index)
-- **THEN** the reported `cost.access_cost` reflects the random-access capability rather than `AccessCost.SOLID`, per `seekable-decompressor-streams`
+- **WHEN** a `.Z` (unix-compress) archive is opened from a non-seekable source
+- **THEN** `StreamNotSeekableError` is raised, while the other single-file formats open successfully from a non-seekable source
 
 ### Requirement: Report member size with format-specific caveats
 
@@ -123,3 +99,61 @@ The system SHALL populate `member.size` (uncompressed size) according to format-
 
 - **WHEN** a `.bz2` archive is opened and the member stream has been fully read to EOF
 - **THEN** `member.size` may be updated to reflect the actual uncompressed byte count
+
+### Requirement: Surface the gzip stored filename
+
+The system SHALL surface the gzip stored filename — the optional `FNAME` header field —
+when present: the **decoded** value in `member.extra["gzip.original_filename"]` and the
+**undecoded** bytes in `member.raw_name`. (`ArchiveMember` has no `raw_filename` field;
+the earlier spec text referred to one that does not exist.) By default the member `name` is still inferred
+from the *source* filename (stripping the `.gz` extension); the embedded name is not
+automatically trusted as the logical name, since it may disagree with the container
+filename. A configuration option MAY direct the reader to prefer the gzip-stored name
+for `name`. The other single-file compressors (BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z)
+carry no embedded filename, so they set neither field from header data.
+
+#### Scenario: gzip with a stored filename
+
+- **WHEN** a `.gz` stream whose header carries `FNAME = "report.csv"` is opened from a path like `archive.gz`
+- **THEN** `member.extra["gzip.original_filename"]` is `"report.csv"` and `member.raw_name` holds its undecoded bytes, while `member.name` remains `"archive"` (derived from the source filename) by default
+
+#### Scenario: gzip without a stored filename
+
+- **WHEN** a `.gz` stream has no `FNAME` header field
+- **THEN** `member.extra` has no `"gzip.original_filename"` key and `member.name` is derived from the source filename
+
+### Requirement: A single multi-format backend serves every single-file compressor
+
+The system SHALL implement single-file compressor reading as **one** `ReadBackend`
+(`SingleFileBackend`) whose `FORMATS` tuple lists every standalone-stream codec, not a
+separate backend class per format. The backend is codec-agnostic: it infers the member
+name and metadata shell, then delegates decompression to the `compressed-streams`
+codec layer resolved from the member's stream codec. This keeps the per-format logic to
+a small set of **per-codec metadata hooks** rather than parallel reader classes, and
+means a newly added standalone codec becomes readable by registering the codec, adding
+its `ArchiveFormat`/`StreamFormat` enum value, and adding its detection entry — with no
+new backend code.
+
+- The per-codec metadata hooks SHALL be a dispatch table keyed by codec, not an
+  `if format == …` chain. Each hook fills the format-specific fields the capability
+  already specifies: gzip's `FNAME` → `extra["gzip.original_filename"]` + `raw_name`
+  (and optional mtime); xz/zst header size; lz4 frame size; lzip trailer size; and the
+  size-availability rules
+  (`gz` always `None`; `bz2`/`zlib`/`br`/`Z` `None` until full decompression). A codec
+  with no extra metadata simply registers no hook.
+- The decodability of any single-file format follows from its **codec backend's**
+  availability (per `backend-registry`'s compositional support), not from a
+  per-format backend's presence: the `SingleFileBackend` itself is always registered;
+  a format whose sole codec backend is missing is reported as support `NONE`.
+
+#### Scenario: one backend reads multiple compressors
+
+- **WHEN** `.gz`, `.bz2`, and `.xz` sources are opened
+- **THEN** each is served by the same `SingleFileBackend` instance class (its `FORMATS` includes GZIP, BZIP2, and XZ), each yielding exactly one `FILE` member with the correct per-codec metadata
+
+#### Scenario: a new standalone codec needs no new backend
+
+- **WHEN** a new standalone codec is added to the `compressed-streams` registry with a matching `ArchiveFormat`/`StreamFormat` value and a detection entry
+- **THEN** that format is readable as a single-file archive through the existing `SingleFileBackend` without adding a new `ReadBackend` subclass
+- **AND** its availability is reported by `format_availability()` from the new codec backend's presence
+

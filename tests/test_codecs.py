@@ -174,6 +174,18 @@ def test_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     assert isinstance(excinfo.value.__cause__, gzip.BadGzipFile)
 
 
+def test_mid_stream_corrupt_gzip_translates_to_corruption_with_cause() -> None:
+    # Corruption *inside* the deflate body (a valid header, then a flipped byte) surfaces as
+    # zlib.error from stdlib gzip — a different exception type than a broken header's
+    # BadGzipFile. It must still be translated to CorruptionError, not leak a raw zlib.error.
+    corrupt = bytearray(gzip.compress(CONTENT))
+    corrupt[len(corrupt) // 2] ^= 0xFF  # flip a byte well past the 10-byte header
+    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP) as stream:
+        with pytest.raises(CorruptionError) as excinfo:
+            stream.read()
+    assert isinstance(excinfo.value.__cause__, zlib.error)
+
+
 def test_truncated_gzip_translates_to_truncated() -> None:
     compressed = gzip.compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]

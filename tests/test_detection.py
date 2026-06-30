@@ -226,3 +226,110 @@ def test_weak_zlib_magic_without_valid_stream_falls_through(tmp_path: Path) -> N
     info = detect_format(path)
     assert info.format == ArchiveFormat.XZ
     assert info.detected_by == "extension"
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: inner-TAR probe over a single-file compressor
+# ---------------------------------------------------------------------------
+
+
+def _tar_bytes() -> bytes:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        t.addfile(info, io.BytesIO(b"hello"))
+    return buf.getvalue()
+
+
+def test_inner_tar_over_gzip_is_tar_gz() -> None:
+    import gzip
+
+    data = gzip.compress(_tar_bytes())
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.TAR_GZ
+    # The inner-tar test is structural, weaker than an exact magic.
+    assert info.confidence == DetectionConfidence.PROBABLE
+    assert info.detected_by == "content_probe"
+
+
+def test_gzip_without_inner_tar_stays_bare_gz() -> None:
+    import gzip
+
+    data = gzip.compress(b"just some bytes, definitely not a tar header region")
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.GZ
+    assert info.detected_by == "magic"
+
+
+def test_inner_tar_over_xz_is_tar_xz() -> None:
+    import lzma
+
+    data = lzma.compress(_tar_bytes(), format=lzma.FORMAT_XZ)
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.TAR_XZ
+
+
+def test_inner_tar_probe_skipped_when_codec_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With the zstd backend absent, a .tar.zst can't be probed: per the spec, detection
+    # reports the *bare* compressor (ZST, by its magic) and defers the inner-TAR
+    # determination to open time — without warning about the benign tar.zst/zst mismatch.
+    monkeypatch.setattr(codecs_module, "_zstandard", None)
+    path = tmp_path / "thing.tar.zst"
+    path.write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 64)  # zstd magic, unprobeable payload
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.ZST
+    assert info.detected_by == "magic"
+
+
+def test_deferred_inner_tar_does_not_warn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A .tar.gz whose payload is NOT a tar: magic says bare GZ, extension says TAR_GZ. That
+    # benign (same-stream) mismatch must not emit a conflict warning.
+    import gzip
+
+    path = tmp_path / "thing.tar.gz"
+    path.write_bytes(gzip.compress(b"not a tar at all"))
+    with caplog.at_level(logging.WARNING, logger="archivey.detection"):
+        info = detect_format(path)
+    assert info.format == ArchiveFormat.GZ
+    assert not caplog.records
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: ISO extended-peek window (CD001 at offset 32 769)
+# ---------------------------------------------------------------------------
+
+
+@requires("pycdlib")
+def test_iso_detected_via_extended_window() -> None:
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(b"x"), 1, "/X.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    info = detect_format(io.BytesIO(out.getvalue()))
+    assert info.format == ArchiveFormat.ISO
+    assert info.confidence == DetectionConfidence.CERTAIN
+    assert info.detected_by == "magic"
+
+
+def test_stream_too_short_for_iso_falls_through() -> None:
+    # Far shorter than the 32 774-byte ISO window, and not any other format: ruled out as
+    # ISO and raises FormatDetectionError (never rejected *solely* for being too short).
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(b"tiny non-archive payload"))
+
+
+def test_small_zip_still_detected_despite_iso_probe() -> None:
+    # A 2 KiB-ish ZIP is matched by its offset-0 magic without ever taking the ISO window.
+    data = _zip_bytes()
+    assert detect_format(io.BytesIO(data)).format == ArchiveFormat.ZIP

@@ -43,15 +43,19 @@ new backend code.
 - **THEN** that format is readable as a single-file archive through the existing `SingleFileBackend` without adding a new `ReadBackend` subclass
 - **AND** its availability is reported by `format_availability()` from the new codec backend's presence
 
+## RENAMED Requirements
+
+- FROM: `### Requirement: Surface the gzip stored filename in `raw_filename``
+- TO: `### Requirement: Surface the gzip stored filename`
+
 ## MODIFIED Requirements
 
 ### Requirement: Surface the gzip stored filename
 
-The gzip format optionally records the original filename in its header (the `FNAME`
-field). When present, the system SHALL expose the **decoded** value in
-`member.extra["gzip.original_filename"]` and preserve the **undecoded** bytes in
-`member.raw_name`. (`ArchiveMember` has no `raw_filename` field; the earlier spec text
-referred to one that does not exist.) By default the member `name` is still inferred
+The system SHALL surface the gzip stored filename — the optional `FNAME` header field —
+when present: the **decoded** value in `member.extra["gzip.original_filename"]` and the
+**undecoded** bytes in `member.raw_name`. (`ArchiveMember` has no `raw_filename` field;
+the earlier spec text referred to one that does not exist.) By default the member `name` is still inferred
 from the *source* filename (stripping the `.gz` extension); the embedded name is not
 automatically trusted as the logical name, since it may disagree with the container
 filename. A configuration option MAY direct the reader to prefer the gzip-stored name

@@ -373,3 +373,8 @@ class ArchiveInfo:
 
     cost: "CostReceipt"
     """Listing/access cost receipt for the archive (see the ``access-mode-and-cost`` capability)."""
+
+    extra: dict[str, Any] = field(default_factory=dict, compare=False)
+    """Format-specific archive-level metadata, keyed by namespaced strings (mirrors
+    ``ArchiveMember.extra``). For example the ISO backend records the auto-selected
+    namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``."""

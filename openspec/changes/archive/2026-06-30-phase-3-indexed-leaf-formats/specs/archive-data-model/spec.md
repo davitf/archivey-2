@@ -7,6 +7,13 @@ named. The enum is already documented as extensible ("new outer codecs are added
 `raw_name` to "exactly what the archive stored," so the gzip case (where `name` is
 source-derived) has a well-defined home for the stored `FNAME` bytes.
 
+It also adds an `extra` mapping to `ArchiveInfo` (mirroring `ArchiveMember.extra`): the ISO
+backend needs an archive-level home for its auto-selected namespace
+(`extra["iso.namespace"]`, required by `format-iso`), and the original `ArchiveInfo`
+sketch omitted such a field. Surfacing format-specific archive-level metadata through a
+namespaced `extra` dict matches the member model and keeps per-format facts off the core
+struct.
+
 ## MODIFIED Requirements
 
 ### Requirement: Archive format identity (ArchiveFormat)
@@ -102,3 +109,41 @@ normalized presentation.
 
 - **WHEN** a `.gz` stream stores `FNAME = "report.csv"` and is opened from a path `archive.gz`
 - **THEN** `member.raw_name` holds the undecoded `FNAME` bytes while `member.name == "archive"` (from the source filename), and the decoded `FNAME` is also available in `member.extra["gzip.original_filename"]`
+
+### Requirement: Archive-level metadata (ArchiveInfo)
+
+The system SHALL define an `ArchiveInfo` frozen dataclass that carries archive-level
+descriptive metadata, available immediately after `open_archive()` without triggering a
+full member scan. In addition to the core descriptive fields (`format`, `format_version`,
+`is_solid`, `member_count`, `comment`, `is_encrypted`, `is_multivolume`, `cost`),
+`ArchiveInfo` SHALL carry an `extra` mapping for **format-specific archive-level
+metadata**, mirroring `ArchiveMember.extra`:
+
+```python
+@dataclass(frozen=True)
+class ArchiveInfo:
+    format: ArchiveFormat
+    format_version: str | None
+    is_solid: bool
+    member_count: int | None        # None if a count requires a full scan
+    comment: str | None
+    is_encrypted: bool              # header-level encryption (7z, RAR5)
+    is_multivolume: bool
+    cost: CostReceipt
+    extra: dict[str, Any] = field(default_factory=dict, compare=False)
+```
+
+Keys in `extra` SHALL be namespaced strings (e.g. `"iso.namespace"`), and `extra` SHALL be
+excluded from `__eq__` (format-specific archive metadata does not affect logical identity),
+matching `ArchiveMember.extra`. `member_count` SHALL be `None` when the format has no
+central directory and a count would require scanning the whole archive.
+
+#### Scenario: member_count is None for a scan-only format
+
+- **WHEN** a TAR archive (no central directory) is opened
+- **THEN** `ar.info.member_count` is `None`
+
+#### Scenario: format-specific archive metadata is exposed via extra
+
+- **WHEN** an ISO 9660 image whose richest namespace is Joliet is opened
+- **THEN** `ar.info.extra["iso.namespace"] == "joliet"`
