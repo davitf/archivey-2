@@ -362,6 +362,7 @@ class ArchiveInfo:
     is_encrypted: bool                # header encryption (7z, RAR5)
     is_multivolume: bool
     cost: CostReceipt
+    extra: dict[str, Any] = field(default_factory=dict, compare=False)
 ```
 
 `is_solid` means the archive is **solid**: decompressing one member may require
@@ -372,7 +373,10 @@ instead). `member_count` SHALL be `None` when the format has no central director
 count requires scanning the entire archive. `is_encrypted` refers to header-level
 encryption (as in 7z or RAR5), distinct from per-member encryption indicated by
 `ArchiveMember.is_encrypted`. `cost` embeds a `CostReceipt` (defined in the
-access-mode-and-cost capability) describing listing and access costs.
+access-mode-and-cost capability) describing listing and access costs. `extra` carries
+format-specific archive-level metadata under namespaced keys (e.g.
+`extra["iso.namespace"]`), mirroring `ArchiveMember.extra`; like it, `extra` is excluded
+from `__eq__`.
 
 #### Scenario: member_count is None for streaming formats
 

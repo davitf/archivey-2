@@ -21,10 +21,10 @@
 - [x] 0.2 Registry: **always register**; support is tri-state (FULL/PARTIAL/NONE),
       compositional over format backend + codec backends. Format backends stay 1:1.
 - [x] 0.3 Non-seekable ZIP **fails fast** (no implicit spool).
-- [ ] 0.4 **TAR read** (random-access) + compressed-tar detection land here; TAR
+- [x] 0.4 **TAR read** (random-access) + compressed-tar detection land here; TAR
       `stream_members`/forward-only + `ExtractionCoordinator`/safe-extraction stay
       **Phase 4**.
-- [ ] 0.5 **Seek-heavy containers are not mounted over a compressor**: only TAR
+- [x] 0.5 **Seek-heavy containers are not mounted over a compressor**: only TAR
       composes with stream compressors; `.iso.xz`/`.iso.gz`/`.zip.xz` are single-file
       compressors wrapping the inner image.
 - [x] 0.6 Scope: unix-compress single-file lands here; **ZST/LZ4 single-file also land
@@ -83,7 +83,7 @@ incrementally — each as its format's stage lands.
       match arrives with the zlib magic entry in S2 — no zlib backend is registered yet.)
 - [x] 2.3 **(S1)** Magic/extension **conflict** → `logging.WARNING` on
       `archivey.detection`; magic wins.
-- [ ] 2.4 **(S3)** Inner-TAR probe over a single-file compressor →
+- [x] 2.4 **(S3)** Inner-TAR probe over a single-file compressor →
       `TAR_GZ`/`TAR_BZ2`/`TAR_XZ`/`TAR_LZIP`/… (decompress ≥ 512 bytes; skip + defer
       when codec backend absent). These are **openable** once the TAR reader (§3b)
       lands. No inner-ISO / inner-ZIP probe — seek-heavy containers stay
@@ -91,7 +91,7 @@ incrementally — each as its format's stage lands.
 - [x] 2.5 **(S2)** Brotli **content probe** (`PROBABLE`); skipped when the Brotli
       backend is missing (fall through to `.br` extension `GUESS`); each probe restores
       position.
-- [ ] 2.6 **(S4)** ISO probe: always attempt it as a **fallback** when the 4 KiB magic
+- [x] 2.6 **(S4)** ISO probe: always attempt it as a **fallback** when the 4 KiB magic
       table and extension produce no `CERTAIN` match (not gated on a `.iso` extension —
       32 KiB is cheap and the rule is cleaner). Peek to 32 774 bytes (`PeekableStream`
       grows its buffer to this cap on demand); too-short stream → "not ISO", fall
@@ -127,24 +127,24 @@ incrementally — each as its format's stage lands.
 
 > **Stage 3.**
 
-- [ ] 3b.1 `formats/tar_reader.py` on the ABC (stdlib `tarfile`); `MAGIC` (`ustar` at
+- [x] 3b.1 `formats/tar_reader.py` on the ABC (stdlib `tarfile`); `MAGIC` (`ustar` at
       257 → `TAR`) / `EXTENSIONS` declared as data; `FORMATS` includes `TAR` **and** the
       compressed combos (`TAR_GZ`/`TAR_BZ2`/`TAR_XZ`/… + on-demand `(TAR, <codec>)`);
       random-access reading on a seekable source (scan-and-index → `_MEMBER_LIST_UPFRONT`
       after scan, `_SUPPORTS_RANDOM_ACCESS`).
-- [ ] 3b.2 `TarInfo` → `ArchiveMember` mapping across PAX / GNU / ustar variants
+- [x] 3b.2 `TarInfo` → `ArchiveMember` mapping across PAX / GNU / ustar variants
       (mode, mtime, uid/gid, type incl. symlink/hardlink/dir, size).
-- [ ] 3b.3 Compressed-tar: the backend **opens the codec internally** —
+- [x] 3b.3 Compressed-tar: the backend **opens the codec internally** —
       `open_codec_stream(codec_for_stream_format(fmt.stream), source,
       config=StreamConfig(streaming=streaming))` → `tarfile.open(fileobj=…, mode="r:")`.
       (Our codec layer, not `tarfile`'s native `r:gz`/`r:bz2`/`r:xz`, so `tar.lzip`/
       `tar.zst`/`tar.lz4` etc. work too. The opener stays generic — composition is the
       backend's job, keeping the seek-heavy-container rule (0.5) per-backend.) Cost
       reflects the underlying codec.
-- [ ] 3b.4 Cost: listing is `REQUIRES_SCANNING` for a plain tar / `REQUIRES_DECOMPRESSION`
+- [x] 3b.4 Cost: listing is `REQUIRES_SCANNING` for a plain tar / `REQUIRES_DECOMPRESSION`
       for a compressed tar (TAR has **no** central index — not `INDEXED`); `DIRECT`
       access on a seekable plain tar.
-- [ ] 3b.5 **Out of scope (Phase 4):** forward-only `stream_members()` on a
+- [x] 3b.5 **Out of scope (Phase 4):** forward-only `stream_members()` on a
       non-seekable `tar.gz`; `ExtractionCoordinator` / safe-extraction. Don't build the
       streaming `_iter_with_data` override here.
 
@@ -190,14 +190,16 @@ incrementally — each as its format's stage lands.
 
 > **Stage 4.**
 
-- [ ] 5.1 `formats/iso_reader.py` (`pycdlib`, `[iso]`); registered always but marked
+- [x] 5.1 `formats/iso_reader.py` (`pycdlib`, `[iso]`); registered always but marked
       unavailable when `pycdlib` is absent (the `_optional("pycdlib")` sentinel);
       `OPTIONAL_DEPENDENCY = "pycdlib"`; `REQUIRES_SEEK = True`;
       `MAGIC = ((32769, b"CD001"),)`.
-- [ ] 5.2 Richest-namespace auto-select (Rock Ridge > Joliet > plain) →
+- [x] 5.2 Richest-namespace auto-select (Rock Ridge > Joliet > plain) →
       `ArchiveInfo.extra["iso.namespace"]`; namespace-dependent fidelity (mode/uid/gid
-      `None` under Joliet/plain; symlinks + POSIX under Rock Ridge).
-- [ ] 5.3 Write attempt → `UnsupportedOperationError`; non-seekable source rejected.
+      `None` under Joliet/plain; symlinks + POSIX under Rock Ridge). (Required adding the
+      `extra` field to `ArchiveInfo` — the data-model spec sketch had omitted it; recorded
+      in the `archive-data-model` delta.)
+- [x] 5.3 Write attempt → `UnsupportedOperationError`; non-seekable source rejected.
 - [ ] 5.4 (Deferred / lower-priority) raw `.bin` sector-stripping wrapper — not built
       unless it stays a thin wrapper; otherwise dropped per spec.
 
@@ -230,7 +232,7 @@ incrementally — each as its format's stage lands.
 - [x] 7.1 `open_archive()` detects (wrapping non-seekable in `PeekableStream`),
       selects the backend, enforces `REQUIRES_SEEK` fail-fast, hands over the shared
       stream.
-- [ ] 7.2 `CostReceipt` values verified per format (ZIP `INDEXED`/`DIRECT`/`SEEKABLE`;
+- [x] 7.2 `CostReceipt` values verified per format (ZIP `INDEXED`/`DIRECT`/`SEEKABLE`;
       TAR `REQUIRES_SCANNING`|`REQUIRES_DECOMPRESSION`/`DIRECT`; single-file
       `INDEXED`/`DIRECT`; ISO `INDEXED`/`DIRECT`/`SEEKABLE`).
 - [x] 7.3 Thread the encoding: `open_read` receives the caller's explicit `encoding`
@@ -241,7 +243,7 @@ incrementally — each as its format's stage lands.
 
 - [x] 8.1 **(S1)** `format-zip` scenarios (CostReceipt, O(1) lookup, member mapping,
       non-seekable fail-fast, multi-volume rejection).
-- [ ] 8.1b **(S3)** `format-tar` random-access read scenarios (PAX/GNU/ustar mapping,
+- [x] 8.1b **(S3)** `format-tar` random-access read scenarios (PAX/GNU/ustar mapping,
       compressed-tar `tar.gz`/`tar.xz`/…, cost). Streaming/`stream_members` scenarios
       deferred to Phase 4.
 - [x] 8.2 **(S2)** `format-single-file-compressors` scenarios for this-phase codecs
@@ -249,16 +251,16 @@ incrementally — each as its format's stage lands.
       size rules, `DIRECT` cost, non-seekable `.Z` raises, password raises). ZST/LZ4
       single-file scenarios included here (skipped when their codec is absent); their
       *seekable-decompressor* refinements remain Phase 8.
-- [ ] 8.3 **(S4)** `format-iso` scenarios (namespace auto-select + fidelity, write
+- [x] 8.3 **(S4)** `format-iso` scenarios (namespace auto-select + fidelity, write
       rejected, non-seekable rejected) — skip when `pycdlib` absent.
-- [ ] 8.4 `format-detection` scenarios, by stage: **(S1)** magic, extension, conflict
+- [x] 8.4 `format-detection` scenarios, by stage: **(S1)** magic, extension, conflict
       warning, never-consumes; **(S2)** Brotli probe + skip; **(S3)** inner-TAR;
       **(S4)** ISO extended/too-short. SFX deferred.
-- [ ] 8.5 `backend-registry` scenarios: **(S1)** always-register via `_optional`
+- [x] 8.5 `backend-registry` scenarios: **(S1)** always-register via `_optional`
       sentinel, tri-state FULL/PARTIAL, `list_supported_formats()` vs
       `list_known_formats()`, two simultaneous readers; **(S4)** NONE +
       ISO-without-pycdlib error + hint (end-to-end degradation).
-- [ ] 8.6 `access-mode-and-cost` indexed-listing / random-access (default
+- [x] 8.6 `access-mode-and-cost` indexed-listing / random-access (default
       `streaming=False`): **(S1)** ZIP + non-seekable ZIP fail-fast; **(S3)** TAR.
 - [ ] 8.7 Retire the matching `tests/_dev_oracle/` coverage as each format transfers
       (per stage).
@@ -269,12 +271,17 @@ incrementally — each as its format's stage lands.
       adversarial case forward so each backend's `_translate_exception` hook is locked
       down when written. Done: **(S1)** ZIP (truncated archive; corrupt member CRC),
       **(S2)** single-file (truncated/corrupt gzip, via a non-seekable source so the
-      stdlib path is deterministic). Pending: **(S3)** TAR, **(S4)** ISO. The full
+      stdlib path is deterministic), **(S3)** TAR (truncated archive → `TruncatedError`;
+      corrupt header checksum → `CorruptionError`, both with the `tarfile.ReadError`
+      cause), **(S4)** ISO (truncated volume descriptor → `CorruptionError`). The full
       adversarial corpus (traversal, bombs, every format) still consolidates in
-      Phase 10. **Follow-up (codec layer, pre-existing):** the `rapidgzip` accelerator
-      leaks a raw `RuntimeError` on a corrupt header and does not raise on truncation —
-      `_translate_rapidgzip` needs the corrupt-header pattern, and truncation detection
-      needs a decision (see review notes).
+      Phase 10. **Follow-ups (codec layer, pre-existing):** (1) the `rapidgzip`
+      accelerator leaks a raw `RuntimeError` on a corrupt header and does not raise on
+      truncation — `_translate_rapidgzip` needs the corrupt-header pattern, and truncation
+      detection needs a decision (see review notes); (2) the **stdlib** gzip path's
+      `GzipCodec.translate` maps `gzip.BadGzipFile`/`EOFError` but not a mid-stream
+      `zlib.error` (raised on a flipped deflate byte), so that corruption currently leaks
+      untranslated — surfaced while wiring the compressed-tar tests.
 
 ## 9. Verify — acceptance criteria
 
@@ -282,14 +289,14 @@ incrementally — each as its format's stage lands.
 > at the end of the phase.
 
 **Spec scenarios covered**
-- [ ] 9.1 `format-zip` (all read), `format-tar` (random-access read + compressed-tar;
+- [x] 9.1 `format-zip` (all read), `format-tar` (random-access read + compressed-tar;
       streaming → Phase 4), `format-single-file-compressors` (this-phase codecs),
       `format-iso` (all), `format-detection` (all except SFX).
-- [ ] 9.2 `backend-registry` selection + degradation + tri-state availability;
+- [x] 9.2 `backend-registry` selection + degradation + tri-state availability;
       `access-mode-and-cost` indexed/random for ZIP and TAR.
 
 **Gates**
-- [ ] 9.3 `uv run pyrefly check` and `uv run ty check` both clean (strict).
-- [ ] 9.4 `uv run ruff check` clean.
-- [ ] 9.5 New tests green; frozen oracle no worse; `git status` clean after a run
+- [x] 9.3 `uv run pyrefly check` and `uv run ty check` both clean (strict).
+- [x] 9.4 `uv run ruff check` clean.
+- [x] 9.5 New tests green; frozen oracle no worse; `git status` clean after a run
       (no committed generated binaries).

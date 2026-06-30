@@ -229,3 +229,37 @@ def test_partial_container_does_not_lower_for_unrelated_format(
     monkeypatch.setattr(codecs_module, "_zstandard", None)
     assert format_availability(ArchiveFormat.DIRECTORY).support is FormatSupport.FULL
     assert ContainerFormat.DIRECTORY == ArchiveFormat.DIRECTORY.container
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: NONE end-to-end — the real ISO backend without pycdlib degrades
+# gracefully (simulated absence, so this runs in the core-only leg too).
+# ---------------------------------------------------------------------------
+
+
+def test_iso_none_without_pycdlib(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    import archivey.formats  # noqa: F401 - ensures the ISO backend is registered
+    from archivey.internal import registry as registry_module
+
+    real_optional = registry_module._optional
+    monkeypatch.setattr(
+        registry_module,
+        "_optional",
+        lambda name: None if name == "pycdlib" else real_optional(name),
+    )
+
+    avail = format_availability(ArchiveFormat.ISO)
+    assert avail.support is FormatSupport.NONE
+    assert any(m.name == "pycdlib" for m in avail.missing)
+    assert any("archivey[iso]" in m.install_hint for m in avail.missing)
+
+    # NONE is excluded from the supported list but still known.
+    assert ArchiveFormat.ISO not in list_supported_formats()
+    assert ArchiveFormat.ISO in list_known_formats()
+
+    # Selecting it raises an install-hint error rather than crashing.
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        open_archive(io.BytesIO(b"not an iso"), format=ArchiveFormat.ISO)
+    assert "pycdlib" in str(excinfo.value)
