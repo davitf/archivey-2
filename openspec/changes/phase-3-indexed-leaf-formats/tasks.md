@@ -275,13 +275,14 @@ incrementally — each as its format's stage lands.
       corrupt header checksum → `CorruptionError`, both with the `tarfile.ReadError`
       cause), **(S4)** ISO (truncated volume descriptor → `CorruptionError`). The full
       adversarial corpus (traversal, bombs, every format) still consolidates in
-      Phase 10. **Follow-ups (codec layer, pre-existing):** (1) the `rapidgzip`
+      Phase 10. **Follow-up (codec layer, pre-existing):** the `rapidgzip`
       accelerator leaks a raw `RuntimeError` on a corrupt header and does not raise on
       truncation — `_translate_rapidgzip` needs the corrupt-header pattern, and truncation
-      detection needs a decision (see review notes); (2) the **stdlib** gzip path's
-      `GzipCodec.translate` maps `gzip.BadGzipFile`/`EOFError` but not a mid-stream
-      `zlib.error` (raised on a flipped deflate byte), so that corruption currently leaks
-      untranslated — surfaced while wiring the compressed-tar tests.
+      detection needs a decision (see review notes). **Fixed in this change:** the
+      **stdlib** gzip path's `GzipCodec.translate` now maps a mid-stream `zlib.error`
+      (raised on a flipped deflate byte) to `CorruptionError` — it previously handled only
+      `gzip.BadGzipFile`/`EOFError`, leaking the raw `zlib.error`; surfaced while wiring the
+      compressed-tar tests, regression-tested at both the codec and TAR levels.
 
 ## 9. Verify — acceptance criteria
 

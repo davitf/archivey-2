@@ -16,23 +16,17 @@ compressed ``.iso.xz`` is a single-file compressor wrapping the image, not mount
 
 from __future__ import annotations
 
+import importlib
 import io
 import re
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, cast
 
 if TYPE_CHECKING:
-    import pycdlib
-    import pycdlib.pycdlibexception
     from _typeshed import WriteableBuffer
-else:
-    try:
-        import pycdlib
-        import pycdlib.pycdlibexception
-    except ImportError:  # pragma: no cover - the absent path runs in the core-only CI leg
-        pycdlib = None
 
 from archivey.internal.cost import (
     AccessCost,
@@ -59,10 +53,24 @@ from archivey.internal.types import (
     MemberType,
 )
 
+
+# pycdlib is an optional dependency ([iso] extra). Resolve it dynamically (like the codec
+# layer's optional packages) so the type checkers don't require it installed in the
+# core-only / lint environment, and absence becomes a clean PackageNotInstalledError.
+def _optional(name: str) -> ModuleType | None:
+    try:
+        return importlib.import_module(name)
+    except ImportError:  # pragma: no cover - the absent path runs in the core-only CI leg
+        return None
+
+
+pycdlib = _optional("pycdlib")
+_pycdlib_exc = _optional("pycdlib.pycdlibexception")
+
 # Errors raised while opening/reading an image: pycdlib's own exception plus OS errors from
 # the underlying handle. Built defensively so the module imports even without pycdlib.
 _ISO_ERRORS: tuple[type[Exception], ...] = (
-    (pycdlib.pycdlibexception.PyCdlibException, OSError) if pycdlib is not None else (OSError,)
+    (_pycdlib_exc.PyCdlibException, OSError) if _pycdlib_exc is not None else (OSError,)
 )
 
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
@@ -197,8 +205,8 @@ class IsoReader(BaseArchiveReader):
         return err
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
-        if pycdlib is not None and isinstance(
-            exc, pycdlib.pycdlibexception.PyCdlibException
+        if _pycdlib_exc is not None and isinstance(
+            exc, _pycdlib_exc.PyCdlibException
         ):
             return CorruptionError(f"Error reading ISO image: {exc!r}")
         return None

@@ -271,3 +271,17 @@ def test_corrupt_tar_header_raises() -> None:
         with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.TAR) as ar:
             ar.members()
     assert isinstance(excinfo.value.__cause__, tarfile.ReadError)
+
+
+def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> None:
+    # A gzip-wrapped tar whose deflate body is mangled: the corruption surfaces through the
+    # codec layer as a CorruptionError while scanning/reading (not a raw zlib.error).
+    path = tmp_path / "bad.tar.gz"
+    raw = bytearray(_build_tar("w:gz"))
+    raw[len(raw) // 2] ^= 0xFF  # flip a byte inside the deflate stream
+    path.write_bytes(bytes(raw))
+    with pytest.raises(CorruptionError):
+        with open_archive(path) as ar:
+            for _member, stream in ar.stream_members():
+                if stream is not None:
+                    stream.read()

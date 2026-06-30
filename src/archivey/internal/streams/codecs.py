@@ -564,6 +564,12 @@ class GzipCodec(StreamCodec):
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
             return CorruptionError(f"Error reading gzip stream: {exc!r}")
+        if isinstance(exc, zlib.error):
+            # Corruption inside the deflate body (a valid gzip header, then bad data) is
+            # raised by stdlib gzip as a raw zlib.error rather than BadGzipFile. zlib does
+            # not flag truncation distinctly here (a short stream surfaces as EOFError
+            # below), so any zlib.error at this point is corruption.
+            return CorruptionError(f"Error reading gzip stream: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"gzip stream is truncated: {exc!r}")
         return None

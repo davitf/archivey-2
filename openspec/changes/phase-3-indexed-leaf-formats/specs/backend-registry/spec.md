@@ -96,9 +96,9 @@ metadata exposed by `format_availability()`.
 
 ### Requirement: Separate ReadBackend and WriteBackend ABCs
 
-Reading and writing are different concerns with different state, lifecycles, and even
-availability, so the system SHALL define **two** abstract base classes — `ReadBackend`
-and `WriteBackend` — rather than one `Backend` with an optional write method. A format
+The system SHALL define **two** abstract base classes — `ReadBackend` and `WriteBackend`
+— rather than one `Backend` with an optional write method, because reading and writing
+are different concerns with different state, lifecycles, and even availability. A format
 may have a read backend, a write backend, both, or (RAR) only a reader. They are
 registered in separate registries.
 
