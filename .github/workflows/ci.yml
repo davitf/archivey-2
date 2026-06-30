@@ -67,6 +67,12 @@ jobs:
           - { os: ubuntu-latest, python-version: "3.12", install: all }
           - { os: ubuntu-latest, python-version: "3.13", install: all }
           - { os: ubuntu-latest, python-version: "3.14", install: all }
+          # Minimum supported library versions (uv --resolution lowest-direct) on the min
+          # Python: the [all] legs above run the *current* versions of every dependency, so
+          # this leg pins each declared dep to its floor (pycdlib 1.14, zstandard 0.23, …) to
+          # catch version-specific bugs that the default highest-version resolution hides —
+          # e.g. the pycdlib 1.14 readinto over-read the ISO backend works around.
+          - { os: ubuntu-latest, python-version: "3.11", install: all-lowest }
           # macOS + Windows on min/max Python (cross-platform path/symlink/junction surface).
           - { os: macos-latest, python-version: "3.11", install: all }
           - { os: macos-latest, python-version: "3.14", install: all }
@@ -108,10 +114,20 @@ jobs:
         if: matrix.install == 'all'
         run: uv sync --group dev --extra all
 
+      # ---- [all-lowest]: same extras, but every declared dependency pinned to its minimum
+      # allowed version (--resolution lowest-direct), so the suite runs against the floor of
+      # the supported range. Resolves fresh rather than from uv.lock (which pins current
+      # versions); the shared test step below uses --no-sync so this resolution stands.
+      - name: Install all extras + dev group (minimum versions)
+        if: matrix.install == 'all-lowest'
+        run: uv sync --group dev --extra all --resolution lowest-direct
+
       - name: Install unrar (Linux only, for RAR data tests)
-        if: matrix.install == 'all' && runner.os == 'Linux'
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar || true
 
       - name: Run tests
-        if: matrix.install == 'all'
-        run: uv run pytest tests/ -q
+        if: matrix.install == 'all' || matrix.install == 'all-lowest'
+        # --no-sync so the all-lowest leg keeps its minimum-version resolution instead of
+        # re-syncing back to the locked (current) versions.
+        run: uv run --no-sync pytest tests/ -q

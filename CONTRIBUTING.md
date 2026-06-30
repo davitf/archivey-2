@@ -30,6 +30,17 @@ with no extra path arguments.
 RAR *data* tests need the system `unrar` binary (`apt-get install -y unrar`, etc.);
 without it those tests skip cleanly.
 
+To reproduce CI's **minimum-supported-versions** leg locally — every declared dependency
+pinned to its floor (`pycdlib 1.14`, `zstandard 0.23`, …), so version-specific library bugs
+in the supported range surface — run the suite under `uv`'s lowest-version resolution:
+
+```bash
+uv run --resolution lowest-direct --extra all pytest    # min versions of every dependency
+```
+
+CI runs the `[all]` matrix legs at current versions and one `[all-lowest]` leg at the
+floors; both must stay green.
+
 ## Tooling decisions
 
 - **Type-checking is Pyrefly + ty** — the library is kept clean on **both**. We do
