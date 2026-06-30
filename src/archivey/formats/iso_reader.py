@@ -17,16 +17,12 @@ compressed ``.iso.xz`` is a single-file compressor wrapping the image, not mount
 from __future__ import annotations
 
 import importlib
-import io
 import re
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, cast
-
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
+from typing import Any, BinaryIO, Iterator, Mapping
 
 from archivey.internal.cost import (
     AccessCost,
@@ -43,6 +39,7 @@ from archivey.internal.errors import (
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.reader import BaseArchiveReader, ReadBackend
 from archivey.internal.registry import register_reader
+from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -102,52 +99,21 @@ def _dr_date_to_datetime(date: Any) -> datetime | None:
         return None
 
 
-class _PyCdlibStream(io.RawIOBase):
-    """Adapt pycdlib's ``PyCdlibIO`` to a plain ``RawIOBase``.
+class _PyCdlibStream(DelegatingStream):
+    """Adapt pycdlib's ``PyCdlibIO`` (a one-file context manager) onto ``DelegatingStream``.
 
-    ``PyCdlibIO`` must be *entered* (its context manager sets up the read offset), and its
-    ``readinto`` mis-signals EOF when wrapped in a ``BufferedReader`` — it keeps reading into
-    the ISO sector padding past the file's logical end. Routing ``readinto`` through
-    ``read`` (which clamps to the logical length) avoids that. Entering happens in
-    ``__init__`` and exiting in ``close()``, so the context lifecycle lives in one place.
+    ``PyCdlibIO`` must be *entered* before use — its context manager sets up the read offset —
+    so this enters it in ``__init__`` and relies on ``DelegatingStream.close()`` (which calls
+    ``inner.close()``, the exact equivalent of ``PyCdlibIO.__exit__``) to exit it, keeping the
+    enter/exit lifecycle paired. ``readinto_passthrough=False`` routes ``readinto`` through
+    ``read``: ``PyCdlibIO.readinto`` mis-signals EOF inside a ``BufferedReader`` (it reads into
+    the ISO sector padding past the file's logical end), while ``PyCdlibIO.read`` clamps to the
+    logical length. Read/seek/tell/seekable are inherited delegation.
     """
 
     def __init__(self, raw: Any) -> None:
-        super().__init__()
-        self._raw = raw
-        raw.__enter__()  # sets up the read offset; close() exits the context
-
-    def readable(self) -> bool:
-        return True
-
-    def read(self, size: int = -1, /) -> bytes:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        return self._raw.read(size)
-
-    def readinto(self, b: "WriteableBuffer", /) -> int:
-        view = memoryview(b).cast("B")
-        data = self.read(len(view))
-        n = len(data)
-        view[:n] = data
-        return n
-
-    def seekable(self) -> bool:
-        return bool(self._raw.seekable())
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        return self._raw.seek(offset, whence)
-
-    def tell(self, /) -> int:
-        return self._raw.tell()
-
-    def close(self) -> None:
-        if not self.closed:
-            try:
-                self._raw.__exit__(None, None, None)
-            except Exception:  # noqa: BLE001 - best-effort cleanup; the object is going away
-                pass
-            super().close()
+        super().__init__(raw, readinto_passthrough=False)
+        raw.__enter__()  # set up the read offset; close() -> inner.close() exits the context
 
 
 class IsoReader(BaseArchiveReader):
@@ -185,7 +151,11 @@ class IsoReader(BaseArchiveReader):
             else:
                 self._iso.open_fp(source)
         except _PYCDLIB_ERRORS as exc:
-            raise self._open_error(exc) from exc
+            translated = self._translate_exception(exc)
+            if translated is not None:
+                self._stamp_error_context(translated)
+                raise translated from exc
+            raise
 
         # Auto-select the richest namespace: Rock Ridge > Joliet > plain ISO 9660.
         if self._iso.has_rock_ridge():
@@ -197,15 +167,6 @@ class IsoReader(BaseArchiveReader):
         else:
             self._namespace = "iso9660"
             self._path_kw = "iso_path"
-
-    def _open_error(self, exc: Exception) -> ArchiveyError:
-        translated = self._translate_exception(exc)
-        if translated is not None:
-            self._stamp_error_context(translated)
-            return translated
-        err = CorruptionError(f"Could not open ISO image: {exc!r}")
-        self._stamp_error_context(err)
-        return err
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if _pycdlib_exc is not None and isinstance(
@@ -349,7 +310,7 @@ class IsoReader(BaseArchiveReader):
                 self._stamp_error_context(translated, member.name)
                 raise translated from exc
             raise
-        return self._wrap_member_stream(cast("BinaryIO", stream), member.name)
+        return self._wrap_member_stream(stream, member.name)
 
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
