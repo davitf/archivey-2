@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_format
-from archivey.internal.errors import FormatDetectionError
+from archivey.exceptions import FormatDetectionError
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.types import MagicSignature
+from archivey.types import MagicSignature
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 
@@ -96,7 +96,7 @@ def test_magic_wins_over_conflicting_extension(
     # through a registry with two synthetic backends: magic says SEVEN_Z, the ".rar"
     # extension says RAR. Magic must win, with a WARNING on archivey.detection.
     from archivey.internal import detection as detection_module
-    from archivey.internal.reader import ReadBackend
+    from archivey.internal.base_reader import ReadBackend
     from archivey.internal.registry import BackendRegistry
 
     class _MagicBackend(ReadBackend):

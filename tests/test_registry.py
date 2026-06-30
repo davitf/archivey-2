@@ -22,11 +22,11 @@ from archivey import (
     list_supported_formats,
     open_archive,
 )
-from archivey.internal.errors import UnsupportedFormatError
-from archivey.internal.reader import ReadBackend
+from archivey.exceptions import UnsupportedFormatError
+from archivey.internal.base_reader import ReadBackend
 from archivey.internal.registry import BackendRegistry
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.types import ContainerFormat, MagicSignature
+from archivey.types import ContainerFormat, MagicSignature
 
 # ---------------------------------------------------------------------------
 # Synthetic backends, registered into a *fresh* registry (no global pollution)
@@ -240,7 +240,7 @@ def test_partial_container_does_not_lower_for_unrelated_format(
 def test_iso_none_without_pycdlib(monkeypatch: pytest.MonkeyPatch) -> None:
     import io
 
-    import archivey.formats  # noqa: F401 - ensures the ISO backend is registered
+    import archivey.internal.backends  # noqa: F401 - ensures the ISO backend is registered
     from archivey.internal import registry as registry_module
 
     real_optional = registry_module._optional

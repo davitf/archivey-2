@@ -7,18 +7,25 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-from archivey.internal.cost import (
+from archivey.core import (
+    DetectionConfidence,
+    FormatAvailability,
+    FormatInfo,
+    FormatSupport,
+    MissingComponent,
+    detect_format,
+    format_availability,
+    list_known_formats,
+    list_supported_formats,
+    open_archive,
+)
+from archivey.cost import (
     AccessCost,
     CostReceipt,
     ListingCost,
     StreamCapability,
 )
-from archivey.internal.detection import (
-    DetectionConfidence,
-    FormatInfo,
-    detect_format,
-)
-from archivey.internal.errors import (
+from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
@@ -39,17 +46,8 @@ from archivey.internal.errors import (
     UnsupportedOperationError,
     WriteError,
 )
-from archivey.internal.open_archive import open_archive
-from archivey.internal.reader import ArchiveReader
-from archivey.internal.registry import (
-    FormatAvailability,
-    FormatSupport,
-    MissingComponent,
-    format_availability,
-    list_known_formats,
-    list_supported_formats,
-)
-from archivey.internal.types import (
+from archivey.reader import ArchiveReader
+from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -111,7 +109,7 @@ __all__ = [
 # Register the bundled backends eagerly (each module self-registers on import), so the
 # availability queries (list_supported_formats / format_availability) work immediately
 # after `import archivey`, without first calling open_archive().
-import archivey.formats  # noqa: E402,F401
+import archivey.internal.backends  # noqa: E402,F401
 
 # Keep the importlib.metadata helpers out of the public `archivey` namespace
 # (so `__all__` stays the single, hand-curated description of the public API).

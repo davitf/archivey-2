@@ -7,7 +7,7 @@ import logging
 import pytest
 
 from archivey.internal.naming import normalize_member_name
-from archivey.internal.types import MemberType
+from archivey.types import MemberType
 
 
 @pytest.mark.parametrize(

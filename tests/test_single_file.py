@@ -18,8 +18,8 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveFormat, MemberType, open_archive
-from archivey.internal.cost import AccessCost, ListingCost
-from archivey.internal.errors import (
+from archivey.cost import AccessCost, ListingCost
+from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     TruncatedError,

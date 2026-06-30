@@ -16,13 +16,13 @@ from contextlib import contextmanager
 import pytest
 
 from archivey import open_archive
-from archivey.formats.single_file_reader import SingleFileBackend
 from archivey.internal import registry as registry_module
+from archivey.internal.backends.single_file_reader import SingleFileBackend
 from archivey.internal.detection import DetectionConfidence, detect_format
 from archivey.internal.registry import FormatSupport, format_availability, get_registry
 from archivey.internal.streams import codecs
 from archivey.internal.streams.streamtools import ensure_binaryio
-from archivey.internal.types import (
+from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     MagicSignature,

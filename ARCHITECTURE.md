@@ -8,51 +8,38 @@
 
 ```
 src/archivey/
-├── __init__.py            # Public API re-exports: open_archive(), create(), extract(),
-│                          #   detect_format(), and the public types
+├── __init__.py            # Thin re-exports; hand-curated __all__
 ├── py.typed               # PEP 561 marker
 │
-├── core.py                # open_archive() / create() / extract() / detect_format() entry points
-├── types.py               # Public types: ArchiveMember, ArchiveInfo, ArchiveFormat
-│                          #   (+ ContainerFormat/StreamFormat), MemberType, CompressionAlgorithm/Method,
-│                          #   CostReceipt (+ Listing/Access/StreamCapability),
-│                          #   ExtractionPolicy/OverwritePolicy, MemberSelector/MemberFilter aliases
+├── core.py                # open_archive(), detect_format(), format_availability, list_*_formats
+├── reader.py              # public ArchiveReader ABC (contract only)
+├── types.py               # ArchiveMember, ArchiveInfo, ArchiveFormat, …
 ├── exceptions.py          # ArchiveyError hierarchy
-├── filters.py             # ExtractionPolicy transforms + path sanitizer
+├── cost.py                # CostReceipt, ListingCost, AccessCost, StreamCapability
 │
 ├── internal/              # private spine + helpers (not part of the public import surface)
-│   ├── base_reader.py     # BaseArchiveReader ABC + default impls (link-follow, context stamping)
-│   ├── base_writer.py     # ArchiveWriter ABC
-│   ├── registry.py        # BackendRegistry + ReadBackend / WriteBackend ABCs
-│   ├── detection.py       # Format detection engine + PeekableStream         (Phase 3)
-│   ├── extraction.py      # ExtractionCoordinator + BombTracker (uses filters) (Phase 4)
-│   ├── progress.py        # ExtractionProgress / ExtractionResult              (Phase 4)
-│   ├── config.py          # StreamConfig + AcceleratorMode (internal; not yet public) (Phase 2)
-│   └── streams/           # compressed + seekable stream layer                 (Phase 2)
-│       ├── streamtools/       # generic, archivey-agnostic binary-stream plumbing (extractable as a lib)
-│       │   ├── binaryio.py    # classify/coerce caller objects to BinaryIO (is_*, ensure_*, BinaryIOWrapper, read_exact)
-│       │   └── slice.py       # SlicingStream + fix_stream_start_position
-│       ├── decompressor_stream.py  # codec-agnostic seekable DecompressorStream base + SeekPoint
-│       ├── decompress.py      # concrete zlib/deflate + Brotli backends (build on the base)
-│       ├── xz.py / lzip.py    # segmented (block-index / trailer-scan) seekable backends
-│       ├── archive_stream.py  # ArchiveStream — exception translation/stamping carrier
-│       ├── codecs.py          # codec registry (one default backend per codec) + resolver
-│       ├── crypto.py          # the single wrapped AES crypto stage ([crypto])
-│       └── verify.py          # decompressed-output digest verification stage
-│       # streamtools/ imports nothing from archivey (pure stdlib); everything else here
-│       # speaks ArchiveyError. (No io_helpers.py — the detection peek/rewind primitive is
-│       # PeekableStream in detection.py, Phase 3, not in this layer.)
+│   ├── base_reader.py     # BaseArchiveReader + ReadBackend / WriteBackend ABCs
+│   ├── registry.py        # BackendRegistry + registration / availability queries
+│   ├── detection.py       # Format detection engine
+│   ├── naming.py, logs.py, config.py
+│   ├── extraction.py      # ExtractionCoordinator + BombTracker (Phase 4)
+│   ├── filters.py         # ExtractionPolicy transforms + path sanitizer (Phase 4)
+│   ├── progress.py        # ExtractionProgress / ExtractionResult (Phase 4)
+│   ├── backends/          # format reader backends (register on import)
+│   │   ├── __init__.py
+│   │   ├── directory_reader.py
+│   │   ├── zip_reader.py
+│   │   ├── tar_reader.py
+│   │   ├── single_file_reader.py
+│   │   ├── iso_reader.py
+│   │   └── … (sevenzip_reader, rar_reader — Phase 7)
+│   └── streams/           # compressed + seekable stream layer (Phase 2)
+│       ├── streamtools/       # generic binary-stream plumbing (extractable; stdlib-only)
+│       ├── decompressor_stream.py
+│       ├── decompress.py, xz.py, lzip.py
+│       ├── archive_stream.py, codecs.py, crypto.py, verify.py, peekable.py
+│       # streamtools/ imports nothing from archivey; everything else speaks ArchiveyError.
 │
-└── formats/               # one module per format backend
-    ├── __init__.py            # registers backends at import time
-    ├── directory_reader.py    # Directory pseudo-backend                       (Phase 1)
-    ├── zip_reader.py          # ZIP (zipfile stdlib)
-    ├── tar_reader.py          # TAR all variants (tarfile stdlib)
-    ├── single_file_reader.py  # GZ, BZ2, XZ, ZST single-file compressors
-    ├── sevenzip_reader.py     # 7-Zip — native reader (stdlib lzma/bz2/zlib); py7zr only for writing
-    ├── rar_reader.py          # RAR — native metadata parser + system `unrar` for data (read-only)
-    └── iso_reader.py          # ISO 9660 (pycdlib, optional)
-
 tests/
 ├── fixtures/              # Committed binary archives — only what can't be generated
 │   ├── adversarial/       # Hand-crafted: path traversal, zip bombs, corrupt headers
@@ -146,13 +133,13 @@ Rather than having backend-specific reader classes be the public API, all backen
 
 ```
 BaseArchiveReader (ABC in internal/base_reader.py)
-├── ZipReader        (formats/zip_reader.py)
-├── TarReader        (formats/tar_reader.py)
-├── SingleFileReader (formats/single_file_reader.py)
-├── SevenZReader     (formats/sevenzip_reader.py)
-├── RarReader        (formats/rar_reader.py)
-├── IsoReader        (formats/iso_reader.py)
-└── DirectoryReader  (formats/directory_reader.py)
+├── ZipReader        (internal/backends/zip_reader.py)
+├── TarReader        (internal/backends/tar_reader.py)
+├── SingleFileReader (internal/backends/single_file_reader.py)
+├── SevenZReader     (internal/backends/sevenzip_reader.py)
+├── RarReader        (internal/backends/rar_reader.py)
+├── IsoReader        (internal/backends/iso_reader.py)
+└── DirectoryReader  (internal/backends/directory_reader.py)
 ```
 
 The methods backends **must or may** implement:
@@ -534,7 +521,7 @@ dependency is absent the guard catches the `ImportError` and the format simply n
 appears in `list_formats()` — import never crashes:
 
 ```python
-# formats/iso_reader.py
+# internal/backends/iso_reader.py
 try:
     import pycdlib
     _PYCDLIB_AVAILABLE = True

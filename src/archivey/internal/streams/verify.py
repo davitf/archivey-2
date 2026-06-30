@@ -26,7 +26,7 @@ import hashlib
 import zlib
 from typing import BinaryIO, Callable, Mapping, Protocol
 
-from archivey.internal.errors import CorruptionError
+from archivey.exceptions import CorruptionError
 from archivey.internal.logs import integrity as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 

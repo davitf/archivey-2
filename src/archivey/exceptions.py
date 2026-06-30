@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from archivey.internal.types import ArchiveFormat
+    from archivey.types import ArchiveFormat
 
 
 class ArchiveyError(Exception):

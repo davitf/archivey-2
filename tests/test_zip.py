@@ -17,8 +17,8 @@ from archivey import (
     MemberType,
     open_archive,
 )
-from archivey.internal.cost import AccessCost, ListingCost, StreamCapability
-from archivey.internal.errors import (
+from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,

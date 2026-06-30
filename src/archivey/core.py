@@ -1,17 +1,39 @@
-"""The ``open_archive()`` entry point."""
+"""Public entry points: open archives and query format support."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.internal.detection import FormatInfo, detect_format
-from archivey.internal.errors import StreamNotSeekableError
-from archivey.internal.reader import ArchiveReader
-from archivey.internal.registry import get_registry
+from archivey.exceptions import StreamNotSeekableError
+from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
+from archivey.internal.registry import (
+    FormatAvailability,
+    FormatSupport,
+    MissingComponent,
+    format_availability,
+    get_registry,
+    list_known_formats,
+    list_supported_formats,
+)
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools import is_seekable, is_stream
-from archivey.internal.types import ArchiveFormat
+from archivey.reader import ArchiveReader
+from archivey.types import ArchiveFormat
+
+__all__ = [
+    "DetectionConfidence",
+    "FormatAvailability",
+    "FormatInfo",
+    "FormatSupport",
+    "MissingComponent",
+    "detect_format",
+    "format_availability",
+    "list_known_formats",
+    "list_supported_formats",
+    "open_archive",
+    "source_name",
+]
 
 
 def source_name(source: str | Path | BinaryIO) -> str | None:
@@ -46,8 +68,8 @@ def open_archive(
     A non-seekable stream is wrapped in a :class:`PeekableStream` so detection never
     consumes bytes the backend still needs.
     """
-    # Import formats package to ensure backends are registered
-    import archivey.formats  # noqa: F401
+    # Import backends to ensure they are registered
+    import archivey.internal.backends  # noqa: F401
 
     if isinstance(password, str):
         password = password.encode()

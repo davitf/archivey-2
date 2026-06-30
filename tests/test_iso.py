@@ -18,8 +18,8 @@ from archivey import (
     format_availability,
     open_archive,
 )
-from archivey.internal.cost import AccessCost, ListingCost, StreamCapability
-from archivey.internal.errors import (
+from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     UnsupportedOperationError,

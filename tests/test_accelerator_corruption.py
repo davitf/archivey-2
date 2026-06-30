@@ -18,11 +18,11 @@ from pathlib import Path
 
 import pytest
 
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
-from archivey.internal.errors import CorruptionError, TruncatedError
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 
 _GZ_ON = StreamConfig(use_rapidgzip=AcceleratorMode.ON)

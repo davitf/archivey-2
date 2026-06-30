@@ -17,9 +17,9 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from archivey.internal.reader import ReadBackend, WriteBackend
+    from archivey.internal.base_reader import ReadBackend, WriteBackend
 
-from archivey.internal.errors import (
+from archivey.exceptions import (
     UnsupportedFormatError,
     UnsupportedOperationError,
 )
@@ -31,7 +31,7 @@ from archivey.internal.streams.codecs import (
     codec_requirement,
     is_codec_available,
 )
-from archivey.internal.types import (
+from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     MagicSignature,
