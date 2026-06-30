@@ -592,6 +592,11 @@ class GzipCodec(StreamCodec):
             return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
         if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
             return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
+        if isinstance(exc, ValueError) and "Failed to decode deflate block" in text:
+            # Corrupt deflate body. On Linux this surfaces via the ISA-L wrapper above; the
+            # non-ISA-L backend (e.g. macOS) instead raises ValueError "Failed to decode
+            # deflate block … The backreferenced distance lies outside the window buffer!".
+            return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
         if isinstance(exc, (ValueError, RuntimeError)) and (
             "gzip/zlib header" in text or "gzip magic" in text
         ):
