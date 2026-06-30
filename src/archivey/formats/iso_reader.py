@@ -22,7 +22,10 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import Any, BinaryIO, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, cast
+
+if TYPE_CHECKING:
+    from pycdlib.pycdlibio import PyCdlibIO
 
 from archivey.internal.cost import (
     AccessCost,
@@ -51,9 +54,10 @@ from archivey.internal.types import (
 )
 
 
-# pycdlib is an optional dependency ([iso] extra). Resolve it dynamically (like the codec
-# layer's optional packages) so the type checkers don't require it installed in the
-# core-only / lint environment, and absence becomes a clean PackageNotInstalledError.
+# pycdlib is an optional *runtime* dependency ([iso] extra): absent in the zero-dep core /
+# core-only install. Resolve it dynamically (like the codec layer's optional packages) so the
+# module still imports there and absence becomes a clean PackageNotInstalledError. (Typing
+# uses the TYPE_CHECKING import above; the dev group carries pycdlib so the checkers resolve it.)
 def _optional(name: str) -> ModuleType | None:
     try:
         return importlib.import_module(name)
@@ -111,8 +115,10 @@ class _PyCdlibStream(DelegatingStream):
     logical length. Read/seek/tell/seekable are inherited delegation.
     """
 
-    def __init__(self, raw: Any) -> None:
-        super().__init__(raw, readinto_passthrough=False)
+    def __init__(self, raw: "PyCdlibIO") -> None:
+        # PyCdlibIO is an io.RawIOBase, which is a BinaryIO at runtime but not by typeshed's
+        # nominal hierarchy, so cast at the DelegatingStream boundary.
+        super().__init__(cast("BinaryIO", raw), readinto_passthrough=False)
         raw.__enter__()  # set up the read offset; close() -> inner.close() exits the context
 
 

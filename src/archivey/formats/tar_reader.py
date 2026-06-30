@@ -69,6 +69,26 @@ _TAR_COMPRESSED: tuple[ArchiveFormat, ...] = tuple(
     if codec.stream_format is not None
 )
 
+# Plain TAR plus every compressed combination the codec layer can decode.
+_TAR_FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR, *_TAR_COMPRESSED)
+
+# Canonical extensions are derived from each format (TAR -> ".tar", TAR_GZ -> ".tar.gz",
+# (TAR, LZIP) -> ".tar.lz", …); only the short aliases (.tgz/.tbz/…) are listed by hand.
+# (Built at module scope: a dict comprehension in the class body can't see class-level names.)
+_TAR_EXTENSIONS: dict[str, ArchiveFormat] = {
+    f".{fmt.file_extension()}": fmt for fmt in _TAR_FORMATS
+}
+_TAR_EXTENSIONS.update(
+    {
+        ".tgz": ArchiveFormat.TAR_GZ,
+        ".tbz2": ArchiveFormat.TAR_BZ2,
+        ".tbz": ArchiveFormat.TAR_BZ2,
+        ".txz": ArchiveFormat.TAR_XZ,
+        ".tzst": ArchiveFormat.TAR_ZST,
+        ".tlz": ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP),
+    }
+)
+
 
 def _member_type(info: tarfile.TarInfo) -> MemberType:
     if info.isdir():
@@ -312,24 +332,8 @@ class TarReader(BaseArchiveReader):
 class TarReadBackend(ReadBackend):
     """Backend factory for TAR archives (plain and compressed)."""
 
-    FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR, *_TAR_COMPRESSED)
-    EXTENSIONS: Mapping[str, ArchiveFormat] = {
-        ".tar": ArchiveFormat.TAR,
-        ".tar.gz": ArchiveFormat.TAR_GZ,
-        ".tgz": ArchiveFormat.TAR_GZ,
-        ".tar.bz2": ArchiveFormat.TAR_BZ2,
-        ".tbz2": ArchiveFormat.TAR_BZ2,
-        ".tbz": ArchiveFormat.TAR_BZ2,
-        ".tar.xz": ArchiveFormat.TAR_XZ,
-        ".txz": ArchiveFormat.TAR_XZ,
-        ".tar.zst": ArchiveFormat.TAR_ZST,
-        ".tzst": ArchiveFormat.TAR_ZST,
-        ".tar.lz4": ArchiveFormat.TAR_LZ4,
-        ".tar.lz": ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP),
-        ".tlz": ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP),
-        ".tar.br": ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI),
-        ".tar.Z": ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS),
-    }
+    FORMATS: tuple[ArchiveFormat, ...] = _TAR_FORMATS
+    EXTENSIONS: Mapping[str, ArchiveFormat] = _TAR_EXTENSIONS
     # Plain tar is recognized by the POSIX/GNU "ustar" magic at offset 257. Compressed tars
     # carry only their outer codec's magic; detection's inner-TAR probe (see internal/
     # detection.py) decompresses a prefix and finds this same signature to report TAR_GZ etc.
