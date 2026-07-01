@@ -67,22 +67,26 @@
 - [ ] 3.7 **Wire `ArchiveReader.extract_all()`** — replace `NotImplementedError`; return
       `list[ExtractionResult]`.
 
-## 4. Hardlinks (source always precedes its links in TAR order; see `format-tar` MODIFIED delta)
+## 4. Hardlinks (source precedes its links in TAR order; no pre-pass — see `format-tar` MODIFIED delta)
 
-- [ ] 4.1 **Streaming mode** — `os.link` (or `copy2` on cross-device) when the source was
-      already extracted; explicit `ExtractionError` when the source was filtered out (a
-      forward pass cannot recover its bytes). No deferred post-pass.
-- [ ] 4.2 **Random-access mode (forward-staging, no seek-back / no re-decompression)** —
-      pre-pass builds the hardlink closure map from member metadata (TAR `linkname` is in the
-      header — no payload reads). When the forward pass reaches an excluded-but-needed source,
-      write its content to the first selected link's path *then* (or a `dest/.archivey-tmp-<id>`
-      temp), and `os.link` further selected links when reached. Never create the excluded
-      source at its own path. State is a bounded `{source → link path}` map drained during the
-      pass — no `pending_*` deferred-creation machine, no second decompression pass.
-- [ ] 4.3 **Tests** — hardlink to prior member; cross-device fallback (mock `os.link`);
-      excluded-source random-access scenario and streaming filtered-source error from
-      `safe-extraction` / `format-tar` specs; **solid `.tar.gz` excluded-source resolves with
-      a single decompression pass** (assert no re-decompression / no second pass).
+- [ ] 4.1 **Sequential resolution + running map** — record each written FILE under a per-source
+      `{device → on-disk path}` map; a selected link to an already-written source uses `os.link`
+      to a same-device copy. No upfront pre-pass, no closure map.
+- [ ] 4.2 **Cross-device sibling linking** — prefer `os.link` to an existing same-device copy
+      of the source; only `shutil.copy2` when none exists, then record the copy's device so
+      later same-device links reuse it (better than `tarfile`, which recopies per link).
+- [ ] 4.3 **Orphaned link (source filtered out) — cost-driven recovery:**
+      - forward-only source → per-member failure via `OnError` (STOP raises / CONTINUE records
+        `FAILED`); no recovery.
+      - seekable `DIRECT` (plain `.tar`) → seek to the source, materialize at the first selected
+        link's path immediately; no second pass.
+      - seekable `SOLID` (compressed) → collect orphaned links during the main pass; resolve in
+        **one** second pass afterwards, only if any orphan exists.
+- [ ] 4.4 **Tests** — link to prior member (same device); chained cross-device link reuses the
+      sibling copy (mock devices / `os.link` `EXDEV`); orphaned link forward-only → `OnError`
+      STOP/CONTINUE; orphaned link plain tar → seek recovery, no second pass; orphaned link
+      compressed tar → single second pass (assert stream decompressed ≤ 2×); no-filter compressed
+      tar → no second pass.
 
 ## 5. Public API + ZIP vertical slice
 

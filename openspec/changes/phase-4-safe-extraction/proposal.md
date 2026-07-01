@@ -31,35 +31,36 @@ override.
 
 ### `ExtractionCoordinator` algorithm (per `safe-extraction` spec, not the stale ARCHITECTURE sketch)
 
-Single forward pass over the reader's `_iter_with_data()` (or the ABC's
-`stream_members()` wrapper):
+Single sequential forward pass over the reader's `_iter_with_data()` (or the ABC's
+`stream_members()` wrapper) — **no upfront pre-pass** (a TAR has no central directory, so a
+closure map would cost a full header scan or, for `.tar.gz`, a full extra decompression that
+the common case never needs):
 
-1. **Pre-pass (random-access only):** build hardlink closure map when the full member list
-   is cheaply available (`_get_members_registered()` or equivalent).
-2. **Per member:** `check_universal(original)` → policy transform on a **transient copy**
+1. **Per member:** `check_universal(original)` → policy transform on a **transient copy**
    → optional user `filter` on the copy → write FILE/DIR/SYMLINK/HARDLINK per spec.
-3. **Symlinks:** post-creation `Path.resolve()` check with `ELOOP`/`RuntimeError` guard.
-4. **Hardlinks:** the real file always precedes any hardlink to it in TAR order, so a single
-   forward pass suffices — **no seek-back and no re-decompression**, which matters for solid
-   `.tar.gz` where seeking to an earlier member would mean re-inflating from the start.
-   - **Random-access** (member list known up front; for TAR the `linkname` is in the header,
-     so the closure map is built from the same header scan that produces the index — no
-     payload reads): when the forward pass reaches an **excluded-but-needed** source, stage
-     its content **then** — write it to the first selected link's destination path (the bytes
-     are streaming past us anyway), and `os.link()` further selected links to it when reached.
-     The excluded source's own name is never created. The only state is a bounded
-     `{source → first-selected-link path}` map drained during the pass — **not** DEV's
-     `pending_*` deferred-creation machine.
-   - **Streaming** (no upfront list): a selected hardlink whose source was filtered out cannot
-     be recovered in one pass → raise an explicit `ExtractionError`. (Extract-all on a pipe
-     resolves every hardlink; only partial selection that splits a group hits this.)
-   - Cross-device `os.link()` failure falls back to `shutil.copy2` in both modes.
-5. **Bomb tracking:** `BombTracker` on the **original** member; per-member ratio when
+2. **Symlinks:** post-creation `Path.resolve()` check with `ELOOP`/`RuntimeError` guard.
+3. **Hardlinks:** the real file always precedes any hardlink to it in TAR order. FILE members
+   are recorded in a running per-source `{device → path}` map as they are written; a selected
+   link to an already-written source is created with `os.link()` (the common case — no seek,
+   no extra pass). A selected link whose source was **excluded** by the selector/`filter`
+   (an "orphaned" link, only possible with a filter) recovers the source's content to the
+   first selected link's path via a strategy chosen from the source's `CostReceipt` (see
+   `format-tar` MODIFIED delta):
+   - **forward-only** → per-member failure via `OnError` (no recovery possible);
+   - **seekable `DIRECT`** (plain `.tar`) → seek back and materialize immediately;
+   - **seekable `SOLID`** (compressed) → collect orphans, resolve in a **single second pass**,
+     and only when an orphan actually exists.
+   Cross-device links prefer `os.link()` to a same-device sibling copy before falling back to
+   `shutil.copy2`. No `pending_*` deferred-creation machine.
+4. **Bomb tracking:** `BombTracker` on the **original** member; per-member ratio when
    `compressed_size` is known (ZIP); **archive-wide ratio** when outer
    `compressed_source_size` is known (compressed TAR — see spec delta).
-6. **`OnError`:** `STOP` vs `CONTINUE` per spec; cumulative bomb limit always stops.
+5. **`OnError`:** `STOP` vs `CONTINUE` per spec (also governs unrecoverable orphaned links);
+   cumulative bomb limit always stops.
 
-No `pending_*` dicts. No `can_move_file`. No `process_file_extracted`.
+No DEV `pending_*` deferred-creation machine, no `can_move_file`, no `process_file_extracted`.
+(The only bounded auxiliary state is the running per-source `{device → path}` map, and — for
+the `SOLID` orphaned-link case only — a list of orphaned links awaiting the single second pass.)
 
 ### Public API
 
@@ -91,12 +92,12 @@ denominator is unknown (pipes, plain `.tar`).
 2. **Archive-wide ratio for solid containers** when outer compressed size is known.
 3. **No streaming TAR work here** — `phase-4-tar-streaming` lands first; this change only
    consumes its `_iter_with_data()` override and `compressed_source_size` hook.
-4. **Hardlink-to-excluded-source is staged forward** — in random-access mode the source is
-   written to the first selected link's path **as the single forward pass reaches the source**
-   (no seek-back, no re-decompression, no second pass); streaming raises if the source was
-   filtered. The bounded `{source → link path}` staging map is permitted; the `pending_*`
-   ban targets DEV's deferred link-creation state machine (`can_move_file`,
-   `process_file_extracted`), not this map.
+4. **No hardlink pre-pass; orphaned-link recovery is chosen from the `CostReceipt`.** Default
+   is a single sequential pass. A hardlink whose source was filtered out recovers via: seek
+   (seekable `DIRECT` / plain tar), one deferred second pass (seekable `SOLID` / compressed
+   tar, only when an orphan exists), or `OnError` failure (forward-only). The `pending_*` ban
+   targets DEV's deferred link-creation state machine (`can_move_file`,
+   `process_file_extracted`), not the bounded per-source map / orphan list used here.
 5. **Minimal config** — bomb limits and policies as keyword args on `extract()` /
    `extract_all()`; full public config surface remains Phase 5.
 
@@ -106,8 +107,9 @@ denominator is unknown (pipes, plain `.tar`).
   `compressed_size` is unavailable but outer `compressed_source_size` is known; the
   `BombTracker` constructor gains a `compressed_source_size` argument.
 - **`format-tar`** (MODIFIED) — reconcile the TAR hardlink requirement with `safe-extraction`:
-  the real file precedes its hardlinks (no deferred post-pass), streaming raises when the
-  source was filtered out, random-access resolves at the first selected link.
+  no upfront pre-pass; single sequential pass; orphaned-link recovery chosen from the
+  `CostReceipt` (seek for `DIRECT`, one second pass for `SOLID`, `OnError` failure for
+  forward-only); cross-device sibling linking.
 
 Implements (no other deltas) the full `safe-extraction` spec and wires
 `archive-reading` `extract_all`. Tests cover `testing-contract` adversarial scenarios
@@ -125,8 +127,9 @@ Implements (no other deltas) the full `safe-extraction` spec and wires
   `src/archivey/internal/base_reader.py` (`extract_all` body, replacing the
   `NotImplementedError` stub); `src/archivey/__init__.py` and `src/archivey/core.py`
   (`extract()`, new public types); adversarial fixtures + `tests/test_extraction.py`.
-- **Risk:** hardlink random-access excluded-source staging — follow `safe-extraction`
-  spec literally; add focused tests before broad corpus coverage.
+- **Risk:** orphaned-link recovery (source filtered out) — three cost-driven paths (seek /
+  second pass / `OnError` failure) plus cross-device sibling linking; follow the `format-tar`
+  MODIFIED delta literally and add focused tests before broad corpus coverage.
 
 ## Implementation stages
 
@@ -134,9 +137,9 @@ Implements (no other deltas) the full `safe-extraction` spec and wires
    policy transforms; unit tests.
 2. **Coordinator core** — FILE/DIR/SYMLINK write, overwrite policy, `OnError`, progress/
    results; ZIP extract vertical slice.
-3. **Hardlinks + bombs** — pre-pass closure map (random-access) + immediate resolution at
-   the first selected link; streaming raises on filtered-out source; `BombTracker`
-   (per-member + archive-wide), adversarial corpus tests.
+3. **Hardlinks + bombs** — sequential resolution with the running per-source `{device → path}`
+   map; orphaned-link recovery (seek / second pass / `OnError`) + cross-device sibling
+   linking; `BombTracker` (per-member + archive-wide); adversarial corpus tests.
 4. **Public API** — `archivey.extract()`, full `extract_all()` signature, retire frozen-
    oracle extraction coverage as tests transfer.
 
