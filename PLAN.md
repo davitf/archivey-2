@@ -288,15 +288,19 @@ this phase adds TAR's forward-only streaming and the extraction machinery.)
 1. **TAR forward-only streaming** — the non-seekable `tar.gz` path: override
    `_iter_with_data()` for true sequential `stream_members()` (the random-access TAR
    reader + variants + compressed-TAR detection are already in Phase 3).
-2. **`ExtractionCoordinator`** (written fresh — unified single ordered pass over
-   `_iter_with_data()`; **no** `pending_*` dicts, **no** `can_move_file`, **no**
-   `process_file_extracted`):
-   - Pre-pass hardlink closure (random-access mode); during-pass FILE/DIR/HARDLINK/
-     SYMLINK handling with symlink escape **re-validated at extraction time**; the
-     only deferred work is an explicit O(skipped-sources) second pass for excluded
-     hardlink targets.
-   - Decompression-bomb limits (cumulative max bytes; per-member ratio; scoped to
-     extraction paths only) and `on_progress` / per-member `ExtractionResult`.
+2. **`ExtractionCoordinator`** (written fresh as a **pull-based sink** that drives the
+   `ArchiveReader` — `cost`, `get_members_if_available()`, `members()`, `_iter_with_data()`
+   — and selects a hardlink algorithm; **not** DEV's push-model helper, so **no**
+   `can_move_file` / `process_file_extracted` / general deferred-state machine):
+   - Hardlinks (source precedes link in TAR order): no filter → single sequential pass;
+     filter + cheaply-available member list (central dir / already-materialized / plain-tar
+     scan) → planned single pass staging orphaned sources to link paths; filter + compressed
+     tar (no cheap list) → one conditional second pass, only if an orphan appears; forward-only
+     orphan → `OnError` failure. Cross-device links reuse a same-device sibling before copying.
+   - FILE/DIR/SYMLINK handling with symlink escape **re-validated at extraction time**.
+   - Decompression-bomb limits (cumulative max bytes; per-member ratio; archive-wide ratio via
+     `compressed_source_size`; scoped to extraction paths only) and `on_progress` / per-member
+     `ExtractionResult`.
 3. Wire `extract()`/`extractall()` and the one-shot extraction API to the
    coordinator.
 
@@ -313,7 +317,8 @@ after advance*), `format-detection` (*gzip wrapping a tar/single file*),
 `testing-contract` (*path traversal member*, *zip bomb extraction*, *non-seekable
 TAR.GZ source*).
 **Gates:** Pyrefly + ty + ruff clean; streaming extraction verified on a non-seekable TAR;
-no `pending_*` attributes anywhere.
+coordinator is a pull-based sink (no push-model `ExtractionHelper`; a `pending_*` grep stays
+as a light tripwire, not a hard ban).
 
 ---
 

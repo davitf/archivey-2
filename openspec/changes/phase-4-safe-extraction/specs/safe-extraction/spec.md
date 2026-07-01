@@ -75,3 +75,48 @@ archive-wide ratio are independent guards; either may trip first.
 - **WHEN** a ZIP member with known `compressed_size` is extracted
 - **THEN** the per-member ratio check applies as today
 - **AND** the archive-wide ratio is not used in place of per-member `compressed_size`
+
+## MODIFIED Requirements
+
+### Requirement: Hardlink Two-Pass Extraction
+
+The system SHALL support hardlinks (as found in TAR archives) through the
+`ExtractionCoordinator` acting as a **pull-based sink** that inspects the reader
+(`cost`, `get_members_if_available()`) and selects an extraction algorithm, rather than a
+push-model helper that buffers deferred link-creation state. The source always precedes its
+hardlinks in archive order.
+
+- **FILE / DIR / SYMLINK** members are written as they are reached; each written FILE is
+  recorded per source in a `{device → on-disk path}` map.
+- **HARDLINK** whose source is already written: create it with `os.link()` to a copy on the
+  same filesystem device; if `os.link()` fails cross-device, fall back to `shutil.copy2` —
+  but prefer `os.link()` to an already-created same-device sibling copy of the source before
+  copying again.
+- **HARDLINK whose source was excluded** by the `members` selector or `filter` (only possible
+  when filtering): the implementation MUST NOT materialize the excluded source at its own
+  destination path (that would leak a file the caller deliberately excluded). It SHALL instead
+  make the source's **content** available only through the selected link(s) — write the source
+  data to the **first selected link's** path and `os.link()` further selected links to it (an
+  implementation MAY equivalently stage in a hidden temp inside `dest`, e.g.
+  `dest/.archivey-tmp-<id>`). If no link to the source is selected either, the source's data is
+  not extracted at all. **How** the excluded source's bytes are obtained is chosen so no pass
+  is wasted (see `format-tar`): when the member list is cheaply available (central directory,
+  already-materialized, or a plain-tar header scan) the source is staged during a single
+  planned forward pass; on a solid stream with no cheap list it is recovered in one conditional
+  second pass; on a **forward-only** source its bytes are unrecoverable and the link is a
+  per-member failure handled by the `OnError` policy (STOP raises, CONTINUE records `FAILED`).
+
+#### Scenario: hardlink to already-extracted member
+
+- **WHEN** a HARDLINK member is reached and its source has already been extracted in this pass on the same device
+- **THEN** `os.link(source_path, hardlink_dest)` is called (or `shutil.copy2`, or a same-device sibling `os.link`, on cross-device failure)
+
+#### Scenario: unrecoverable orphaned hardlink follows OnError
+
+- **WHEN** a selected HARDLINK's source was excluded and the source is on a forward-only stream (unrecoverable in one pass)
+- **THEN** it is a per-member failure: `OnError.STOP` raises and `OnError.CONTINUE` records a `FAILED` `ExtractionResult` and proceeds
+
+#### Scenario: selected hardlink whose source was excluded (recoverable)
+
+- **WHEN** a selected HARDLINK points to a source the `members` selector / `filter` excluded, and the source is recoverable (cheap member list, or a solid stream via one second pass)
+- **THEN** the source content is written to the first selected link's path (further selected links are `os.link`'d to it), and the excluded source is never created at its own destination path

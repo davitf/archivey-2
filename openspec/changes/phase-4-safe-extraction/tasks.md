@@ -5,8 +5,11 @@
 > Prerequisites: Phase 3 complete (ZIP backend is the first extract vertical slice) **and
 > `phase-4-tar-streaming` merged first** (provides `compressed_source_size` and the
 > forward-only `_iter_with_data()` override this change consumes).
-> Clean-slate: write `ExtractionCoordinator` fresh — do **not** port DEV's
-> `ExtractionHelper` / `pending_*` state machine.
+> Clean-slate: write `ExtractionCoordinator` fresh as a **pull-based sink** that drives the
+> `ArchiveReader` (`cost`, `get_members_if_available()`, `members()`, `stream_members()` /
+> `_iter_with_data()`) and selects an algorithm — do **not** port DEV's push-model
+> `ExtractionHelper`. DEV's state sprawl came from the push model; the pull-model sink keeps
+> only bounded, purpose-specific maps.
 > Module paths below are post-`package-layout-restructure`: public API at
 > `src/archivey/` root, internals under `src/archivey/internal/`.
 
@@ -16,14 +19,16 @@
 
 ## 0. Decisions locked in this change (no code, just honored below)
 
-- [ ] 0.1 **Single forward pass** over `_iter_with_data()` `(member, stream)` pairs —
-      coordinator algorithm follows `safe-extraction` spec, not ARCHITECTURE §2.6's old
-      `open_fn` sketch.
+- [ ] 0.1 **Pull-based sink** driving `_iter_with_data()` `(member, stream)` pairs — algorithm
+      selected from `get_members_if_available()` + `cost`; follows `safe-extraction` spec, not
+      ARCHITECTURE §2.6's old `open_fn` sketch.
 - [ ] 0.2 **Archive-wide bomb ratio** when `compressed_source_size` is known (spec delta);
       per-member ratio when `member.compressed_size` is known (ZIP).
 - [ ] 0.3 **Transforms on transient copy**; `BombTracker` + `ExtractionResult` use
       **original** member.
-- [ ] 0.4 **No `pending_*` attributes anywhere** in extraction code (PLAN gate).
+- [ ] 0.4 **Pull-model sink, no push-model state machine** — bounded maps (plan, per-source
+      `{device → path}`, orphan list) are fine; do not reintroduce DEV's `pending_*` /
+      `can_move_file` / `process_file_extracted` sprawl.
 - [ ] 0.5 **Bomb limits only on extract paths** — `read()` / `open()` unchanged.
 
 ## 1. Types and filters
@@ -53,9 +58,10 @@
 
 ## 3. `ExtractionCoordinator` core
 
-- [ ] 3.1 **`src/archivey/internal/extraction.py`** — `ExtractionCoordinator.run(reader, dest, …)` drives
-      one pass via `reader._iter_with_data()` (respect `members` selector + user `filter` on
-      transient copy).
+- [ ] 3.1 **`src/archivey/internal/extraction.py`** — `ExtractionCoordinator.run(reader, dest, …)`
+      as a pull-based sink: inspect `reader.cost` + `reader.get_members_if_available()` to pick
+      the hardlink algorithm (§4), then drive `reader._iter_with_data()` (respect `members`
+      selector + user `filter` on transient copy).
 - [ ] 3.2 **FILE extraction** — chunked copy with `BombTracker.count()`; apply mode/mtime
       best-effort after write; honor `OverwritePolicy`.
 - [ ] 3.3 **DIR extraction** — `mkdir` with policy mode.
@@ -67,26 +73,31 @@
 - [ ] 3.7 **Wire `ArchiveReader.extract_all()`** — replace `NotImplementedError`; return
       `list[ExtractionResult]`.
 
-## 4. Hardlinks (source precedes its links in TAR order; no pre-pass — see `format-tar` MODIFIED delta)
+## 4. Hardlinks (source precedes its links in TAR order; algorithm-selected — see `format-tar` MODIFIED delta)
 
-- [ ] 4.1 **Sequential resolution + running map** — record each written FILE under a per-source
-      `{device → on-disk path}` map; a selected link to an already-written source uses `os.link`
-      to a same-device copy. No upfront pre-pass, no closure map.
-- [ ] 4.2 **Cross-device sibling linking** — prefer `os.link` to an existing same-device copy
-      of the source; only `shutil.copy2` when none exists, then record the copy's device so
-      later same-device links reuse it (better than `tarfile`, which recopies per link).
-- [ ] 4.3 **Orphaned link (source filtered out) — cost-driven recovery:**
-      - forward-only source → per-member failure via `OnError` (STOP raises / CONTINUE records
-        `FAILED`); no recovery.
-      - seekable `DIRECT` (plain `.tar`) → seek to the source, materialize at the first selected
-        link's path immediately; no second pass.
-      - seekable `SOLID` (compressed) → collect orphaned links during the main pass; resolve in
-        **one** second pass afterwards, only if any orphan exists.
-- [ ] 4.4 **Tests** — link to prior member (same device); chained cross-device link reuses the
-      sibling copy (mock devices / `os.link` `EXDEV`); orphaned link forward-only → `OnError`
-      STOP/CONTINUE; orphaned link plain tar → seek recovery, no second pass; orphaned link
-      compressed tar → single second pass (assert stream decompressed ≤ 2×); no-filter compressed
-      tar → no second pass.
+- [ ] 4.1 **Algorithm selection** — only a selector/`filter` can orphan a link, so fetch the
+      member list up front **only when filtering** and it's cheap: `get_members_if_available()`
+      ≠ None, or a seekable `REQUIRES_SCANNING` plain tar (may call `members()`). Never call
+      `members()` on a compressed tar or a streaming reader.
+- [ ] 4.2 **(A) No filter → single sequential pass** — record each written FILE under a
+      per-source `{device → on-disk path}` map; a link to an already-written source uses
+      `os.link` to a same-device copy. No planning, no second pass.
+- [ ] 4.3 **(B) Filter + cheap list → planned single pass** — plan selection + policy + filter
+      up front, building a `source → selected-link-paths` map; one forward pass writes selected
+      members and stages each needed (even excluded) source to the first selected link's path as
+      it is reached; `os.link` the rest. No second pass; works for `DIRECT` and `SOLID`.
+- [ ] 4.4 **(C) Filter + no cheap list (compressed tar) → sequential + conditional second pass**
+      — collect orphaned links during the main pass; resolve all in **one** second pass, only if
+      an orphan exists (stream decompressed ≤ 2×). Forward-only orphan → per-member `OnError`
+      failure (STOP raises / CONTINUE records `FAILED`); no recovery.
+- [ ] 4.5 **Cross-device sibling linking** — prefer `os.link` to an existing same-device copy of
+      the source; only `shutil.copy2` when none exists, then record the copy's device so later
+      same-device links reuse it (better than `tarfile`, which recopies from the archive per link).
+- [ ] 4.6 **Tests** — unfiltered → single pass, no list fetched; filter + central-dir/plain-tar
+      orphan → planned single pass, no second pass; filter + compressed-tar orphan → one second
+      pass (assert decompressed ≤ 2×); filter + compressed-tar no orphan → single pass; forward-only
+      orphan → `OnError` STOP/CONTINUE; chained cross-device link reuses the sibling copy (mock
+      devices / `os.link` `EXDEV`).
 
 ## 5. Public API + ZIP vertical slice
 
@@ -111,5 +122,7 @@
 ## 7. Gates
 
 - [ ] 7.1 `uv run pyrefly check` + `uv run ty check` + `uv run ruff` clean.
-- [ ] 7.2 No `pending_*` attributes in `src/archivey/` (grep gate).
+- [ ] 7.2 Coordinator is a pull-based sink (no push-model `ExtractionHelper`); bounded maps
+      are fine. A `pending_*` grep over `src/archivey/` stays as a light tripwire against
+      reintroducing the DEV state sprawl, not a hard architectural ban.
 - [ ] 7.3 All new tests green; adversarial scenarios pass.

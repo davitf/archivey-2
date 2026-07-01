@@ -31,36 +31,40 @@ override.
 
 ### `ExtractionCoordinator` algorithm (per `safe-extraction` spec, not the stale ARCHITECTURE sketch)
 
-Single sequential forward pass over the reader's `_iter_with_data()` (or the ABC's
-`stream_members()` wrapper) — **no upfront pre-pass** (a TAR has no central directory, so a
-closure map would cost a full header scan or, for `.tar.gz`, a full extra decompression that
-the common case never needs):
+The coordinator is a **pull-based sink**: it drives the reader (`cost`,
+`get_members_if_available()`, `members()` when cheap, `_iter_with_data()`/`stream_members()`)
+and picks an algorithm — no push-model state machine, and **no upfront pass the run doesn't
+need**. Per member: `check_universal(original)` → policy transform on a **transient copy** →
+optional user `filter` on the copy → write FILE/DIR/SYMLINK/HARDLINK. Symlinks get the
+post-creation `Path.resolve()` check with the `ELOOP`/`RuntimeError` guard.
 
-1. **Per member:** `check_universal(original)` → policy transform on a **transient copy**
-   → optional user `filter` on the copy → write FILE/DIR/SYMLINK/HARDLINK per spec.
-2. **Symlinks:** post-creation `Path.resolve()` check with `ELOOP`/`RuntimeError` guard.
-3. **Hardlinks:** the real file always precedes any hardlink to it in TAR order. FILE members
-   are recorded in a running per-source `{device → path}` map as they are written; a selected
-   link to an already-written source is created with `os.link()` (the common case — no seek,
-   no extra pass). A selected link whose source was **excluded** by the selector/`filter`
-   (an "orphaned" link, only possible with a filter) recovers the source's content to the
-   first selected link's path via a strategy chosen from the source's `CostReceipt` (see
-   `format-tar` MODIFIED delta):
-   - **forward-only** → per-member failure via `OnError` (no recovery possible);
-   - **seekable `DIRECT`** (plain `.tar`) → seek back and materialize immediately;
-   - **seekable `SOLID`** (compressed) → collect orphans, resolve in a **single second pass**,
-     and only when an orphan actually exists.
-   Cross-device links prefer `os.link()` to a same-device sibling copy before falling back to
-   `shutil.copy2`. No `pending_*` deferred-creation machine.
+Hardlinks (the real file always precedes its links in TAR order; see `format-tar` MODIFIED
+delta). Only a selector/`filter` can orphan a link, so the coordinator fetches the member
+list up front **only when filtering** and it's cheap to obtain, and picks one of three:
+
+1. **No filter → single sequential pass.** Record written FILEs in a per-source
+   `{device → path}` map; a link to an already-written source uses `os.link()`. No orphans
+   possible; no second pass.
+2. **Filter + cheap member list** (central dir / already-materialized, or a plain-tar header
+   scan) **→ planned single pass.** Plan the selection + `source → selected-link-paths` map
+   up front, then one forward pass that stages each needed source to the first selected link's
+   path as it is reached (works for `DIRECT` and `SOLID`; no second pass).
+3. **Filter + no cheap list** (compressed tar) **→ sequential pass + one conditional second
+   pass**, taken only if an orphan actually appears (stream decompressed at most twice).
+
+   Forward-only sources have no list and no second pass, so an orphaned link is a per-member
+   failure via `OnError`. Cross-device links prefer `os.link()` to a same-device sibling copy
+   before `shutil.copy2`.
 4. **Bomb tracking:** `BombTracker` on the **original** member; per-member ratio when
    `compressed_size` is known (ZIP); **archive-wide ratio** when outer
    `compressed_source_size` is known (compressed TAR — see spec delta).
 5. **`OnError`:** `STOP` vs `CONTINUE` per spec (also governs unrecoverable orphaned links);
    cumulative bomb limit always stops.
 
-No DEV `pending_*` deferred-creation machine, no `can_move_file`, no `process_file_extracted`.
-(The only bounded auxiliary state is the running per-source `{device → path}` map, and — for
-the `SOLID` orphaned-link case only — a list of orphaned links awaiting the single second pass.)
+Pull-model sink, not DEV's push-model helper: no `can_move_file`, no `process_file_extracted`,
+no general deferred-state machine. The only bounded auxiliary state is the write plan
+(algorithm 2), the per-source `{device → path}` map, and — for algorithm 3 only — a list of
+orphaned links awaiting the single second pass.
 
 ### Public API
 
@@ -92,12 +96,14 @@ denominator is unknown (pipes, plain `.tar`).
 2. **Archive-wide ratio for solid containers** when outer compressed size is known.
 3. **No streaming TAR work here** — `phase-4-tar-streaming` lands first; this change only
    consumes its `_iter_with_data()` override and `compressed_source_size` hook.
-4. **No hardlink pre-pass; orphaned-link recovery is chosen from the `CostReceipt`.** Default
-   is a single sequential pass. A hardlink whose source was filtered out recovers via: seek
-   (seekable `DIRECT` / plain tar), one deferred second pass (seekable `SOLID` / compressed
-   tar, only when an orphan exists), or `OnError` failure (forward-only). The `pending_*` ban
-   targets DEV's deferred link-creation state machine (`can_move_file`,
-   `process_file_extracted`), not the bounded per-source map / orphan list used here.
+4. **Coordinator is a pull-based sink; hardlink handling is algorithm-selected, no pre-pass
+   unless filtering.** No filter → single sequential pass. Filter + cheaply-available member
+   list (central dir / already-materialized / plain-tar scan) → planned single pass that
+   stages orphaned sources to link paths. Filter + compressed tar (no cheap list) → one
+   conditional second pass, only if an orphan appears. Forward-only orphan → `OnError`
+   failure. Cross-device links reuse a same-device sibling before copying. The old
+   `no pending_*` gate is relaxed to "pull-model sink, no push-model state machine"; bounded
+   maps (plan, `{device → path}`, orphan list) are fine.
 5. **Minimal config** — bomb limits and policies as keyword args on `extract()` /
    `extract_all()`; full public config surface remains Phase 5.
 
@@ -106,12 +112,17 @@ denominator is unknown (pipes, plain `.tar`).
 - **`safe-extraction`** (ADDED) — archive-wide decompression ratio when per-member
   `compressed_size` is unavailable but outer `compressed_source_size` is known; the
   `BombTracker` constructor gains a `compressed_source_size` argument.
+- **`safe-extraction`** (MODIFIED) — *Hardlink Two-Pass Extraction* reframed around the
+  pull-based sink: unrecoverable orphaned links follow `OnError` (not an unconditional raise),
+  cross-device links reuse a same-device sibling, and the excluded-source recovery mechanism
+  is algorithm-selected (details in `format-tar`).
 - **`format-tar`** (MODIFIED) — reconcile the TAR hardlink requirement with `safe-extraction`:
-  no upfront pre-pass; single sequential pass; orphaned-link recovery chosen from the
-  `CostReceipt` (seek for `DIRECT`, one second pass for `SOLID`, `OnError` failure for
-  forward-only); cross-device sibling linking.
+  pull-based sink; member list fetched up front only when filtering and cheap; three
+  algorithms (sequential / planned single pass / conditional second pass) selected by whether
+  the list is cheaply available; `OnError` for forward-only orphans; cross-device sibling
+  linking.
 
-Implements (no other deltas) the full `safe-extraction` spec and wires
+Implements (no other deltas) the rest of the `safe-extraction` spec and wires
 `archive-reading` `extract_all`. Tests cover `testing-contract` adversarial scenarios
 (path traversal, zip bomb) and extraction scenarios across ZIP + seekable TAR.
 
@@ -127,9 +138,10 @@ Implements (no other deltas) the full `safe-extraction` spec and wires
   `src/archivey/internal/base_reader.py` (`extract_all` body, replacing the
   `NotImplementedError` stub); `src/archivey/__init__.py` and `src/archivey/core.py`
   (`extract()`, new public types); adversarial fixtures + `tests/test_extraction.py`.
-- **Risk:** orphaned-link recovery (source filtered out) — three cost-driven paths (seek /
-  second pass / `OnError` failure) plus cross-device sibling linking; follow the `format-tar`
-  MODIFIED delta literally and add focused tests before broad corpus coverage.
+- **Risk:** orphaned-link recovery (source filtered out) — three algorithms (sequential /
+  planned single pass / conditional second pass) selected from list-availability + cost, plus
+  cross-device sibling linking; follow the `format-tar` MODIFIED delta literally and add
+  focused tests before broad corpus coverage.
 
 ## Implementation stages
 
@@ -137,9 +149,10 @@ Implements (no other deltas) the full `safe-extraction` spec and wires
    policy transforms; unit tests.
 2. **Coordinator core** — FILE/DIR/SYMLINK write, overwrite policy, `OnError`, progress/
    results; ZIP extract vertical slice.
-3. **Hardlinks + bombs** — sequential resolution with the running per-source `{device → path}`
-   map; orphaned-link recovery (seek / second pass / `OnError`) + cross-device sibling
-   linking; `BombTracker` (per-member + archive-wide); adversarial corpus tests.
+3. **Hardlinks + bombs** — the three-algorithm sink (sequential / planned single pass /
+   conditional second pass) selected via `get_members_if_available()` + cost; per-source
+   `{device → path}` map + cross-device sibling linking; `OnError` for forward-only orphans;
+   `BombTracker` (per-member + archive-wide); adversarial corpus tests.
 4. **Public API** — `archivey.extract()`, full `extract_all()` signature, retire frozen-
    oracle extraction coverage as tests transfer.
 
