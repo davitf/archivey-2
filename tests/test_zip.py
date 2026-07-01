@@ -103,7 +103,7 @@ def test_random_access_read_by_name(simple_zip: Path) -> None:
 
 
 def test_central_directory_lookup_no_io(simple_zip: Path) -> None:
-    # reader["name"] is served from the in-memory name map with no extra archive reads.
+    # reader.get("name") is served from the in-memory name map with no extra archive reads.
     with open_archive(simple_zip) as ar:
         ar.members()  # materialize
         archive = ar._archive  # type: ignore[attr-defined]
@@ -115,7 +115,7 @@ def test_central_directory_lookup_no_io(simple_zip: Path) -> None:
             return original_open(*args, **kwargs)
 
         archive.open = counting_open  # type: ignore[method-assign]
-        member = ar["hello.txt"]
+        member = ar.get("hello.txt")
         assert member.name == "hello.txt"
         assert calls["open"] == 0  # lookup touched no archive data
 
@@ -129,7 +129,7 @@ def test_unix_mode_from_external_attr(tmp_path: Path) -> None:
     path = tmp_path / "moded.zip"
     _zip_with_unix_mode(path, "script.sh", b"#!/bin/sh\n", 0o755)
     with open_archive(path) as ar:
-        member = ar["script.sh"]
+        member = ar.get("script.sh")
         assert member.mode == 0o755
 
 
@@ -144,7 +144,7 @@ def test_none_mode_when_external_attr_zero() -> None:
     cd = raw.index(b"PK\x01\x02")
     raw[cd + 38 : cd + 42] = b"\x00\x00\x00\x00"
     with open_archive(io.BytesIO(bytes(raw))) as ar:
-        assert ar["plain.txt"].mode is None
+        assert ar.get("plain.txt").mode is None
 
 
 def test_directory_member_type(simple_zip: Path) -> None:
@@ -174,7 +174,7 @@ def test_symlink_member(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"target.txt")
     with open_archive(path) as ar:
-        member = ar["link"]
+        member = ar.get("link")
         assert member.type == MemberType.SYMLINK
         assert member.link_target == "target.txt"
 
@@ -202,12 +202,12 @@ def test_encrypted_flag() -> None:
     flags = int.from_bytes(raw[cd + 8 : cd + 10], "little") | 0x1
     raw[cd + 8 : cd + 10] = flags.to_bytes(2, "little")
     with open_archive(io.BytesIO(bytes(raw))) as ar:
-        assert ar["e.txt"].is_encrypted is True
+        assert ar.get("e.txt").is_encrypted is True
 
 
 def test_size_fields(simple_zip: Path) -> None:
     with open_archive(simple_zip) as ar:
-        member = ar["hello.txt"]
+        member = ar.get("hello.txt")
         assert member.size == len(b"hello world")
         assert member.compressed_size is not None
 
@@ -217,7 +217,7 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("café.txt", b"x")  # forces the UTF-8 flag
     with open_archive(path) as ar:
-        member = ar["café.txt"]
+        member = ar.get("café.txt")
         assert member.raw_name == "café.txt".encode("utf-8")
 
 
@@ -232,7 +232,7 @@ def test_extended_timestamp_precedence(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
-        member = ar["t.txt"]
+        member = ar.get("t.txt")
         assert member.modified is not None
         assert member.modified.tzinfo is not None
         assert member.modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
@@ -252,7 +252,7 @@ def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
-        assert ar["file.txt"].modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
+        assert ar.get("file.txt").modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
 
 
 def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
@@ -266,7 +266,7 @@ def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
-        member = ar["t.txt"]
+        member = ar.get("t.txt")
         assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
         assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
         assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
@@ -461,7 +461,7 @@ def test_ntfs_timestamps_used_when_no_extended_timestamp(tmp_path: Path) -> None
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
-        member = ar["t.txt"]
+        member = ar.get("t.txt")
         assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
         assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
         assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
@@ -481,7 +481,7 @@ def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
-        member = ar["t.txt"]
+        member = ar.get("t.txt")
         assert member.modified == datetime.fromtimestamp(ut_mtime, tz=timezone.utc)
         assert member.accessed == datetime.fromtimestamp(nt_atime, tz=timezone.utc)
         assert member.created is None  # NTFS ctime was 0 = "not set"

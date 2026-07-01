@@ -25,7 +25,7 @@ The system SHALL expose the following cost and capability properties for every o
 
 #### Scenario: Central directory lookup is O(1)
 
-- **WHEN** `reader["some/member.txt"]` is called on a ZIP reader
+- **WHEN** `reader.get("some/member.txt")` is called on a ZIP reader
 - **THEN** the lookup is satisfied via the in-memory `NameToInfo` dict with no additional I/O
 
 ### Requirement: Map ZIP member metadata to the unified ArchiveMember model

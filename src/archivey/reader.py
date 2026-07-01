@@ -64,34 +64,32 @@ class ArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def __len__(self) -> int:
-        """Member count (may trigger a scan). On a streaming reader raises ``TypeError``
-        — not ``UnsupportedOperationError`` like :meth:`members` — because ``list(reader)``
-        probes ``__len__`` implicitly via the length-hint protocol, which suppresses only
-        ``TypeError``; iteration must keep working there."""
-        ...
+    def __contains__(self, member: object) -> bool:
+        """Whether ``member`` (an :class:`ArchiveMember`) was yielded by *this* reader.
 
-    @abstractmethod
-    def __contains__(self, name: object) -> bool:
-        """Whether a member with the given name exists."""
-        ...
-
-    @abstractmethod
-    def __getitem__(self, name: str) -> ArchiveMember:
-        """Look up a member by name; raises ``KeyError`` if absent."""
+        Identity-based and O(1) — no scan — so it is valid in any access mode; useful to
+        disambiguate members when several readers are in play. Name lookup is
+        :meth:`get`, and a non-``ArchiveMember`` operand raises ``TypeError`` (this also
+        keeps the ``in`` operator from silently falling back to a full iteration, which
+        would consume a streaming reader's single forward pass)."""
         ...
 
     @abstractmethod
     def get(
         self, name: str, default: ArchiveMember | None = None
     ) -> ArchiveMember | None:
-        """Look up a member by name, returning ``default`` if absent."""
+        """Look up a member by its normalized name, returning ``default`` if absent.
+        This is the name-lookup entry point; :meth:`open`/:meth:`read` also accept a
+        name directly. May trigger a scan; on a streaming reader raises
+        ``UnsupportedOperationError``. With duplicate member names, returns the last
+        (the one a sequential extraction would leave on disk)."""
         ...
 
     @abstractmethod
     def open(self, member: str | ArchiveMember) -> BinaryIO:
-        """Open a member as a binary stream, following symlinks/hardlinks. The caller
-        is responsible for closing the returned stream."""
+        """Open a member as a binary stream, following symlinks/hardlinks. Accepts a
+        member object or a name (an unknown name raises ``KeyError``). The caller is
+        responsible for closing the returned stream."""
         ...
 
     @abstractmethod

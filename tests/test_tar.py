@@ -235,7 +235,7 @@ def test_pax_mtime_override(tmp_path: Path) -> None:
     path = tmp_path / "pax.tar"
     path.write_bytes(buf.getvalue())
     with open_archive(path) as ar:
-        m = ar["p.txt"]
+        m = ar.get("p.txt")
         assert m.modified is not None
         assert abs(m.modified.timestamp() - 1_600_000_000.123456) < 1e-3
 
@@ -249,7 +249,7 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
     path = tmp_path / "u.tar"
     path.write_bytes(buf.getvalue())
     with open_archive(path) as ar:
-        m = ar["café.txt"]
+        m = ar.get("café.txt")
         assert m.name == "café.txt"  # decoded name round-trips
         assert m.raw_name == "café.txt".encode("utf-8")  # verbatim stored bytes
 
@@ -267,7 +267,7 @@ def test_pax_atime_ctime(tmp_path: Path) -> None:
     path = tmp_path / "pax_times.tar"
     path.write_bytes(buf.getvalue())
     with open_archive(path) as ar:
-        m = ar["p.txt"]
+        m = ar.get("p.txt")
         assert m.accessed is not None
         assert abs(m.accessed.timestamp() - 1_600_000_100.5) < 1e-3
         assert m.created is not None
@@ -609,7 +609,7 @@ def _build_link_tar() -> bytes:
 
 def test_relative_symlink_resolves_against_link_directory() -> None:
     with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
-        member = ar["dir/rel_link"]
+        member = ar.get("dir/rel_link")
         assert member.link_target == "file"  # raw stored target is untouched
         assert member.link_target_member is not None
         assert member.link_target_member.name == "dir/file"
@@ -618,7 +618,7 @@ def test_relative_symlink_resolves_against_link_directory() -> None:
 
 def test_dotdot_symlink_resolves_upward() -> None:
     with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
-        assert ar["dir/up_link"].link_target_member.name == "top.txt"
+        assert ar.get("dir/up_link").link_target_member.name == "top.txt"
         assert ar.read("dir/up_link") == b"TOP"
 
 
@@ -626,7 +626,7 @@ def test_absolute_symlink_stays_unresolved() -> None:
     from archivey.exceptions import LinkTargetNotFoundError
 
     with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
-        member = ar["dir/abs_link"]
+        member = ar.get("dir/abs_link")
         assert member.link_target == "/etc/passwd"
         assert member.link_target_member is None
         with pytest.raises(LinkTargetNotFoundError):
@@ -635,7 +635,7 @@ def test_absolute_symlink_stays_unresolved() -> None:
 
 def test_hardlink_target_is_archive_relative() -> None:
     with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
-        assert ar["dir/hard"].link_target_member.name == "dir/file"
+        assert ar.get("dir/hard").link_target_member.name == "dir/file"
         assert ar.read("dir/hard") == b"NESTED"
 
 

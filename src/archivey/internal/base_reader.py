@@ -124,10 +124,11 @@ class BaseArchiveReader(ArchiveReader):
       with format detection in Phase 3.)
 
     Access-mode enforcement (independent of the flags above): a ``streaming=True`` reader
-    is forward-only, so ``members``/``len``/``__contains__``/``__getitem__``/``get``/
-    ``open``/``read`` all raise ``UnsupportedOperationError`` — uniformly, not
-    per-backend. Only a single pass of ``__iter__``/``stream_members``/``extract_all``
-    (and ``get_members_if_available``) is allowed.
+    is forward-only, so ``members``/``get``/``open``/``read`` all raise
+    ``UnsupportedOperationError`` — uniformly, not per-backend. Only a single pass of
+    ``__iter__``/``stream_members``/``extract_all`` (and ``get_members_if_available``)
+    is allowed. ``member in reader`` is identity-based and scan-free, so it works in
+    either mode; there is no ``__len__``/``__getitem__`` (name lookup is ``get()``).
 
     **MAY override**:
 
@@ -388,38 +389,22 @@ class BaseArchiveReader(ArchiveReader):
             return self._get_members_registered()
         return None
 
-    def __len__(self) -> int:
-        # TypeError, not UnsupportedOperationError: len() is also probed *implicitly* —
-        # list(reader) calls __len__ for preallocation via the length-hint protocol,
-        # which suppresses only TypeError. Any other exception type would make
-        # list(reader) blow up even though plain iteration is exactly what a streaming
-        # reader supports.
-        if self._streaming:
-            raise TypeError(
-                "len() is not available on a streaming (forward-only) reader. "
-                "Iterate the reader (or stream_members()) instead.",
-            )
-        return len(self._get_members_registered())
-
-    def __contains__(self, name: object) -> bool:
-        if not isinstance(name, str):
-            return False
-        self._require_random_access("membership ('in') test")
-        self._get_members_registered()
-        assert self._members_by_name is not None
-        return name in self._members_by_name
-
-    def __getitem__(self, name: str) -> ArchiveMember:
-        self._require_random_access("key lookup")
-        self._get_members_registered()
-        assert self._members_by_name is not None
-        try:
-            return self._members_by_name[name]
-        except KeyError:
-            raise KeyError(f"Member {name!r} not found") from None
+    def __contains__(self, member: object) -> bool:
+        # Identity membership for ArchiveMembers: O(1), no scan, so it works in any
+        # access mode. This method must exist even though it is a convenience — without
+        # a __contains__, the `in` operator falls back to iterating __iter__, which
+        # would silently consume a streaming reader's single forward pass (and compare
+        # members by value). Strings are rejected: name lookup is get().
+        if isinstance(member, ArchiveMember):
+            return member._archive_id == self._archive_id
+        raise TypeError(
+            f"'in <ArchiveReader>' tests whether an ArchiveMember belongs to this "
+            f"reader (by identity); to look up a member by name use reader.get(name). "
+            f"Got {type(member).__name__}.",
+        )
 
     def get(self, name: str, default: ArchiveMember | None = None) -> ArchiveMember | None:
-        self._require_random_access("key lookup")
+        self._require_random_access("get()")
         self._get_members_registered()
         assert self._members_by_name is not None
         return self._members_by_name.get(name, default)
@@ -436,7 +421,10 @@ class BaseArchiveReader(ArchiveReader):
                 "iterate with stream_members() instead.",
             )
         if isinstance(member, str):
-            member = self[member]
+            found = self.get(member)
+            if found is None:
+                raise KeyError(f"Member {member!r} not found")
+            member = found
         return self._open_with_link_follow(member, visited=set())
 
     def _open_with_link_follow(

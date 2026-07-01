@@ -109,21 +109,21 @@ def format(self) -> ArchiveFormat: ...
 
 ### Requirement: Sequential in-order iteration
 
-The system SHALL support iterating all members in archive order via `__iter__`, and MAY materialize the full member list via `members()` or `__len__`.
+The system SHALL support iterating all members in archive order via `__iter__`, and MAY materialize the full member list via `members()`.
 
 ```python
 def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
 def members(self) -> list[ArchiveMember]: ...          # materializes all (may trigger scan)
 def get_members_if_available(self) -> list[ArchiveMember] | None: ...  # no-scan peek
-def __len__(self) -> int: ...                   # may trigger scan
-def __contains__(self, name: str) -> bool: ...
 ```
 
-`__iter__` MUST yield `ArchiveMember` objects one at a time without loading all members into memory. `members()` and `__len__` MAY trigger a full scan for streaming formats that have no central directory. After the member list has been materialized once, subsequent `__iter__` calls MUST return from the cache rather than re-reading the archive.
+`__iter__` MUST yield `ArchiveMember` objects one at a time without loading all members into memory. `members()` MAY trigger a full scan for streaming formats that have no central directory. After the member list has been materialized once, subsequent `__iter__` calls MUST return from the cache rather than re-reading the archive.
+
+The reader deliberately defines **no `__len__`** (and no `__getitem__` — see the name-lookup requirement): the reader is not a collection, and the sequence/mapping protocols get probed *implicitly* in ways the library does not control (`list(reader)` probes `__len__` for preallocation via the length-hint protocol). `len(reader)` therefore raises Python's own `TypeError` in every mode; a caller that wants a count uses `len(ar.members())`, `ar.info.member_count` (when cheaply known), or counts during iteration. `list(reader)` just iterates.
 
 `get_members_if_available()` returns the member list only when it is available **without scanning** (already materialized, or the backend has a true upfront index), else `None`; it never scans, so it is callable under any intent. See `access-mode-and-cost` for its full contract.
 
-When opened with `streaming=True`, the reader is forward-only: `members()`, `__contains__`, `__getitem__`, `get()`, `open()`, and `read()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). `__len__` SHALL raise `TypeError` instead: `len()` is also probed *implicitly* — `list(reader)` calls `__len__` for preallocation via the length-hint protocol, which suppresses only `TypeError` — so any other exception type would break `list(reader)` even though plain iteration is exactly what a streaming reader supports. Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-mode-and-cost`.
+When opened with `streaming=True`, the reader is forward-only: `members()`, `get()`, `open()`, and `read()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-mode-and-cost`.
 
 #### Scenario: forward iteration
 
@@ -135,39 +135,68 @@ When opened with `streaming=True`, the reader is forward-only: `members()`, `__c
 - **WHEN** `ar.members()` is called on a reader opened with `streaming=True`
 - **THEN** `UnsupportedOperationError` is raised
 
-#### Scenario: len() and list() on a streaming reader
+#### Scenario: no len(); list() iterates
 
-- **WHEN** `len(ar)` is called on a reader opened with `streaming=True`
-- **THEN** `TypeError` is raised
-- **AND** `list(ar)` (which probes `__len__` via the length-hint protocol, suppressing `TypeError`) still iterates the single forward pass successfully
+- **WHEN** `len(ar)` is called on any reader
+- **THEN** Python's own `TypeError` is raised (`ArchiveReader` defines no `__len__`)
+- **AND** `list(ar)` iterates normally (on a streaming reader, consuming the single forward pass)
 
 ---
 
-### Requirement: Membership and random access by name
+### Requirement: Name lookup and member identity
 
-The system SHALL support dictionary-style lookup of members by normalized name, subject to an access-mode constraint.
+The system SHALL provide name lookup through the explicit `get()` method — the reader is
+deliberately **not** a mapping (no `__getitem__`): duplicate member names mean the mapping
+contract cannot be honored, and dunder protocols get probed implicitly in ways the library
+does not control. `open()`/`read()` also accept a name directly and raise `KeyError` when
+it is absent.
 
 ```python
-def __getitem__(self, name: str) -> ArchiveMember: ...    # KeyError if absent
 def get(self, name: str, default=None) -> ArchiveMember | None: ...
+def __contains__(self, member: ArchiveMember) -> bool: ...   # identity, O(1), any mode
 ```
 
-Calling `__getitem__` or `get` on a reader opened with `streaming=True` SHALL raise `UnsupportedOperationError` — uniformly, regardless of whether the backend has an index loaded (a streaming reader is forward-only; this keeps its behaviour deterministic across formats). A caller that wants a no-scan peek at the member list on any reader uses `get_members_if_available()` instead.
+`get()` looks up a member by its normalized name; with duplicate names it returns the
+**last** one (the member a sequential extraction would leave on disk — callers needing all
+duplicates iterate). Calling `get` on a reader opened with `streaming=True` SHALL raise
+`UnsupportedOperationError` — uniformly, regardless of whether the backend has an index
+loaded (a streaming reader is forward-only; this keeps its behaviour deterministic across
+formats). A caller that wants a no-scan peek at the member list on any reader uses
+`get_members_if_available()` instead.
 
-#### Scenario: successful key lookup
+`member in reader` is **identity membership**: `True` iff the `ArchiveMember` object was
+yielded by this reader. It is O(1) (no scan), so it is valid in any access mode; its use
+is disambiguating members when several readers are in play. A non-`ArchiveMember` operand
+(notably a name string) SHALL raise `TypeError` directing the caller to `get()`.
+`__contains__` MUST be defined even though it is a convenience: without it, Python's `in`
+operator falls back to iterating `__iter__`, which would silently consume a streaming
+reader's single forward pass and compare members by value.
 
-- **WHEN** `ar["path/to/file.txt"]` is called and the member exists
+#### Scenario: successful name lookup
+
+- **WHEN** `ar.get("path/to/file.txt")` is called and the member exists
 - **THEN** the corresponding `ArchiveMember` object is returned
 
-#### Scenario: missing key lookup
+#### Scenario: missing name lookup
 
-- **WHEN** `ar["nonexistent.txt"]` is called and the member does not exist
-- **THEN** `KeyError` is raised
+- **WHEN** `ar.get("nonexistent.txt")` is called and the member does not exist
+- **THEN** `None` (or the caller's `default`) is returned
+- **AND** `ar.open("nonexistent.txt")` / `ar.read("nonexistent.txt")` raise `KeyError`
 
-#### Scenario: random access on a streaming reader
+#### Scenario: name lookup on a streaming reader
 
-- **WHEN** `ar["file.txt"]` is called on a reader opened with `streaming=True`
+- **WHEN** `ar.get("file.txt")` is called on a reader opened with `streaming=True`
 - **THEN** `UnsupportedOperationError` is raised (regardless of any loaded index)
+
+#### Scenario: identity membership
+
+- **WHEN** `member in ar` is evaluated with an `ArchiveMember` yielded by `ar`
+- **THEN** it is `True` (and `False` for a member from a different reader), without scanning, in either access mode
+
+#### Scenario: string operand for `in` is rejected
+
+- **WHEN** `"file.txt" in ar` is evaluated
+- **THEN** `TypeError` is raised, directing the caller to `ar.get(name)` (the `in` operator never falls back to iterating the reader)
 
 ---
 
