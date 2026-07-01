@@ -122,21 +122,40 @@ carry no embedded filename, so they set neither field from header data.
 - **WHEN** a `.gz` stream has no `FNAME` header field
 - **THEN** `member.extra` has no `"gzip.original_filename"` key and `member.name` is derived from the source filename
 
+### Requirement: Per-codec metadata comes from the codec descriptor
+
+The single multi-format `SingleFileBackend` SHALL obtain each format's metadata extraction
+from its codec descriptor's metadata hook rather than a reader-local dispatch table, keeping
+the reader codec-agnostic. The "one backend, per-codec hooks" structure SHALL be preserved —
+only the hooks' home moves onto the descriptor — and the surfaced metadata (gzip `FNAME` →
+`extra["gzip.original_filename"]` + `raw_name`, gzip mtime, xz/lzip decompressed size, and
+the per-format size-availability rules) MUST be unchanged.
+
+#### Scenario: gzip metadata extraction lives on the codec descriptor
+
+- **WHEN** a `.gz` source with a stored `FNAME` and mtime is opened
+- **THEN** `extra["gzip.original_filename"]` (Latin-1 decoded), `raw_name`, and `modified` are populated exactly as before, via the gzip descriptor's metadata hook rather than a reader method
+
+#### Scenario: a codec with no extra metadata needs no hook
+
+- **WHEN** a `.bz2` source (no header metadata) is opened
+- **THEN** the member carries the default shell with `size` `None`, because its descriptor registers no metadata hook
+
 ### Requirement: A single multi-format backend serves every single-file compressor
 
 The system SHALL implement single-file compressor reading as **one** `ReadBackend`
 (`SingleFileBackend`) whose `FORMATS` tuple lists every standalone-stream codec, not a
 separate backend class per format. The backend is codec-agnostic: it infers the member
 name and metadata shell, then delegates decompression to the `compressed-streams`
-codec layer resolved from the member's stream codec. This keeps the per-format logic to
-a small set of **per-codec metadata hooks** rather than parallel reader classes, and
-means a newly added standalone codec becomes readable by registering the codec, adding
-its `ArchiveFormat`/`StreamFormat` enum value, and adding its detection entry — with no
+codec layer resolved from the member's stream codec. Per-codec metadata and detection
+data live on each codec's `StreamCodec` descriptor (see `compressed-streams`); the
+backend derives its format tables from those descriptors rather than hand-listing them.
+A newly added standalone codec becomes readable by registering one descriptor — with no
 new backend code.
 
-- The per-codec metadata hooks SHALL be a dispatch table keyed by codec, not an
-  `if format == …` chain. Each hook fills the format-specific fields the capability
-  already specifies: gzip's `FNAME` → `extra["gzip.original_filename"]` + `raw_name`
+- The per-codec metadata hooks SHALL live on the codec descriptors, not a reader-local
+  dispatch table. Each hook fills the format-specific fields the capability already
+  specifies: gzip's `FNAME` → `extra["gzip.original_filename"]` + `raw_name`
   (and optional mtime); xz/zst header size; lz4 frame size; lzip trailer size; and the
   size-availability rules
   (`gz` always `None`; `bz2`/`zlib`/`br`/`Z` `None` until full decompression). A codec
@@ -153,7 +172,7 @@ new backend code.
 
 #### Scenario: a new standalone codec needs no new backend
 
-- **WHEN** a new standalone codec is added to the `compressed-streams` registry with a matching `ArchiveFormat`/`StreamFormat` value and a detection entry
+- **WHEN** a new standalone codec descriptor is registered with a matching `ArchiveFormat`/`StreamFormat` value
 - **THEN** that format is readable as a single-file archive through the existing `SingleFileBackend` without adding a new `ReadBackend` subclass
 - **AND** its availability is reported by `format_availability()` from the new codec backend's presence
 

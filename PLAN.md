@@ -33,9 +33,9 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 | 10 | Polish + oracle retirement | `packaging-and-extras` (finalize), `cli`, `testing-contract` (full corpus) | — |
 
 **In-flight changes unrelated to a PLAN phase** (do not block Phase 4, but may land
-alongside): `codec-descriptor-refactor`, `compression-library-evaluation`,
-`seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`,
-`zstd-stdlib-backend-migration` (Phase 8 / stream-layer follow-ons).
+alongside): `seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`.
+Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor`,
+`compression-library-evaluation`, `zstd-stdlib-backend-migration`.
 
 ---
 
