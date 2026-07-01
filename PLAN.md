@@ -292,12 +292,12 @@ this phase adds TAR's forward-only streaming and the extraction machinery.)
    `ArchiveReader` — `cost`, `get_members_if_available()`, `members()`, `_iter_with_data()`
    — and selects a hardlink algorithm; **not** DEV's push-model helper, so **no**
    `can_move_file` / `process_file_extracted` / general deferred-state machine):
-   - Hardlinks (source precedes link in TAR order): no filter → single sequential pass;
-     filter + **free** member list (`get_members_if_available()` — true index / already
-     materialized) → planned single pass staging orphaned sources to link paths; filter + no
-     free list (plain `.tar` and compressed tar; never scan speculatively) → one conditional
-     second pass, only if an orphan appears; forward-only orphan → `OnError` failure.
-     Cross-device links reuse a same-device sibling before copying.
+   - Hardlinks (source precedes link in TAR order): one **core** algorithm — sequential pass +
+     conditional second pass (no filter → no orphans → one pass; a filter that orphans a link →
+     one second pass on a seekable source, or `OnError` on a forward-only one; never scan
+     speculatively) — plus an **optional** planned single pass when filtering and a free member
+     list exists (`get_members_if_available()` ≠ None). Cross-device links reuse a same-device
+     sibling before copying.
    - FILE/DIR handling; SYMLINK escape **re-validated at extraction time**; symlinks are
      target-independent (may dangle within `dest`, no copy) and fail via `OnError` on
      filesystems without symlink support (no copy-the-target fallback).

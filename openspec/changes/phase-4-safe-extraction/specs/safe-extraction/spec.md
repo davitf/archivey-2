@@ -91,9 +91,14 @@ Re-Validated at Extraction Time*). No copy of the target is made.
 When the destination filesystem or platform cannot create a symlink (`os.symlink` raises
 `OSError`/`NotImplementedError` — e.g. FAT, or Windows without the symlink privilege), the
 member is a per-member failure handled by the `OnError` policy (STOP raises, CONTINUE records
-`FAILED`). The system SHALL NOT silently fall back to copying the target's data the way
-`tarfile` does, because that converts a symbolic reference into a materialized file and
-bypasses the symlink-escape guarantees.
+`FAILED`). The system SHALL NOT silently fall back to copying the target's data.
+
+**Deliberate deviation from `tarfile`.** Python's `tarfile`, on a symlink-unsupported
+platform, silently copies the in-archive target's data into a regular file at the link path
+(raising `ExtractError` only if the target isn't in the archive). Archivey does **not**: that
+converts a symbolic reference into a materialized file and bypasses the symlink-escape
+guarantees, so a failure is surfaced via `OnError` instead. A future opt-in policy may offer a
+`tarfile`-style copy fallback (tracked in `IDEAS.md`), but the safe behavior is the default.
 
 #### Scenario: symlink to a filtered-out member is created dangling
 

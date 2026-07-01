@@ -78,35 +78,31 @@
 
 ## 4. Hardlinks (source precedes its links in TAR order; algorithm-selected — see `format-tar` MODIFIED delta)
 
-- [ ] 4.1 **Algorithm selection** — only a selector/`filter` can orphan a link, so use a member
-      list up front **only when it's free** (`get_members_if_available()` ≠ None). Never call
-      `members()` speculatively (a plain-tar header scan isn't reliably cheap; compressed-tar
-      listing would decompress everything). No free list → reactive handling (task 4.4).
-- [ ] 4.2 **(A) No filter → single sequential pass** — record each written FILE under a
-      per-source `{device → on-disk path}` map; a link to an already-written source uses
-      `os.link` to a same-device copy. No planning, no second pass.
-- [ ] 4.3 **(B) Filter + free list → planned single pass** — when `get_members_if_available()`
-      returns the list, plan selection + policy + filter up front into a
-      `source → selected-link-paths` map; one forward pass writes selected members and stages
-      each needed (even excluded) source to the first selected link's path as it is reached;
-      `os.link` the rest. No second pass.
-- [ ] 4.4 **(C) Filter + no free list (plain `.tar` and compressed tar) → sequential +
-      conditional second pass** — collect orphaned links during the main pass; resolve all in
-      **one** second pass on a seekable source, only if an orphan exists (re-scan for plain;
-      re-decompress ≤ 2× for compressed). Forward-only orphan → per-member `OnError` failure
-      (STOP raises / CONTINUE records `FAILED`); no recovery.
-- [ ] 4.5 **Cross-device sibling linking** — prefer `os.link` to an existing same-device copy of
+- [ ] 4.1 **Core algorithm — sequential pass + conditional second pass** (subsumes the
+      no-filter case; no separate (A) implementation). One forward pass records each written
+      FILE under a per-source `{device → on-disk path}` map; a link to an already-written source
+      uses `os.link` to a same-device copy. No filter → no orphans → one pass, done. If a filter
+      orphans a selected link: seekable source → collect orphans, resolve all in **one** second
+      pass afterwards, only if an orphan exists (re-scan for plain; re-decompress ≤ 2× for
+      compressed); forward-only source → per-member `OnError` failure (STOP raises / CONTINUE
+      records `FAILED`), no recovery. Never call `members()` speculatively.
+- [ ] 4.2 **Optional optimization — planned single pass** — when filtering **and**
+      `get_members_if_available()` returns a free list, plan selection + policy + filter up front
+      into a `source → selected-link-paths` map and stage each needed (even excluded) source to
+      the first selected link's path during the single pass, skipping the second pass. Layered on
+      the core; can be deferred without affecting correctness.
+- [ ] 4.3 **Cross-device sibling linking** — prefer `os.link` to an existing same-device copy of
       the source; only `shutil.copy2` when none exists, then record the copy's device so later
       same-device links reuse it (better than `tarfile`, which recopies from the archive per link).
-- [ ] 4.6 **Tests** — unfiltered → single pass, no list fetched; filter + free-list (indexed /
-      already-materialized) orphan → planned single pass, no second pass; filter + plain-tar
-      orphan → one re-scan second pass; filter + compressed-tar orphan → one second pass (assert
-      decompressed ≤ 2×); filter + no orphan → single pass, no speculative list; forward-only
-      orphan → `OnError` STOP/CONTINUE; chained cross-device link reuses the sibling copy (mock
-      devices / `os.link` `EXDEV`).
-- [ ] 4.7 **Symlink tests** — dangling symlink to a filtered-out target created within `dest`
+- [ ] 4.4 **Tests** — unfiltered → single pass, no list fetched; filter + plain-tar orphan → one
+      re-scan second pass; filter + compressed-tar orphan → one second pass (assert decompressed
+      ≤ 2×); filter + no orphan → single pass, no speculative list; forward-only orphan →
+      `OnError` STOP/CONTINUE; (optional) filter + free-list orphan → planned single pass, no
+      second pass; chained cross-device link reuses the sibling copy (mock devices / `os.link`
+      `EXDEV`).
+- [ ] 4.5 **Symlink tests** — dangling symlink to a filtered-out target created within `dest`
       (no copy, no error); `os.symlink` failure on an unsupported filesystem → `OnError`
-      STOP/CONTINUE (no copy-the-target fallback).
+      STOP/CONTINUE (no copy-the-target fallback, a deliberate deviation from `tarfile`).
 
 ## 5. Public API + ZIP vertical slice
 

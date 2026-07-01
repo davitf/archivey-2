@@ -64,6 +64,15 @@
   `source`; (3) **extract** *to* an `fsspec` location as the `dest`. (2)/(3) mostly mean
   accepting fsspec-opened file objects at the `open_archive`/`extract` boundary.
 
+- **Configurable symlink-extraction behavior** — a policy knob (in the spirit of `OnError`
+  / `ExtractionPolicy`) for what happens when a SYMLINK member cannot be created as a real
+  symlink — most notably on filesystems/platforms without symlink support (FAT, Windows
+  without the privilege). Phase 4 fixes this at "per-member `OnError` failure, never copy"
+  (deliberately *deviating* from `tarfile`, which silently copies the in-archive target's
+  data). A future option could offer e.g. `symlink=error|copy|skip` (copy = `tarfile`-style
+  materialize-the-target, guarded so it can't reintroduce a path escape). Its own change +
+  exploration — the safe default lands first.
+
 ## Performance & robustness
 
 - **rapidgzip for zlib / raw-deflate streams** — give zlib- and deflate-compressed streams

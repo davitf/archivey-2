@@ -12,39 +12,40 @@ calling `reader.get_members_if_available()`, and iterating the forward pass — 
 among the algorithms below. It MUST NOT hold a push-model deferred-state machine, and MUST NOT
 force an upfront pass the run does not need.
 
-**Obtaining the member list.** Only a `members` selector or a `filter` can orphan a hardlink
-(select a link while excluding its source); an unfiltered extract-all never orphans one. Even
-then, the coordinator uses the member list up front **only when it is available for free** —
-i.e. `get_members_if_available()` returns it (a true central directory, or an already-
-materialized list). It SHALL NOT speculatively call `members()` to obtain a list: a header
-scan of a plain `.tar` is not reliably cheap (seek-heavy on spinning or network media), and
-listing a compressed tar would decompress the whole stream. Instead, when no free list is
-available, orphans are handled reactively (algorithm 3).
+Only a `members` selector or a `filter` can **orphan** a hardlink — select a link while
+excluding its source; an unfiltered extract-all never orphans one, because the source is
+always selected and precedes the link. The coordinator uses **one core algorithm**, with an
+**optional optimization** when a free member list is available:
 
-The coordinator then uses one of three algorithms:
+**Core — sequential pass with a conditional second pass.** One forward pass: write each
+selected member; record written FILEs in a per-source `{device → on-disk path}` map; a
+selected hardlink to an already-written source is created with `os.link()`. This alone handles
+the common case — with no filter no link is ever orphaned, so the pass completes in one go
+with no second pass. If a `filter`/selector *does* orphan a selected link (its source was
+excluded), the coordinator:
 
-1. **No selector/filter — single sequential pass.** Write each member; record written FILEs
-   in a per-source `{device → on-disk path}` map; a hardlink to an already-written source is
-   created with `os.link()`. No planning and no second pass. (Orphans are impossible.)
-2. **Filtered, free member list available — planned single pass.** When
-   `get_members_if_available()` returns the list, apply the selector, policy transform and
-   `filter` to it up front to compute the write plan and a `source → selected-link-paths` map
-   (including sources that are themselves excluded but referenced by a selected link). Then one
-   forward pass: write selected members; when the pass reaches a **needed** source, write its
-   content to the first selected link's path even if the source itself was excluded (its bytes
-   are streaming past regardless), and `os.link()` the remaining selected links. No second pass.
-3. **Filtered, no free list (plain `.tar` and compressed tar) — sequential pass + conditional
-   second pass.** The coordinator runs the sequential pass and, if a selected link's source
-   turns out to have been excluded (an orphan), collects it and resolves all orphans in a
-   **single second pass** afterwards — only when at least one orphan exists. For a plain `.tar`
-   the second pass re-scans headers; for a compressed tar it re-decompresses (so the stream is
-   decompressed at most twice, and exactly once in the common no-orphan case). The second pass
-   requires a seekable/re-openable source.
+- on a **seekable** source, collects the orphans and resolves them in a **single second pass**
+  afterwards — only when at least one orphan exists. For a plain `.tar` the second pass
+  re-scans headers; for a compressed tar it re-decompresses (so the stream is decompressed at
+  most twice, and exactly once when there are no orphans).
+- on a **forward-only** source (`stream_capability == FORWARD_ONLY`), the source's bytes are
+  unrecoverable — a per-member failure handled by the configured `OnError` policy (STOP raises
+  `ExtractionError`; CONTINUE records a `FAILED` `ExtractionResult` and proceeds).
 
-**Forward-only sources** (`stream_capability == FORWARD_ONLY`, streaming/pipe): the list is
-unavailable and there is no second pass, so a selected link whose source was excluded is
-unrecoverable — a per-member failure handled by the configured `OnError` policy (STOP raises
-`ExtractionError`; CONTINUE records a `FAILED` `ExtractionResult` with the error and proceeds).
+The coordinator SHALL NOT speculatively call `members()` to look ahead: a header scan of a
+plain `.tar` is not reliably cheap (seek-heavy on spinning or network media), and listing a
+compressed tar would decompress the whole stream. It pays the second pass only when an orphan
+actually forces it.
+
+**Optional optimization — planned single pass.** When a selector/`filter` is in use **and** a
+member list is available *for free* — `get_members_if_available()` returns it (a true central
+directory, or an already-materialized list) — the coordinator MAY plan up front (apply the
+selector, policy transform and `filter` to the list, computing the write plan and a
+`source → selected-link-paths` map) and, in the single forward pass, write each **needed**
+source to the first selected link's path even if the source itself was excluded (its bytes are
+streaming past regardless), `os.link()`ing the remaining selected links. This avoids the second
+pass for indexed sources. It is an optimization layered on the core algorithm, not a separate
+correctness path.
 
 **Cross-device handling.** The coordinator tracks, per source, the on-disk paths it has
 created and their filesystem device. To create a link it prefers `os.link()` to an existing
@@ -56,8 +57,8 @@ a second time.) This is strictly better than `tarfile`, which re-extracts the so
 from the archive for every cross-device link and never links sibling copies to each other.
 
 The excluded source's own name is never created on disk. The only auxiliary structures are
-the write plan (algorithm 2), the per-source `{device → path}` map, and — for algorithm 3
-only — a bounded list of orphaned links awaiting the single second pass; none of these is a
+the per-source `{device → path}` map, a bounded list of orphaned links awaiting the second
+pass (core algorithm), and the write plan (optional optimization); none of these is a
 push-model deferred-creation machine.
 
 #### Scenario: Unfiltered extract resolves hardlinks in one sequential pass
