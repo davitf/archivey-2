@@ -278,7 +278,7 @@ def test_inner_tar_probe_skipped_when_codec_missing(
     # With the zstd backend absent, a .tar.zst can't be probed: per the spec, detection
     # reports the *bare* compressor (ZST, by its magic) and defers the inner-TAR
     # determination to open time — without warning about the benign tar.zst/zst mismatch.
-    monkeypatch.setattr(codecs_module, "_zstandard", None)
+    monkeypatch.setattr(codecs_module, "_zstd", None)
     path = tmp_path / "thing.tar.zst"
     path.write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 64)  # zstd magic, unprobeable payload
     info = detect_format(path)

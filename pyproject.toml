@@ -17,7 +17,7 @@ authors = [
 7z = [
     "pyppmd>=1.1.0",
     "inflate64>=1.0.0",
-    "zstandard>=0.23.0",
+    "backports.zstd>=1.0.0; python_version < '3.14'",
     "brotli>=1.1.0",
     "cryptography>=45.0.0",
 ]
@@ -37,7 +37,7 @@ iso = [
     "pycdlib>=1.14.0",
 ]
 zstd = [
-    "zstandard>=0.23.0",
+    "backports.zstd>=1.0.0; python_version < '3.14'",
 ]
 lz4 = [
     "lz4>=4.4.5",
@@ -84,7 +84,7 @@ dev = [
     "coverage[toml]>=7.6.0",
     "py7zr>=1.0.0",
     "rarfile>=4.2",
-    "zstandard>=0.23.0",
+    "backports.zstd>=1.0.0",
     "lz4>=4.4.5",
     "brotli>=1.1.0",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so

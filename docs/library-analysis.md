@@ -52,7 +52,7 @@ Two recurring notes:
 | LZMA1/LZMA2 (raw) | stdlib `lzma` `FORMAT_RAW` | core | n/a (container-owned) | yes | yes |
 | Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters | core | n/a (filter stage) | yes | yes |
 | raw Deflate / zlib | stdlib `zlib` | core | no (rewind) | yes | yes |
-| zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** — *migration; see below* | `[zstd]` | no (rewind) | yes (frame checksum) | **yes** |
+| zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[zstd]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
 | lz4 | `lz4` | `[lz4]` | no (rewind) | yes | yes |
 | brotli | `brotli` | `[7z]` | no (rewind) | yes | partial² |
 | unix-compress (`.Z`) | `uncompresspy` | `[unix-compress]` | yes (random-access decoder) | yes | no³ |
@@ -135,11 +135,11 @@ Why, against the alternatives:
   the smaller, more future-aligned surface, and `pyzstd` pulls `backports.zstd` anyway. `pyzstd`
   remains relevant only if/when the *Seekable Zstd* container is supported.
 
-**Status / packaging:** the actual library swap is deferred to a follow-up change (see
-`compression-library-evaluation` task 6.3); until it lands, the `[zstd]` (and the `[7z]` bundle's
-zstd) backend stays `zstandard` and the `_ZstdReopenStream` wrapper stays in place. `pyzstd` was
-previously pinned in `[all]` purely as a test-fixture generator and is now removed (the active
-test suite generates zstd fixtures with `zstandard`; only the frozen `tests/_dev_oracle`
+**Status / packaging:** the decode backend is stdlib `compression.zstd` (3.14+) /
+`backports.zstd` (3.11–3.13). The `[zstd]` extra pins `backports.zstd` on older
+Pythons only; `_ZstdReopenStream` has been removed. `pyzstd` was previously pinned in
+`[all]` purely as a test-fixture generator and is now removed (the active test suite
+generates zstd fixtures with `backports.zstd`; only the frozen `tests/_dev_oracle`
 referenced `pyzstd`, and it guards for its absence).
 
 ### Seekable zstd (efficient random access) — none for now
@@ -316,8 +316,8 @@ missing-dependency gating are already wired.)
 These live in the `dev` dependency group, never an extra (`packaging-and-extras`): `py7zr` and
 `rarfile` (decode **oracles** to cross-check the native 7z reader and RAR metadata parser),
 `ncompress` (an LZW **compressor** to generate `.Z` fixtures, since `uncompresspy` only
-decodes). `pyzstd` used to sit in `[all]` as a zstd-fixture generator but is removed — the active
-suite uses `zstandard` for that.
+decodes). The active suite uses `backports.zstd` (or stdlib `compression.zstd` on 3.14+) for
+zstd fixture generation.
 
 A guard test (`tests/test_extras_imported.py`) asserts that every package pinned in a
 user-facing extra is actually imported by some `src/` code path (with a small, documented
@@ -326,11 +326,8 @@ allowlist for features whose implementation is a later phase: `tqdm` for `[cli]`
 
 ## Follow-up changes
 
-The decisions above that imply a behaviour change are deferred to their own proposals:
+The decisions above that imply further work are tracked separately:
 
-- **zstd backend migration** — replace `zstandard` decode with `compression.zstd` /
-  `backports.zstd`, delete `_ZstdReopenStream`, update the `[zstd]` / `[7z]` extras and the
-  `compressed-streams` backend table. (Filed by `compression-library-evaluation` task 6.3.)
 - **Efficient seekable zstd** — optional; **evaluate a native frame-index reader first**
   (reusing the xz/lzip `_SegmentedDecompressorStream`), since `indexed_zstd` only seeks at frame
   granularity, which that infrastructure already provides — avoiding the heavy C++ dependency and

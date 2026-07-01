@@ -25,7 +25,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedOperationError,
 )
-from tests.conftest import requires
+from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import NonSeekableBytesIO, make_lzip_member, make_unix_compress
 
 
@@ -255,11 +255,10 @@ def test_brotli_roundtrip() -> None:
 # ---------------------------------------------------------------------------
 
 
-@requires("zstandard")
+@requires_zstd()
 def test_zstd_roundtrip(tmp_path: Path) -> None:
-    import zstandard
-
-    data = zstandard.ZstdCompressor().compress(b"zstd payload")
+    zstd = zstd_backend()
+    data = zstd.compress(b"zstd payload")
     with open_archive(io.BytesIO(data)) as ar:
         assert ar.format == ArchiveFormat.ZST
         assert ar.members()[0].name == "data"

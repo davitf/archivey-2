@@ -22,7 +22,7 @@ def requires(*packages: str) -> pytest.MarkDecorator:
     an optional format library are skipped cleanly there rather than erroring, while
     they run normally in the `[all]` leg. Use it as a decorator::
 
-        @requires("zstandard")
+        @requires_zstd()
         def test_zstd_stream(): ...
 
     Tests asserting the *degradation* behavior (a missing lib raising
@@ -33,6 +33,37 @@ def requires(*packages: str) -> pytest.MarkDecorator:
         bool(missing),
         reason=f"requires optional package(s): {', '.join(missing)}",
     )
+
+
+def requires_zstd() -> pytest.MarkDecorator:
+    """Skip when neither stdlib ``compression.zstd`` nor ``backports.zstd`` is importable."""
+    has = _has_zstd_backend()
+    return pytest.mark.skipif(
+        not has,
+        reason="requires zstd backend (compression.zstd or backports.zstd)",
+    )
+
+
+def _has_zstd_backend() -> bool:
+    for name in ("compression.zstd", "backports.zstd"):
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return True
+        except ModuleNotFoundError:
+            continue
+    return False
+
+
+def zstd_backend():
+    """Return the installed zstd codec module (stdlib on 3.14+, else backports)."""
+    import importlib
+
+    for name in ("compression.zstd", "backports.zstd"):
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            continue
+    raise RuntimeError("no zstd backend installed")
 
 
 @pytest.fixture

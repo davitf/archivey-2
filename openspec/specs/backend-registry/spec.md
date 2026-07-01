@@ -195,7 +195,7 @@ missing package/tool and the install command, derived from the same availability
 metadata exposed by `format_availability()`.
 
 - A **single-codec** format whose sole codec/backend is missing (ISO without
-  `pycdlib`; `.zst` without `zstandard`; `.lz4` without `lz4`) has support **NONE**;
+  `pycdlib`; `.zst` without `backports.zstd` (or stdlib `compression.zstd` on 3.14+); `.lz4` without `lz4`) has support **NONE**;
   opening it raises `UnsupportedFormatError` with the install hint.
 - A **multi-codec container** missing only some optional codecs/tools has support
   **PARTIAL**; it opens and lists, and only a member using the missing codec/tool
@@ -274,7 +274,7 @@ def list_known_formats() -> list[ArchiveFormat]:  # every format the registry kn
 
 #### Scenario: single-codec format without its codec is none
 
-- **WHEN** `format_availability(ArchiveFormat.ZSTD)` is queried and `zstandard` is not installed
+- **WHEN** `format_availability(ArchiveFormat.ZSTD)` is queried and the zstd backend is not available (`backports.zstd` absent on Python < 3.14)
 - **THEN** `support` is `FormatSupport.NONE` and `missing` names `[zstd]` / `pip install archivey[zstd]`
 
 #### Scenario: fully-stdlib format is full

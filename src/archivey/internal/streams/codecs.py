@@ -52,7 +52,6 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ensure_binaryio,
     ensure_bufferedio,
-    is_seekable,
 )
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.types import (
@@ -75,7 +74,17 @@ def _optional(name: str) -> ModuleType | None:
         return None
 
 
-_zstandard = _optional("zstandard")
+def _optional_zstd() -> ModuleType | None:
+    """Stdlib ``compression.zstd`` (3.14+) or ``backports.zstd`` (older Pythons)."""
+    for name in ("compression.zstd", "backports.zstd"):
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            continue
+    return None
+
+
+_zstd = _optional_zstd()
 _lz4_frame = _optional("lz4.frame")
 _brotli = _optional("brotli")
 _uncompresspy = _optional("uncompresspy")
@@ -298,64 +307,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
                     tail = chunk[-(len(magic) - 1) :]
         except OSError:
             return True  # cannot rule out a second member -> do not raise
-
-
-class _ZstdReopenStream(DelegatingStream):
-    """A zstd decoder that services a backward seek by reopening from the start.
-
-    zstandard's reader raises ``OSError`` on a backward seek. To give zstd the same
-    forward-only-but-rewindable behaviour as the other index-less codecs (brotli/lz4/zlib),
-    a backward seek closes the reader, rewinds the source, and reopens a fresh decoder, then
-    re-decompresses forward to the target. The O(n) rewind cost is surfaced by the rewind
-    warning the outer ``ArchiveStream`` carries, so this class stays quiet. Read/tell/close are
-    inherited delegation; only the reopen-on-backward-seek logic is overridden here.
-    """
-
-    def __init__(self, source: CodecSource) -> None:
-        self._source = source
-        super().__init__(self._open())
-        self._size: int | None = None
-
-    def _open(self) -> BinaryIO:
-        assert _zstandard is not None
-        return _zstandard.open(self._source, "rb")
-
-    def _reopen(self) -> None:
-        # Closing the zstandard reader does not close the underlying source, so it can be
-        # rewound and reopened. (A path source is simply reopened from scratch.)
-        self._inner.close()
-        if not isinstance(self._source, (str, os.PathLike)):
-            self._source.seek(0)
-        self._inner = self._open()
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        if whence == io.SEEK_SET:
-            new_pos = offset
-        elif whence == io.SEEK_CUR:
-            new_pos = self._inner.tell() + offset
-        elif whence == io.SEEK_END:
-            # zstandard cannot report the size without decoding; read to the end once and
-            # cache it (matching what _compression.DecompressReader does internally).
-            if self._size is None:
-                while self._inner.read(65536):
-                    pass
-                self._size = self._inner.tell()
-            new_pos = self._size + offset
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-        try:
-            return self._inner.seek(new_pos)
-        except OSError as e:
-            if "cannot seek zstd decompression stream backwards" in str(e):
-                self._reopen()
-                return self._inner.seek(new_pos)
-            raise
-
-    def seekable(self) -> bool:
-        # A path can always be reopened; a stream source only if it can be rewound.
-        if isinstance(self._source, (str, os.PathLike)):
-            return True
-        return is_seekable(self._source)
 
 
 # --- single-file metadata + content probes ---------------------------------------------
@@ -821,29 +772,27 @@ class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD
     stream_format = StreamFormat.ZSTD
     magic = (MagicSignature(0, b"\x28\xb5\x2f\xfd", ArchiveFormat.ZST),)
-    requirement = MissingComponent("zstandard", "pip install archivey[zstd]", ("zstd",))
+    requirement = MissingComponent("backports.zstd", "pip install archivey[zstd]", ("zstd",))
 
     def _backend_present(self) -> bool:
-        return _zstandard is not None
+        return _zstd is not None
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if _zstandard is None:
+        if _zstd is None:
             raise PackageNotInstalledError(
-                "The 'zstandard' package is required for zstd streams "
-                "(install the 'zstd' extra)."
+                "The zstd backend is not available: install backports.zstd via the "
+                "'zstd' extra (Python < 3.14) or use Python 3.14+ with stdlib "
+                "compression.zstd."
             )
-        # zstd's reader raises on a backward seek; reopen-from-start gives it the same
-        # rewindable forward-only behaviour as the other index-less codecs (the outer
-        # ArchiveStream warns on the O(n) rewind — see rewind_warning).
-        return _ZstdReopenStream(source)
+        return _zstd.open(source, "rb")
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        if _zstandard is not None and isinstance(exc, _zstandard.ZstdError):
-            return CorruptionError(f"Error reading zstandard stream: {exc!r}")
+        if _zstd is not None and isinstance(exc, _zstd.ZstdError):
+            return CorruptionError(f"Error reading zstd stream: {exc!r}")
         if isinstance(exc, EOFError):
-            return TruncatedError(f"zstandard stream is truncated: {exc!r}")
+            return TruncatedError(f"zstd stream is truncated: {exc!r}")
         return None
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:

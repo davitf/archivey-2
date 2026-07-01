@@ -32,7 +32,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import StreamFormat
-from tests.conftest import requires
+from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import (
     NonSeekableBytesIO,
     compress_lzma2_raw,
@@ -234,6 +234,16 @@ def test_truncated_brotli_translates_to_truncated() -> None:
     compressed = brotli.compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
     with open_codec_stream(Codec.BROTLI, io.BytesIO(truncated)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+
+
+@requires_zstd()
+def test_truncated_zstd_translates_to_truncated() -> None:
+    zstd = zstd_backend()
+    compressed = zstd.compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(Codec.ZSTD, io.BytesIO(truncated)) as stream:
         with pytest.raises(TruncatedError):
             stream.read()
 

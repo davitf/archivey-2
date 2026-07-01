@@ -74,7 +74,7 @@ provided by small optional packages:
 | BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`–`0x09`, `0x03030103`… | `lzma.FILTER_X86`/`ARM`/… | core |
 | Deflate | `0x040108` | `zlib` (raw) | core |
 | BZip2 | `0x040202` | `bz2` | core |
-| Zstd | `0x04f71101` | `zstandard` | optional `[7z]` |
+| Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | optional `[7z]` on <3.14; core on 3.14+ |
 | Brotli | `0x04f71102` | `brotli` | optional `[7z]` |
 | PPMd (var.H) | `0x030401` | `pyppmd` | optional `[7z]` |
 | Deflate64 | `0x040109` | `inflate64` | optional `[7z]` |
