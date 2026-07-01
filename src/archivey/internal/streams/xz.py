@@ -31,7 +31,7 @@ from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
-    _SegmentedDecompressorStream,
+    SegmentedDecompressorStream,
 )
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
@@ -444,7 +444,7 @@ class _XzBlockChain:
         return self._finished
 
 
-class XzDecompressorStream(_SegmentedDecompressorStream["_XzState | _XzBlockChain"]):
+class XzDecompressorStream(SegmentedDecompressorStream["_XzState | _XzBlockChain"]):
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
     Builds a block-level seek-point table progressively during forward reads and via a

@@ -26,7 +26,7 @@ from typing import BinaryIO
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
-    _SegmentedDecompressorStream,
+    SegmentedDecompressorStream,
 )
 
 _MAGIC = b"LZIP"
@@ -222,7 +222,7 @@ class _LzipState:
         return (int(data_size), int(member_size))
 
 
-class LzipDecompressorStream(_SegmentedDecompressorStream[_LzipState]):
+class LzipDecompressorStream(SegmentedDecompressorStream[_LzipState]):
     """Seekable lzip decompressor backed by stdlib ``lzma``.
 
     Builds a seek-point table from member headers/trailers — progressively during forward

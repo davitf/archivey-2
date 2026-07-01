@@ -6,7 +6,7 @@ positions as they decode (``add_seek_points``) and/or build a full index once on
 streams in ``decompress.py`` and the segmented XZ / lzip streams in ``xz.py`` / ``lzip.py``.
 
 This module holds no codec itself — only the shared scaffolding (``DecompressorStream``,
-``_SegmentedDecompressorStream``, ``SeekPoint``).
+``SegmentedDecompressorStream``, ``SeekPoint``).
 """
 
 from __future__ import annotations
@@ -282,7 +282,7 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         return self._pos
 
 
-class _SegmentedDecompressorStream(DecompressorStream[_SDT]):
+class SegmentedDecompressorStream(DecompressorStream[_SDT]):
     """Base for multi-segment compressed formats (lzip, XZ).
 
     Tracks compressed/decompressed cursors and delegates feed/flush to a state-machine
