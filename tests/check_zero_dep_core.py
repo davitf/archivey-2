@@ -20,6 +20,7 @@ from archivey import open_archive
 
 # 1. Third-party runtime packages MUST NOT be importable in a core-only install.
 FORBIDDEN = (
+    "backports.zstd",
     "zstandard",
     "lz4",
     "cryptography",

@@ -17,7 +17,7 @@ from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_backwards
 from archivey.internal.streams.xz import XzDecompressorStream, _read_xz_index_backwards
-from tests.conftest import requires
+from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import (
     CountingBytesIO,
     make_lzip_member,
@@ -246,18 +246,12 @@ def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
     assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
 
 
-@requires("zstandard")
-def test_zstd_reopens_and_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
-    """zstd's reader can't seek backward in place; a rewind reopens from the start + warns.
-
-    A forward seek stays quiet; the backward seek reopens the source and re-decodes,
-    delivering correct data with one warning.
-    """
-    import zstandard
-
-    compressed = zstandard.ZstdCompressor().compress(CONTENT)
+@requires_zstd()
+def test_zstd_rewinds_and_warns_on_backward_seek(caplog: pytest.LogCaptureFixture) -> None:
+    """zstd has no index; a backward seek re-decompresses from the start and warns once."""
+    zstd = zstd_backend()
+    compressed = zstd.compress(CONTENT)
     with open_codec_stream(Codec.ZSTD, io.BytesIO(compressed)) as stream:
-        assert stream.seekable() is True  # made rewindable via reopen
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.read(100) == CONTENT[:100]
             assert stream.seek(300) == 300  # forward: no rewind, no warning
@@ -265,8 +259,8 @@ def test_zstd_reopens_and_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> N
         assert not caplog.records
 
         with caplog.at_level("WARNING", logger="archivey.streams"):
-            assert stream.seek(0) == 0  # backward → reopen + re-decode from start
-            assert stream.read(100) == CONTENT[:100]  # correct data after reopen
+            assert stream.seek(0) == 0  # backward → re-decode from start
+            assert stream.read(100) == CONTENT[:100]
     assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
 
 

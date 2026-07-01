@@ -24,7 +24,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
 )
-from tests.conftest import requires
+from tests.conftest import requires_zstd, zstd_backend
 from tests.streams_util import NonSeekableBytesIO
 
 # ---------------------------------------------------------------------------
@@ -248,12 +248,11 @@ def test_pax_atime_ctime(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@requires("zstandard")
+@requires_zstd()
 def test_tar_zst_via_codec_layer() -> None:
-    import zstandard
-
+    zstd = zstd_backend()
     plain = _build_tar()
-    data = zstandard.ZstdCompressor().compress(plain)
+    data = zstd.compress(plain)
     with open_archive(io.BytesIO(data)) as ar:
         assert ar.format == ArchiveFormat.TAR_ZST
         assert ar.read("hello.txt") == b"hello world"

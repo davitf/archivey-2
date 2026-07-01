@@ -47,7 +47,7 @@ The system SHALL decompress each supported codec through a default backend:
 | Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `lzma` raw filters | core |
 | raw Deflate | stdlib `zlib` (`-15`) | core |
 | Copy/STORED | pass-through | core |
-| zstd | `zstandard` | optional `[zstd]` |
+| zstd | stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14) | optional `[zstd]` on <3.14; core on 3.14+ |
 | lz4 | `lz4` | optional `[lz4]` |
 | Brotli | `brotli` | optional `[7z]` |
 | unix-compress (LZW, `.Z`) | `uncompresspy` | optional `[unix-compress]` |
@@ -59,6 +59,16 @@ The system SHALL decompress each supported codec through a default backend:
 
 - **WHEN** a gzip stream is opened with default configuration
 - **THEN** it is decompressed using the stdlib `gzip` module
+
+#### Scenario: default zstd backend on Python 3.14+
+
+- **WHEN** a zstd stream is opened with default configuration on Python 3.14 or newer
+- **THEN** it is decompressed using the standard-library `compression.zstd` module
+
+#### Scenario: default zstd backend on Python 3.11–3.13
+
+- **WHEN** a zstd stream is opened with default configuration on Python 3.11–3.13 and `backports.zstd` is installed
+- **THEN** it is decompressed using `backports.zstd` (the same `compression.zstd` API)
 
 #### Scenario: raw LZMA2 backend for a 7z folder
 
@@ -110,8 +120,10 @@ rather than failing obscurely.
 The system SHALL wrap each backend stream so decompression failures surface as the
 library's own exception types: corrupt data as `CorruptionError`, unexpected
 end-of-input as `TruncatedError`, and a backend that requires seeking on a
-non-seekable source as the documented non-seekable error. No raw backend exception
-escapes unwrapped.
+non-seekable source as the documented non-seekable error. For the zstd backend
+specifically, the `compression.zstd` `ZstdError` SHALL map to `CorruptionError`
+and its `EOFError` (raised on a truncated frame) SHALL map to `TruncatedError`.
+No raw backend exception escapes unwrapped.
 
 #### Scenario: corrupt compressed data
 
@@ -122,6 +134,16 @@ escapes unwrapped.
 
 - **WHEN** a compressed stream ends mid-data
 - **THEN** `TruncatedError` is raised
+
+#### Scenario: truncated zstd data raises
+
+- **WHEN** a zstd stream that ends before its end-of-frame marker is read to EOF
+- **THEN** `TruncatedError` is raised (the stdlib backend reports the cut as `EOFError`), rather than a silent short read
+
+#### Scenario: corrupt zstd data raises
+
+- **WHEN** a zstd frame carrying a content checksum is corrupted and read
+- **THEN** `CorruptionError` is raised with the backend `ZstdError` attached as `__cause__`
 
 ---
 

@@ -51,12 +51,12 @@ compression formats, and the CLI. The mapping is:
 | Extra | Pulls in | Enables |
 |-------|----------|---------|
 | *(none)* | stdlib only + native parsers | ZIP, TAR + `tar.gz`/`tar.bz2`/`tar.xz`, GZ, BZ2, XZ, directory, **7z read** (common codecs: LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/STORED) with CRC32 verification, **RAR metadata/listing** with CRC32 verification (Blake2sp verification needs `[rar]`) — RAR member *data* needs the system `unrar` binary |
-| `[7z]` | `pyppmd`, `inflate64`, `zstandard`, `brotli`, `cryptography` | **all** 7z reading features — PPMd, Deflate64, Zstd, Brotli, and AES-encrypted 7z |
+| `[7z]` | `pyppmd`, `inflate64`, `backports.zstd` (<3.14), `brotli`, `cryptography` | **all** 7z reading features — PPMd, Deflate64, Zstd, Brotli, and AES-encrypted 7z |
 | `[rar]` | `cryptography`, a Blake2sp backend | **all** RAR reading features that need a Python package — header-encrypted RAR5 and Blake2sp checksum verification (member *data* still needs the `unrar` binary) |
 | `[crypto]` | `cryptography` | the AES/crypto backend alone — a subset of `[7z]`/`[rar]`, for callers who want only encryption support |
 | `[7z-write]` | `py7zr` | 7-Zip **writing** (reading is native, no extra) |
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
-| `[zstd]` | `zstandard` | standalone Zstandard (`.zst`, `.tar.zst`) |
+| `[zstd]` | `backports.zstd` (<3.14 only) | standalone Zstandard (`.zst`, `.tar.zst`); on Python 3.14+ the stdlib `compression.zstd` is used with no extra |
 | `[lz4]` | `lz4` | LZ4 (`.tar.lz4`) |
 | `[unix-compress]` | `uncompresspy` | unix-compress (`.Z`, `.tar.Z`) — LZW decompression |
 | `[cli]` | `tqdm` | the `archivey` command-line interface and its progress bar |
@@ -72,7 +72,7 @@ extensions, but the bundled ones ship broad manylinux/musllinux/macOS/Windows wh
 and install without a compiler on mainstream platforms — **except** `rapidgzip`
 (the `[seekable]` lib), which more often lacks a wheel and falls back
 to a C++17 source build. `[recommended-lite]` is therefore `[recommended]` minus only
-that one: it keeps every format and codec (`cryptography`, `pyppmd`, `zstandard`,
+that one: it keeps every format and codec (`cryptography`, `pyppmd`, `backports.zstd`,
 `lz4`, …) and just drops gz/bz2 seeking, so it installs reliably where the C++ build
 fails. A user who hits a build error on `[recommended]` can fall back to
 `[recommended-lite]` without losing any format support.
@@ -128,7 +128,7 @@ are pulled in by `uv sync` (or `pip install --group dev`) for contributors.
 
 - **WHEN** `pip install archivey[iso]` is run
 - **THEN** `pycdlib` is installed and `.iso` archives become available
-- **AND** no other optional dependency (py7zr, zstandard, lz4) is pulled in
+- **AND** no other optional dependency (py7zr, backports.zstd, lz4) is pulled in
 
 #### Scenario: `[recommended]` enables every capability plus gz/bz2 seeking
 
@@ -180,10 +180,16 @@ via an explicit, documented allowlist in that guard.
 - **WHEN** a library is imported only by the test suite (an oracle or a fixture generator), e.g. `rarfile`, `py7zr`, `ncompress`, or fixture-only `pyzstd`
 - **THEN** it is declared in the `dev` dependency group and is absent from every user-facing extra
 
-#### Scenario: the zstd extra matches the chosen backend
+#### Scenario: the zstd extra pins the stdlib-line backend
 
-- **WHEN** the evaluation selects the zstd decode backend
-- **THEN** the `[zstd]` extra pins exactly that package (plus any adopted seekable-zstd backend), and `docs/library-analysis.md` records the choice
+- **WHEN** `pip install archivey[zstd]` is run on Python 3.11–3.13
+- **THEN** `backports.zstd` is installed and `.zst` / `.tar.zst` reading works via the `compression.zstd` API
+- **AND** `zstandard` is not pulled in
+
+#### Scenario: no zstd runtime dependency on Python 3.14+
+
+- **WHEN** `pip install archivey[zstd]` is resolved on Python 3.14 or newer
+- **THEN** no third-party zstd package is required, because the standard-library `compression.zstd` provides the backend
 
 ---
 

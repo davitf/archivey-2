@@ -138,12 +138,12 @@ def test_zip_partial_when_optional_codecs_missing(
     # ZIP can store deflate64 (inflate64 / [7z]) and zstd ([zstd]); with those absent it
     # still opens and lists common (stored/deflate) members -> PARTIAL.
     monkeypatch.setattr(codecs_module, "_inflate64", None)
-    monkeypatch.setattr(codecs_module, "_zstandard", None)
+    monkeypatch.setattr(codecs_module, "_zstd", None)
 
     avail = format_availability(ArchiveFormat.ZIP)
     assert avail.support is FormatSupport.PARTIAL
     missing_names = {m.name for m in avail.missing}
-    assert {"inflate64", "zstandard"} <= missing_names
+    assert {"inflate64", "backports.zstd"} <= missing_names
     # PARTIAL formats are still "supported" (readable for their common members).
     assert ArchiveFormat.ZIP in list_supported_formats()
 
@@ -153,7 +153,7 @@ def test_zip_full_when_codecs_present(monkeypatch: pytest.MonkeyPatch) -> None:
     # regardless of which extras the test environment installed (the core-only CI legs
     # have none). The PARTIAL direction is covered by
     # test_zip_partial_when_optional_codecs_missing.
-    for sentinel in ("_inflate64", "_zstandard", "_pyppmd"):
+    for sentinel in ("_inflate64", "_zstd", "_pyppmd"):
         monkeypatch.setattr(codecs_module, sentinel, object())
     avail = format_availability(ArchiveFormat.ZIP)
     assert avail.support is FormatSupport.FULL
@@ -164,11 +164,11 @@ def test_single_codec_format_none_when_codec_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A bare single-file compressor whose sole codec backend is missing is NONE (not
-    # PARTIAL): there is nothing to fall back to. ZST's codec is zstandard.
-    monkeypatch.setattr(codecs_module, "_zstandard", None)
+    # PARTIAL): there is nothing to fall back to. ZST's codec is backports.zstd / stdlib zstd.
+    monkeypatch.setattr(codecs_module, "_zstd", None)
     avail = format_availability(ArchiveFormat.ZST)
     assert avail.support is FormatSupport.NONE
-    assert avail.missing[0].name == "zstandard"
+    assert avail.missing[0].name == "backports.zstd"
     assert ArchiveFormat.ZST in list_known_formats()
     assert ArchiveFormat.ZST not in list_supported_formats()
 
@@ -176,7 +176,7 @@ def test_single_codec_format_none_when_codec_missing(
 def test_single_codec_format_full_when_codec_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codecs_module, "_zstandard", object())
+    monkeypatch.setattr(codecs_module, "_zstd", object())
     assert format_availability(ArchiveFormat.ZST).support is FormatSupport.FULL
 
 
@@ -226,7 +226,7 @@ def test_partial_container_does_not_lower_for_unrelated_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Removing a ZIP-relevant codec must not affect a codec-less format like DIRECTORY.
-    monkeypatch.setattr(codecs_module, "_zstandard", None)
+    monkeypatch.setattr(codecs_module, "_zstd", None)
     assert format_availability(ArchiveFormat.DIRECTORY).support is FormatSupport.FULL
     assert ContainerFormat.DIRECTORY == ArchiveFormat.DIRECTORY.container
 
