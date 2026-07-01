@@ -44,6 +44,8 @@ class ReadBackend(ABC):
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
     REQUIRES_SEEK: bool = False
+    # When True, open_archive(streaming=True) may open a non-seekable source (TAR only).
+    SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
@@ -60,6 +62,7 @@ class ReadBackend(ABC):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        strict_eof: bool = False,
     ) -> "BaseArchiveReader":
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller). A
@@ -299,6 +302,11 @@ class BaseArchiveReader(ArchiveReader):
     @property
     def cost(self) -> CostReceipt:
         return self._get_archive_info().cost
+
+    @property
+    def compressed_source_size(self) -> int | None:
+        """Outer compressed byte length when known (``Path``-backed compressed tars); else ``None``."""
+        return None
 
     def __iter__(self) -> Iterator[ArchiveMember]:
         if self._streaming and self._members_cache is None:

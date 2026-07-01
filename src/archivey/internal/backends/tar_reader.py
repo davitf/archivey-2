@@ -1,22 +1,11 @@
 """TAR backend on the v2 ABC, backed by the stdlib ``tarfile`` module.
 
-This phase implements **random-access reading** of a seekable TAR: ``tarfile`` scans the
-512-byte headers (decompressing first for a compressed tar) to build the member index, and
-any member is then opened on demand. A plain ``.tar`` reads directly from the (seekable)
-source — ``DIRECT`` access, ``REQUIRES_SCANNING`` listing; a compressed tar is read through
-the codec layer — ``SOLID`` access, ``REQUIRES_DECOMPRESSION`` listing.
-
-TAR is the **only** container that composes with the stream compressors: the codec is
-opened internally (``tar.gz``/``tar.bz2``/``tar.xz``/``tar.zst``/``tar.lz4`` and, because
-the codec layer is generic, ``tar.lz``/``tar.zst``/``tar.br``/… too) rather than via
-``tarfile``'s native ``r:gz``/``r:bz2`` modes, so every codec archivey knows works
-uniformly (see ``format-tar`` and tasks.md §3b).
-
-**Out of scope here (Phase 4):** forward-only ``stream_members()`` over a non-seekable
-``tar.gz``, the ``ExtractionCoordinator`` / safe-extraction, and the ``strict_eof``
-end-of-archive verification (it needs the public config surface that arrives in Phase 5).
-Because only random-access read lands now, a non-seekable source is rejected at open via
-``REQUIRES_SEEK``.
+Random-access reading (``streaming=False``) scans 512-byte headers on a seekable source
+(decompressing first for a compressed tar) and opens any member on demand. Forward-only
+reading (``streaming=True``) walks the archive in one progressive pass — including on a
+non-seekable source for plain and compressed tars — via ``_iter_with_data()`` /
+``stream_members()``. End-of-archive truncation is checked after a full scan or streaming
+pass when ``strict_eof`` is configured on open.
 """
 
 from __future__ import annotations
@@ -24,6 +13,7 @@ from __future__ import annotations
 import stat
 import tarfile
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, cast
 
@@ -40,6 +30,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig
+from archivey.internal.logs import backends as backends_logger
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.codecs import (
@@ -47,7 +38,11 @@ from archivey.internal.streams.codecs import (
     codec_for_stream_format,
     open_codec_stream,
 )
-from archivey.internal.streams.streamtools import ensure_binaryio, ensure_bufferedio
+from archivey.internal.streams.streamtools import (
+    ensure_binaryio,
+    ensure_bufferedio,
+    is_seekable,
+)
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -135,9 +130,12 @@ class TarReader(BaseArchiveReader):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        strict_eof: bool = False,
     ) -> None:
         super().__init__(format, streaming, archive_name)
         self._encoding = encoding
+        self._strict_eof = strict_eof
+        self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
         # A decompression stream we open and therefore must close (compressed tars only);
         # for a plain tar from a path, tarfile owns and closes the file handle itself.
@@ -168,25 +166,29 @@ class TarReader(BaseArchiveReader):
             # tarfile can mis-handle a short read() (fewer bytes than requested) from a
             # decompressor; a BufferedReader in front guarantees full-sized reads.
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
-            return self._tarfile_open(fileobj=self._owned_stream)
+            return self._tarfile_open(fileobj=self._owned_stream, streaming=streaming)
         if isinstance(source, Path):
-            return self._tarfile_open(name=str(source))
-        return self._tarfile_open(fileobj=source)
+            return self._tarfile_open(name=str(source), streaming=streaming)
+        return self._tarfile_open(fileobj=source, streaming=streaming)
 
     def _tarfile_open(
-        self, *, name: str | None = None, fileobj: BinaryIO | None = None
+        self,
+        *,
+        name: str | None = None,
+        fileobj: BinaryIO | None = None,
+        streaming: bool = False,
     ) -> tarfile.TarFile:
-        # mode="r:" reads an *uncompressed* tar stream — we feed it either the raw file (plain
-        # tar) or our own decompressor (compressed tar), never tarfile's native r:gz/r:bz2.
-        # errorlevel=1 makes tarfile raise on fatal read errors (so truncation/corruption
-        # surfaces rather than being silently skipped); we translate those below. encoding=None
-        # is accepted (tarfile then applies its own utf-8 default).
+        # mode="r:" reads an *uncompressed* tar stream with random access; mode="r|" is
+        # forward-only (required for non-seekable sources). We feed either the raw file
+        # (plain tar) or our own decompressor (compressed tar), never tarfile's native
+        # r:gz/r:bz2 modes.
+        mode = "r|" if streaming else "r:"
         return tarfile.open(
             name=name,
             fileobj=fileobj,
-            mode="r:",
-            errorlevel=1,
-            encoding=self._encoding,
+            mode=mode,
+            errorlevel=1,  # raise on fatal read errors (truncation/corruption surface below)
+            encoding=self._encoding,  # None → tarfile applies its utf-8 default
         )
 
     def _translate_open_error(self, exc: Exception) -> ArchiveyError:
@@ -209,6 +211,9 @@ class TarReader(BaseArchiveReader):
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
+        if self._streaming:
+            yield from self._iter_members_progressive()
+            return
         try:
             members = self._tar.getmembers()  # forces the full header scan
         except tarfile.TarError as exc:
@@ -220,6 +225,94 @@ class TarReader(BaseArchiveReader):
             raise
         for info in members:
             yield self._to_member(info)
+        self._verify_tar_eof()
+
+    def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
+        """Forward-only member walk — never calls ``getmembers()``."""
+        try:
+            for idx, info in enumerate(self._tar):
+                member = self._to_member(info)
+                member._member_id = idx
+                member._archive_id = self._archive_id
+                yield member
+        except tarfile.TarError as exc:
+            translated = self._translate_exception(exc)
+            if translated is not None:
+                self._stamp_error_context(translated)
+                raise translated from exc
+            raise
+        self._verify_tar_eof()
+
+    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
+        if not self._streaming:
+            yield from super()._iter_with_data()
+            return
+        try:
+            for idx, info in enumerate(self._tar):
+                member = self._to_member(info)
+                member._member_id = idx
+                member._archive_id = self._archive_id
+                if member.is_file:
+                    raw = self._tar.extractfile(info)
+                    if raw is None:
+                        raw = BytesIO(b"")
+                    yield member, self._wrap_member_stream(
+                        ensure_binaryio(raw), member.name
+                    )
+                else:
+                    yield member, None
+        except tarfile.TarError as exc:
+            translated = self._translate_exception(exc)
+            if translated is not None:
+                self._stamp_error_context(translated)
+                raise translated from exc
+            raise
+        self._verify_tar_eof()
+
+    def _verify_tar_eof(self) -> None:
+        """Verify the two-block null end-of-archive marker.
+
+        The POSIX trailer is two null-filled 512-byte blocks, but ``tarfile`` has
+        already consumed the *first* one by the time we get here — stopping on a null
+        block (``EOFHeaderError``) is exactly how it detects the end of the archive,
+        and with the default ``ignore_zeros=False`` it stops after that single block.
+        So ``fileobj`` is positioned just past the first marker block, and we only need
+        to confirm the *second* one follows. (Reading two blocks here would demand a
+        third block of trailing zeros and wrongly flag a valid archive whose trailer is
+        the minimal two blocks with no record padding — e.g. ``tar -b1``.)
+
+        A short or non-zero read means the marker is missing or truncated: a truncation
+        right after the last member leaves no first block for ``tarfile`` to consume,
+        so ``fileobj`` is at EOF and this read comes up empty.
+        """
+        fileobj = self._tar.fileobj
+        if fileobj is None:
+            return
+        chunk = fileobj.read(512)
+        if len(chunk) == 512 and chunk == b"\x00" * 512:
+            return
+        msg = (
+            "TAR archive may be truncated: missing or invalid "
+            "end-of-archive marker block(s)"
+        )
+        if self._strict_eof:
+            err = TruncatedError(msg)
+            self._stamp_error_context(err)
+            raise err
+        backends_logger.warning(msg)
+
+    @property
+    def compressed_source_size(self) -> int | None:
+        if not self._compressed or not isinstance(self._source, Path):
+            return None
+        return self._source.stat().st_size
+
+    def _source_stream_capability(self) -> StreamCapability:
+        if isinstance(self._source, Path):
+            return StreamCapability.SEEKABLE
+        if is_seekable(self._source):
+            return StreamCapability.SEEKABLE
+        return StreamCapability.FORWARD_ONLY
 
     def _to_member(self, info: tarfile.TarInfo) -> ArchiveMember:
         member_type = _member_type(info)
@@ -288,24 +381,23 @@ class TarReader(BaseArchiveReader):
         if raw is None:
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.
-            from io import BytesIO
-
             raw = BytesIO(b"")
         return self._wrap_member_stream(ensure_binaryio(raw), member.name)
 
     def _get_archive_info(self) -> ArchiveInfo:
+        stream_cap = self._source_stream_capability()
         if self._compressed:
             cost = CostReceipt(
                 listing_cost=ListingCost.REQUIRES_DECOMPRESSION,
                 access_cost=AccessCost.SOLID,  # one compression stream over all members
-                stream_capability=StreamCapability.SEEKABLE,
+                stream_capability=stream_cap,
                 solid_block_count=1,
             )
         else:
             cost = CostReceipt(
                 listing_cost=ListingCost.REQUIRES_SCANNING,  # walk 512-byte headers, no index
                 access_cost=AccessCost.DIRECT,  # each member is at a known, independent offset
-                stream_capability=StreamCapability.SEEKABLE,
+                stream_capability=stream_cap,
                 solid_block_count=None,
             )
         return ArchiveInfo(
@@ -340,9 +432,10 @@ class TarReadBackend(ReadBackend):
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(257, b"ustar", ArchiveFormat.TAR),
     )
-    # Random-access read needs a seekable source; non-seekable forward-only streaming is
-    # Phase 4 (which will relax this for streaming=True).
+    # Random-access open needs a seekable source; forward-only streaming is allowed on
+    # non-seekable sources when streaming=True (see SUPPORTS_STREAMING_NON_SEEKABLE).
     REQUIRES_SEEK = True
+    SUPPORTS_STREAMING_NON_SEEKABLE = True
 
     def open_read(
         self,
@@ -352,10 +445,13 @@ class TarReadBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        strict_eof: bool = False,
     ) -> TarReader:
         # `format` carries the concrete (TAR, <stream>) variant the detector/caller resolved;
         # the backend uses its stream to pick the codec to decompress with.
-        return TarReader(source, format, streaming, password, encoding, archive_name)
+        return TarReader(
+            source, format, streaming, password, encoding, archive_name, strict_eof
+        )
 
 
 register_reader(TarReadBackend)

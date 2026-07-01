@@ -56,12 +56,19 @@ def open_archive(
     streaming: bool = False,
     password: bytes | str | None = None,
     encoding: str | None = None,
+    strict_eof: bool = False,
 ) -> ArchiveReader:
     """Open an archive for reading.
 
     ``streaming=False`` (the default) opens for random access and fails fast at open
     time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
     access (works on any source, but disables random-access methods).
+
+    ``strict_eof`` controls TAR end-of-archive verification: after all members are read,
+    the TAR backend checks for two null-filled 512-byte EOF blocks. When the check
+    fails, ``strict_eof=False`` (the default) emits a warning; ``strict_eof=True``
+    raises :class:`~archivey.TruncatedError`. This keyword is a Phase 4 stopgap — Phase 5
+    task 4 (``PLAN.md``) folds it into the finalized public config surface.
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
@@ -99,9 +106,11 @@ def open_archive(
     backend_cls = registry.reader_for_format(format)
 
     # Fail fast for a seek-requiring backend on a non-seekable source (the access-mode
-    # contract: streaming=False does not implicitly buffer).
+    # contract: streaming=False does not implicitly buffer). Per-backend opt-in only:
+    # TAR may open non-seekable sources under streaming=True; ZIP/ISO still fail fast.
     if (
         backend_cls.REQUIRES_SEEK
+        and not (streaming and backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE)
         and is_stream(open_source)
         and not is_seekable(open_source)
     ):
@@ -126,4 +135,5 @@ def open_archive(
         password=password,
         encoding=effective_encoding,
         archive_name=archive_name,
+        strict_eof=strict_eof,
     )

@@ -261,6 +261,7 @@ class SingleFileBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        strict_eof: bool = False,
     ) -> SingleFileReader:
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.

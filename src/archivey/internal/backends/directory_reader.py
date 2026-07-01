@@ -219,6 +219,7 @@ class DirectoryReadBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        strict_eof: bool = False,
     ) -> DirectoryReader:
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature.

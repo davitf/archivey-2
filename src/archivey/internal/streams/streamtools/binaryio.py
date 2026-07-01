@@ -87,6 +87,12 @@ def is_seekable(stream: Any) -> bool:
     ``test_windows_pipe_seek_characterization``) — which would silently corrupt random-access
     reads. So when ``seekable()`` claims ``True`` we confirm the underlying object isn't a
     pipe/FIFO or character device (which are never seekable) and override the claim if it is.
+
+    ``seekable()`` on some stdlib objects is broken rather than missing — notably
+    ``tarfile.ExFileObject`` in ``r|`` (streaming) mode, whose ``seekable()`` delegates
+    to ``tarfile._Stream`` which has no ``seekable()`` method (``AttributeError``). Those
+    member streams are forward-only by design (``r|`` forbids backward seeks), so treating
+    them as non-seekable is correct.
     """
     if isinstance(stream, io.BufferedReader):
         return is_seekable(stream.raw)
@@ -98,7 +104,15 @@ def is_seekable(stream: Any) -> bool:
     if seekable is None:
         logger.debug("Stream %r has no seekable() method; treating as non-seekable", stream)
         return False
-    if not seekable():
+    try:
+        if not seekable():
+            return False
+    except AttributeError:
+        # e.g. tarfile.ExFileObject in r| mode → tarfile._Stream (no seekable()); see docstring.
+        logger.debug(
+            "Stream %r seekable() raised AttributeError; treating as non-seekable",
+            stream,
+        )
         return False
     if _is_fifo_or_chardev(stream):
         logger.debug(

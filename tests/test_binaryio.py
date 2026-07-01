@@ -157,7 +157,24 @@ def test_is_seekable_object_without_seekable_method() -> None:
     assert not is_seekable(OnlyReadStream(b"x"))
 
 
-def test_is_seekable_overrides_lying_seekable_for_pipe() -> None:
+def test_is_seekable_tarfile_exfileobject_in_streaming_mode() -> None:
+    # tarfile.ExFileObject.seekable() in r| mode delegates to tarfile._Stream, which
+    # lacks seekable() — AttributeError. Member streams are forward-only there anyway.
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        t.addfile(info, io.BytesIO(b"x"))
+    data = buf.getvalue()
+
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r|") as t:
+        for info in t:
+            member_stream = t.extractfile(info)
+            assert member_stream is not None
+            assert not is_seekable(member_stream)
+            break
     # A stream can claim seekable()=True yet be a pipe whose seek() does not reposition
     # (real Windows os.pipe behavior). is_seekable must distrust the claim for a FIFO and
     # return False. Verified portably with a real pipe fd, which is a FIFO on every platform.
