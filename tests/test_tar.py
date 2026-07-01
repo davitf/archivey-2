@@ -342,11 +342,13 @@ def test_non_seekable_tar_gz_streaming(tmp_path: Path) -> None:
         assert ar.cost.stream_capability == StreamCapability.FORWARD_ONLY
         assert ar.cost.listing_cost == ListingCost.REQUIRES_DECOMPRESSION
         assert ar.cost.access_cost == AccessCost.SOLID
-        collected = {}
+        collected: dict[str, bytes | None] = {}
         for member, stream in ar.stream_members():
-            if stream is not None:
-                collected[member.name] = stream.read()
+            collected[member.name] = stream.read() if stream is not None else None
+        assert set(collected) == {"hello.txt", "dir/nested.txt", "dir/", "link.txt"}
         assert collected["hello.txt"] == b"hello world"
+        assert collected["dir/nested.txt"] == b"nested content"
+        assert collected["dir/"] is None
 
 
 def test_non_seekable_tar_bz2_streaming_smoke() -> None:

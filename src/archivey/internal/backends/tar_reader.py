@@ -186,8 +186,8 @@ class TarReader(BaseArchiveReader):
             name=name,
             fileobj=fileobj,
             mode=mode,
-            errorlevel=1,
-            encoding=self._encoding,
+            errorlevel=1,  # raise on fatal read errors (truncation/corruption surface below)
+            encoding=self._encoding,  # None → tarfile applies its utf-8 default
         )
 
     def _translate_open_error(self, exc: Exception) -> ArchiveyError:

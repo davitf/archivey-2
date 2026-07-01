@@ -64,6 +64,12 @@ def open_archive(
     time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
     access (works on any source, but disables random-access methods).
 
+    ``strict_eof`` controls TAR end-of-archive verification: after all members are read,
+    the TAR backend checks for two null-filled 512-byte EOF blocks. When the check
+    fails, ``strict_eof=False`` (the default) emits a warning; ``strict_eof=True``
+    raises :class:`~archivey.TruncatedError`. This keyword is a Phase 4 stopgap — Phase 5
+    task 4 (``PLAN.md``) folds it into the finalized public config surface.
+
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
     A non-seekable stream is wrapped in a :class:`PeekableStream` so detection never
