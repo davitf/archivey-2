@@ -13,6 +13,7 @@ from __future__ import annotations
 import stat
 import tarfile
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, cast
 
@@ -254,8 +255,6 @@ class TarReader(BaseArchiveReader):
                 if member.is_file:
                     raw = self._tar.extractfile(info)
                     if raw is None:
-                        from io import BytesIO
-
                         raw = BytesIO(b"")
                     yield member, self._wrap_member_stream(
                         ensure_binaryio(raw), member.name
@@ -271,13 +270,26 @@ class TarReader(BaseArchiveReader):
         self._verify_tar_eof()
 
     def _verify_tar_eof(self) -> None:
-        """Check for two null-filled 512-byte end-of-archive blocks after the last member."""
+        """Verify the two-block null end-of-archive marker.
+
+        The POSIX trailer is two null-filled 512-byte blocks, but ``tarfile`` has
+        already consumed the *first* one by the time we get here — stopping on a null
+        block (``EOFHeaderError``) is exactly how it detects the end of the archive,
+        and with the default ``ignore_zeros=False`` it stops after that single block.
+        So ``fileobj`` is positioned just past the first marker block, and we only need
+        to confirm the *second* one follows. (Reading two blocks here would demand a
+        third block of trailing zeros and wrongly flag a valid archive whose trailer is
+        the minimal two blocks with no record padding — e.g. ``tar -b1``.)
+
+        A short or non-zero read means the marker is missing or truncated: a truncation
+        right after the last member leaves no first block for ``tarfile`` to consume,
+        so ``fileobj`` is at EOF and this read comes up empty.
+        """
         fileobj = self._tar.fileobj
         if fileobj is None:
             return
-        expected = 512 * 2
-        chunk = fileobj.read(expected)
-        if len(chunk) == expected and chunk == b"\x00" * expected:
+        chunk = fileobj.read(512)
+        if len(chunk) == 512 and chunk == b"\x00" * 512:
             return
         msg = (
             "TAR archive may be truncated: missing or invalid "
@@ -369,8 +381,6 @@ class TarReader(BaseArchiveReader):
         if raw is None:
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.
-            from io import BytesIO
-
             raw = BytesIO(b"")
         return self._wrap_member_stream(ensure_binaryio(raw), member.name)
 
