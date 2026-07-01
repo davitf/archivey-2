@@ -72,8 +72,15 @@ class FormatAvailability:
 
 # Optional member-codecs each container can use, beyond the always-present stdlib codecs.
 # A format is FULL when all of these are available, PARTIAL when some are missing (a
-# multi-codec container still opens and lists). Single-codec RAW_STREAM formats are handled
-# separately (their sole codec missing makes them NONE, not PARTIAL).
+# multi-codec container still opens and lists). Single-codec formats (bare RAW_STREAM
+# compressors and compressed tars) are handled separately: their sole stream codec
+# missing makes them NONE, not PARTIAL.
+#
+# NOTE (Phase 3 → 7 gap): ZIP member *decode* currently goes through stdlib zipfile,
+# which cannot decompress deflate64/ppmd (or zstd before Python 3.14) even when these
+# codec packages are installed — such members raise UnsupportedFeatureError at read.
+# This table describes the intended post-Phase-7 composition, where the codec layer is
+# wired into ZIP member reads (see ``format-zip`` / ``compressed-streams``).
 _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
     ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
 }

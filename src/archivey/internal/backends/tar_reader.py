@@ -234,13 +234,14 @@ class TarReader(BaseArchiveReader):
         self._verify_tar_eof()
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
-        """Forward-only member walk — never calls ``getmembers()``."""
+        """Forward-only member walk — never calls ``getmembers()``.
+
+        Yields bare members; the base's streaming ``__iter__`` (via
+        ``_register_progressively``) stamps ids and resolves backward links.
+        """
         try:
-            for idx, info in enumerate(self._tar):
-                member = self._to_member(info)
-                member._member_id = idx
-                member._archive_id = self._archive_id
-                yield member
+            for info in self._tar:
+                yield self._to_member(info)
         except tarfile.TarError as exc:
             translated = self._translate_exception(exc)
             if translated is not None:
@@ -253,12 +254,15 @@ class TarReader(BaseArchiveReader):
         if not self._streaming:
             yield from super()._iter_with_data()
             return
+        # _register_progressively stamps ids and resolves backward links (hardlinks
+        # always point at an earlier member, so they resolve in this single pass); each
+        # member carries its TarInfo in _raw, which extractfile() uses directly.
         try:
-            for idx, info in enumerate(self._tar):
-                member = self._to_member(info)
-                member._member_id = idx
-                member._archive_id = self._archive_id
+            for member in self._register_progressively(
+                self._to_member(info) for info in self._tar
+            ):
                 if member.is_file:
+                    info = cast("tarfile.TarInfo", member._raw)
                     raw = self._tar.extractfile(info)
                     if raw is None:
                         raw = BytesIO(b"")

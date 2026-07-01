@@ -75,17 +75,40 @@ def _decode_with_fallback(data: bytes) -> str:
     raise AssertionError("unreachable: cp437 decodes every byte")
 
 
+# Seconds between the NTFS FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
+_NTFS_EPOCH_OFFSET = 11_644_473_600
+
+
+def _filetime_to_datetime(value: int, filename: str) -> datetime | None:
+    """An NTFS FILETIME (100 ns ticks since 1601, UTC) as a datetime; 0 means "not set"."""
+    if value == 0:
+        return None
+    try:
+        return datetime.fromtimestamp(
+            value / 10_000_000 - _NTFS_EPOCH_OFFSET, tz=timezone.utc
+        )
+    except (ValueError, OverflowError, OSError):
+        logger.warning("Invalid NTFS timestamp for %r: %r", filename, value)
+        return None
+
+
 def _zip_timestamps(
     info: zipfile.ZipInfo,
 ) -> tuple[datetime | None, datetime | None, datetime | None]:
     """Return ``(modified, accessed, created)`` for a member.
 
-    The DOS ``date_time`` gives a 2-second-granularity modification time (``None`` for the
-    "no timestamp" sentinel year 1980). An Extended Timestamp extra field (0x5455) records
-    real Unix timestamps and takes precedence: its flags byte signals which of
-    modification/access/creation times follow (in that order), each a signed 32-bit Unix
-    time interpreted as UTC. The central directory typically carries only the modification
-    time even when the flags advertise more, so access/creation are often ``None``.
+    Sources, lowest to highest precedence (each layer overrides only the times it
+    actually carries):
+
+    1. The DOS ``date_time``: a 2-second-granularity local wall-clock modification time
+       (naive ``datetime``; ``None`` for the "no timestamp" sentinel year 1980).
+    2. An NTFS extra field (0x000A): three 64-bit FILETIMEs (modification, access,
+       creation) in 100 ns UTC ticks since 1601; zero means "not set". Written by
+       Windows tools (e.g. 7-Zip).
+    3. An Extended Timestamp extra field (0x5455): real Unix timestamps, its flags byte
+       signaling which of modification/access/creation follow (in that order), each a
+       signed 32-bit Unix time interpreted as UTC. The central directory typically
+       carries only the modification time even when the flags advertise more.
     """
     if info.date_time == (1980, 0, 0, 0, 0, 0):
         modified: datetime | None = None
@@ -98,27 +121,50 @@ def _zip_timestamps(
     accessed: datetime | None = None
     created: datetime | None = None
 
+    # One scan collecting both timestamp extra fields, applied afterwards in precedence
+    # order (NTFS below Extended Timestamp) regardless of their order in the blob.
+    ntfs_field: bytes | None = None
+    ut_field: bytes | None = None
     extra = info.extra or b""
     pos = 0
     while pos + 4 <= len(extra):
         tag, length = struct.unpack("<HH", extra[pos : pos + 4])
         field = extra[pos + 4 : pos + 4 + length]
-        if tag == 0x5455 and field:  # Extended Timestamp: flags byte + present times
-            flags = field[0]
-            cursor = 1
-            for bit in (0x01, 0x02, 0x04):  # mtime, atime, ctime, in order
-                if flags & bit and cursor + 4 <= len(field):
-                    ts = int.from_bytes(field[cursor : cursor + 4], "little", signed=True)
-                    when = datetime.fromtimestamp(ts, tz=timezone.utc)
-                    if bit == 0x01:
-                        modified = when
-                    elif bit == 0x02:
-                        accessed = when
-                    else:
-                        created = when
-                    cursor += 4
-            break
+        if tag == 0x000A and ntfs_field is None:
+            ntfs_field = field
+        elif tag == 0x5455 and field and ut_field is None:
+            ut_field = field
         pos += 4 + length
+
+    if ntfs_field is not None:
+        # Layout: 4 reserved bytes, then (tag, size) attributes; tag 1 carries the three
+        # FILETIMEs. Malformed/short fields are skipped rather than failing the listing.
+        cursor = 4
+        while cursor + 4 <= len(ntfs_field):
+            attr_tag, attr_size = struct.unpack_from("<HH", ntfs_field, cursor)
+            cursor += 4
+            if attr_tag == 0x0001 and attr_size >= 24 and cursor + 24 <= len(ntfs_field):
+                mtime, atime, ctime = struct.unpack_from("<QQQ", ntfs_field, cursor)
+                modified = _filetime_to_datetime(mtime, info.filename) or modified
+                accessed = _filetime_to_datetime(atime, info.filename) or accessed
+                created = _filetime_to_datetime(ctime, info.filename) or created
+                break
+            cursor += attr_size
+
+    if ut_field is not None:
+        flags = ut_field[0]
+        cursor = 1
+        for bit in (0x01, 0x02, 0x04):  # mtime, atime, ctime, in order
+            if flags & bit and cursor + 4 <= len(ut_field):
+                ts = int.from_bytes(ut_field[cursor : cursor + 4], "little", signed=True)
+                when = datetime.fromtimestamp(ts, tz=timezone.utc)
+                if bit == 0x01:
+                    modified = when
+                elif bit == 0x02:
+                    accessed = when
+                else:
+                    created = when
+                cursor += 4
 
     return modified, accessed, created
 

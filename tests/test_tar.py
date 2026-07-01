@@ -573,3 +573,86 @@ def test_out_of_range_mtime_degrades_to_none() -> None:
     with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.TAR) as reader:
         (member,) = reader.members()
         assert member.modified is None
+
+
+# ---------------------------------------------------------------------------
+# Link-target name resolution (relative symlinks, hardlinks, streaming pass)
+# ---------------------------------------------------------------------------
+
+
+def _build_link_tar() -> bytes:
+    """dir/file + a root-level decoy `file`, and links exercising target resolution."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for name, data in [("file", b"ROOT"), ("dir/file", b"NESTED"), ("top.txt", b"TOP")]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        rel = tarfile.TarInfo("dir/rel_link")  # -> dir/file, not the root decoy
+        rel.type = tarfile.SYMTYPE
+        rel.linkname = "file"
+        t.addfile(rel)
+        up = tarfile.TarInfo("dir/up_link")  # ../top.txt -> top.txt
+        up.type = tarfile.SYMTYPE
+        up.linkname = "../top.txt"
+        t.addfile(up)
+        absolute = tarfile.TarInfo("dir/abs_link")  # absolute: outside the archive
+        absolute.type = tarfile.SYMTYPE
+        absolute.linkname = "/etc/passwd"
+        t.addfile(absolute)
+        hard = tarfile.TarInfo("dir/hard")  # hardlink targets are archive-relative
+        hard.type = tarfile.LNKTYPE
+        hard.linkname = "dir/file"
+        t.addfile(hard)
+    return buf.getvalue()
+
+
+def test_relative_symlink_resolves_against_link_directory() -> None:
+    with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
+        member = ar["dir/rel_link"]
+        assert member.link_target == "file"  # raw stored target is untouched
+        assert member.link_target_member is not None
+        assert member.link_target_member.name == "dir/file"
+        assert ar.read("dir/rel_link") == b"NESTED"  # not the root-level decoy
+
+
+def test_dotdot_symlink_resolves_upward() -> None:
+    with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
+        assert ar["dir/up_link"].link_target_member.name == "top.txt"
+        assert ar.read("dir/up_link") == b"TOP"
+
+
+def test_absolute_symlink_stays_unresolved() -> None:
+    from archivey.exceptions import LinkTargetNotFoundError
+
+    with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
+        member = ar["dir/abs_link"]
+        assert member.link_target == "/etc/passwd"
+        assert member.link_target_member is None
+        with pytest.raises(LinkTargetNotFoundError):
+            ar.open(member)
+
+
+def test_hardlink_target_is_archive_relative() -> None:
+    with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
+        assert ar["dir/hard"].link_target_member.name == "dir/file"
+        assert ar.read("dir/hard") == b"NESTED"
+
+
+def test_streaming_pass_resolves_backward_links() -> None:
+    # Hardlinks always point at an earlier member (the TAR model), so a single
+    # streaming pass resolves them progressively; relative symlinks to earlier
+    # members resolve too.
+    source = NonSeekableBytesIO(_build_link_tar())
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
+        resolved = {
+            m.name: (m.link_target_member.name if m.link_target_member else None)
+            for m, _stream in ar.stream_members()
+            if m.is_link
+        }
+    assert resolved == {
+        "dir/rel_link": "dir/file",
+        "dir/up_link": "top.txt",
+        "dir/abs_link": None,
+        "dir/hard": "dir/file",
+    }

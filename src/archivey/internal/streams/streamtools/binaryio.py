@@ -143,6 +143,19 @@ def is_filename(obj: Any) -> TypeGuard[str | bytes | os.PathLike]:
     return isinstance(obj, (str, bytes, os.PathLike))
 
 
+def source_name(source: Any) -> str | None:
+    """Best-effort human-readable name for a source, for error messages and metadata.
+
+    A path-like source yields its string form; a file-like stream yields its ``name``
+    attribute when that is a string (``open()`` sets it, ``BytesIO`` does not, and some
+    streams expose an integer fd there — both of those yield ``None``).
+    """
+    if is_filename(source):
+        return os.fsdecode(source)
+    name = getattr(source, "name", None)
+    return name if isinstance(name, str) else None
+
+
 def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
     """Whether ``obj`` already satisfies the ``BinaryIO`` interface we rely on.
 

@@ -439,3 +439,49 @@ def test_explicit_encoding_overrides_cp437_default() -> None:
         (member,) = reader.members()
         assert member.name == "é.txt"
         assert member.raw_name == b"\xe9.txt"
+
+
+def _ntfs_extra(mtime_ft: int, atime_ft: int, ctime_ft: int) -> bytes:
+    """An NTFS extra field (0x000A): 4 reserved bytes, then tag 1 with three FILETIMEs."""
+    body = struct.pack("<I", 0) + struct.pack("<HHQQQ", 0x0001, 24, mtime_ft, atime_ft, ctime_ft)
+    return struct.pack("<HH", 0x000A, len(body)) + body
+
+
+def _to_filetime(unix_time: int) -> int:
+    return (unix_time + 11_644_473_600) * 10_000_000
+
+
+def test_ntfs_timestamps_used_when_no_extended_timestamp(tmp_path: Path) -> None:
+    # An NTFS extra field (0x000A) carries FILETIME mtime/atime/ctime; with no 0x5455
+    # field they populate all three member times as tz-aware UTC datetimes.
+    mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
+    path = tmp_path / "ntfs.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = _ntfs_extra(_to_filetime(mtime), _to_filetime(atime), _to_filetime(ctime))
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar["t.txt"]
+        assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
+        assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
+        assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
+
+
+def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
+    # Precedence: 0x5455 (Unix) > 0x000A (NTFS) > DOS date_time — regardless of the
+    # fields' order in the extra blob. Here NTFS carries all three times but the UT
+    # field's mtime wins for `modified`; atime/ctime stay from NTFS (UT carries none).
+    ut_mtime, nt_mtime, nt_atime = 1_600_000_000, 1_500_000_000, 1_500_000_100
+    extra = _ntfs_extra(_to_filetime(nt_mtime), _to_filetime(nt_atime), 0) + struct.pack(
+        "<HHBI", 0x5455, 5, 0x01, ut_mtime
+    )
+    path = tmp_path / "both.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar["t.txt"]
+        assert member.modified == datetime.fromtimestamp(ut_mtime, tz=timezone.utc)
+        assert member.accessed == datetime.fromtimestamp(nt_atime, tz=timezone.utc)
+        assert member.created is None  # NTFS ctime was 0 = "not set"

@@ -17,7 +17,7 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.streams.peekable import PeekableStream
-from archivey.internal.streams.streamtools import is_seekable, is_stream
+from archivey.internal.streams.streamtools import is_seekable, is_stream, source_name
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat
 
@@ -32,21 +32,8 @@ __all__ = [
     "list_known_formats",
     "list_supported_formats",
     "open_archive",
-    "source_name",
+    "source_name",  # re-exported from streamtools (the single implementation)
 ]
-
-
-def source_name(source: str | Path | BinaryIO) -> str | None:
-    """Best-effort human-readable name for a source, for error messages and metadata.
-
-    A path-like source yields its string form; a file-like stream yields its ``name``
-    attribute when that is a string (``open()`` sets it, ``BytesIO`` does not, and some
-    streams expose an integer fd there — both of those yield ``None``).
-    """
-    if isinstance(source, (str, Path)):
-        return str(source)
-    name = getattr(source, "name", None)
-    return name if isinstance(name, str) else None
 
 
 def open_archive(
@@ -74,6 +61,13 @@ def open_archive(
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
     A non-seekable stream is wrapped in a :class:`PeekableStream` so detection never
     consumes bytes the backend still needs.
+
+    A seekable stream source is taken to hold the archive **starting at its current
+    position** — detection peeks from there and restores the position, and the TAR /
+    single-file-compressor backends read from there (so an archive embedded mid-file
+    works without slicing). ZIP tolerates prefix data by design (offsets are resolved
+    from the end-of-central-directory). ISO is the exception: ``pycdlib`` addresses the
+    image with absolute offsets, so an ISO stream must start at position 0.
     """
     # Import backends to ensure they are registered
     import archivey.internal.backends  # noqa: F401

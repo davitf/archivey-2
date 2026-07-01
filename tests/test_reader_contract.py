@@ -115,7 +115,6 @@ def test_streaming_disables_random_access_on_capable_backend() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
     for call in (
         lambda: reader.members(),
-        lambda: len(reader),
         lambda: "a.txt" in reader,
         lambda: reader["a.txt"],
         lambda: reader.get("a.txt"),
@@ -126,6 +125,16 @@ def test_streaming_disables_random_access_on_capable_backend() -> None:
             call()
     # A single forward pass is still allowed.
     assert [m.name for m in reader] == ["a.txt"]
+
+
+def test_streaming_len_raises_typeerror_so_list_works() -> None:
+    # len() raises TypeError (not UnsupportedOperationError): list(reader) probes
+    # __len__ implicitly via the length-hint protocol, which suppresses only TypeError,
+    # so plain list(reader) must still perform the forward pass.
+    reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
+    with pytest.raises(TypeError):
+        len(reader)
+    assert [m.name for m in list(reader)] == ["a.txt"]
 
 
 # --- get_members_if_available: never scans; safe on any reader ----------------------
@@ -157,8 +166,6 @@ def test_streaming_iteration_registers_member_ids() -> None:
     # A streaming pass must still stamp identity onto the members it yields (the
     # progressive path bypasses _get_members_registered).
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
-    # Note: list(reader) would call __len__ for list preallocation, which the streaming
-    # gate blocks — go through iter() so len() is never touched.
-    member = next(iter(reader))
+    (member,) = list(reader)
     assert member.member_id == 0
     assert member.archive_id == reader._archive_id

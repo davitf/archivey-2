@@ -380,3 +380,35 @@ def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
     stream.read(-1)
     with pytest.raises(TruncatedError):
         stream.read()
+
+
+def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
+    # A seek that does not leave the sequential frontier (tell()-style seek(0, SEEK_CUR),
+    # or a seek to the current offset) keeps the ISIZE check armed, so a short
+    # accelerator output is still caught at EOF.
+    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
+
+    payload = b"hello world" * 100
+    path = tmp_path / "f.gz"
+    path.write_bytes(gzip.compress(payload))
+
+    stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
+    stream.read(16)
+    stream.seek(0, io.SEEK_CUR)  # no-op: must not disarm the check
+    stream.read(-1)
+    with pytest.raises(TruncatedError):
+        stream.read()
+
+
+def test_gzip_truncation_check_real_seek_disables_verification(tmp_path) -> None:
+    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
+
+    payload = b"hello world" * 100
+    path = tmp_path / "f.gz"
+    path.write_bytes(gzip.compress(payload))
+
+    stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
+    stream.read(16)
+    stream.seek(0)  # genuine random access: the sequential total is meaningless now
+    stream.read(-1)
+    assert stream.read() == b""  # no spurious TruncatedError after a real seek

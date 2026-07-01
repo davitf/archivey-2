@@ -12,6 +12,7 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     UnsupportedOperationError,
 )
+from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import is_seekable
 from archivey.reader import ArchiveReader, MemberSelector
@@ -246,6 +247,29 @@ class BaseArchiveReader(ArchiveReader):
         self._members_by_name = by_name
         return members
 
+    @staticmethod
+    def _lookup_link_target(
+        member: ArchiveMember, by_name: Mapping[str, ArchiveMember]
+    ) -> ArchiveMember | None:
+        """The member ``member``'s link target refers to, or ``None`` if not present.
+
+        Resolves the stored target string to an archive-namespace name first (a symlink
+        target is relative to the link's own directory — see
+        :func:`resolve_link_target_name`), then looks it up; directory members carry a
+        trailing ``/`` in their names, so both forms are tried.
+        """
+        if not member.link_target:
+            return None
+        target_name = resolve_link_target_name(
+            member.name, member.link_target, member.type
+        )
+        if target_name is None:
+            return None
+        target = by_name.get(target_name)
+        if target is None and not target_name.endswith("/"):
+            target = by_name.get(target_name + "/")
+        return target
+
     def _resolve_link(
         self,
         member: ArchiveMember,
@@ -255,22 +279,49 @@ class BaseArchiveReader(ArchiveReader):
         visited: set[str] = set()
         current = member
 
-        while current.link_target is not None:
-            target_name = current.link_target
-            if target_name in visited:
+        while current.is_link and current.link_target:
+            if current.name in visited:
                 # Cycle detected; leave link_target_member unset (None) rather than
                 # pointing at an intermediate link in the cycle.
                 return
             visited.add(current.name)
-            target = by_name.get(target_name)
+            target = self._lookup_link_target(current, by_name)
             if target is None:
-                # Missing target - leave link_target_member as None
+                # Missing/unresolvable target - leave link_target_member as None
                 return
             current = target
 
         # Set on the original member (the final resolved target or None on cycle)
         if current is not member:
             member.link_target_member = current
+
+    def _register_progressively(
+        self, members: Iterator[ArchiveMember]
+    ) -> Iterator[ArchiveMember]:
+        """Stamp ids and resolve *backward-pointing* links during a single forward pass.
+
+        Backs the streaming iteration paths. Hardlinks always refer to an earlier member
+        (the TAR model — see ``archive-reading``), so they resolve during the pass; a
+        symlink to an earlier member resolves too, while a forward-pointing one stays
+        unresolved (``link_target_member`` ``None``). A backend that already stamps ids
+        is left untouched (the stamp only fills unset fields).
+        """
+        by_name: dict[str, ArchiveMember] = {}
+        for idx, member in enumerate(members):
+            if member._member_id is None:
+                member._member_id = idx
+                member._archive_id = self._archive_id
+            if member.is_link and member.link_target_member is None:
+                target = self._lookup_link_target(member, by_name)
+                if target is not None and target is not member:
+                    # An earlier link's own resolution is already final; reuse it (an
+                    # unresolved earlier link yields None, i.e. stays unresolved).
+                    if target.is_link:
+                        target = target.link_target_member
+                    if target is not None:
+                        member.link_target_member = target
+            by_name[member.name] = member
+            yield member
 
     # --- Public API ---
 
@@ -310,16 +361,10 @@ class BaseArchiveReader(ArchiveReader):
 
     def __iter__(self) -> Iterator[ArchiveMember]:
         if self._streaming and self._members_cache is None:
-            # Forward-only: stream directly without caching the whole list. Members are
-            # still stamped with their ids progressively (a backend that already assigns
-            # them, like TAR's progressive walk, is left untouched) so member_id/
-            # archive_id work on a streamed member too. Links are NOT resolved here — a
-            # single forward pass cannot see later members.
-            for idx, member in enumerate(self._iter_members()):
-                if member._member_id is None:
-                    member._member_id = idx
-                    member._archive_id = self._archive_id
-                yield member
+            # Forward-only: stream directly without caching the whole list, stamping ids
+            # and resolving backward-pointing links progressively (a forward-pointing
+            # symlink stays unresolved — a single pass cannot see later members).
+            yield from self._register_progressively(self._iter_members())
         else:
             yield from self._get_members_registered()
 
@@ -344,7 +389,16 @@ class BaseArchiveReader(ArchiveReader):
         return None
 
     def __len__(self) -> int:
-        self._require_random_access("len()")
+        # TypeError, not UnsupportedOperationError: len() is also probed *implicitly* —
+        # list(reader) calls __len__ for preallocation via the length-hint protocol,
+        # which suppresses only TypeError. Any other exception type would make
+        # list(reader) blow up even though plain iteration is exactly what a streaming
+        # reader supports.
+        if self._streaming:
+            raise TypeError(
+                "len() is not available on a streaming (forward-only) reader. "
+                "Iterate the reader (or stream_members()) instead.",
+            )
         return len(self._get_members_registered())
 
     def __contains__(self, name: object) -> bool:
@@ -405,7 +459,7 @@ class BaseArchiveReader(ArchiveReader):
                     member_name=member.name,
                 )
             target = (
-                self._members_by_name.get(member.link_target)
+                self._lookup_link_target(member, self._members_by_name)
                 if self._members_by_name
                 else None
             )

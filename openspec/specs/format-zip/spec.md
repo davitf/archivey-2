@@ -33,10 +33,28 @@ The system SHALL expose the following cost and capability properties for every o
 The system SHALL map each `ZipInfo` entry to a `ArchiveMember` dataclass using the following field rules:
 
 - `mode`: parsed from `external_attr >> 16`. If `external_attr == 0` and `create_system != 3` (Unix), `mode` is set to `None`.
-- `modified`: from the `date_time` tuple, constructed as a naive `datetime` (no TZ; DOS format has 2-second granularity). If the ZIP64 extra field contains an NT timestamp, use that as a timezone-aware UTC `datetime` instead.
+- `modified`/`accessed`/`created`: layered by precedence, each layer overriding only the
+  times it actually carries. Base: the DOS `date_time` tuple as a naive `datetime` (no TZ;
+  local wall-clock, 2-second granularity; `None` for the year-1980 "no timestamp"
+  sentinel). Above it: the NTFS extra field (`0x000A`) — three 64-bit FILETIMEs
+  (modification/access/creation, 100 ns UTC ticks since 1601, zero = "not set"; written
+  by Windows tools such as 7-Zip) — as timezone-aware UTC `datetime`s. Highest: the
+  Extended Timestamp extra field (`0x5455`) — signed 32-bit Unix times, its flags byte
+  signaling which of modification/access/creation are present — as timezone-aware UTC
+  `datetime`s.
 - `type`: inferred from `mode` if Unix, otherwise from `is_dir()` and symlink detection via extra field `0x000A` (NTFS) or `0x7875` (Unix UID/GID).
 - `compression`: map `compress_type` integer to `CompressionMethod`.
 - `is_encrypted`: set to `True` when `flag_bits & 0x1` is non-zero.
+
+> **Phase 3 → 7 gap (member decode via stdlib zipfile).** Until the
+> `compressed-streams` codec layer is wired into ZIP member reads (Phase 7, alongside
+> the native 7z reader's container codecs), member *data* decompression goes through
+> stdlib `zipfile`, which cannot decode deflate64/PPMd (or zstd before Python 3.14)
+> even when the corresponding codec packages are installed — reading such a member
+> raises `UnsupportedFeatureError`. `format_availability(ZIP)`'s FULL/PARTIAL result
+> (see `backend-registry`) describes the intended post-Phase-7 composition over those
+> codecs, so until then it can report FULL while these rare member codecs still fail
+> at read time. Listing is unaffected.
 
 #### Scenario: Unix mode from external_attr
 
@@ -48,10 +66,15 @@ The system SHALL map each `ZipInfo` entry to a `ArchiveMember` dataclass using t
 - **WHEN** a ZIP entry has `external_attr == 0` or `create_system != 3`
 - **THEN** `member.mode` is set to `None`
 
-#### Scenario: NT timestamp takes precedence over DOS date_time
+#### Scenario: Extended Timestamp takes precedence over DOS date_time
 
-- **WHEN** a ZIP entry carries a ZIP64 extra field containing an NT timestamp
-- **THEN** `member.modified` is a timezone-aware UTC `datetime` derived from that NT timestamp, overriding the value from `date_time`
+- **WHEN** a ZIP entry carries an Extended Timestamp extra field (`0x5455`) with a modification time
+- **THEN** `member.modified` is a timezone-aware UTC `datetime` derived from that Unix time, overriding the value from `date_time`
+
+#### Scenario: NTFS timestamps used when no Extended Timestamp is present
+
+- **WHEN** a ZIP entry carries an NTFS extra field (`0x000A`) with non-zero FILETIMEs and no `0x5455` field
+- **THEN** `member.modified`/`accessed`/`created` are timezone-aware UTC `datetime`s derived from those FILETIMEs, overriding the value from `date_time`
 
 #### Scenario: Encrypted entry detection
 

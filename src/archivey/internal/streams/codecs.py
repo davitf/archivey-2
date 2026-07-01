@@ -52,6 +52,7 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ensure_binaryio,
     ensure_bufferedio,
+    fix_stream_start_position,
 )
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.types import (
@@ -264,8 +265,13 @@ class _GzipTruncationCheckStream(DelegatingStream):
         return data
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        self._verify = False  # random access invalidates the sequential byte total
-        return super().seek(offset, whence)
+        result = super().seek(offset, whence)
+        # Random access invalidates the sequential byte total — but only when the seek
+        # actually moved off the sequential frontier. A no-op seek (tell()-style
+        # seek(0, SEEK_CUR), or a seek to the current position) keeps the check armed.
+        if result != self._total:
+            self._verify = False
+        return result
 
     def _verify_not_truncated(self) -> None:
         try:
@@ -1077,6 +1083,13 @@ def open_codec_stream(
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
     """
+    if not isinstance(source, (str, os.PathLike)):
+        # A seekable stream positioned mid-file gets a clean tell()==0 origin (a
+        # SlicingStream view), because codec backends address the source with absolute
+        # offsets — the seekable XZ/lzip index, stdlib gzip's rewind — and would
+        # otherwise read the wrong bytes. Streams at position 0 pass through unchanged
+        # (see the stream-position contract in ``format-detection``).
+        source = fix_stream_start_position(source)
     backend = resolve_codec(codec, config)
     # Opened eagerly (lazy=False), so ArchiveStream.seekable() reflects the real backend
     # stream — no seekable hint needed (that only matters for a lazily-opened stream).

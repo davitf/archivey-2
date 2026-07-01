@@ -9,7 +9,11 @@ from typing import BinaryIO, Callable, Iterator
 from archivey.cost import CostReceipt
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember
 
-# Type alias for member selector filter
+# Type alias for the member selector passed to stream_members(). Only the predicate form
+# is implemented today. The archive-reading spec also allows a Collection[ArchiveMember |
+# str] form ("yield exactly these names/members"); that lands with the Phase 5 public-API
+# finalization, where its semantics under duplicate member names must be decided (match
+# by name? by identity?) — see PLAN.md Phase 5.
 MemberSelector = Callable[[ArchiveMember], bool] | None
 
 
@@ -61,7 +65,10 @@ class ArchiveReader(ABC):
 
     @abstractmethod
     def __len__(self) -> int:
-        """Member count (same constraints as :meth:`members`)."""
+        """Member count (may trigger a scan). On a streaming reader raises ``TypeError``
+        — not ``UnsupportedOperationError`` like :meth:`members` — because ``list(reader)``
+        probes ``__len__`` implicitly via the length-hint protocol, which suppresses only
+        ``TypeError``; iteration must keep working there."""
         ...
 
     @abstractmethod

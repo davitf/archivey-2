@@ -123,7 +123,7 @@ def __contains__(self, name: str) -> bool: ...
 
 `get_members_if_available()` returns the member list only when it is available **without scanning** (already materialized, or the backend has a true upfront index), else `None`; it never scans, so it is callable under any intent. See `access-mode-and-cost` for its full contract.
 
-When opened with `streaming=True`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, and `read()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-mode-and-cost`.
+When opened with `streaming=True`, the reader is forward-only: `members()`, `__contains__`, `__getitem__`, `get()`, `open()`, and `read()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). `__len__` SHALL raise `TypeError` instead: `len()` is also probed *implicitly* — `list(reader)` calls `__len__` for preallocation via the length-hint protocol, which suppresses only `TypeError` — so any other exception type would break `list(reader)` even though plain iteration is exactly what a streaming reader supports. Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-mode-and-cost`.
 
 #### Scenario: forward iteration
 
@@ -132,8 +132,14 @@ When opened with `streaming=True`, the reader is forward-only: `members()`, `__l
 
 #### Scenario: materialization on a streaming reader
 
-- **WHEN** `ar.members()` or `len(ar)` is called on a reader opened with `streaming=True`
+- **WHEN** `ar.members()` is called on a reader opened with `streaming=True`
 - **THEN** `UnsupportedOperationError` is raised
+
+#### Scenario: len() and list() on a streaming reader
+
+- **WHEN** `len(ar)` is called on a reader opened with `streaming=True`
+- **THEN** `TypeError` is raised
+- **AND** `list(ar)` (which probes `__len__` via the length-hint protocol, suppressing `TypeError`) still iterates the single forward pass successfully
 
 ---
 
@@ -287,6 +293,17 @@ The system SHALL transparently follow symlinks and hardlinks in `open()` and `re
 which a hardlink entry refers back to a previously-seen file); the library relies on
 this ordering so a hardlink can always be resolved during a single forward pass.
 
+**Target-name resolution.** The stored target string is resolved to an archive-namespace
+member name before lookup, because the two link kinds store targets in different
+namespaces: a **hardlink** target is archive-relative from the root (the linkname is the
+earlier member's own stored path) and is normalized as-is, while a **symlink** target is
+a filesystem path relative to the link's *own directory* (`dir/link -> file` means
+`dir/file`) and is joined to that directory first. An absolute symlink target, or one
+that `..`-escapes the archive root, cannot name a member — it stays unresolved
+(`link_target_member` is `None`; opening through it raises `LinkTargetNotFoundError`).
+Directory members carry a trailing `/` in their normalized names, so target lookup tries
+both the bare and the `/`-suffixed form.
+
 If the link target is not present in the archive, `LinkTargetNotFoundError` (a
 `ReadError`/member error) SHALL be raised. Chains SHALL be followed recursively with
 **cycle detection** — the set of members already visited on the current chain is
@@ -315,6 +332,16 @@ This does not rely on format-level link resolution; format-level resolution (e.g
 
 - **WHEN** `ar.read("data/latest")` is called and `"data/latest"` is a `SYMLINK` pointing to `"data/v1.0/report.txt"`
 - **THEN** the content of `"data/v1.0/report.txt"` is returned transparently
+
+#### Scenario: relative symlink target resolves against the link's directory
+
+- **WHEN** member `"dir/link"` is a `SYMLINK` whose stored target is `"file"` and the archive contains both `"dir/file"` and a root-level `"file"`
+- **THEN** `ar.read("dir/link")` returns the content of `"dir/file"` (not the root-level `"file"`), and `member.link_target_member` points at `"dir/file"`
+
+#### Scenario: absolute symlink target stays unresolved
+
+- **WHEN** a `SYMLINK` member's stored target is absolute (e.g. `"/etc/passwd"`)
+- **THEN** `member.link_target_member` is `None` and `ar.open()` on it raises `LinkTargetNotFoundError`
 
 #### Scenario: hardlink resolves to an earlier member
 
