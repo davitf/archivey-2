@@ -5,6 +5,7 @@ sources, PAX/GNU/ustar member mapping, cost, corrupt/truncated handling, and
 from __future__ import annotations
 
 import io
+import logging
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -396,20 +397,36 @@ def test_compressed_source_size_none_for_plain_and_stream(plain_tar: Path) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_valid_tar_eof_silent(plain_tar: Path) -> None:
-    with open_archive(plain_tar) as ar:
-        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+def _eof_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """EOF-check warnings only — filtered to the backends logger so the unrelated
+    ``archivey.normalization`` warning from the ``dir`` -> ``dir/`` fixture entry
+    doesn't leak into the assertion."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "archivey.backends" and r.levelno == logging.WARNING
+    ]
+
+
+def test_valid_tar_eof_silent(
+    plain_tar: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(plain_tar) as ar:
             ar.members()
-            log.warning.assert_not_called()
+    assert _eof_warnings(caplog) == []
 
 
-def test_missing_eof_blocks_warns_by_default() -> None:
+def test_missing_eof_blocks_warns_by_default(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     data = _tar_missing_eof_block()
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
-            log.warning.assert_called_once()
-            assert "truncated" in log.warning.call_args[0][0].lower()
+    warnings = _eof_warnings(caplog)
+    assert len(warnings) == 1
+    assert "truncated" in warnings[0].lower()
 
 
 def test_missing_eof_blocks_strict_eof_raises() -> None:
@@ -421,14 +438,16 @@ def test_missing_eof_blocks_strict_eof_raises() -> None:
             ar.members()
 
 
-def test_missing_eof_blocks_streaming_warns() -> None:
+def test_missing_eof_blocks_streaming_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     data = _tar_missing_eof_block()
-    with open_archive(
-        NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-    ) as ar:
-        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(
+            NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+        ) as ar:
             list(ar.stream_members())
-            log.warning.assert_called_once()
+    assert len(_eof_warnings(caplog)) == 1
 
 
 def test_missing_eof_blocks_streaming_strict_raises() -> None:
@@ -443,26 +462,28 @@ def test_missing_eof_blocks_streaming_strict_raises() -> None:
             list(ar.stream_members())
 
 
-def test_minimal_eof_trailer_silent() -> None:
+def test_minimal_eof_trailer_silent(caplog: pytest.LogCaptureFixture) -> None:
     # A valid archive whose trailer is exactly the two required null blocks (no record
     # padding) must not be flagged: tarfile consumes the first block detecting EOF, so the
     # check must only require the second block, not two more. Random-access path.
     data = _tar_minimal_eof()
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
-            log.warning.assert_not_called()
+    assert _eof_warnings(caplog) == []
 
 
-def test_minimal_eof_trailer_streaming_silent() -> None:
+def test_minimal_eof_trailer_streaming_silent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # Same minimal-but-valid trailer over the forward-only streaming path.
     data = _tar_minimal_eof()
-    with open_archive(
-        NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-    ) as ar:
-        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(
+            NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+        ) as ar:
             list(ar.stream_members())
-            log.warning.assert_not_called()
+    assert _eof_warnings(caplog) == []
 
 
 def test_minimal_eof_trailer_strict_does_not_raise() -> None:
