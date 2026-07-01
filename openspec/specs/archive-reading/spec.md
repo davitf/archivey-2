@@ -123,7 +123,7 @@ def __contains__(self, name: str) -> bool: ...
 
 `get_members_if_available()` returns the member list only when it is available **without scanning** (already materialized, or the backend has a true upfront index), else `None`; it never scans, so it is callable under any intent. See `access-mode-and-cost` for its full contract.
 
-When opened with `streaming=True`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, `read()`, and random `extract()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-mode-and-cost`.
+When opened with `streaming=True`, the reader is forward-only: `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, and `read()` all SHALL raise `UnsupportedOperationError` (uniformly, not depending on a loaded index). Only a single forward pass — `__iter__`/`stream_members` or one `extract_all` — plus `get_members_if_available()` is allowed. See the access mode × method table in `access-mode-and-cost`.
 
 #### Scenario: forward iteration
 
@@ -146,7 +146,7 @@ def __getitem__(self, name: str) -> ArchiveMember: ...    # KeyError if absent
 def get(self, name: str, default=None) -> ArchiveMember | None: ...
 ```
 
-Calling `__getitem__`, `get`, or random `extract` on a reader opened with `streaming=True` SHALL raise `UnsupportedOperationError` — uniformly, regardless of whether the backend has an index loaded (a streaming reader is forward-only; this keeps its behaviour deterministic across formats). A caller that wants a no-scan peek at the member list on any reader uses `get_members_if_available()` instead.
+Calling `__getitem__` or `get` on a reader opened with `streaming=True` SHALL raise `UnsupportedOperationError` — uniformly, regardless of whether the backend has an index loaded (a streaming reader is forward-only; this keeps its behaviour deterministic across formats). A caller that wants a no-scan peek at the member list on any reader uses `get_members_if_available()` instead.
 
 #### Scenario: successful key lookup
 

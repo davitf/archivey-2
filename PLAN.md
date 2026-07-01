@@ -270,8 +270,12 @@ degradation).
 **Specs:** `format-tar` (streaming + extraction semantics), `safe-extraction` (all),
 `archive-reading` (forward iteration, `stream_members`, streaming-mode enforcement),
 `format-detection` (gzip-wrapped tar — regression), `testing-contract` (adversarial corpus,
-non-seekable `tar.gz`). **OpenSpec changes:** `package-layout-restructure` (merge before
-Phase 4 implementation) → `phase-4-tar-streaming` + `phase-4-safe-extraction`.
+non-seekable `tar.gz`). **OpenSpec changes:** `archive/2026-06-30-package-layout-restructure` ✓ →
+`phase-4-tar-streaming` (read/stream path, `strict_eof`, `compressed_source_size`) →
+`phase-4-safe-extraction` (`ExtractionCoordinator`, bomb limits). Ordered: `phase-4-tar-streaming`
+lands first; `phase-4-safe-extraction` consumes its `_iter_with_data()` override and
+`compressed_source_size` hook (the latter feeds the archive-wide bomb ratio, so safe extraction
+depends on it even for seekable `.tar.gz`).
 
 **Goal:** `stream_members()` bounded-memory streaming works on a non-seekable
 source (exercised on TAR); `ExtractionCoordinator` replaces the deferred state
@@ -284,15 +288,22 @@ this phase adds TAR's forward-only streaming and the extraction machinery.)
 1. **TAR forward-only streaming** — the non-seekable `tar.gz` path: override
    `_iter_with_data()` for true sequential `stream_members()` (the random-access TAR
    reader + variants + compressed-TAR detection are already in Phase 3).
-2. **`ExtractionCoordinator`** (written fresh — unified single ordered pass over
-   `_iter_with_data()`; **no** `pending_*` dicts, **no** `can_move_file`, **no**
-   `process_file_extracted`):
-   - Pre-pass hardlink closure (random-access mode); during-pass FILE/DIR/HARDLINK/
-     SYMLINK handling with symlink escape **re-validated at extraction time**; the
-     only deferred work is an explicit O(skipped-sources) second pass for excluded
-     hardlink targets.
-   - Decompression-bomb limits (cumulative max bytes; per-member ratio; scoped to
-     extraction paths only) and `on_progress` / per-member `ExtractionResult`.
+2. **`ExtractionCoordinator`** (written fresh as a **pull-based sink** that drives the
+   `ArchiveReader` — `get_members_if_available()` and `_iter_with_data()` — and selects a
+   hardlink algorithm; **not** DEV's push-model helper, so **no** `can_move_file` /
+   `process_file_extracted` / general deferred-state machine):
+   - Hardlinks (source precedes link in TAR order): one **core** algorithm — sequential pass +
+     conditional second pass (no filter → no orphans → one pass; a filter that orphans a link →
+     one second pass on a re-readable source, or `OnError` on a forward-only one; never scan
+     speculatively) — plus an **optional** planned single pass when filtering and a free member
+     list exists (`get_members_if_available()` ≠ None). Cross-device links try `os.link` against
+     the source's recorded paths, reusing a sibling copy before copying again.
+   - FILE/DIR handling; SYMLINK escape **re-validated at extraction time**; symlinks are
+     target-independent (may dangle within `dest`, no copy) and fail via `OnError` on
+     filesystems without symlink support (no copy-the-target fallback).
+   - Decompression-bomb limits (cumulative max bytes; per-member ratio; archive-wide ratio via
+     `compressed_source_size`; `max_entries` count guard; scoped to extraction paths only) and
+     `on_progress` / per-member `ExtractionResult`.
 3. Wire `extract()`/`extractall()` and the one-shot extraction API to the
    coordinator.
 
@@ -309,7 +320,8 @@ after advance*), `format-detection` (*gzip wrapping a tar/single file*),
 `testing-contract` (*path traversal member*, *zip bomb extraction*, *non-seekable
 TAR.GZ source*).
 **Gates:** Pyrefly + ty + ruff clean; streaming extraction verified on a non-seekable TAR;
-no `pending_*` attributes anywhere.
+coordinator is a pull-based sink (no push-model `ExtractionHelper`; a `pending_*` grep stays
+as a light tripwire, not a hard ban).
 
 ---
 
@@ -329,6 +341,13 @@ no `pending_*` attributes anywhere.
 3. Finalize `access-mode-and-cost` — streaming-mode enforcement and **CostReceipt
    values verified per format**; `error-handling` translation contract (cause/
    traceback preserved; genuine I/O not reclassified; context filled by base reader).
+4. **Finalize the public config surface** — graduate the Phase 4 *stopgap* keyword args
+   into their finalized public form per `SPEC.md`: the decompression-bomb limits
+   (`max_extracted_bytes`, `max_ratio`, `ratio_activation_threshold`, `max_entries`), the
+   `strict_eof` flag (shipped bare on `open_archive()` in `phase-4-tar-streaming`), and the
+   extraction policies (`ExtractionPolicy` / `OverwritePolicy` / `OnError`). Decide whether
+   these live as keyword args or a consolidated config object and lock their defaults —
+   Phase 4 deliberately deferred this "full public config surface" here.
 
 ### Tests added
 `archive-data-model`, `access-mode-and-cost`, `error-handling`, and the remaining
