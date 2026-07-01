@@ -289,21 +289,21 @@ this phase adds TAR's forward-only streaming and the extraction machinery.)
    `_iter_with_data()` for true sequential `stream_members()` (the random-access TAR
    reader + variants + compressed-TAR detection are already in Phase 3).
 2. **`ExtractionCoordinator`** (written fresh as a **pull-based sink** that drives the
-   `ArchiveReader` — `cost`, `get_members_if_available()`, `members()`, `_iter_with_data()`
-   — and selects a hardlink algorithm; **not** DEV's push-model helper, so **no**
-   `can_move_file` / `process_file_extracted` / general deferred-state machine):
+   `ArchiveReader` — `get_members_if_available()` and `_iter_with_data()` — and selects a
+   hardlink algorithm; **not** DEV's push-model helper, so **no** `can_move_file` /
+   `process_file_extracted` / general deferred-state machine):
    - Hardlinks (source precedes link in TAR order): one **core** algorithm — sequential pass +
      conditional second pass (no filter → no orphans → one pass; a filter that orphans a link →
-     one second pass on a seekable source, or `OnError` on a forward-only one; never scan
+     one second pass on a re-readable source, or `OnError` on a forward-only one; never scan
      speculatively) — plus an **optional** planned single pass when filtering and a free member
-     list exists (`get_members_if_available()` ≠ None). Cross-device links reuse a same-device
-     sibling before copying.
+     list exists (`get_members_if_available()` ≠ None). Cross-device links try `os.link` against
+     the source's recorded paths, reusing a sibling copy before copying again.
    - FILE/DIR handling; SYMLINK escape **re-validated at extraction time**; symlinks are
      target-independent (may dangle within `dest`, no copy) and fail via `OnError` on
      filesystems without symlink support (no copy-the-target fallback).
    - Decompression-bomb limits (cumulative max bytes; per-member ratio; archive-wide ratio via
-     `compressed_source_size`; scoped to extraction paths only) and `on_progress` / per-member
-     `ExtractionResult`.
+     `compressed_source_size`; `max_entries` count guard; scoped to extraction paths only) and
+     `on_progress` / per-member `ExtractionResult`.
 3. Wire `extract()`/`extractall()` and the one-shot extraction API to the
    coordinator.
 

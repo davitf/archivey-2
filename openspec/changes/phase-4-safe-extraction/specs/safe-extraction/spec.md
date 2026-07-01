@@ -28,9 +28,20 @@ coordinator reads it from the reader and passes it to the constructor):
 class BombTracker:
     def __init__(self, max_bytes: int, max_ratio: float,
                  ratio_activation_threshold: int = 5 * 2**20,  # 5 MiB
-                 compressed_source_size: int | None = None):
+                 compressed_source_size: int | None = None,
+                 max_entries: int = 1_048_576):   # entry-count guard (see below)
         ...
         self._compressed_source_size = compressed_source_size
+        self._max_entries = max_entries
+        self._entry_count = 0
+
+    def start_member(self, member: ArchiveMember) -> None:
+        # ... (records the ORIGINAL member as before), plus the entry-count guard:
+        self._entry_count += 1
+        if self._entry_count > self._max_entries:
+            raise ExtractionError(
+                f"Entry-count limit reached: {self._entry_count} > {self._max_entries}"
+            )
 
     def count(self, chunk_bytes: int) -> None:
         self._total_bytes += chunk_bytes
@@ -78,6 +89,42 @@ archive-wide ratio are independent guards; either may trip first.
 
 ---
 
+### Requirement: Enforce Maximum Entry Count
+
+The system SHALL track the number of archive members processed during a single `extract()` /
+`extract_all()` call and SHALL raise `ExtractionError` when it exceeds `max_entries`. This
+guards against an **entry-count / inode-exhaustion bomb** — an archive packing an enormous
+number of tiny (often zero-byte) files or directories that overwhelms the filesystem (inodes,
+per-directory entries, per-file syscall overhead) *without* tripping `max_extracted_bytes`
+(there is little data) or the decompression ratio (each entry compresses normally). Every
+member counts (FILE, DIR, SYMLINK, HARDLINK); the counter is incremented in
+`BombTracker.start_member()`.
+
+Like the cumulative `max_extracted_bytes` limit, this is a global resource guard, so exceeding
+it halts extraction **even under `OnError.CONTINUE`** (continuing would defeat the guard). The
+caller MAY override `max_entries` on `extract()` / `extract_all()`. The default is
+`1_048_576` (2²⁰) entries — generous enough for large legitimate archives (a Linux source
+tarball or a `node_modules` bundle can hold hundreds of thousands of files) while still
+bounding a pathological many-entries bomb. This limit is independent of the byte and ratio
+guards; any of them may trip first.
+
+#### Scenario: archive with too many entries is rejected
+
+- **WHEN** an archive containing more than `max_entries` members is extracted
+- **THEN** `ExtractionError` is raised once the count crosses the limit, and extraction halts even under `OnError.CONTINUE`
+
+#### Scenario: caller overrides the entry-count limit
+
+- **WHEN** `archivey.extract(..., max_entries=100)` is called on an archive with more than 100 members
+- **THEN** `ExtractionError` is raised after the 100th member is started
+
+#### Scenario: entry count is independent of byte and ratio limits
+
+- **WHEN** an archive of many tiny files stays well under `max_extracted_bytes` and never trips the decompression ratio but exceeds `max_entries`
+- **THEN** `ExtractionError` is still raised on the entry-count guard
+
+---
+
 ### Requirement: Symlink extraction is target-independent and fails safe on unsupported filesystems
 
 The system SHALL create SYMLINK members as symbolic references via `os.symlink()` without
@@ -115,17 +162,17 @@ guarantees, so a failure is surfaced via `OnError` instead. A future opt-in poli
 ### Requirement: Hardlink Two-Pass Extraction
 
 The system SHALL support hardlinks (as found in TAR archives) through the
-`ExtractionCoordinator` acting as a **pull-based sink** that inspects the reader
-(`cost`, `get_members_if_available()`) and selects an extraction algorithm, rather than a
-push-model helper that buffers deferred link-creation state. The source always precedes its
-hardlinks in archive order.
+`ExtractionCoordinator` acting as a **pull-based sink** that uses `get_members_if_available()`
+(for the optional optimization) and, only on an orphan, the source's re-readability, and
+selects an extraction algorithm — rather than a push-model helper that buffers deferred
+link-creation state. The source always precedes its hardlinks in archive order.
 
-- **FILE / DIR / SYMLINK** members are written as they are reached; each written FILE is
-  recorded per source in a `{device → on-disk path}` map.
-- **HARDLINK** whose source is already written: create it with `os.link()` to a copy on the
-  same filesystem device; if `os.link()` fails cross-device, fall back to `shutil.copy2` —
-  but prefer `os.link()` to an already-created same-device sibling copy of the source before
-  copying again.
+- **FILE / DIR / SYMLINK** members are written as they are reached; each written FILE's path is
+  recorded under a per-source **list of on-disk paths**.
+- **HARDLINK** whose source is already written: create it by trying `os.link()` against each
+  recorded path of the source in turn; the first that succeeds wins. If every attempt fails
+  cross-device (`EXDEV`), fall back to `shutil.copy2` and append the new path (so a later link
+  on that device can `os.link()` to this copy instead of copying again).
 - **HARDLINK whose source was excluded** by the `members` selector or `filter` (only possible
   when filtering): the implementation MUST NOT materialize the excluded source at its own
   destination path (that would leak a file the caller deliberately excluded). It SHALL instead
@@ -143,8 +190,8 @@ hardlinks in archive order.
 
 #### Scenario: hardlink to already-extracted member
 
-- **WHEN** a HARDLINK member is reached and its source has already been extracted in this pass on the same device
-- **THEN** `os.link(source_path, hardlink_dest)` is called (or `shutil.copy2`, or a same-device sibling `os.link`, on cross-device failure)
+- **WHEN** a HARDLINK member is reached and its source has already been extracted in this pass
+- **THEN** the coordinator tries `os.link()` against the source's recorded on-disk paths in turn (falling back to a sibling link or `shutil.copy2` on cross-device failure)
 
 #### Scenario: unrecoverable orphaned hardlink follows OnError
 

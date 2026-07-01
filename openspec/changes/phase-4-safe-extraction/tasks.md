@@ -20,14 +20,15 @@
 ## 0. Decisions locked in this change (no code, just honored below)
 
 - [ ] 0.1 **Pull-based sink** driving `_iter_with_data()` `(member, stream)` pairs — algorithm
-      selected from `get_members_if_available()` + `cost`; follows `safe-extraction` spec, not
+      selected from `get_members_if_available()` and (on an orphan) source re-readability, no
+      `SOLID`/`DIRECT` cost lookup; follows `safe-extraction` spec, not
       ARCHITECTURE §2.6's old `open_fn` sketch.
 - [ ] 0.2 **Archive-wide bomb ratio** when `compressed_source_size` is known (spec delta);
       per-member ratio when `member.compressed_size` is known (ZIP).
 - [ ] 0.3 **Transforms on transient copy**; `BombTracker` + `ExtractionResult` use
       **original** member.
-- [ ] 0.4 **Pull-model sink, no push-model state machine** — bounded maps (plan, per-source
-      `{device → path}`, orphan list) are fine; do not reintroduce DEV's `pending_*` /
+- [ ] 0.4 **Pull-model sink, no push-model state machine** — bounded state (plan, per-source
+      path list, orphan list) is fine; do not reintroduce DEV's `pending_*` /
       `can_move_file` / `process_file_extracted` sprawl.
 - [ ] 0.5 **Bomb limits only on extract paths** — `read()` / `open()` unchanged.
 
@@ -52,15 +53,19 @@
       ratio** using the new optional `compressed_source_size` constructor arg (coordinator
       reads `reader.compressed_source_size` and passes it in). Archive-wide ratio activates
       on **cumulative** output (`_total_bytes`), not per-member.
-- [ ] 2.2 **Tests** — cumulative limit; per-member ratio (ZIP fixture); activation
+- [ ] 2.2 **`max_entries` guard** — cumulative entry counter incremented in `start_member()`;
+      raise `ExtractionError` when exceeded; always-stop (like `max_extracted_bytes`, halts
+      even under `OnError.CONTINUE`); default `1_048_576`, caller-overridable.
+- [ ] 2.3 **Tests** — cumulative byte limit; per-member ratio (ZIP fixture); activation
       threshold false-positive guard; archive-wide ratio with known outer size; skip when
-      denominators unknown.
+      denominators unknown; `max_entries` exceeded (many-tiny-files fixture) halts even under
+      `CONTINUE`; entry count independent of byte/ratio guards.
 
 ## 3. `ExtractionCoordinator` core
 
 - [ ] 3.1 **`src/archivey/internal/extraction.py`** — `ExtractionCoordinator.run(reader, dest, …)`
-      as a pull-based sink: inspect `reader.cost` + `reader.get_members_if_available()` to pick
-      the hardlink algorithm (§4), then drive `reader._iter_with_data()` (respect `members`
+      as a pull-based sink: call `reader.get_members_if_available()` to decide the optional
+      planned-pass optimization (§4), then drive `reader._iter_with_data()` (respect `members`
       selector + user `filter` on transient copy).
 - [ ] 3.2 **FILE extraction** — chunked copy with `BombTracker.count()`; apply mode/mtime
       best-effort after write; honor `OverwritePolicy`.
@@ -80,20 +85,23 @@
 
 - [ ] 4.1 **Core algorithm — sequential pass + conditional second pass** (subsumes the
       no-filter case; no separate (A) implementation). One forward pass records each written
-      FILE under a per-source `{device → on-disk path}` map; a link to an already-written source
-      uses `os.link` to a same-device copy. No filter → no orphans → one pass, done. If a filter
-      orphans a selected link: seekable source → collect orphans, resolve all in **one** second
-      pass afterwards, only if an orphan exists (re-scan for plain; re-decompress ≤ 2× for
-      compressed); forward-only source → per-member `OnError` failure (STOP raises / CONTINUE
-      records `FAILED`), no recovery. Never call `members()` speculatively.
+      FILE under a per-source **list of on-disk paths**; a link to an already-written source is
+      created by trying `os.link` against those paths in turn. No filter → no orphans → one
+      pass, done. If a filter orphans a selected link: re-readable source → collect orphans,
+      resolve all in **one** second pass afterwards, only if an orphan exists (re-scan for
+      plain; re-decompress ≤ 2× for compressed); forward-only source (can't be re-read) →
+      per-member `OnError` failure (STOP raises / CONTINUE records `FAILED`), no recovery.
+      Never call `members()` speculatively; no `SOLID`/`DIRECT` cost lookup needed.
 - [ ] 4.2 **Optional optimization — planned single pass** — when filtering **and**
       `get_members_if_available()` returns a free list, plan selection + policy + filter up front
       into a `source → selected-link-paths` map and stage each needed (even excluded) source to
       the first selected link's path during the single pass, skipping the second pass. Layered on
       the core; can be deferred without affecting correctness.
-- [ ] 4.3 **Cross-device sibling linking** — prefer `os.link` to an existing same-device copy of
-      the source; only `shutil.copy2` when none exists, then record the copy's device so later
-      same-device links reuse it (better than `tarfile`, which recopies from the archive per link).
+- [ ] 4.3 **Cross-device handling (try-list)** — to create a link, try `os.link` against the
+      source's recorded on-disk paths in turn; first success wins. On all-`EXDEV`, `shutil.copy2`
+      and append the new path so a later same-device link reuses it (handles `C → A` via
+      `os.link(B, C)`; better than `tarfile`, which recopies from the archive per link). `st_dev`
+      is an optional optimization to skip doomed attempts, not required.
 - [ ] 4.4 **Tests** — unfiltered → single pass, no list fetched; filter + plain-tar orphan → one
       re-scan second pass; filter + compressed-tar orphan → one second pass (assert decompressed
       ≤ 2×); filter + no orphan → single pass, no speculative list; forward-only orphan →

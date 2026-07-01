@@ -48,8 +48,9 @@ filesystem can't create symlinks (`os.symlink` raises), it's a per-member `OnErr
 delta). One **core** algorithm, plus one **optional** optimization — no separate no-filter
 path (that's just the core with zero orphans):
 
-1. **Core — sequential pass + conditional second pass.** Record written FILEs in a per-source
-   `{device → path}` map; a link to an already-written source uses `os.link()`. With no filter
+1. **Core — sequential pass + conditional second pass.** Record written FILEs under a per-source
+   list of on-disk paths; a link to an already-written source tries `os.link()` against those
+   paths in turn (copy on all-cross-device). With no filter
    nothing is orphaned → one pass, done. If a filter orphans a selected link: seekable source →
    resolve all orphans in one second pass (only if an orphan appears; re-scan for plain,
    re-decompress ≤ 2× for compressed); forward-only source → per-member `OnError` failure. The
@@ -59,17 +60,20 @@ path (that's just the core with zero orphans):
    stage each needed source to the first selected link's path during the single pass, skipping
    the second pass. An optimization over the core, not a separate correctness path.
 
-   Cross-device links prefer `os.link()` to a same-device sibling copy before `shutil.copy2`.
+   Cross-device: try `os.link()` against the source's recorded on-disk paths in turn; on
+   all-`EXDEV`, `shutil.copy2` and append the new path (a later same-device link then links to
+   it) — no `st_dev` bookkeeping needed (optional optimization).
 4. **Bomb tracking:** `BombTracker` on the **original** member; per-member ratio when
    `compressed_size` is known (ZIP); **archive-wide ratio** when outer
-   `compressed_source_size` is known (compressed TAR — see spec delta).
+   `compressed_source_size` is known (compressed TAR — see spec delta); cumulative
+   `max_entries` guard against many-tiny-files / inode bombs.
 5. **`OnError`:** `STOP` vs `CONTINUE` per spec (also governs unrecoverable orphaned links);
-   cumulative bomb limit always stops.
+   cumulative `max_extracted_bytes` and `max_entries` guards always stop.
 
 Pull-model sink, not DEV's push-model helper: no `can_move_file`, no `process_file_extracted`,
-no general deferred-state machine. The only bounded auxiliary state is the per-source
-`{device → path}` map, the orphaned-link list awaiting the second pass (core), and the write
-plan (optional optimization).
+no general deferred-state machine. The only bounded auxiliary state is the per-source list of
+on-disk paths, the orphaned-link list awaiting the second pass (core), and the write plan
+(optional optimization).
 
 ### Public API
 
@@ -107,9 +111,9 @@ denominator is unknown (pipes, plain `.tar`).
    one second pass on a seekable source (only if an orphan appears; never scan speculatively),
    or `OnError` failure on a forward-only source. Optional optimization = a planned single pass
    when filtering **and** a free member list exists (`get_members_if_available()` ≠ None).
-   Cross-device links reuse a same-device sibling before copying. The old `no pending_*` gate
-   is relaxed to "pull-model sink, no push-model state machine"; bounded maps (plan,
-   `{device → path}`, orphan list) are fine.
+   Cross-device links try `os.link()` against the source's recorded paths, reusing a sibling
+   copy before copying again. The old `no pending_*` gate is relaxed to "pull-model sink, no
+   push-model state machine"; bounded state (plan, per-source path lists, orphan list) is fine.
 5. **Minimal config** — bomb limits and policies as keyword args on `extract()` /
    `extract_all()`; full public config surface remains Phase 5.
 
@@ -158,9 +162,9 @@ Implements (no other deltas) the rest of the `safe-extraction` spec and wires
 2. **Coordinator core** — FILE/DIR/SYMLINK write, overwrite policy, `OnError`, progress/
    results; ZIP extract vertical slice.
 3. **Hardlinks + bombs** — the core sink (sequential pass + conditional second pass) with the
-   optional planned single pass when a free list exists; per-source `{device → path}` map +
-   cross-device sibling linking; `OnError` for forward-only orphans; `BombTracker` (per-member
-   + archive-wide); adversarial corpus tests.
+   optional planned single pass when a free list exists; per-source path list + try-`os.link`-
+   then-copy cross-device handling; `OnError` for forward-only orphans; `BombTracker`
+   (per-member + archive-wide + `max_entries`); adversarial corpus tests.
 4. **Public API** — `archivey.extract()`, full `extract_all()` signature, retire frozen-
    oracle extraction coverage as tests transfer.
 
