@@ -42,22 +42,37 @@ forward-only pass. `TarReader` MUST override it to:
 
 For **compressed tars** (`.tar.gz`, `.tar.bz2`, `.tar.xz`, …): open the codec layer with
 `StreamConfig(streaming=True)` (no seekable accelerators) and feed the decompressor stream
-to `tarfile.open(mode="r:", fileobj=...)`, same as today but without requiring a seekable
-outer source.
+to `tarfile.open(mode="r:", fileobj=...)`. `TarReader` **already** threads
+`StreamConfig(streaming=streaming)` into the codec today (`tar_reader.py`); the remaining work
+is removing the seekable-outer-source requirement (below), not the codec wiring.
 
 For **plain `.tar`** on a non-seekable source: header scan is inherently forward-only;
 `streaming=True` is the only mode that works (random-access open already fails fast).
 
-### Access gating: relax `REQUIRES_SEEK` under `streaming=True`
+### Access gating: relax `REQUIRES_SEEK` under `streaming=True` — **per backend, not in the opener**
 
-Today `TarReadBackend.REQUIRES_SEEK = True` unconditionally and non-seekable TAR open
-raises `StreamNotSeekableError` even with `streaming=True`. After this change:
+Today the opener (`core.py`) enforces `StreamNotSeekableError` whenever
+`backend_cls.REQUIRES_SEEK` is true and the source is non-seekable — **unconditionally on
+`streaming`**, for every backend. The naive fix of adding `and not streaming` to that single
+opener check is **wrong**: it would also relax ZIP and ISO, which set `REQUIRES_SEEK = True`
+and genuinely cannot do a forward-only pass on a non-seekable source (ISO needs the path
+table / directory records; the ZIP backend has no forward-only `_iter_with_data()` override).
+ISO and ZIP MUST keep failing fast on a non-seekable source even under `streaming=True`.
 
-- `streaming=False` (random access) + non-seekable source → **fail fast** (unchanged).
-- `streaming=True` + non-seekable source → **allowed** for TAR (plain and compressed).
+The relaxation is therefore **per-backend opt-in**, not an opener-wide change. Concretely:
+introduce a backend capability (e.g. a `SUPPORTS_STREAMING_NON_SEEKABLE` class flag, default
+`False`) that **only `TarReadBackend` sets `True`**, and have the opener skip the seek
+requirement only when `streaming=True` **and** the backend declares that capability. Net
+behaviour:
+
+- `streaming=False` (random access) + non-seekable source → **fail fast** for all backends
+  (unchanged).
+- `streaming=True` + non-seekable source → **allowed for TAR only**; ZIP/ISO still fail fast.
 
 Wire `CostReceipt.stream_capability` to the actual source: `SEEKABLE` when
-`is_seekable(source)`, `FORWARD_ONLY` otherwise (per `access-mode-and-cost`).
+`is_seekable(source)`, `FORWARD_ONLY` otherwise (per `access-mode-and-cost`). Today
+`TarReader` hardcodes `stream_capability=StreamCapability.SEEKABLE` in `_get_archive_info()`;
+this change derives it from the source instead.
 
 ### Minimal `strict_eof` config (Phase 4, not Phase 5)
 
@@ -68,7 +83,8 @@ Add `strict_eof: bool = False` to `open_archive()` (and thread it into `TarReade
 - `strict_eof=False` (default): emit `logging.WARNING` on `archivey.backends.*`.
 - `strict_eof=True`: raise `TruncatedError`.
 
-This is intentionally minimal — no full public `ReaderConfig` yet (Phase 5).
+This is intentionally minimal — folding `strict_eof` into the finalized public config surface
+is **Phase 5 task 4** (see `PLAN.md`), alongside the extraction bomb limits and policies.
 
 ### `compressed_source_size` hook for safe extraction
 
@@ -102,12 +118,13 @@ TAR.GZ).
 - **Depends on:** Phase 3 green (`TarReader` random-access path, detection, codec layer).
 - **Blocks:** full non-seekable `tar.gz` *extraction* until `phase-4-safe-extraction` also
   lands; streaming *read* is testable after this change alone.
-- **Affected code:** `formats/tar_reader.py` (override + `strict_eof` + cost capability),
-  `internal/open_archive.py` (`strict_eof` param), `internal/reader.py` (optional
-  `compressed_source_size` property), tests (`test_tar.py`, `testing-contract` non-seekable
-  scenario).
-- **Coordinates with:** `phase-4-safe-extraction` (consumes `_iter_with_data()` and
-  `compressed_source_size`; can merge in either order, but pipe `tar.gz` extract needs both).
+- **Affected code:** `src/archivey/internal/backends/tar_reader.py` (override + `strict_eof`
+  + cost capability + `SUPPORTS_STREAMING_NON_SEEKABLE` flag),
+  `src/archivey/core.py` (`strict_eof` param on `open_archive()`; per-backend seek gating),
+  `src/archivey/internal/base_reader.py` (optional `compressed_source_size` property),
+  tests (`test_tar.py`, `testing-contract` non-seekable scenario).
+- **Coordinates with:** `phase-4-safe-extraction` (which lands **after** this change and
+  consumes `_iter_with_data()` and `compressed_source_size`; pipe `tar.gz` extract needs both).
 
 ## Implementation stages
 

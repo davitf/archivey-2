@@ -3,12 +3,17 @@
 > Run tools through uv: `uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
 > `uv run ruff`.
 > Prerequisite: Phase 3 complete (TAR random-access reader + detection green).
-> Companion change: `phase-4-safe-extraction` (extraction; can merge in either order).
+> Companion change: `phase-4-safe-extraction` (extraction), which lands **after** this one
+> and consumes the `_iter_with_data()` override and `compressed_source_size` added here.
 > Clean-slate: override the ABC; port streaming logic from DEV as reference only.
+> Module paths below are post-`package-layout-restructure`: the TAR backend lives at
+> `src/archivey/internal/backends/tar_reader.py`, `open_archive()` at `src/archivey/core.py`,
+> and the reader ABC base at `src/archivey/internal/base_reader.py`.
 
-> **DEV source map** (pin commit `730275b…`): `formats/tar_reader.py` — the forward-only /
-> non-seekable iteration path (not the `ExtractionHelper`). v2's `_iter_with_data()`
-> override replaces DEV's separate streaming reader shape.
+> **DEV source map** (pin commit `730275b…`): DEV's `formats/tar_reader.py` — the
+> forward-only / non-seekable iteration path (not the `ExtractionHelper`). v2's
+> `_iter_with_data()` override replaces DEV's separate streaming reader shape. (DEV uses the
+> pre-restructure layout; the v2 paths are under `src/archivey/internal/backends/`.)
 
 ## 0. Decisions locked in this change (no code, just honored below)
 
@@ -16,7 +21,9 @@
       `open_archive()`, threaded into `TarReader`; no full public `ReaderConfig` yet.
 - [ ] 0.2 **Progressive iteration only** — streaming path MUST NOT call `getmembers()`;
       use `tarfile` forward iteration.
-- [ ] 0.3 **`REQUIRES_SEEK` is conditional** — fail fast only when `streaming=False`.
+- [ ] 0.3 **`REQUIRES_SEEK` relaxation is per-backend opt-in** — only `TarReadBackend`
+      allows a non-seekable source under `streaming=True`; ZIP/ISO still fail fast. Not an
+      opener-wide `and not streaming`.
 - [ ] 0.4 **Expose `compressed_source_size`** on the reader for
       `phase-4-safe-extraction` (file size when known; `None` otherwise).
 - [ ] 0.5 **No extraction work** — `extract_all` stays deferred to
@@ -24,10 +31,13 @@
 
 ## 1. Access gating + cost surface
 
-- [ ] 1.1 **`TarReadBackend` / `open_archive` gating** — allow non-seekable TAR when
-      `streaming=True`; keep `StreamNotSeekableError` for `streaming=False`. Update
-      `REQUIRES_SEEK` handling in the registry/opener (backend declares seek required for
-      random access only, or opener checks `streaming` before enforcing seek).
+- [ ] 1.1 **Per-backend seek gating** — add a backend capability flag (e.g.
+      `SUPPORTS_STREAMING_NON_SEEKABLE = False` on `ReadBackend`, set `True` only on
+      `TarReadBackend`). In `core.py`, skip the `StreamNotSeekableError` check when
+      `streaming=True` **and** the backend declares that flag; otherwise enforce it as today.
+      Do **not** add a blanket `and not streaming` to the opener — that would wrongly relax
+      ZIP/ISO. Verify ZIP/ISO still raise `StreamNotSeekableError` on a non-seekable source
+      under `streaming=True`.
 - [ ] 1.2 **`CostReceipt.stream_capability`** — set from `is_seekable(source)`:
       `SEEKABLE` vs `FORWARD_ONLY` for TAR (plain and compressed). Keep
       `listing_cost` / `access_cost` format-driven (unchanged).
