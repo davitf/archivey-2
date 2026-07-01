@@ -1,6 +1,6 @@
-"""TAR backend tests — Stage 3 (random-access read of plain + compressed tars,
-PAX/GNU/ustar member mapping, cost, corrupt/truncated handling) and the TAR slice of
-access-mode-and-cost. Streaming / ``stream_members`` over a non-seekable tar is Phase 4."""
+"""TAR backend tests — random-access read, forward-only streaming on non-seekable
+sources, PAX/GNU/ustar member mapping, cost, corrupt/truncated handling, and
+``strict_eof`` end-of-archive verification."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import io
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -16,6 +17,7 @@ from archivey import (
     CompressionAlgorithm,
     CompressionMethod,
     MemberType,
+    UnsupportedOperationError,
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
@@ -56,6 +58,17 @@ def _build_tar(mode: str = "w") -> bytes:
         link.linkname = "hello.txt"
         t.addfile(link)
     return buf.getvalue()
+
+
+def _tar_missing_eof_block() -> bytes:
+    """Valid member data but only one of the two required EOF null blocks."""
+    full = _build_tar()
+    with tarfile.open(fileobj=io.BytesIO(full), mode="r:") as t:
+        members = t.getmembers()
+        last = members[-1]
+        blocks = (last.size + 511) & ~511
+        eof_start = last.offset_data + blocks
+    return full[: eof_start + 512]
 
 
 @pytest.fixture
@@ -259,7 +272,7 @@ def test_tar_zst_via_codec_layer() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Non-seekable source fails fast (random-access read needs seek; streaming is Phase 4)
+# Non-seekable source: random-access fails fast; streaming succeeds
 # ---------------------------------------------------------------------------
 
 
@@ -271,6 +284,144 @@ def test_non_seekable_tar_fails_fast() -> None:
 def test_non_seekable_tar_fails_fast_via_detection() -> None:
     with pytest.raises(StreamNotSeekableError):
         open_archive(NonSeekableBytesIO(_build_tar()))
+
+
+def test_non_seekable_tar_streaming_opens_without_scanning() -> None:
+    with open_archive(
+        NonSeekableBytesIO(_build_tar()), format=ArchiveFormat.TAR, streaming=True
+    ) as ar:
+        assert ar.cost.stream_capability == StreamCapability.FORWARD_ONLY
+
+
+def test_non_seekable_plain_tar_stream_members() -> None:
+    with open_archive(
+        NonSeekableBytesIO(_build_tar()), format=ArchiveFormat.TAR, streaming=True
+    ) as ar:
+        collected = {}
+        for member, stream in ar.stream_members():
+            collected[member.name] = stream.read() if stream is not None else None
+        assert collected["hello.txt"] == b"hello world"
+        assert collected["dir/nested.txt"] == b"nested content"
+        assert collected["dir/"] is None
+
+
+def test_non_seekable_plain_tar_iter() -> None:
+    with open_archive(
+        NonSeekableBytesIO(_build_tar()), format=ArchiveFormat.TAR, streaming=True
+    ) as ar:
+        names = [m.name for m in ar]
+        assert "hello.txt" in names
+        assert "dir/nested.txt" in names
+
+
+def test_streaming_tar_disables_random_access(plain_tar: Path) -> None:
+    with open_archive(plain_tar, streaming=True) as ar:
+        with pytest.raises(UnsupportedOperationError):
+            ar.members()
+        with pytest.raises(UnsupportedOperationError):
+            ar.read("hello.txt")
+
+
+def test_streaming_tar_does_not_call_getmembers() -> None:
+    data = _build_tar()
+    with open_archive(
+        NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+    ) as ar:
+        with mock.patch.object(
+            tarfile.TarFile, "getmembers", side_effect=AssertionError("getmembers called")
+        ):
+            list(ar.stream_members())
+
+
+def test_non_seekable_tar_gz_streaming(tmp_path: Path) -> None:
+    path = tmp_path / "a.tar.gz"
+    path.write_bytes(_build_tar("w:gz"))
+    data = path.read_bytes()
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+        assert ar.format == ArchiveFormat.TAR_GZ
+        assert ar.cost.stream_capability == StreamCapability.FORWARD_ONLY
+        assert ar.cost.listing_cost == ListingCost.REQUIRES_DECOMPRESSION
+        assert ar.cost.access_cost == AccessCost.SOLID
+        collected = {}
+        for member, stream in ar.stream_members():
+            if stream is not None:
+                collected[member.name] = stream.read()
+        assert collected["hello.txt"] == b"hello world"
+
+
+def test_non_seekable_tar_bz2_streaming_smoke() -> None:
+    data = _build_tar("w:bz2")
+    with open_archive(
+        NonSeekableBytesIO(data), format=ArchiveFormat.TAR_BZ2, streaming=True
+    ) as ar:
+        names = [m.name for m, _ in ar.stream_members()]
+        assert "hello.txt" in names
+
+
+def test_compressed_source_size_on_path(tmp_path: Path) -> None:
+    path = tmp_path / "a.tar.gz"
+    path.write_bytes(_build_tar("w:gz"))
+    with open_archive(path) as ar:
+        assert ar.compressed_source_size == path.stat().st_size
+
+
+def test_compressed_source_size_none_for_plain_and_stream(plain_tar: Path) -> None:
+    with open_archive(plain_tar) as ar:
+        assert ar.compressed_source_size is None
+    with open_archive(NonSeekableBytesIO(_build_tar("w:gz")), streaming=True) as ar:
+        assert ar.compressed_source_size is None
+
+
+# ---------------------------------------------------------------------------
+# strict_eof / end-of-archive truncation detection
+# ---------------------------------------------------------------------------
+
+
+def test_valid_tar_eof_silent(plain_tar: Path) -> None:
+    with open_archive(plain_tar) as ar:
+        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+            ar.members()
+            log.warning.assert_not_called()
+
+
+def test_missing_eof_blocks_warns_by_default() -> None:
+    data = _tar_missing_eof_block()
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+            ar.members()
+            log.warning.assert_called_once()
+            assert "truncated" in log.warning.call_args[0][0].lower()
+
+
+def test_missing_eof_blocks_strict_eof_raises() -> None:
+    data = _tar_missing_eof_block()
+    with pytest.raises(TruncatedError):
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.TAR, strict_eof=True
+        ) as ar:
+            ar.members()
+
+
+def test_missing_eof_blocks_streaming_warns() -> None:
+    data = _tar_missing_eof_block()
+    with open_archive(
+        NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+    ) as ar:
+        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+            list(ar.stream_members())
+            log.warning.assert_called_once()
+
+
+def test_missing_eof_blocks_streaming_strict_raises() -> None:
+    data = _tar_missing_eof_block()
+    with pytest.raises(TruncatedError):
+        with open_archive(
+            NonSeekableBytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=True,
+            strict_eof=True,
+        ) as ar:
+            list(ar.stream_members())
 
 
 # ---------------------------------------------------------------------------

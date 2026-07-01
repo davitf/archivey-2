@@ -98,7 +98,14 @@ def is_seekable(stream: Any) -> bool:
     if seekable is None:
         logger.debug("Stream %r has no seekable() method; treating as non-seekable", stream)
         return False
-    if not seekable():
+    try:
+        if not seekable():
+            return False
+    except AttributeError:
+        logger.debug(
+            "Stream %r seekable() raised AttributeError; treating as non-seekable",
+            stream,
+        )
         return False
     if _is_fifo_or_chardev(stream):
         logger.debug(

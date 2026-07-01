@@ -300,6 +300,7 @@ class ZipReadBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        strict_eof: bool = False,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.

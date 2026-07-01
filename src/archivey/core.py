@@ -56,6 +56,7 @@ def open_archive(
     streaming: bool = False,
     password: bytes | str | None = None,
     encoding: str | None = None,
+    strict_eof: bool = False,
 ) -> ArchiveReader:
     """Open an archive for reading.
 
@@ -99,9 +100,11 @@ def open_archive(
     backend_cls = registry.reader_for_format(format)
 
     # Fail fast for a seek-requiring backend on a non-seekable source (the access-mode
-    # contract: streaming=False does not implicitly buffer).
+    # contract: streaming=False does not implicitly buffer). Per-backend opt-in only:
+    # TAR may open non-seekable sources under streaming=True; ZIP/ISO still fail fast.
     if (
         backend_cls.REQUIRES_SEEK
+        and not (streaming and backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE)
         and is_stream(open_source)
         and not is_seekable(open_source)
     ):
@@ -126,4 +129,5 @@ def open_archive(
         password=password,
         encoding=effective_encoding,
         archive_name=archive_name,
+        strict_eof=strict_eof,
     )
