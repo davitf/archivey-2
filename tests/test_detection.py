@@ -333,3 +333,19 @@ def test_small_zip_still_detected_despite_iso_probe() -> None:
     # A 2 KiB-ish ZIP is matched by its offset-0 magic without ever taking the ISO window.
     data = _zip_bytes()
     assert detect_format(io.BytesIO(data)).format == ArchiveFormat.ZIP
+
+
+# ---------------------------------------------------------------------------
+# Stream-position contract: detection reads from and restores the current position
+# ---------------------------------------------------------------------------
+
+
+def test_detection_from_mid_positioned_stream() -> None:
+    # The archive starts wherever the caller positioned the stream: detection must peek
+    # from there (an embedded archive after junk bytes) and restore the position.
+    junk = b"JUNKJUNK" * 16
+    stream = io.BytesIO(junk + _zip_bytes())
+    stream.seek(len(junk))
+    info = detect_format(stream)
+    assert info.format == ArchiveFormat.ZIP
+    assert stream.tell() == len(junk)  # starting position restored, not rewound to 0

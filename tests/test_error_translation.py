@@ -99,3 +99,31 @@ def test_untranslated_exception_propagates_unchanged() -> None:
     reader = _Unmapped(ArchiveFormat.ZIP, False, "archive.zip")
     with pytest.raises(_RawDecodeError):
         reader.read("member.bin")
+
+
+# ---------------------------------------------------------------------------
+# ArchiveStream close(): failure still marks the wrapper closed
+# ---------------------------------------------------------------------------
+
+
+def test_archive_stream_close_failure_still_closes_wrapper() -> None:
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    class _FailingClose(io.BytesIO):
+        def close(self) -> None:  # noqa: D102
+            raise RuntimeError("simulated close failure")
+
+    def _translate(exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, RuntimeError):
+            return CorruptionError(f"translated: {exc}")
+        return None
+
+    stream = ArchiveStream(lambda: _FailingClose(b"data"), translate=_translate)
+    with pytest.raises(CorruptionError):
+        stream.close()
+    # The wrapper is closed despite the inner failure: reads are refused and a retried
+    # close() is a no-op instead of failing again.
+    assert stream.closed
+    with pytest.raises(ValueError):
+        stream.read()
+    stream.close()  # idempotent

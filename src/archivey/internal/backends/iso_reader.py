@@ -12,6 +12,11 @@ The directory tree lives in the header region, giving O(1) (``INDEXED``) listing
 out of scope (``UnsupportedOperationError``). The image is read uncompressed in place — a
 compressed ``.iso.xz`` is a single-file compressor wrapping the image, not mounted here
 (see the seek-heavy-container note in the proposal).
+
+Stream-position caveat: unlike the TAR/single-file backends, an ISO stream source must
+start at position 0 — ``pycdlib`` addresses the image with absolute offsets (the PVD at
+32 KiB etc.), so a mid-positioned stream is not supported (wrap the region in a
+``SlicingStream`` first if that is ever needed).
 """
 
 from __future__ import annotations

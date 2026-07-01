@@ -168,12 +168,20 @@ class ArchiveStream(ReadOnlyIOStream):
         return self._seekable_hint
 
     def close(self) -> None:
-        if self._inner is not None:
-            try:
-                self._inner.close()
-            except Exception as e:  # noqa: BLE001 - re-raised via the translator
-                self._fail(e)
-        super().close()
+        if self.closed:
+            return
+        # The finally ensures the wrapper is marked closed even when the inner close
+        # raises (which _fail re-raises translated): a half-open wrapper would hand out
+        # further reads on a dead stream, and a retried close() would fail again
+        # instead of no-opping (the guard above makes it a no-op instead).
+        try:
+            if self._inner is not None:
+                try:
+                    self._inner.close()
+                except Exception as e:  # noqa: BLE001 - re-raised via the translator
+                    self._fail(e)
+        finally:
+            super().close()
 
     def __repr__(self) -> str:
         return f"<ArchiveStream inner={self._inner!r}>"

@@ -227,7 +227,7 @@ def stream_members(
 
 `add_members()` in `ArchiveWriter` calls `reader.stream_members()` so conversions always take the bounded-memory streaming path.
 
-Everything else (`__iter__`, `__getitem__`, `read`, `open`, `stream_members`, `extract`, `extract_all`, `members`) is implemented once in the ABC.
+Everything else (`__iter__`, `get`, `read`, `open`, `stream_members`, `extract`, `extract_all`, `members`) is implemented once in the ABC.
 
 ### 2.4 Lazy member materialization
 
@@ -235,7 +235,7 @@ Everything else (`__iter__`, `__getitem__`, `read`, `open`, `stream_members`, `e
 
 `__iter__` calls `_iter_members()` directly — a generator that never loads all members.
 
-`members()` and `__len__` force materialization:
+`members()` forces materialization:
 ```python
 def members(self) -> list[ArchiveMember]:
     if self._members_cache is None:
@@ -245,7 +245,7 @@ def members(self) -> list[ArchiveMember]:
 
 After materialization, `__iter__` returns `iter(self._members_cache)` for efficiency (avoids re-reading on second iteration).
 
-**Streaming guard:** if the reader was opened with `streaming=True` (forward-only), materialization is forbidden. Calling `.members()` or `__len__` raises `UnsupportedOperationError` with a clear message.
+**Streaming guard:** if the reader was opened with `streaming=True` (forward-only), materialization is forbidden. Calling `.members()` raises `UnsupportedOperationError` with a clear message.
 
 ### 2.5 PeekableStream for non-seekable sources
 

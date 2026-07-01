@@ -27,6 +27,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     TruncatedError,
+    UnsupportedOperationError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig
@@ -132,6 +133,11 @@ class TarReader(BaseArchiveReader):
         archive_name: str | None,
         strict_eof: bool = False,
     ) -> None:
+        if password is not None:
+            raise UnsupportedOperationError(
+                "TAR archives do not support passwords (they carry no encryption).",
+                archive_name=archive_name,
+            )
         super().__init__(format, streaming, archive_name)
         self._encoding = encoding
         self._strict_eof = strict_eof
@@ -228,13 +234,14 @@ class TarReader(BaseArchiveReader):
         self._verify_tar_eof()
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
-        """Forward-only member walk — never calls ``getmembers()``."""
+        """Forward-only member walk — never calls ``getmembers()``.
+
+        Yields bare members; the base's streaming ``__iter__`` (via
+        ``_register_progressively``) stamps ids and resolves backward links.
+        """
         try:
-            for idx, info in enumerate(self._tar):
-                member = self._to_member(info)
-                member._member_id = idx
-                member._archive_id = self._archive_id
-                yield member
+            for info in self._tar:
+                yield self._to_member(info)
         except tarfile.TarError as exc:
             translated = self._translate_exception(exc)
             if translated is not None:
@@ -247,12 +254,15 @@ class TarReader(BaseArchiveReader):
         if not self._streaming:
             yield from super()._iter_with_data()
             return
+        # _register_progressively stamps ids and resolves backward links (hardlinks
+        # always point at an earlier member, so they resolve in this single pass); each
+        # member carries its TarInfo in _raw, which extractfile() uses directly.
         try:
-            for idx, info in enumerate(self._tar):
-                member = self._to_member(info)
-                member._member_id = idx
-                member._archive_id = self._archive_id
+            for member in self._register_progressively(
+                self._to_member(info) for info in self._tar
+            ):
                 if member.is_file:
+                    info = cast("tarfile.TarInfo", member._raw)
                     raw = self._tar.extractfile(info)
                     if raw is None:
                         raw = BytesIO(b"")
@@ -328,8 +338,16 @@ class TarReader(BaseArchiveReader):
         )
 
         # tarfile folds a PAX mtime (sub-second/timezone) into TarInfo.mtime already, so this
-        # one field honors both the standard ustar mtime and the PAX override.
-        modified = datetime.fromtimestamp(info.mtime, tz=timezone.utc)
+        # one field honors both the standard ustar mtime and the PAX override. A hostile
+        # out-of-range value (e.g. a crafted PAX mtime beyond datetime's range) must not
+        # sink the whole listing, so it degrades to None like _pax_time does.
+        try:
+            modified = datetime.fromtimestamp(info.mtime, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            backends_logger.warning(
+                "Invalid TAR mtime for %r: %r", info.name, info.mtime
+            )
+            modified = None
 
         compression = (
             (CompressionMethod(algo=CompressionAlgorithm.STORED),)

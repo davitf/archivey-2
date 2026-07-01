@@ -24,6 +24,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
     is_stream,
     read_exact,
+    source_name,
 )
 from archivey.internal.streams.streamtools.slice import (
     SlicingStream,
@@ -43,4 +44,5 @@ __all__ = [
     "is_seekable",
     "is_stream",
     "read_exact",
+    "source_name",
 ]

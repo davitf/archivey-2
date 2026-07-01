@@ -40,7 +40,7 @@ from archivey.internal.streams.codecs import (
     stream_codec_for_format,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
-from archivey.internal.streams.streamtools import is_seekable, is_stream
+from archivey.internal.streams.streamtools import is_seekable, is_stream, read_exact
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -91,6 +91,11 @@ class SingleFileReader(BaseArchiveReader):
         self._stream_codec = stream_codec_for_format(format.stream)
         self._codec = self._stream_codec.codec
         self._seekable = not is_stream(source) or is_seekable(source)
+        # The compressed stream starts wherever the caller positioned the source (the
+        # stream-position contract): remember it so re-opens rewind *here*, not to 0.
+        self._source_start = (
+            source.tell() if is_stream(source) and is_seekable(source) else 0
+        )
 
         # A non-seekable source cannot be randomly accessed, so engaging a random-access
         # accelerator (rapidgzip) is pointless — and would in fact fail at *open*: rapidgzip
@@ -159,8 +164,10 @@ class SingleFileReader(BaseArchiveReader):
         if isinstance(src, PeekableStream):
             return src.peek(length)
         if is_seekable(src):
-            data = src.read(length)
-            src.seek(0)
+            pos = src.tell()
+            src.seek(self._source_start)
+            data = read_exact(src, length)
+            src.seek(pos)
             return data
         return b""
 
@@ -190,10 +197,11 @@ class SingleFileReader(BaseArchiveReader):
         yield self._member
 
     def _open_codec_stream(self) -> BinaryIO:
-        """Open a fresh decompression stream over the source (rewinding a seekable one)."""
+        """Open a fresh decompression stream over the source (rewinding a seekable one
+        to the position it had when handed to the reader)."""
         src = self._source
         if is_stream(src) and is_seekable(src):
-            src.seek(0)
+            src.seek(self._source_start)
         codec_source = str(src) if isinstance(src, Path) else src
         return open_codec_stream(
             self._codec,

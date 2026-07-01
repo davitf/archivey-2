@@ -95,11 +95,11 @@ class ArchiveReader:
     # --- Member iteration ---
     def __iter__(self) -> Iterator[ArchiveMember]: ...    # sequential, in-order
     def members(self) -> list[ArchiveMember]: ...         # materializes all (may trigger scan)
-    def __len__(self) -> int: ...                         # may trigger scan
-    def __contains__(self, name: str) -> bool: ...
+    # (deliberately no __len__/__getitem__: the reader is not a collection; see the
+    # archive-reading spec. `member in reader` is identity membership, any mode.)
+    def __contains__(self, member: ArchiveMember) -> bool: ...
 
-    # --- Random access (default streaming=False; raises under streaming=True) ---
-    def __getitem__(self, name: str) -> ArchiveMember: ...  # KeyError if absent
+    # --- Name lookup (default streaming=False; raises under streaming=True) ---
     def get(self, name: str, default=None) -> ArchiveMember | None: ...
 
     # --- Data access ---
@@ -144,7 +144,7 @@ class ArchiveReader:
     def close(self) -> None: ...
 ```
 
-**Constraint:** calling `__getitem__`, `get`, or random `extract_all(members=[name])` on a reader opened with `streaming=True` raises `UnsupportedOperationError`. `members()` and `__len__` likewise raise under `streaming=True`, since they require materializing all members. The enforcement is **uniform** — it does not depend on whether a backend happens to have an index loaded — so streaming behaviour is deterministic across formats. (`get_members_if_available()` is exempt: it never scans, so it stays callable.)
+**Constraint:** calling `get`, or random `extract_all(members=[name])`, on a reader opened with `streaming=True` raises `UnsupportedOperationError`. `members()` likewise raises under `streaming=True`, since it requires materializing all members. The enforcement is **uniform** — it does not depend on whether a backend happens to have an index loaded — so streaming behaviour is deterministic across formats. (`get_members_if_available()` is exempt: it never scans, so it stays callable.)
 
 **Two sequential access patterns — different memory profiles:**
 
