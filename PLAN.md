@@ -341,6 +341,13 @@ as a light tripwire, not a hard ban).
 3. Finalize `access-mode-and-cost` — streaming-mode enforcement and **CostReceipt
    values verified per format**; `error-handling` translation contract (cause/
    traceback preserved; genuine I/O not reclassified; context filled by base reader).
+4. **Finalize the public config surface** — graduate the Phase 4 *stopgap* keyword args
+   into their finalized public form per `SPEC.md`: the decompression-bomb limits
+   (`max_extracted_bytes`, `max_ratio`, `ratio_activation_threshold`, `max_entries`), the
+   `strict_eof` flag (shipped bare on `open_archive()` in `phase-4-tar-streaming`), and the
+   extraction policies (`ExtractionPolicy` / `OverwritePolicy` / `OnError`). Decide whether
+   these live as keyword args or a consolidated config object and lock their defaults —
+   Phase 4 deliberately deferred this "full public config surface" here.
 
 ### Tests added
 `archive-data-model`, `access-mode-and-cost`, `error-handling`, and the remaining

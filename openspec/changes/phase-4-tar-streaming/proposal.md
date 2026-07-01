@@ -83,7 +83,8 @@ Add `strict_eof: bool = False` to `open_archive()` (and thread it into `TarReade
 - `strict_eof=False` (default): emit `logging.WARNING` on `archivey.backends.*`.
 - `strict_eof=True`: raise `TruncatedError`.
 
-This is intentionally minimal — no full public `ReaderConfig` yet (Phase 5).
+This is intentionally minimal — folding `strict_eof` into the finalized public config surface
+is **Phase 5 task 4** (see `PLAN.md`), alongside the extraction bomb limits and policies.
 
 ### `compressed_source_size` hook for safe extraction
 

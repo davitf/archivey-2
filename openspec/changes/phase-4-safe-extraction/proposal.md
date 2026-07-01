@@ -114,8 +114,10 @@ denominator is unknown (pipes, plain `.tar`).
    Cross-device links try `os.link()` against the source's recorded paths, reusing a sibling
    copy before copying again. The old `no pending_*` gate is relaxed to "pull-model sink, no
    push-model state machine"; bounded state (plan, per-source path lists, orphan list) is fine.
-5. **Minimal config** — bomb limits and policies as keyword args on `extract()` /
-   `extract_all()`; full public config surface remains Phase 5.
+5. **Minimal config** — bomb limits (`max_extracted_bytes`, `max_ratio`,
+   `ratio_activation_threshold`, `max_entries`) and policies as keyword args on `extract()` /
+   `extract_all()`; consolidating them into the finalized public config surface is **Phase 5
+   task 4** (see `PLAN.md`).
 
 ## Specs
 
