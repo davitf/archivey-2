@@ -39,6 +39,17 @@ def test_xz_forward_read_roundtrip() -> None:
         assert stream.read() == CONTENT
 
 
+def test_xz_stream_padding_between_streams() -> None:
+    """4-byte-aligned null padding between concatenated XZ streams is skipped."""
+    part1 = b"first-part"
+    part2 = b"second-part"
+    stream1 = lzma.compress(part1, format=lzma.FORMAT_XZ)
+    stream2 = lzma.compress(part2, format=lzma.FORMAT_XZ)
+    data = stream1 + b"\x00" * 8 + stream2
+    with XzDecompressorStream(io.BytesIO(data)) as stream:
+        assert stream.read() == part1 + part2
+
+
 def test_xz_seek_set_and_read() -> None:
     compressed = lzma.compress(CONTENT, format=lzma.FORMAT_XZ)
     with XzDecompressorStream(io.BytesIO(compressed)) as stream:

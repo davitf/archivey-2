@@ -294,11 +294,17 @@ class _XzState:
         new_streams: list[tuple[int, int]] = []
         while True:
             if self._state == self._NEED_HEADER:
-                while len(self._buf) >= 4 and self._buf[0] == 0:
-                    if self._buf[:4] == b"\x00\x00\x00\x00":
-                        del self._buf[:4]
-                    else:
-                        break
+                # XZ spec §2.2 "Stream Padding": concatenated streams may be separated by
+                # null bytes whose length is a multiple of four (to keep streams 4-byte
+                # aligned). Strip all leading 4-byte runs in one delete.
+                padding = 0
+                while padding + 4 <= len(self._buf) and bytes(
+                    self._buf[padding : padding + 4]
+                ) == b"\x00\x00\x00\x00":
+                    padding += 4
+                if padding:
+                    del self._buf[:padding]
+
                 if len(self._buf) < _STREAM_HEADER_SIZE:
                     break
                 header = bytes(self._buf[:_STREAM_HEADER_SIZE])
