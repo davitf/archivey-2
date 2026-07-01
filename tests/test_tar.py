@@ -71,6 +71,23 @@ def _tar_missing_eof_block() -> bytes:
     return full[: eof_start + 512]
 
 
+def _tar_minimal_eof() -> bytes:
+    """A fully valid archive terminated by exactly the two required EOF null blocks.
+
+    ``tarfile`` pads its own output to a 10240-byte record boundary, so a tar it wrote
+    always has plenty of trailing zeros. This helper strips that padding down to the
+    bare POSIX minimum (two 512-byte null blocks, no record padding) — what e.g.
+    ``tar -b1`` or a streaming producer emits — to exercise the EOF check's boundary.
+    """
+    full = _build_tar()
+    with tarfile.open(fileobj=io.BytesIO(full), mode="r:") as t:
+        members = t.getmembers()
+        last = members[-1]
+        blocks = (last.size + 511) & ~511
+        eof_start = last.offset_data + blocks
+    return full[: eof_start + 512 * 2]
+
+
 @pytest.fixture
 def plain_tar(tmp_path: Path) -> Path:
     path = tmp_path / "simple.tar"
@@ -424,6 +441,44 @@ def test_missing_eof_blocks_streaming_strict_raises() -> None:
             strict_eof=True,
         ) as ar:
             list(ar.stream_members())
+
+
+def test_minimal_eof_trailer_silent() -> None:
+    # A valid archive whose trailer is exactly the two required null blocks (no record
+    # padding) must not be flagged: tarfile consumes the first block detecting EOF, so the
+    # check must only require the second block, not two more. Random-access path.
+    data = _tar_minimal_eof()
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+            ar.members()
+            log.warning.assert_not_called()
+
+
+def test_minimal_eof_trailer_streaming_silent() -> None:
+    # Same minimal-but-valid trailer over the forward-only streaming path.
+    data = _tar_minimal_eof()
+    with open_archive(
+        NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+    ) as ar:
+        with mock.patch("archivey.internal.backends.tar_reader.backends_logger") as log:
+            list(ar.stream_members())
+            log.warning.assert_not_called()
+
+
+def test_minimal_eof_trailer_strict_does_not_raise() -> None:
+    # strict_eof must accept the minimal valid trailer on both access modes.
+    data = _tar_minimal_eof()
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.TAR, strict_eof=True
+    ) as ar:
+        assert [m.name for m in ar.members()]
+    with open_archive(
+        NonSeekableBytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=True,
+        strict_eof=True,
+    ) as ar:
+        assert [m for m, _ in ar.stream_members()]
 
 
 # ---------------------------------------------------------------------------
