@@ -310,8 +310,16 @@ class BaseArchiveReader(ArchiveReader):
 
     def __iter__(self) -> Iterator[ArchiveMember]:
         if self._streaming and self._members_cache is None:
-            # Forward-only: stream directly without caching the whole list.
-            yield from self._iter_members()
+            # Forward-only: stream directly without caching the whole list. Members are
+            # still stamped with their ids progressively (a backend that already assigns
+            # them, like TAR's progressive walk, is left untouched) so member_id/
+            # archive_id work on a streamed member too. Links are NOT resolved here — a
+            # single forward pass cannot see later members.
+            for idx, member in enumerate(self._iter_members()):
+                if member._member_id is None:
+                    member._member_id = idx
+                    member._archive_id = self._archive_id
+                yield member
         else:
             yield from self._get_members_registered()
 

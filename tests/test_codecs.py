@@ -346,3 +346,37 @@ def test_verify_oversized_int_digest_mismatches_not_raises() -> None:
     with pytest.raises(CorruptionError, match="crc32"):
         while stream.read(64):  # read to EOF; the terminal read verifies
             pass
+
+
+# --- gzip ISIZE truncation backstop -------------------------------------------------------
+
+
+def test_gzip_truncation_check_read0_mid_stream_is_not_eof(tmp_path) -> None:
+    # read(0) is not EOF: mid-stream it must not run the ISIZE trailer comparison (which
+    # would spuriously report truncation because the byte total is still partial).
+    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
+
+    payload = b"hello world" * 100
+    path = tmp_path / "f.gz"
+    path.write_bytes(gzip.compress(payload))
+
+    # A plain BytesIO stands in for the accelerator's decompressed output.
+    stream = _GzipTruncationCheckStream(io.BytesIO(payload), str(path))
+    assert stream.read(5) == b"hello"
+    assert stream.read(0) == b""  # must not raise TruncatedError
+    assert stream.read(-1) == payload[5:]
+    assert stream.read() == b""  # clean EOF: the full total matches ISIZE
+
+
+def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
+    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
+
+    payload = b"hello world" * 100
+    path = tmp_path / "f.gz"
+    path.write_bytes(gzip.compress(payload))
+
+    # Simulate an accelerator that silently stopped short of the real payload.
+    stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
+    stream.read(-1)
+    with pytest.raises(TruncatedError):
+        stream.read()

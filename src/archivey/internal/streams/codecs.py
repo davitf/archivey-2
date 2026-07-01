@@ -253,6 +253,8 @@ class _GzipTruncationCheckStream(DelegatingStream):
         self._verify = True
 
     def read(self, size: int = -1, /) -> bytes:
+        if size == 0:
+            return b""  # an explicit read(0) is not EOF; it must not trip the check
         data = self._inner.read(size)
         if data:
             self._total += len(data)

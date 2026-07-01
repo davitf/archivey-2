@@ -46,8 +46,9 @@ from archivey.types import (
     MemberType,
 )
 
-# Encoding fallbacks for ZIP metadata stored without the UTF-8 flag.
-_ZIP_ENCODINGS = ("utf-8", "cp437", "cp1252", "latin-1")
+# Comment decoding: try UTF-8 first, else fall back to cp437 (the ZIP appnote default,
+# which maps every byte and therefore never fails — no further fallbacks are reachable).
+_ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # A ".z01"/".z42"/… segment name — the obvious signal of a split (multi-volume) ZIP set.
 _SPLIT_SEGMENT_RE = re.compile(r"\.z\d{2}$", re.IGNORECASE)
@@ -71,7 +72,7 @@ def _decode_with_fallback(data: bytes) -> str:
             return data.decode(encoding)
         except UnicodeDecodeError:
             continue
-    return data.decode("latin-1")
+    raise AssertionError("unreachable: cp437 decodes every byte")
 
 
 def _zip_timestamps(
@@ -156,8 +157,14 @@ class ZipReader(BaseArchiveReader):
             )
 
         try:
+            # `metadata_encoding` (3.11+) decodes names stored without the UTF-8 flag with
+            # the caller's encoding instead of the cp437 default (UTF-8-flagged names are
+            # unaffected). A wrong explicit encoding may raise UnicodeDecodeError — caller
+            # misuse, propagated unchanged like other genuine errors.
             # typeshed types ZipFile too narrowly; a binary stream is valid here.
-            self._archive: zipfile.ZipFile = zipfile.ZipFile(source, "r")  # type: ignore[arg-type]
+            self._archive: zipfile.ZipFile = zipfile.ZipFile(  # type: ignore[arg-type]
+                source, "r", metadata_encoding=encoding
+            )
         except zipfile.BadZipFile as exc:
             if _looks_like_multivolume(exc):
                 raise UnsupportedFeatureError(
@@ -205,8 +212,12 @@ class ZipReader(BaseArchiveReader):
 
         decoded = info.filename
         name = normalize_member_name(decoded.replace("\\", "/"), member_type)
+        # Recover the stored bytes by re-encoding with the codec zipfile decoded with:
+        # UTF-8 when the entry's UTF-8 flag is set, else the caller's metadata encoding
+        # (when given) or zipfile's cp437 default.
         raw_name = info.orig_filename.encode(
-            "utf-8" if info.flag_bits & 0x800 else "cp437", errors="surrogateescape"
+            "utf-8" if info.flag_bits & 0x800 else (self._encoding or "cp437"),
+            errors="surrogateescape",
         )
 
         algo = _ZIP_COMPRESSION_ALGOS.get(info.compress_type, CompressionAlgorithm.UNKNOWN)
@@ -218,8 +229,26 @@ class ZipReader(BaseArchiveReader):
 
         link_target = None
         if member_type == MemberType.SYMLINK:
-            with self._archive.open(info, pwd=self._password) as f:
-                link_target = f.read().decode("utf-8", errors="surrogateescape")
+            # A symlink's target is its (possibly encrypted) file data. Listing must stay
+            # usable without a password, so a missing/wrong password leaves link_target
+            # unset (following the link later fails with LinkTargetNotFoundError); other
+            # errors surface translated like any member-read error.
+            try:
+                with self._archive.open(info, pwd=self._password) as f:
+                    link_target = f.read().decode("utf-8", errors="surrogateescape")
+            except (RuntimeError, zipfile.BadZipFile) as exc:
+                translated = self._translate_exception(exc)
+                if isinstance(translated, EncryptionError):
+                    logger.warning(
+                        "Cannot read the symlink target of %r without the correct "
+                        "password; leaving link_target unset.",
+                        info.filename,
+                    )
+                elif translated is not None:
+                    self._stamp_error_context(translated, info.filename)
+                    raise translated from exc
+                else:
+                    raise
 
         modified, accessed, created = _zip_timestamps(info)
         return ArchiveMember(

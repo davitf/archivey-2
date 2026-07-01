@@ -548,3 +548,28 @@ def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> Non
             for _member, stream in ar.stream_members():
                 if stream is not None:
                     stream.read()
+
+
+# ---------------------------------------------------------------------------
+# Password rejection and hostile metadata robustness
+# ---------------------------------------------------------------------------
+
+
+def test_password_rejected() -> None:
+    # TAR carries no encryption; a password is API misuse, rejected like the other
+    # unencrypted formats (single-file compressors, ISO, directory) rather than ignored.
+    with pytest.raises(UnsupportedOperationError):
+        open_archive(io.BytesIO(_build_tar()), format=ArchiveFormat.TAR, password="x")
+
+
+def test_out_of_range_mtime_degrades_to_none() -> None:
+    # A crafted PAX mtime beyond datetime's range must not sink the listing.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo("weird.txt")
+        info.size = 0
+        info.mtime = 10**18
+        t.addfile(info)
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.TAR) as reader:
+        (member,) = reader.members()
+        assert member.modified is None

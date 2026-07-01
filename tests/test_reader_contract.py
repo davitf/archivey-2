@@ -151,3 +151,14 @@ def test_get_members_if_available_returns_cache_once_materialized() -> None:
     assert reader.get_members_if_available() is None
     _ = list(reader)
     assert reader.get_members_if_available() is not None
+
+
+def test_streaming_iteration_registers_member_ids() -> None:
+    # A streaming pass must still stamp identity onto the members it yields (the
+    # progressive path bypasses _get_members_registered).
+    reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
+    # Note: list(reader) would call __len__ for list preallocation, which the streaming
+    # gate blocks — go through iter() so len() is never touched.
+    member = next(iter(reader))
+    assert member.member_id == 0
+    assert member.archive_id == reader._archive_id

@@ -381,3 +381,61 @@ def test_corrupt_member_data_raises_corruption_on_read() -> None:
         assert ar.members()[0].name == "data.txt"  # listing is unaffected
         with pytest.raises(CorruptionError):
             ar.read("data.txt")
+
+
+# ---------------------------------------------------------------------------
+# Encrypted symlink targets and explicit metadata encoding
+# ---------------------------------------------------------------------------
+
+
+def _flag_first_entry_encrypted(data: bytes) -> bytes:
+    """Set bit 0 (encryption) of the general-purpose flags in both headers."""
+    raw = bytearray(data)
+    raw[raw.find(b"PK\x03\x04") + 6] |= 1
+    raw[raw.find(b"PK\x01\x02") + 8] |= 1
+    return bytes(raw)
+
+
+def test_encrypted_symlink_listing_without_password() -> None:
+    # A symlink's target is its (encrypted) file data; listing must still succeed with
+    # link_target unset — not leak zipfile's raw RuntimeError("password required").
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("link")
+        info.create_system = 3  # Unix
+        info.external_attr = 0o120777 << 16  # symlink mode
+        z.writestr(info, b"target.txt")
+    data = _flag_first_entry_encrypted(buf.getvalue())
+
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
+        (member,) = reader.members()
+        assert member.type is MemberType.SYMLINK
+        assert member.is_encrypted
+        assert member.link_target is None
+
+
+def _zip_with_non_utf8_name(name_byte: bytes) -> bytes:
+    """A ZIP whose single member name contains ``name_byte``, stored without the UTF-8 flag."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("X.txt", b"data")  # ASCII name -> no UTF-8 flag
+    # Same length, so all header offsets stay valid; replaces the name in both the local
+    # header and the central directory.
+    return buf.getvalue().replace(b"X.txt", name_byte + b".txt")
+
+
+def test_explicit_encoding_overrides_cp437_default() -> None:
+    data = _zip_with_non_utf8_name(b"\xe9")
+
+    # Default: zipfile's cp437 fallback (0xE9 -> Greek Theta).
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
+        (member,) = reader.members()
+        assert member.name == "Θ.txt"
+
+    # Explicit caller encoding wins, and raw_name still round-trips the stored bytes.
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.ZIP, encoding="latin-1"
+    ) as reader:
+        (member,) = reader.members()
+        assert member.name == "é.txt"
+        assert member.raw_name == b"\xe9.txt"

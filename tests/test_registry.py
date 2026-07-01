@@ -263,3 +263,35 @@ def test_iso_none_without_pycdlib(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(UnsupportedFormatError) as excinfo:
         open_archive(io.BytesIO(b"not an iso"), format=ArchiveFormat.ISO)
     assert "pycdlib" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Compressed tar: the outer stream codec is a single-codec gate (NONE, not PARTIAL)
+# ---------------------------------------------------------------------------
+
+
+def test_compressed_tar_none_when_stream_codec_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+
+    # A compressed tar cannot even be listed without its outer codec, so per the
+    # single-codec rule tar.zst is NONE with the codec's install hint — not FULL.
+    monkeypatch.setattr(codecs_module, "_zstd", None)
+    avail = format_availability(ArchiveFormat.TAR_ZST)
+    assert avail.support is FormatSupport.NONE
+    assert avail.missing[0].name == "backports.zstd"
+    assert ArchiveFormat.TAR_ZST in list_known_formats()
+    assert ArchiveFormat.TAR_ZST not in list_supported_formats()
+
+    # Selecting it raises an install-hint error rather than failing later at decode time.
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        open_archive(io.BytesIO(b"not a tar.zst"), format=ArchiveFormat.TAR_ZST)
+    assert "backports.zstd" in str(excinfo.value)
+
+
+def test_compressed_tar_full_when_stream_codec_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codecs_module, "_zstd", object())
+    assert format_availability(ArchiveFormat.TAR_ZST).support is FormatSupport.FULL

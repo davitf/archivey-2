@@ -448,3 +448,12 @@ def test_source_name_for_path_and_stream(tmp_path: Path) -> None:
         assert source_name(f) == str(p)
     # An in-memory stream has no name attribute -> None.
     assert source_name(io.BytesIO(b"")) is None
+
+
+def test_password_rejected(simple_dir: Path) -> None:
+    # Directories carry no encryption; a password is API misuse, rejected like the
+    # other unencrypted formats rather than silently ignored.
+    from archivey.exceptions import UnsupportedOperationError
+
+    with pytest.raises(UnsupportedOperationError):
+        open_archive(simple_dir, password="x")

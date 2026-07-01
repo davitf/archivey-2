@@ -27,6 +27,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     TruncatedError,
+    UnsupportedOperationError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig
@@ -132,6 +133,11 @@ class TarReader(BaseArchiveReader):
         archive_name: str | None,
         strict_eof: bool = False,
     ) -> None:
+        if password is not None:
+            raise UnsupportedOperationError(
+                "TAR archives do not support passwords (they carry no encryption).",
+                archive_name=archive_name,
+            )
         super().__init__(format, streaming, archive_name)
         self._encoding = encoding
         self._strict_eof = strict_eof
@@ -328,8 +334,16 @@ class TarReader(BaseArchiveReader):
         )
 
         # tarfile folds a PAX mtime (sub-second/timezone) into TarInfo.mtime already, so this
-        # one field honors both the standard ustar mtime and the PAX override.
-        modified = datetime.fromtimestamp(info.mtime, tz=timezone.utc)
+        # one field honors both the standard ustar mtime and the PAX override. A hostile
+        # out-of-range value (e.g. a crafted PAX mtime beyond datetime's range) must not
+        # sink the whole listing, so it degrades to None like _pax_time does.
+        try:
+            modified = datetime.fromtimestamp(info.mtime, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            backends_logger.warning(
+                "Invalid TAR mtime for %r: %r", info.name, info.mtime
+            )
+            modified = None
 
         compression = (
             (CompressionMethod(algo=CompressionAlgorithm.STORED),)
