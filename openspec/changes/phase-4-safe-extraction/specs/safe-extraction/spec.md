@@ -76,6 +76,35 @@ archive-wide ratio are independent guards; either may trip first.
 - **THEN** the per-member ratio check applies as today
 - **AND** the archive-wide ratio is not used in place of per-member `compressed_size`
 
+---
+
+### Requirement: Symlink extraction is target-independent and fails safe on unsupported filesystems
+
+The system SHALL create SYMLINK members as symbolic references via `os.symlink()` without
+requiring the link's target to exist or to be among the extracted members. Unlike a hardlink
+(which needs a real inode and therefore its source materialized), a symlink is a stored path
+string, so a symlink whose target was filtered out, appears later in the archive, or lies
+outside the archive is created as-is and MAY dangle — the only constraint is the universal
+symlink-escape check (the resolved target must remain within `dest`; see *Symlink Escape
+Re-Validated at Extraction Time*). No copy of the target is made.
+
+When the destination filesystem or platform cannot create a symlink (`os.symlink` raises
+`OSError`/`NotImplementedError` — e.g. FAT, or Windows without the symlink privilege), the
+member is a per-member failure handled by the `OnError` policy (STOP raises, CONTINUE records
+`FAILED`). The system SHALL NOT silently fall back to copying the target's data the way
+`tarfile` does, because that converts a symbolic reference into a materialized file and
+bypasses the symlink-escape guarantees.
+
+#### Scenario: symlink to a filtered-out member is created dangling
+
+- **WHEN** a SYMLINK member whose target is another member excluded by the `members` selector / `filter` is extracted, and its resolved target stays within `dest`
+- **THEN** the symlink is created pointing at the (absent) target and may dangle; no copy of the target is made and no error is raised
+
+#### Scenario: symlink on a filesystem without symlink support follows OnError
+
+- **WHEN** `os.symlink` raises `OSError`/`NotImplementedError` because the destination filesystem or platform cannot create symlinks
+- **THEN** it is a per-member failure: `OnError.STOP` raises and `OnError.CONTINUE` records a `FAILED` `ExtractionResult` and proceeds; the target's data is not copied in its place
+
 ## MODIFIED Requirements
 
 ### Requirement: Hardlink Two-Pass Extraction
@@ -100,11 +129,12 @@ hardlinks in archive order.
   implementation MAY equivalently stage in a hidden temp inside `dest`, e.g.
   `dest/.archivey-tmp-<id>`). If no link to the source is selected either, the source's data is
   not extracted at all. **How** the excluded source's bytes are obtained is chosen so no pass
-  is wasted (see `format-tar`): when the member list is cheaply available (central directory,
-  already-materialized, or a plain-tar header scan) the source is staged during a single
-  planned forward pass; on a solid stream with no cheap list it is recovered in one conditional
-  second pass; on a **forward-only** source its bytes are unrecoverable and the link is a
-  per-member failure handled by the `OnError` policy (STOP raises, CONTINUE records `FAILED`).
+  is wasted (see `format-tar`): when a member list is available for free
+  (`get_members_if_available()` — a true index or an already-materialized list) the source is
+  staged during a single planned forward pass; otherwise (plain `.tar` or compressed tar, with
+  no speculative scan) it is recovered from a seekable source in one conditional second pass;
+  on a **forward-only** source its bytes are unrecoverable and the link is a per-member failure
+  handled by the `OnError` policy (STOP raises, CONTINUE records `FAILED`).
 
 #### Scenario: hardlink to already-extracted member
 
@@ -118,5 +148,5 @@ hardlinks in archive order.
 
 #### Scenario: selected hardlink whose source was excluded (recoverable)
 
-- **WHEN** a selected HARDLINK points to a source the `members` selector / `filter` excluded, and the source is recoverable (cheap member list, or a solid stream via one second pass)
+- **WHEN** a selected HARDLINK points to a source the `members` selector / `filter` excluded, and the source is recoverable (a free member list, or a seekable stream via one second pass)
 - **THEN** the source content is written to the first selected link's path (further selected links are `os.link`'d to it), and the excluded source is never created at its own destination path

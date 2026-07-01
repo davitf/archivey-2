@@ -8,40 +8,38 @@ The system SHALL support hardlink extraction from TAR archives; the `linkname` f
 the source path, and TAR ordering guarantees the real file (the source) precedes any hardlink
 that references it. Resolution is performed by the `safe-extraction` `ExtractionCoordinator`,
 which acts as a **pull-based sink**: it drives the `ArchiveReader` — inspecting `reader.cost`,
-calling `reader.get_members_if_available()` (and, when cheap, `reader.members()`), and
-iterating the forward pass — and selects among the algorithms below. It MUST NOT hold a
-push-model deferred-state machine, and MUST NOT force an upfront pass the run does not need.
+calling `reader.get_members_if_available()`, and iterating the forward pass — and selects
+among the algorithms below. It MUST NOT hold a push-model deferred-state machine, and MUST NOT
+force an upfront pass the run does not need.
 
 **Obtaining the member list.** Only a `members` selector or a `filter` can orphan a hardlink
-(select a link while excluding its source); an unfiltered extract-all never orphans one. So
-the coordinator obtains the full member list up front **only when a selector/filter is in
-use** and the list is available without a wasted pass — either `get_members_if_available()`
-returns it (a central directory, or an already-materialized list), or the source is seekable
-with `listing_cost == REQUIRES_SCANNING` (a plain `.tar`, whose 512-byte header walk is cheap
-and decompresses nothing) so it MAY call `members()`. It SHALL NOT call `members()` on a
-compressed tar (that would decompress the whole stream) or on a streaming reader (which
-raises `UnsupportedOperationError`).
+(select a link while excluding its source); an unfiltered extract-all never orphans one. Even
+then, the coordinator uses the member list up front **only when it is available for free** —
+i.e. `get_members_if_available()` returns it (a true central directory, or an already-
+materialized list). It SHALL NOT speculatively call `members()` to obtain a list: a header
+scan of a plain `.tar` is not reliably cheap (seek-heavy on spinning or network media), and
+listing a compressed tar would decompress the whole stream. Instead, when no free list is
+available, orphans are handled reactively (algorithm 3).
 
 The coordinator then uses one of three algorithms:
 
 1. **No selector/filter — single sequential pass.** Write each member; record written FILEs
    in a per-source `{device → on-disk path}` map; a hardlink to an already-written source is
    created with `os.link()`. No planning and no second pass. (Orphans are impossible.)
-2. **Filtered, member list in hand — planned single pass.** Apply the selector, policy
-   transform and `filter` to the member list up front to compute the write plan and a
-   `source → selected-link-paths` map (including sources that are themselves excluded but
-   referenced by a selected link). Then one forward pass: write selected members; when the
-   pass reaches a **needed** source, write its content to the first selected link's path even
-   if the source itself was excluded (its bytes are streaming past regardless), and `os.link()`
-   the remaining selected links. No second pass; works for `AccessCost.DIRECT` and `SOLID`
-   alike, since the list was obtained without a wasted pass.
-3. **Filtered, no cheaply-available list (compressed tar) — sequential pass + conditional
-   second pass.** `get_members_if_available()` is `None` and listing would require
-   decompressing the whole stream, so the coordinator runs the sequential pass and, if a
-   selected link's source turns out to have been excluded (an orphan), collects it and
-   resolves all orphans in a **single second pass** afterwards — only when at least one orphan
-   exists. The stream is thus decompressed at most twice, and exactly once in the common
-   no-orphan case.
+2. **Filtered, free member list available — planned single pass.** When
+   `get_members_if_available()` returns the list, apply the selector, policy transform and
+   `filter` to it up front to compute the write plan and a `source → selected-link-paths` map
+   (including sources that are themselves excluded but referenced by a selected link). Then one
+   forward pass: write selected members; when the pass reaches a **needed** source, write its
+   content to the first selected link's path even if the source itself was excluded (its bytes
+   are streaming past regardless), and `os.link()` the remaining selected links. No second pass.
+3. **Filtered, no free list (plain `.tar` and compressed tar) — sequential pass + conditional
+   second pass.** The coordinator runs the sequential pass and, if a selected link's source
+   turns out to have been excluded (an orphan), collects it and resolves all orphans in a
+   **single second pass** afterwards — only when at least one orphan exists. For a plain `.tar`
+   the second pass re-scans headers; for a compressed tar it re-decompresses (so the stream is
+   decompressed at most twice, and exactly once in the common no-orphan case). The second pass
+   requires a seekable/re-openable source.
 
 **Forward-only sources** (`stream_capability == FORWARD_ONLY`, streaming/pipe): the list is
 unavailable and there is no second pass, so a selected link whose source was excluded is
@@ -67,20 +65,20 @@ push-model deferred-creation machine.
 - **WHEN** an archive is extracted with no `members` selector or `filter` that excludes a hardlink source
 - **THEN** every hardlink resolves during a single sequential pass with `os.link` (source precedes link) and no member list is fetched up front
 
-#### Scenario: Filtered extract with a cheap member list stages orphaned sources in one pass
+#### Scenario: Filtered extract with a free member list stages orphaned sources in one pass
 
-- **WHEN** a `filter` excludes a hardlink's source but selects the link, and the member list is available via `get_members_if_available()` or a plain-tar header scan
+- **WHEN** a `filter` excludes a hardlink's source but selects the link, and `get_members_if_available()` returns the list (a true index or an already-materialized list)
 - **THEN** the coordinator plans up front, and during the single forward pass writes the excluded source's content to the first selected link's path (further selected links `os.link` to it); no second pass is used and the excluded source is never created at its own path
 
-#### Scenario: Filtered compressed tar recovers an orphan in one second pass
+#### Scenario: Filtered tar without a free list recovers an orphan in one second pass
 
-- **WHEN** a `.tar.gz` (`REQUIRES_DECOMPRESSION`, no index) is extracted with a filter that orphans one or more hardlinks
-- **THEN** the orphans are resolved in a single second pass after the main pass, so the stream is decompressed at most twice regardless of the number of orphans
+- **WHEN** a plain `.tar` or a `.tar.gz` (no free list) is extracted with a filter that orphans one or more hardlinks on a seekable source
+- **THEN** the coordinator does not speculatively scan/list up front, and resolves all orphans in a single second pass after the main pass (a compressed tar is thus decompressed at most twice)
 
-#### Scenario: Filtered compressed tar with no orphan does not take a second pass
+#### Scenario: Filtered tar with no orphan does not take a second pass
 
-- **WHEN** a `.tar.gz` is extracted with a filter that does not orphan any hardlink
-- **THEN** extraction completes in a single decompression pass with no second pass
+- **WHEN** a plain `.tar` or `.tar.gz` is extracted with a filter that does not orphan any hardlink
+- **THEN** extraction completes in a single pass with no second pass and no up-front list fetch
 
 #### Scenario: Orphaned link on a forward-only source follows OnError
 

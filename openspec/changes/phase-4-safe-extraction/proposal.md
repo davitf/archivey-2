@@ -32,29 +32,35 @@ override.
 ### `ExtractionCoordinator` algorithm (per `safe-extraction` spec, not the stale ARCHITECTURE sketch)
 
 The coordinator is a **pull-based sink**: it drives the reader (`cost`,
-`get_members_if_available()`, `members()` when cheap, `_iter_with_data()`/`stream_members()`)
-and picks an algorithm — no push-model state machine, and **no upfront pass the run doesn't
-need**. Per member: `check_universal(original)` → policy transform on a **transient copy** →
-optional user `filter` on the copy → write FILE/DIR/SYMLINK/HARDLINK. Symlinks get the
-post-creation `Path.resolve()` check with the `ELOOP`/`RuntimeError` guard.
+`get_members_if_available()`, `_iter_with_data()`/`stream_members()`) and picks an algorithm —
+no push-model state machine, and **no upfront pass the run doesn't need** (it never calls
+`members()` speculatively). Per member: `check_universal(original)` → policy transform on a
+**transient copy** → optional user `filter` on the copy → write FILE/DIR/SYMLINK/HARDLINK.
 
-Hardlinks (the real file always precedes its links in TAR order; see `format-tar` MODIFIED
-delta). Only a selector/`filter` can orphan a link, so the coordinator fetches the member
-list up front **only when filtering** and it's cheap to obtain, and picks one of three:
+**Symlinks** are created via `os.symlink()` and get the post-creation `Path.resolve()` escape
+check with the `ELOOP`/`RuntimeError` guard. A symlink does **not** require its target to be
+extracted (unlike a hardlink) — a symlink to a filtered-out/later/external target is created
+and may dangle (only the within-`dest` escape check applies); no copy is made. If the
+filesystem can't create symlinks (`os.symlink` raises), it's a per-member `OnError` failure —
+**no** silent copy-the-target fallback (which is what `tarfile` does).
+
+**Hardlinks** (the real file always precedes its links in TAR order; see `format-tar` MODIFIED
+delta). Only a selector/`filter` can orphan a link, and the coordinator uses a member list up
+front **only when it's free** (`get_members_if_available()` ≠ None); it never speculatively
+scans (a plain-tar header walk isn't reliably cheap on slow/network media). Three algorithms:
 
 1. **No filter → single sequential pass.** Record written FILEs in a per-source
    `{device → path}` map; a link to an already-written source uses `os.link()`. No orphans
    possible; no second pass.
-2. **Filter + cheap member list** (central dir / already-materialized, or a plain-tar header
-   scan) **→ planned single pass.** Plan the selection + `source → selected-link-paths` map
+2. **Filter + free member list** (`get_members_if_available()` ≠ None: true index or
+   already-materialized) **→ planned single pass.** Plan selection + `source → selected-link-paths`
    up front, then one forward pass that stages each needed source to the first selected link's
-   path as it is reached (works for `DIRECT` and `SOLID`; no second pass).
-3. **Filter + no cheap list** (compressed tar) **→ sequential pass + one conditional second
-   pass**, taken only if an orphan actually appears (stream decompressed at most twice).
-
-   Forward-only sources have no list and no second pass, so an orphaned link is a per-member
-   failure via `OnError`. Cross-device links prefer `os.link()` to a same-device sibling copy
-   before `shutil.copy2`.
+   path as it is reached; no second pass.
+3. **Filter + no free list** (plain `.tar` and compressed tar) **→ sequential pass + one
+   conditional second pass**, taken only if an orphan actually appears (re-scan for plain,
+   re-decompress ≤ 2× for compressed). Forward-only sources have no list and no second pass,
+   so an orphaned link is a per-member `OnError` failure. Cross-device links prefer `os.link()`
+   to a same-device sibling copy before `shutil.copy2`.
 4. **Bomb tracking:** `BombTracker` on the **original** member; per-member ratio when
    `compressed_size` is known (ZIP); **archive-wide ratio** when outer
    `compressed_source_size` is known (compressed TAR — see spec delta).
@@ -97,13 +103,14 @@ denominator is unknown (pipes, plain `.tar`).
 3. **No streaming TAR work here** — `phase-4-tar-streaming` lands first; this change only
    consumes its `_iter_with_data()` override and `compressed_source_size` hook.
 4. **Coordinator is a pull-based sink; hardlink handling is algorithm-selected, no pre-pass
-   unless filtering.** No filter → single sequential pass. Filter + cheaply-available member
-   list (central dir / already-materialized / plain-tar scan) → planned single pass that
-   stages orphaned sources to link paths. Filter + compressed tar (no cheap list) → one
-   conditional second pass, only if an orphan appears. Forward-only orphan → `OnError`
-   failure. Cross-device links reuse a same-device sibling before copying. The old
-   `no pending_*` gate is relaxed to "pull-model sink, no push-model state machine"; bounded
-   maps (plan, `{device → path}`, orphan list) are fine.
+   unless a free list exists.** No filter → single sequential pass. Filter + **free** member
+   list (`get_members_if_available()` ≠ None: true index / already-materialized) → planned
+   single pass that stages orphaned sources to link paths. Filter + no free list (plain `.tar`
+   and compressed tar; never scan speculatively) → one conditional second pass, only if an
+   orphan appears. Forward-only orphan → `OnError` failure. Cross-device links reuse a
+   same-device sibling before copying. The old `no pending_*` gate is relaxed to "pull-model
+   sink, no push-model state machine"; bounded maps (plan, `{device → path}`, orphan list) are
+   fine.
 5. **Minimal config** — bomb limits and policies as keyword args on `extract()` /
    `extract_all()`; full public config surface remains Phase 5.
 
@@ -112,6 +119,9 @@ denominator is unknown (pipes, plain `.tar`).
 - **`safe-extraction`** (ADDED) — archive-wide decompression ratio when per-member
   `compressed_size` is unavailable but outer `compressed_source_size` is known; the
   `BombTracker` constructor gains a `compressed_source_size` argument.
+- **`safe-extraction`** (ADDED) — symlink extraction is target-independent (dangling links
+  allowed within `dest`, no copy) and fails safe via `OnError` on filesystems without symlink
+  support (no silent copy-the-target fallback).
 - **`safe-extraction`** (MODIFIED) — *Hardlink Two-Pass Extraction* reframed around the
   pull-based sink: unrecoverable orphaned links follow `OnError` (not an unconditional raise),
   cross-device links reuse a same-device sibling, and the excluded-source recovery mechanism

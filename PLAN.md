@@ -293,11 +293,14 @@ this phase adds TAR's forward-only streaming and the extraction machinery.)
    — and selects a hardlink algorithm; **not** DEV's push-model helper, so **no**
    `can_move_file` / `process_file_extracted` / general deferred-state machine):
    - Hardlinks (source precedes link in TAR order): no filter → single sequential pass;
-     filter + cheaply-available member list (central dir / already-materialized / plain-tar
-     scan) → planned single pass staging orphaned sources to link paths; filter + compressed
-     tar (no cheap list) → one conditional second pass, only if an orphan appears; forward-only
-     orphan → `OnError` failure. Cross-device links reuse a same-device sibling before copying.
-   - FILE/DIR/SYMLINK handling with symlink escape **re-validated at extraction time**.
+     filter + **free** member list (`get_members_if_available()` — true index / already
+     materialized) → planned single pass staging orphaned sources to link paths; filter + no
+     free list (plain `.tar` and compressed tar; never scan speculatively) → one conditional
+     second pass, only if an orphan appears; forward-only orphan → `OnError` failure.
+     Cross-device links reuse a same-device sibling before copying.
+   - FILE/DIR handling; SYMLINK escape **re-validated at extraction time**; symlinks are
+     target-independent (may dangle within `dest`, no copy) and fail via `OnError` on
+     filesystems without symlink support (no copy-the-target fallback).
    - Decompression-bomb limits (cumulative max bytes; per-member ratio; archive-wide ratio via
      `compressed_source_size`; scoped to extraction paths only) and `on_progress` / per-member
      `ExtractionResult`.

@@ -66,7 +66,10 @@
       best-effort after write; honor `OverwritePolicy`.
 - [ ] 3.3 **DIR extraction** — `mkdir` with policy mode.
 - [ ] 3.4 **SYMLINK extraction** — `os.symlink` + post-creation resolve check with
-      `ELOOP`/`RuntimeError` guard (per spec pseudocode).
+      `ELOOP`/`RuntimeError` guard (per spec pseudocode). Target-independent: a symlink to a
+      filtered-out/later/external target is created and may dangle (only the within-`dest`
+      escape check applies), no copy. `os.symlink` failure on an unsupported filesystem →
+      per-member `OnError` failure; **no** copy-the-target fallback.
 - [ ] 3.5 **`OnError.STOP` vs `CONTINUE`** — partial file cleanup; `ExtractionResult` with
       `FAILED`/`REJECTED` + `error`; cumulative bomb always stops.
 - [ ] 3.6 **`on_progress` callback** — once per member with counters from spec.
@@ -75,29 +78,35 @@
 
 ## 4. Hardlinks (source precedes its links in TAR order; algorithm-selected — see `format-tar` MODIFIED delta)
 
-- [ ] 4.1 **Algorithm selection** — only a selector/`filter` can orphan a link, so fetch the
-      member list up front **only when filtering** and it's cheap: `get_members_if_available()`
-      ≠ None, or a seekable `REQUIRES_SCANNING` plain tar (may call `members()`). Never call
-      `members()` on a compressed tar or a streaming reader.
+- [ ] 4.1 **Algorithm selection** — only a selector/`filter` can orphan a link, so use a member
+      list up front **only when it's free** (`get_members_if_available()` ≠ None). Never call
+      `members()` speculatively (a plain-tar header scan isn't reliably cheap; compressed-tar
+      listing would decompress everything). No free list → reactive handling (task 4.4).
 - [ ] 4.2 **(A) No filter → single sequential pass** — record each written FILE under a
       per-source `{device → on-disk path}` map; a link to an already-written source uses
       `os.link` to a same-device copy. No planning, no second pass.
-- [ ] 4.3 **(B) Filter + cheap list → planned single pass** — plan selection + policy + filter
-      up front, building a `source → selected-link-paths` map; one forward pass writes selected
-      members and stages each needed (even excluded) source to the first selected link's path as
-      it is reached; `os.link` the rest. No second pass; works for `DIRECT` and `SOLID`.
-- [ ] 4.4 **(C) Filter + no cheap list (compressed tar) → sequential + conditional second pass**
-      — collect orphaned links during the main pass; resolve all in **one** second pass, only if
-      an orphan exists (stream decompressed ≤ 2×). Forward-only orphan → per-member `OnError`
-      failure (STOP raises / CONTINUE records `FAILED`); no recovery.
+- [ ] 4.3 **(B) Filter + free list → planned single pass** — when `get_members_if_available()`
+      returns the list, plan selection + policy + filter up front into a
+      `source → selected-link-paths` map; one forward pass writes selected members and stages
+      each needed (even excluded) source to the first selected link's path as it is reached;
+      `os.link` the rest. No second pass.
+- [ ] 4.4 **(C) Filter + no free list (plain `.tar` and compressed tar) → sequential +
+      conditional second pass** — collect orphaned links during the main pass; resolve all in
+      **one** second pass on a seekable source, only if an orphan exists (re-scan for plain;
+      re-decompress ≤ 2× for compressed). Forward-only orphan → per-member `OnError` failure
+      (STOP raises / CONTINUE records `FAILED`); no recovery.
 - [ ] 4.5 **Cross-device sibling linking** — prefer `os.link` to an existing same-device copy of
       the source; only `shutil.copy2` when none exists, then record the copy's device so later
       same-device links reuse it (better than `tarfile`, which recopies from the archive per link).
-- [ ] 4.6 **Tests** — unfiltered → single pass, no list fetched; filter + central-dir/plain-tar
-      orphan → planned single pass, no second pass; filter + compressed-tar orphan → one second
-      pass (assert decompressed ≤ 2×); filter + compressed-tar no orphan → single pass; forward-only
+- [ ] 4.6 **Tests** — unfiltered → single pass, no list fetched; filter + free-list (indexed /
+      already-materialized) orphan → planned single pass, no second pass; filter + plain-tar
+      orphan → one re-scan second pass; filter + compressed-tar orphan → one second pass (assert
+      decompressed ≤ 2×); filter + no orphan → single pass, no speculative list; forward-only
       orphan → `OnError` STOP/CONTINUE; chained cross-device link reuses the sibling copy (mock
       devices / `os.link` `EXDEV`).
+- [ ] 4.7 **Symlink tests** — dangling symlink to a filtered-out target created within `dest`
+      (no copy, no error); `os.symlink` failure on an unsupported filesystem → `OnError`
+      STOP/CONTINUE (no copy-the-target fallback).
 
 ## 5. Public API + ZIP vertical slice
 
