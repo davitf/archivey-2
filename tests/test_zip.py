@@ -540,3 +540,30 @@ def test_nested_archive_source_size_is_cheap(tmp_path: Path) -> None:
         with open_archive(inner_stream, format=ArchiveFormat.ZIP) as inner_ar:
             assert inner_ar.compressed_source_size == len(inner_bytes)
             assert inner_ar.read("data.txt") == b"nested payload"
+
+
+def _zip_with_backslash_name(path: Path, name: str, create_system: int) -> None:
+    """Write a single entry whose stored filename contains a backslash, tagging the
+    entry's create-system (0 = FAT/DOS, 3 = Unix)."""
+    info = zipfile.ZipInfo(name)
+    info.create_system = create_system
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+
+
+def test_backslash_converted_for_dos_windows_entry(tmp_path: Path) -> None:
+    # A DOS/Windows-origin entry uses "\" as a path separator: it is converted to "/".
+    path = tmp_path / "win.zip"
+    _zip_with_backslash_name(path, "dir\\sub\\file.txt", create_system=0)  # FAT
+    with open_archive(path) as ar:
+        names = [m.name for m in ar.members()]
+    assert "dir/sub/file.txt" in names
+
+
+def test_backslash_kept_literal_for_unix_entry(tmp_path: Path) -> None:
+    # A Unix-origin entry keeps a backslash as a literal filename character.
+    path = tmp_path / "unix.zip"
+    _zip_with_backslash_name(path, "weird\\name.txt", create_system=3)  # Unix
+    with open_archive(path) as ar:
+        names = [m.name for m in ar.members()]
+    assert "weird\\name.txt" in names

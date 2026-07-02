@@ -65,6 +65,18 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     98: CompressionAlgorithm.PPMD,
 }
 
+# ZIP create-system values whose entries use "\" as a path separator (DOS/Windows family).
+# For these, a stored backslash is a separator; for Unix/other entries it is a literal
+# filename character (see the minimal-name-normalization change / archive-data-model spec).
+_BACKSLASH_SEPARATOR_SYSTEMS: frozenset[CreateSystem] = frozenset(
+    {
+        CreateSystem.FAT,
+        CreateSystem.OS2_HPFS,
+        CreateSystem.WINDOWS_NTFS,
+        CreateSystem.VFAT,
+    }
+)
+
 
 def _decode_with_fallback(data: bytes) -> str:
     for encoding in _ZIP_ENCODINGS:
@@ -257,8 +269,18 @@ class ZipReader(BaseArchiveReader):
         else:
             member_type = MemberType.FILE
 
+        try:
+            create_system = CreateSystem(info.create_system)
+        except ValueError:
+            create_system = CreateSystem.UNKNOWN
+        # Convert "\" to "/" only for DOS/Windows-origin entries (where it is a separator);
+        # a Unix (or other) entry keeps a backslash as a literal filename character.
+        backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
+
         decoded = info.filename
-        name = normalize_member_name(decoded.replace("\\", "/"), member_type)
+        name = normalize_member_name(
+            decoded, member_type, backslash_is_separator=backslash_is_separator
+        )
         # Recover the stored bytes by re-encoding with the codec zipfile decoded with:
         # UTF-8 when the entry's UTF-8 flag is set, else the caller's metadata encoding
         # (when given) or zipfile's cp437 default.
@@ -268,11 +290,6 @@ class ZipReader(BaseArchiveReader):
         )
 
         algo = _ZIP_COMPRESSION_ALGOS.get(info.compress_type, CompressionAlgorithm.UNKNOWN)
-
-        try:
-            create_system = CreateSystem(info.create_system)
-        except ValueError:
-            create_system = CreateSystem.UNKNOWN
 
         link_target = None
         if member_type == MemberType.SYMLINK:
