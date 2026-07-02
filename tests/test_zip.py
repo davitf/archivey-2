@@ -4,6 +4,7 @@ fail-fast, multi-volume rejection) and the ZIP slice of access-mode-and-cost."""
 from __future__ import annotations
 
 import io
+import os
 import struct
 import zipfile
 from datetime import datetime, timezone
@@ -560,8 +561,17 @@ def test_backslash_converted_for_dos_windows_entry(tmp_path: Path) -> None:
     assert "dir/sub/file.txt" in names
 
 
+@pytest.mark.skipif(
+    os.sep != "/",
+    reason=(
+        "On Windows, zipfile.ZipInfo replaces os.sep ('\\\\') with '/' when both writing "
+        "and reading, so a zip member name can never carry a literal backslash there — the "
+        "keep-literal scenario is unobservable on that platform."
+    ),
+)
 def test_backslash_kept_literal_for_unix_entry(tmp_path: Path) -> None:
-    # A Unix-origin entry keeps a backslash as a literal filename character.
+    # A Unix-origin entry keeps a backslash as a literal filename character (POSIX hosts,
+    # where zipfile does not rewrite backslashes).
     path = tmp_path / "unix.zip"
     _zip_with_backslash_name(path, "weird\\name.txt", create_system=3)  # Unix
     with open_archive(path) as ar:
