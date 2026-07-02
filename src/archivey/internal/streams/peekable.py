@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import BinaryIO
 
-from archivey.internal.streams.streamtools import ReadOnlyIOStream
+from archivey.internal.streams.streamtools import ReadOnlyIOStream, source_name
 
 # Default amount buffered for detection (matches ``format-detection``'s DETECTION_LIMIT).
 # The buffer grows on demand up to whatever ``peek(n)`` asks for — e.g. 32 774 bytes when
@@ -83,9 +83,11 @@ class PeekableStream(ReadOnlyIOStream):
         return self._pos
 
     @property
-    def name(self) -> str | None:
-        name = getattr(self._underlying, "name", None)
-        return name if isinstance(name, str) else None
+    def name(self) -> str:
+        resolved = source_name(self._underlying)
+        if resolved is not None:
+            return resolved
+        raise AttributeError("name")
 
     def close(self) -> None:
         # Do NOT close the underlying stream — the caller owns it.

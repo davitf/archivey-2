@@ -11,7 +11,11 @@ import io
 from typing import BinaryIO
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
-from archivey.internal.streams.streamtools.binaryio import is_seekable, source_byte_size
+from archivey.internal.streams.streamtools.binaryio import (
+    is_seekable,
+    source_byte_size,
+    source_name,
+)
 
 
 class SlicingStream(ReadOnlyIOStream):
@@ -126,6 +130,13 @@ class SlicingStream(ReadOnlyIOStream):
         if underlying is None:
             return None
         return max(underlying - self._start, 0)
+
+    @property
+    def name(self) -> str:
+        resolved = source_name(self._stream)
+        if resolved is not None:
+            return resolved
+        raise AttributeError("name")
 
 
 def fix_stream_start_position(stream: BinaryIO) -> BinaryIO:

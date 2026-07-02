@@ -7,6 +7,7 @@ corner-case coverage (per CONTRIBUTING's narrow exception for stream primitives)
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import pytest
 
@@ -130,9 +131,30 @@ class TestFixStreamStartPosition:
         assert fixed.tell() == 0
         assert fixed.read(5) == DATA[10:15]
 
+    def test_midstream_slice_has_no_name(self) -> None:
+        # pycdlib on Windows: hasattr(fp, 'name') and fp.name.startswith(r'\\.\')
+        # crashes when typing.BinaryIO's stub name is None; BytesIO has no name attr.
+        stream = io.BytesIO(DATA)
+        stream.seek(10)
+        fixed = fix_stream_start_position(stream)
+        assert not hasattr(fixed, "name")
+
     def test_non_seekable_passthrough(self) -> None:
         stream = NonSeekableBytesIO(DATA)
         assert fix_stream_start_position(stream) is stream
+
+
+class TestSlicingStreamName:
+    def test_no_name_for_bytesio_underlying(self) -> None:
+        sliced = SlicingStream(io.BytesIO(DATA), start=5)
+        assert not hasattr(sliced, "name")
+
+    def test_forwards_file_name(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.bin"
+        path.write_bytes(DATA)
+        with open(path, "rb") as underlying:
+            sliced = SlicingStream(underlying, start=5, length=10)
+            assert sliced.name == str(path)
 
 
 class TestSlicingStreamSize:
