@@ -222,7 +222,7 @@ class DirectoryReadBackend(ReadBackend):
         strict_eof: bool = False,
     ) -> DirectoryReader:
         # `format` is always DIRECTORY here (single-format backend); accepted for the
-        # uniform ReadBackend signature.
+        # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
         return DirectoryReader(source, streaming, archive_name or str(source))

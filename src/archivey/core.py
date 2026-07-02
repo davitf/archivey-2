@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.exceptions import StreamNotSeekableError
+from archivey.exceptions import StreamNotSeekableError, UnsupportedOperationError
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.registry import (
     FormatAvailability,
@@ -17,7 +17,12 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.streams.peekable import PeekableStream
-from archivey.internal.streams.streamtools import is_seekable, is_stream
+from archivey.internal.streams.streamtools import (
+    fix_stream_start_position,
+    is_seekable,
+    is_stream,
+    source_name,
+)
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat
 
@@ -32,21 +37,8 @@ __all__ = [
     "list_known_formats",
     "list_supported_formats",
     "open_archive",
-    "source_name",
+    "source_name",  # re-exported from streamtools (the single implementation)
 ]
-
-
-def source_name(source: str | Path | BinaryIO) -> str | None:
-    """Best-effort human-readable name for a source, for error messages and metadata.
-
-    A path-like source yields its string form; a file-like stream yields its ``name``
-    attribute when that is a string (``open()`` sets it, ``BytesIO`` does not, and some
-    streams expose an integer fd there — both of those yield ``None``).
-    """
-    if isinstance(source, (str, Path)):
-        return str(source)
-    name = getattr(source, "name", None)
-    return name if isinstance(name, str) else None
 
 
 def open_archive(
@@ -74,6 +66,12 @@ def open_archive(
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
     A non-seekable stream is wrapped in a :class:`PeekableStream` so detection never
     consumes bytes the backend still needs.
+
+    A seekable stream source is taken to hold the archive **starting at its current
+    position**: detection peeks from there and restores the position, and the opener
+    then wraps a mid-positioned stream in a zero-origin view so every backend sees the
+    archive begin at ``tell() == 0`` (an archive embedded mid-file works uniformly,
+    without manual slicing).
     """
     # Import backends to ensure they are registered
     import archivey.internal.backends  # noqa: F401
@@ -105,6 +103,15 @@ def open_archive(
     registry = get_registry()
     backend_cls = registry.reader_for_format(format)
 
+    # A password for a format that has no encryption is API misuse, rejected centrally
+    # (backends declare SUPPORTS_PASSWORD as data and never see the argument otherwise).
+    if password is not None and not backend_cls.SUPPORTS_PASSWORD:
+        raise UnsupportedOperationError(
+            f"Format {format!r} does not support passwords (it carries no encryption).",
+            source_format=format,
+            archive_name=archive_name,
+        )
+
     # Fail fast for a seek-requiring backend on a non-seekable source (the access-mode
     # contract: streaming=False does not implicitly buffer). Per-backend opt-in only:
     # TAR may open non-seekable sources under streaming=True; ZIP/ISO still fail fast.
@@ -120,6 +127,13 @@ def open_archive(
             source_format=format,
             archive_name=archive_name,
         )
+
+    # Normalize the stream origin once for every backend: a seekable stream positioned
+    # mid-file is wrapped so the backend sees tell() == 0 at the archive's first byte
+    # (the stream-position contract in format-detection). Done after detection, which
+    # peeks from and restores the same origin.
+    if is_stream(open_source) and is_seekable(open_source):
+        open_source = fix_stream_start_position(open_source)
 
     # Thread the encoding: an explicit caller encoding wins, else the detector's hint, else
     # None (the backend auto-detects).

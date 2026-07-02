@@ -34,13 +34,13 @@ The system SHALL accept a `streaming: bool` parameter in `archivey.open_archive(
 
 ### Requirement: Access-mode enforcement — streaming is forward-only
 
-A reader opened with `streaming=True` is forward-only. The system SHALL raise `UnsupportedOperationError` from every random-access or full-materialization method — `members()`, `__len__`, `__contains__`, `__getitem__`, `get()`, `open()`, and `read()`. This holds **uniformly**, regardless of whether the backend happens to have an index loaded, so streaming behaviour does not vary by format. Only a single forward pass via `__iter__`/`stream_members` (or one `extract_all`) is permitted. (There is no single-member `extract()`; selecting members for extraction is `extract_all(members=...)` — see `safe-extraction`.)
+A reader opened with `streaming=True` is forward-only. The system SHALL raise `UnsupportedOperationError` from every random-access or full-materialization method — `members()`, `get()`, `open()`, and `read()`. (`ArchiveReader` defines no `__len__`/`__getitem__` at all — see `archive-reading` — and `member in reader` is scan-free identity membership, allowed in both modes.) This holds **uniformly**, regardless of whether the backend happens to have an index loaded, so streaming behaviour does not vary by format. Only a single forward pass via `__iter__`/`stream_members` (or one `extract_all`) is permitted. (There is no single-member `extract()`; selecting members for extraction is `extract_all(members=...)` — see `safe-extraction`.)
 
 `get_members_if_available()` is exempt: it never scans (see the next requirement), so it remains callable on any reader.
 
 #### Scenario: random access raises on a streaming reader
 
-- **WHEN** any of `ar["f"]`, `ar.get("f")`, `len(ar)`, `ar.members()`, `ar.open(m)`, or `ar.read(m)` is called on a reader opened with `streaming=True`
+- **WHEN** any of `ar.get("f")`, `ar.members()`, `ar.open(m)`, or `ar.read(m)` is called on a reader opened with `streaming=True`
 - **THEN** `UnsupportedOperationError` is raised
 
 #### Scenario: a single forward pass is allowed on a streaming reader
@@ -75,10 +75,10 @@ The per-method behaviour is the composition of the rules above. There are exactl
 | `__iter__`, `stream_members` | ✅ | ✅ (one pass only) |
 | `extract_all` | ✅ | ✅ (the one pass) |
 | `get_members_if_available` | ✅ | ✅ (no-scan; may be `None`) |
-| `members`, `__len__` | ✅ (may scan) | ⛔ |
-| `__contains__` | ✅ | ⛔ |
-| `__getitem__`, `get` | ✅ | ⛔ |
+| `members` | ✅ (may scan) | ⛔ |
+| `get` | ✅ (may scan) | ⛔ |
 | `open`, `read` | ✅ | ⛔ |
+| `in` (`__contains__`, identity — see `archive-reading`) | ✅ (no scan) | ✅ (no scan) |
 | `cost`, `info`, `format`, `close`, context manager | ✅ | ✅ |
 | at `open_archive()` | fail fast if the source can't be random-accessed | works on any source |
 

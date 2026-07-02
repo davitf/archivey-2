@@ -65,6 +65,20 @@ obtain all other member *data* by invoking the system `unrar` binary. If `unrar`
 required but not available on PATH, the system SHALL raise
 `PackageNotInstalledError` naming `unrar`. Listing never requires `unrar`.
 
+**Supported decompressor: RARLAB `unrar` only** (maintainer decision, 2026-07).
+Several other tools answer to RAR extraction — `unrar-free` (libarchive-based, with a
+long history of failing on real-world archives), `unar`, `bsdtar`, `7z` — and
+`rarfile` grew a whole backend-detection layer to juggle them; Archivey deliberately
+does not. The backend SHALL verify the binary is RARLAB `unrar` (its version banner)
+and treat an incompatible flavor like a missing tool — a clear error naming RARLAB
+`unrar`, never silently degraded output. Additional decompressor backends can be
+added later if a real need appears.
+
+#### Scenario: an incompatible unrar flavor on PATH
+
+- **WHEN** the `unrar` on PATH is not RARLAB unrar (e.g. `unrar-free`) and a compressed member is read
+- **THEN** the system raises `PackageNotInstalledError` naming RARLAB `unrar`, rather than piping data through the incompatible tool
+
 #### Scenario: reading a compressed member without unrar installed
 
 - **WHEN** `reader.read(member)` is called on a non-stored member and `unrar` is not on PATH

@@ -320,3 +320,16 @@ def test_corrupt_gzip_raises_corruption() -> None:
     with open_archive(NonSeekableBytesIO(bytes(data))) as ar:
         with pytest.raises(CorruptionError):
             ar.read(ar.members()[0])
+
+
+def test_open_from_mid_positioned_stream() -> None:
+    # The compressed stream starts at the caller's position (an embedded .gz after junk
+    # bytes); reads — including a re-open for a second read — must use that origin.
+    junk = b"X" * 37
+    payload = b"embedded payload " * 20
+    stream = io.BytesIO(junk + gzip.compress(payload))
+    stream.seek(len(junk))
+    with open_archive(stream, format=ArchiveFormat.GZ) as ar:
+        (member,) = ar.members()
+        assert ar.read(member) == payload
+        assert ar.read(member) == payload  # re-open rewinds to the embedded origin

@@ -72,8 +72,15 @@ class FormatAvailability:
 
 # Optional member-codecs each container can use, beyond the always-present stdlib codecs.
 # A format is FULL when all of these are available, PARTIAL when some are missing (a
-# multi-codec container still opens and lists). Single-codec RAW_STREAM formats are handled
-# separately (their sole codec missing makes them NONE, not PARTIAL).
+# multi-codec container still opens and lists). Single-codec formats (bare RAW_STREAM
+# compressors and compressed tars) are handled separately: their sole stream codec
+# missing makes them NONE, not PARTIAL.
+#
+# NOTE (Phase 3 → 7 gap): ZIP member *decode* currently goes through stdlib zipfile,
+# which cannot decompress deflate64/ppmd (or zstd before Python 3.14) even when these
+# codec packages are installed — such members raise UnsupportedFeatureError at read.
+# This table describes the intended post-Phase-7 composition, where the codec layer is
+# wired into ZIP member reads (see ``format-zip`` / ``compressed-streams``).
 _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
     ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
 }
@@ -172,9 +179,21 @@ class BackendRegistry:
                 (MissingComponent(dep, hint),),
             )
 
-        # Backend itself is usable; fold in the optional codecs the format can use.
+        # The format's own stream codec — a bare single-file compressor's sole codec, or
+        # the outer codec of a compressed tar (`tar.<codec>`). With it missing the archive
+        # cannot even be listed, so the format is NONE (the single-codec rule in
+        # ``backend-registry``), not PARTIAL.
+        if fmt.stream != StreamFormat.UNCOMPRESSED:
+            stream_codec = codec_for_stream_format(fmt.stream)
+            if not is_codec_available(stream_codec):
+                requirement = codec_requirement(stream_codec)
+                assert requirement is not None  # an optional codec always declares one
+                return FormatAvailability(fmt, FormatSupport.NONE, (requirement,))
+
+        # Backend + stream codec usable; fold in the optional *member* codecs the
+        # container can use. A multi-codec container missing some still opens -> PARTIAL.
         missing: list[MissingComponent] = []
-        for codec in self._optional_codecs_for_format(fmt):
+        for codec in _CONTAINER_OPTIONAL_CODECS.get(fmt.container, ()):
             if not is_codec_available(codec):
                 requirement = codec_requirement(codec)
                 assert requirement is not None  # an optional codec always declares one
@@ -182,23 +201,7 @@ class BackendRegistry:
 
         if not missing:
             return FormatAvailability(fmt, FormatSupport.FULL, ())
-
-        # A single-codec format (a bare RAW_STREAM single-file compressor) whose sole codec
-        # is missing is unreadable -> NONE; a multi-codec container still opens -> PARTIAL.
-        support = (
-            FormatSupport.NONE
-            if fmt.container == ContainerFormat.RAW_STREAM
-            else FormatSupport.PARTIAL
-        )
-        return FormatAvailability(fmt, support, tuple(missing))
-
-    def _optional_codecs_for_format(self, fmt: ArchiveFormat) -> tuple[Codec, ...]:
-        if fmt.container == ContainerFormat.RAW_STREAM:
-            # A single-file compressor's readability hinges on its one stream codec.
-            if fmt.stream == StreamFormat.UNCOMPRESSED:
-                return ()
-            return (codec_for_stream_format(fmt.stream),)
-        return _CONTAINER_OPTIONAL_CODECS.get(fmt.container, ())
+        return FormatAvailability(fmt, FormatSupport.PARTIAL, tuple(missing))
 
     # --- selection -----------------------------------------------------------------------
 

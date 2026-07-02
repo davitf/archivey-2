@@ -11,7 +11,7 @@ import io
 from typing import BinaryIO
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
-from archivey.internal.streams.streamtools.binaryio import is_seekable
+from archivey.internal.streams.streamtools.binaryio import is_seekable, source_byte_size
 
 
 class SlicingStream(ReadOnlyIOStream):
@@ -33,6 +33,9 @@ class SlicingStream(ReadOnlyIOStream):
     *non-owning view*: it must NOT close the underlying stream (the container owns it), whereas
     ``DelegatingStream.close`` closes its inner. So delegation would be both useless (almost
     everything is overridden) and unsafe (the close default).
+
+    It also does not expose ``name``: a slice view remaps the origin, so forwarding the
+    underlying path would mislead libraries that reopen or stat by ``stream.name``.
     """
 
     def __init__(
@@ -83,7 +86,6 @@ class SlicingStream(ReadOnlyIOStream):
 
         assert self._start is not None  # always set for seekable streams
         start_abs = self._start
-        current_abs = start_abs + self._pos
 
         if whence == io.SEEK_SET:
             new_relative = offset
@@ -91,16 +93,12 @@ class SlicingStream(ReadOnlyIOStream):
             new_relative = self._pos + offset
         elif whence == io.SEEK_END:
             if self._length is None:
-                if offset != 0:
-                    raise io.UnsupportedOperation(
-                        "SEEK_END is not supported when slice length is not defined "
-                        "and offset is non-zero"
-                    )
-                underlying_end = self._stream.seek(0, io.SEEK_END)
-                self._stream.seek(current_abs)  # restore for the caller's mental model
-                new_relative = underlying_end - start_abs
+                # No declared length: the slice ends where the underlying stream does,
+                # so probe that end on demand (the seek below repositions regardless).
+                end_relative = self._stream.seek(0, io.SEEK_END) - start_abs
             else:
-                new_relative = self._length + offset
+                end_relative = self._length
+            new_relative = end_relative + offset
         else:
             raise ValueError(f"Invalid whence: {whence}")
 
@@ -114,6 +112,23 @@ class SlicingStream(ReadOnlyIOStream):
 
     def seekable(self) -> bool:
         return self._seekable
+
+    @property
+    def size(self) -> int | None:
+        """Total slice length when cheaply knowable (the fsspec-style ``size`` convention).
+
+        A declared ``length`` answers directly; an open-ended slice derives it from the
+        underlying stream's cheap size (``source_byte_size``), and reports ``None`` when
+        that is unknowable — never by an expensive end-seek.
+        """
+        if self._length is not None:
+            return self._length
+        if self._start is None:
+            return None  # non-seekable underlying stream: length unknowable cheaply
+        underlying = source_byte_size(self._stream)
+        if underlying is None:
+            return None
+        return max(underlying - self._start, 0)
 
 
 def fix_stream_start_position(stream: BinaryIO) -> BinaryIO:

@@ -59,7 +59,7 @@
       unselected members without opening streams; late-bound fields visible on original
       member object after read.
 - [x] 2.4 **Tests** — non-seekable plain tar: `stream_members()` + `__iter__` over corpus
-      tar fixtures; `members()` / `__getitem__` raise `UnsupportedOperationError` on
+      tar fixtures; `members()` / `get()` raise `UnsupportedOperationError` on
       `streaming=True` reader (may already be covered by `test_reader_contract.py` — extend
       with real TAR backend).
 

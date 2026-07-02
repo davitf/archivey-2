@@ -276,7 +276,13 @@ responsibility, not `detect_format()`'s, so that one wrapper is shared by detect
 and the backend rather than detection consuming bytes the caller can no longer reach:
 
 - For **paths and seekable streams**: detection reads via `peek`/`read` and restores
-  the position with `seek(0)` afterwards; no wrapper is needed.
+  the stream's **starting position** (its `tell()` on entry) afterwards; no wrapper is
+  needed for detection itself. The archive is taken to begin wherever the caller
+  positioned the stream, so an archive embedded mid-file detects against the right
+  bytes. `open_archive()` then normalizes the origin for the backend: a seekable
+  stream positioned mid-file is wrapped in a zero-origin view (`SlicingStream`) so
+  every backend — including those that address the source with absolute offsets, like
+  ISO via `pycdlib` — sees the archive begin at `tell() == 0`.
 - For **non-seekable streams**: `open_archive()` SHALL wrap the source in a
   `PeekableStream` **before** running detection and pass that same `PeekableStream`
   to both detection and the backend. Detection inspects bytes through
@@ -308,11 +314,11 @@ this wrapping internally, so callers of the high-level API never wrap by hand.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-#### Scenario: seekable stream is rewound
+#### Scenario: seekable stream position is preserved
 
-- **WHEN** `detect_format()` is called with a seekable `BinaryIO` at position 0
-- **THEN** after detection completes the stream position SHALL be 0
-- **AND** the backend can read the full stream from the start without any data loss
+- **WHEN** `detect_format()` is called with a seekable `BinaryIO` at any position N
+- **THEN** after detection completes the stream position SHALL again be N
+- **AND** the backend can read the full archive from that origin without any data loss
 
 #### Scenario: non-seekable source wrapped once by the opener and shared
 

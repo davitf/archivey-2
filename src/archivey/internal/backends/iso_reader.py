@@ -12,6 +12,11 @@ The directory tree lives in the header region, giving O(1) (``INDEXED``) listing
 out of scope (``UnsupportedOperationError``). The image is read uncompressed in place — a
 compressed ``.iso.xz`` is a single-file compressor wrapping the image, not mounted here
 (see the seek-heavy-container note in the proposal).
+
+``pycdlib`` addresses the image with absolute offsets (the PVD at 32 KiB etc.), so it
+needs the archive to start at ``tell() == 0`` — which ``open_archive`` guarantees by
+wrapping any mid-positioned seekable stream in a zero-origin view before handing it to
+a backend (the stream-position contract in ``format-detection``).
 """
 
 from __future__ import annotations
@@ -37,7 +42,6 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
-    UnsupportedOperationError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.naming import normalize_member_name
@@ -141,12 +145,9 @@ class IsoReader(BaseArchiveReader):
         encoding: str | None,
         archive_name: str | None,
     ) -> None:
+        # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
         super().__init__(format, streaming, archive_name)
-        if password is not None:
-            raise UnsupportedOperationError(
-                "ISO 9660 images do not support passwords (they carry no encryption).",
-                archive_name=archive_name,
-            )
+        self._source = source
         if pycdlib is None:
             raise PackageNotInstalledError(
                 "The 'pycdlib' package is required to read ISO images "
@@ -320,7 +321,7 @@ class IsoReader(BaseArchiveReader):
                 self._stamp_error_context(translated, member.name)
                 raise translated from exc
             raise
-        return self._wrap_member_stream(stream, member.name)
+        return self._wrap_member_stream(stream, member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(

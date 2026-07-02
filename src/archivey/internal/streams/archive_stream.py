@@ -63,6 +63,7 @@ class ArchiveStream(ReadOnlyIOStream):
         lazy: bool = False,
         seekable: bool = True,
         rewind_warning: RewindWarning | None = None,
+        size: int | None = None,
     ) -> None:
         super().__init__()
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
@@ -73,8 +74,35 @@ class ArchiveStream(ReadOnlyIOStream):
         self._seekable_hint = seekable
         self._rewind_warning = rewind_warning
         self._rewind_warned = False
+        self._size = size
         if not lazy:
             self._ensure_open()
+
+    @property
+    def size(self) -> int | None:
+        """Total decompressed byte length when cheaply known, else ``None``.
+
+        The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
+        supply it up front (a member stream knows ``member.size`` from the archive
+        metadata), else an opened inner decompressor with a cheap ``try_get_size()``
+        (index/trailer scan, no decompression) is consulted. Lets a nested
+        ``open_archive(reader.open("inner.zip"))`` learn its source size — e.g. for the
+        extraction bomb tracker — without an expensive end-seek. A lazy, still-unopened
+        stream reports ``None`` rather than opening itself just to answer.
+        """
+        if self._size is not None:
+            return self._size
+        inner = self._inner
+        if inner is None:
+            return None
+        try_get_size = getattr(inner, "try_get_size", None)
+        if callable(try_get_size):
+            result = try_get_size()
+            return result if isinstance(result, int) else None
+        inner_size = getattr(inner, "size", None)
+        if isinstance(inner_size, int) and not isinstance(inner_size, bool):
+            return inner_size
+        return None
 
     def _ensure_open(self) -> BinaryIO:
         if self.closed:
@@ -168,12 +196,20 @@ class ArchiveStream(ReadOnlyIOStream):
         return self._seekable_hint
 
     def close(self) -> None:
-        if self._inner is not None:
-            try:
-                self._inner.close()
-            except Exception as e:  # noqa: BLE001 - re-raised via the translator
-                self._fail(e)
-        super().close()
+        if self.closed:
+            return
+        # The finally ensures the wrapper is marked closed even when the inner close
+        # raises (which _fail re-raises translated): a half-open wrapper would hand out
+        # further reads on a dead stream, and a retried close() would fail again
+        # instead of no-opping (the guard above makes it a no-op instead).
+        try:
+            if self._inner is not None:
+                try:
+                    self._inner.close()
+                except Exception as e:  # noqa: BLE001 - re-raised via the translator
+                    self._fail(e)
+        finally:
+            super().close()
 
     def __repr__(self) -> str:
         return f"<ArchiveStream inner={self._inner!r}>"

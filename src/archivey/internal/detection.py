@@ -7,7 +7,10 @@ as data and the detector aggregates them, so a new format becomes detectable by
 registering its backend (see ``format-detection`` and ``backend-registry``).
 
 Detection never consumes bytes from the source: paths are opened and closed; seekable
-streams are read and rewound to position 0; a non-seekable stream must be wrapped in a
+streams are read and restored to their **starting position** (the archive is taken to
+begin wherever the stream is positioned when handed in, so a mid-positioned stream —
+e.g. an archive embedded in a larger file — detects against the right bytes); a
+non-seekable stream must be wrapped in a
 :class:`~archivey.internal.streams.peekable.PeekableStream` first (the opener does this),
 which detection inspects via ``peek``.
 
@@ -31,7 +34,7 @@ from archivey.exceptions import ArchiveyError, FormatDetectionError
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
-from archivey.internal.streams.streamtools import is_seekable, read_exact
+from archivey.internal.streams.streamtools import is_seekable, read_exact, source_name
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
@@ -61,19 +64,13 @@ class FormatInfo:
     payload_offset: int = 0  # nonzero only for SFX archives (is-SFX == payload_offset > 0)
 
 
-def _source_extension_name(source: object) -> str | None:
-    """The filename to match an extension against, or ``None`` when the source is anonymous."""
-    if isinstance(source, (str, Path)):
-        return str(source)
-    name = getattr(source, "name", None)
-    return name if isinstance(name, str) else None
-
-
 def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
-    """Return the source's first ``length`` bytes without consuming them.
+    """Return the source's next ``length`` bytes without consuming them.
 
-    Paths are opened and closed; a :class:`PeekableStream` is peeked; a seekable stream is
-    read and rewound to position 0. A raw non-seekable stream would lose the prefix, so the
+    Paths are opened and closed; a :class:`PeekableStream` is peeked; a seekable stream
+    is read from its **current position** and restored to it (the archive starts
+    wherever the caller positioned the stream — see the stream-position contract in
+    ``format-detection``). A raw non-seekable stream would lose the prefix, so the
     caller (the opener) must wrap it in a ``PeekableStream`` first.
     """
     if isinstance(source, (str, Path)):
@@ -82,8 +79,9 @@ def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
     if isinstance(source, PeekableStream):
         return source.peek(length)
     if is_seekable(source):
+        start = source.tell()
         data = read_exact(source, length)
-        source.seek(0)
+        source.seek(start)
         return data
     # Raw non-seekable stream used standalone: reading consumes bytes the caller can no
     # longer reach. Detection still works, but the prefix is gone — the opener avoids this
@@ -204,7 +202,7 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
     extension_map = registry.extension_map()
-    name = _source_extension_name(source)
+    name = source_name(source)
     ext_fmt = _match_extension(name, extension_map)
 
     # Magic signals split by where they live: "near" ones fit in the default window; "far"

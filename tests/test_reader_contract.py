@@ -115,9 +115,6 @@ def test_streaming_disables_random_access_on_capable_backend() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
     for call in (
         lambda: reader.members(),
-        lambda: len(reader),
-        lambda: "a.txt" in reader,
-        lambda: reader["a.txt"],
         lambda: reader.get("a.txt"),
         lambda: reader.open("a.txt"),
         lambda: reader.read("a.txt"),
@@ -126,6 +123,28 @@ def test_streaming_disables_random_access_on_capable_backend() -> None:
             call()
     # A single forward pass is still allowed.
     assert [m.name for m in reader] == ["a.txt"]
+
+
+def test_no_len_so_list_works_on_streaming_reader() -> None:
+    # The reader defines no __len__ (it is not a collection), so len() raises Python's
+    # own TypeError — and list(reader), which probes __len__ via the length-hint
+    # protocol (suppressing TypeError), performs the plain forward pass.
+    reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
+    with pytest.raises(TypeError):
+        len(reader)
+    assert [m.name for m in list(reader)] == ["a.txt"]
+
+
+def test_contains_is_identity_and_mode_free() -> None:
+    # Identity membership works even on a streaming reader (no scan involved), and a
+    # string operand raises TypeError instead of falling back to iteration.
+    reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
+    (member,) = list(reader)
+    assert member in reader
+    other = _IndexedReader(ArchiveFormat.ZIP, False, "y.zip")
+    assert other.members()[0] not in reader
+    with pytest.raises(TypeError):
+        "a.txt" in reader  # noqa: B015 - the expression itself must raise
 
 
 # --- get_members_if_available: never scans; safe on any reader ----------------------
@@ -151,3 +170,12 @@ def test_get_members_if_available_returns_cache_once_materialized() -> None:
     assert reader.get_members_if_available() is None
     _ = list(reader)
     assert reader.get_members_if_available() is not None
+
+
+def test_streaming_iteration_registers_member_ids() -> None:
+    # A streaming pass must still stamp identity onto the members it yields (the
+    # progressive path bypasses _get_members_registered).
+    reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
+    (member,) = list(reader)
+    assert member.member_id == 0
+    assert member.archive_id == reader._archive_id

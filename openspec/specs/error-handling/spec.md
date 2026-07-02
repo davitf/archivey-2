@@ -49,7 +49,7 @@ incompatible at open), **not** `UnsupportedOperationError`.
 **`UnsupportedOperationError` vs `UnsupportedFeatureError` — a deliberate split:**
 
 - `UnsupportedOperationError` signals **API misuse**: the caller asked for something this
-  reader's *mode* does not permit — random access (`__getitem__`, `get`, materialization)
+  reader's *mode* does not permit — random access (`get`, materialization)
   on a `streaming=True` reader, writing through a read-only RAR backend, or using a
   closed reader. It is not caused by the archive's contents; choosing a different
   access mode/usage avoids it. It can therefore occur in normal use when the wrong access mode

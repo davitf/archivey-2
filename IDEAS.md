@@ -57,12 +57,23 @@
   `glob()`, `read_bytes()`, `is_dir()`, … over the member tree (precedent: `zipfile.Path`).
   Read-only wrapper; needs random access, so a `DIRECT`/indexed-archive convenience.
 
-- **fsspec integration** — three distinct directions, all useful:
+- **fsspec integration** — three distinct directions:
   (1) **expose** an opened archive as an `fsspec` filesystem so pandas/dask/pyarrow/etc.
-  read members by path (pairs with the pathlib navigation layer);
+  read members by path (pairs with the pathlib navigation layer) — the substantial one;
   (2) **open** archives *from* an `fsspec` URL (`s3://…/a.zip`, `http(s)://`, …) as the
-  `source`; (3) **extract** *to* an `fsspec` location as the `dest`. (2)/(3) mostly mean
-  accepting fsspec-opened file objects at the `open_archive`/`extract` boundary.
+  `source`; (3) **extract** *to* an `fsspec` location as the `dest`.
+  For (2), passing an fsspec-opened file object **already works** (the stream-input
+  tests exercise fsspec objects), so the remaining value is *URL-level* opening —
+  archivey calling `fsspec.open()` itself, behind an optional `[fsspec]` extra. What
+  that buys beyond "hand me a stream": archivey can pick sensible fsspec caching for
+  the access mode (`streaming=True` → plain forward read; random access → block/file
+  cache so ZIP central-directory + member seeks don't re-fetch), and — the real
+  unlock — it has **filesystem context**, which a bare stream can never provide:
+  multi-volume sets (`name.7z.001`…) need `fs.ls()` to discover sibling volumes, which
+  the Phase 7 volume-joining path requires. Shape TBD: a URL-string branch inside
+  `open_archive()` (gated on `"://" in source` + fsspec installed) vs. a separate
+  `open_archive_url()`; the separate function keeps typing/behavior of the core
+  entry point simple and the dependency boundary explicit.
 
 - **Configurable symlink-extraction behavior** — a policy knob (in the spirit of `OnError`
   / `ExtractionPolicy`) for what happens when a SYMLINK member cannot be created as a real
@@ -99,13 +110,25 @@
   match (e.g. deflate↔deflate; not deflate→zstd), so it's an opportunistic fast path with a
   decompress-recompress fallback. Pairs with the native ZIP parser (raw-deflate access) above.
 
-- **Parallel extraction** — extract independent members concurrently for
-  `AccessCost.DIRECT` archives (bounded by I/O). Also applies to **solid archives with
-  multiple independent blocks** — e.g. a 7z with several solid folders can decompress
-  folders in parallel (py7zr does this); members *within* one solid block stay
-  sequential. No benefit for a single-block solid archive.
+- **Parallel extraction / concurrent member streams** — extract independent members
+  concurrently for `AccessCost.DIRECT` archives (bounded by I/O). Also applies to
+  **solid archives with multiple independent blocks** — e.g. a 7z with several solid
+  folders can decompress folders in parallel (py7zr does this); members *within* one
+  solid block stay sequential. No benefit for a single-block solid archive.
+  **Constraint:** the concurrency model says readers are *not* thread-safe (one per
+  thread — `openspec/project.md`), so this must be designed as either N readers over
+  the same path or an explicit shared-source primitive — never silent sharing.
+  **Plumbing to consider before the native 7z/RAR/ZIP readers land (Phase 7):** a
+  `streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
+  underlying handle + a lock + a per-view position, each read seeking under the lock)
+  so multiple open member streams over one seekable source are safe by construction;
+  interleaved single-threaded streams already work that way in zipfile. Whatever isn't
+  supported must **fail loudly** (detect concurrent misuse and raise) rather than
+  silently interleave reads and produce jumbled data.
 
 - **Efficient seekable zstd — probably a *native* frame-index reader, not `indexed_zstd`.**
+  *(Status: **scheduled** — promoted to the rescoped Phase 8 in `PLAN.md`; the analysis
+  below is the basis for that phase's benchmark-first task.)*
   zstd currently has *no* fast random access: a backward seek re-decompresses from the start
   (rewind + warning), like brotli/lz4/zlib. The obvious candidate,
   [`indexed_zstd`](https://github.com/martinellimarco/indexed_zstd) (martinellimarco; the zstd

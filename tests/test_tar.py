@@ -235,7 +235,7 @@ def test_pax_mtime_override(tmp_path: Path) -> None:
     path = tmp_path / "pax.tar"
     path.write_bytes(buf.getvalue())
     with open_archive(path) as ar:
-        m = ar["p.txt"]
+        m = ar.get("p.txt")
         assert m.modified is not None
         assert abs(m.modified.timestamp() - 1_600_000_000.123456) < 1e-3
 
@@ -249,7 +249,7 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
     path = tmp_path / "u.tar"
     path.write_bytes(buf.getvalue())
     with open_archive(path) as ar:
-        m = ar["café.txt"]
+        m = ar.get("café.txt")
         assert m.name == "café.txt"  # decoded name round-trips
         assert m.raw_name == "café.txt".encode("utf-8")  # verbatim stored bytes
 
@@ -267,7 +267,7 @@ def test_pax_atime_ctime(tmp_path: Path) -> None:
     path = tmp_path / "pax_times.tar"
     path.write_bytes(buf.getvalue())
     with open_archive(path) as ar:
-        m = ar["p.txt"]
+        m = ar.get("p.txt")
         assert m.accessed is not None
         assert abs(m.accessed.timestamp() - 1_600_000_100.5) < 1e-3
         assert m.created is not None
@@ -385,10 +385,16 @@ def test_compressed_source_size_on_path(tmp_path: Path) -> None:
         assert ar.compressed_source_size == path.stat().st_size
 
 
-def test_compressed_source_size_none_for_plain_and_stream(plain_tar: Path) -> None:
+def test_compressed_source_size_generalized(plain_tar: Path) -> None:
+    # Generalized (for the archive-wide extraction ratio guard): known for any path
+    # source — a plain tar simply yields a harmless ~1:1 ratio — and for seekable
+    # streams via a SEEK_END probe; only a non-seekable stream is unknowable.
     with open_archive(plain_tar) as ar:
-        assert ar.compressed_source_size is None
-    with open_archive(NonSeekableBytesIO(_build_tar("w:gz")), streaming=True) as ar:
+        assert ar.compressed_source_size == plain_tar.stat().st_size
+    data = _build_tar("w:gz")
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR_GZ) as ar:
+        assert ar.compressed_source_size == len(data)
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
         assert ar.compressed_source_size is None
 
 
@@ -548,3 +554,111 @@ def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> Non
             for _member, stream in ar.stream_members():
                 if stream is not None:
                     stream.read()
+
+
+# ---------------------------------------------------------------------------
+# Password rejection and hostile metadata robustness
+# ---------------------------------------------------------------------------
+
+
+def test_password_rejected() -> None:
+    # TAR carries no encryption; a password is API misuse, rejected like the other
+    # unencrypted formats (single-file compressors, ISO, directory) rather than ignored.
+    with pytest.raises(UnsupportedOperationError):
+        open_archive(io.BytesIO(_build_tar()), format=ArchiveFormat.TAR, password="x")
+
+
+def test_out_of_range_mtime_degrades_to_none() -> None:
+    # A crafted PAX mtime beyond datetime's range must not sink the listing.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo("weird.txt")
+        info.size = 0
+        info.mtime = 10**18
+        t.addfile(info)
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.TAR) as reader:
+        (member,) = reader.members()
+        assert member.modified is None
+
+
+# ---------------------------------------------------------------------------
+# Link-target name resolution (relative symlinks, hardlinks, streaming pass)
+# ---------------------------------------------------------------------------
+
+
+def _build_link_tar() -> bytes:
+    """dir/file + a root-level decoy `file`, and links exercising target resolution."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for name, data in [("file", b"ROOT"), ("dir/file", b"NESTED"), ("top.txt", b"TOP")]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        rel = tarfile.TarInfo("dir/rel_link")  # -> dir/file, not the root decoy
+        rel.type = tarfile.SYMTYPE
+        rel.linkname = "file"
+        t.addfile(rel)
+        up = tarfile.TarInfo("dir/up_link")  # ../top.txt -> top.txt
+        up.type = tarfile.SYMTYPE
+        up.linkname = "../top.txt"
+        t.addfile(up)
+        absolute = tarfile.TarInfo("dir/abs_link")  # absolute: outside the archive
+        absolute.type = tarfile.SYMTYPE
+        absolute.linkname = "/etc/passwd"
+        t.addfile(absolute)
+        hard = tarfile.TarInfo("dir/hard")  # hardlink targets are archive-relative
+        hard.type = tarfile.LNKTYPE
+        hard.linkname = "dir/file"
+        t.addfile(hard)
+    return buf.getvalue()
+
+
+def test_relative_symlink_resolves_against_link_directory() -> None:
+    with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
+        member = ar.get("dir/rel_link")
+        assert member.link_target == "file"  # raw stored target is untouched
+        assert member.link_target_member is not None
+        assert member.link_target_member.name == "dir/file"
+        assert ar.read("dir/rel_link") == b"NESTED"  # not the root-level decoy
+
+
+def test_dotdot_symlink_resolves_upward() -> None:
+    with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
+        assert ar.get("dir/up_link").link_target_member.name == "top.txt"
+        assert ar.read("dir/up_link") == b"TOP"
+
+
+def test_absolute_symlink_stays_unresolved() -> None:
+    from archivey.exceptions import LinkTargetNotFoundError
+
+    with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
+        member = ar.get("dir/abs_link")
+        assert member.link_target == "/etc/passwd"
+        assert member.link_target_member is None
+        with pytest.raises(LinkTargetNotFoundError):
+            ar.open(member)
+
+
+def test_hardlink_target_is_archive_relative() -> None:
+    with open_archive(io.BytesIO(_build_link_tar()), format=ArchiveFormat.TAR) as ar:
+        assert ar.get("dir/hard").link_target_member.name == "dir/file"
+        assert ar.read("dir/hard") == b"NESTED"
+
+
+def test_streaming_pass_resolves_backward_links() -> None:
+    # Hardlinks always point at an earlier member (the TAR model), so a single
+    # streaming pass resolves them progressively; relative symlinks to earlier
+    # members resolve too.
+    source = NonSeekableBytesIO(_build_link_tar())
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
+        resolved = {
+            m.name: (m.link_target_member.name if m.link_target_member else None)
+            for m, _stream in ar.stream_members()
+            if m.is_link
+        }
+    assert resolved == {
+        "dir/rel_link": "dir/file",
+        "dir/up_link": "top.txt",
+        "dir/abs_link": None,
+        "dir/hard": "dir/file",
+    }

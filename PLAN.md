@@ -25,10 +25,10 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 | 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams` | `archive/2026-06-21-phase-2-stream-layer` ✓ |
 | 3 | Indexed leaf formats + detection | `format-zip`, `format-tar` (random-access read), `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry`, `access-mode-and-cost` | `archive/2026-06-30-phase-3-indexed-leaf-formats` ✓ |
 | 4 | TAR streaming + safe extraction | `format-tar` (forward-only `stream_members`, hardlinks, truncation), `safe-extraction`, `archive-reading` (sequential + `stream_members`), `format-detection` (gzip-wrapped tar regression), `testing-contract` (adversarial + non-seekable `tar.gz`) | `archive/2026-06-30-package-layout-restructure` ✓ → `phase-4-tar-streaming` + `phase-4-safe-extraction` |
-| 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | — |
+| 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | `phase-5-public-api` |
 | 6 | Writing support | `archive-writing`, `format-zip` / `format-tar` (writers) | — |
 | 7 | Native 7z + RAR read | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
-| 8 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` | — |
+| 8 | Seekable zstd + blocked gzip (rescoped; original zst/lz4 read goals landed in Phases 2–3, `w:zst` moved to Phase 6) | `seekable-decompressor-streams`, `format-single-file-compressors` | `seekable-gzip-and-block-writing` (partial) |
 | 9 | CLI | `cli` | — |
 | 10 | Polish + oracle retirement | `packaging-and-extras` (finalize), `cli`, `testing-contract` (full corpus) | — |
 
@@ -332,22 +332,24 @@ as a light tripwire, not a hard ban).
 **Entry criteria:** Phase 4 green.
 
 ### Tasks
-1. Finalize `archive-reading` (metadata access, membership/random access,
-   `read`/`open`, transparent **link following** with depth limit, context-manager
-   lifecycle).
+1. Finalize `archive-reading` (metadata access, name lookup / identity membership,
+   `read`/`open`, transparent **link following** with cycle detection (no fixed depth
+   limit, per the spec), context-manager lifecycle).
 2. Finalize `archive-data-model` (`ArchiveFormat`/`MemberType` taxonomy,
-   compression-method model, the full `Member` record — hashable, `extra`, digests
+   compression-method model, the full `Member` record — deliberately **unhashable**
+   (mutable; callers key by `name`/`member_id`, per the spec), `extra`, digests
    under algorithm keys, name normalization — and `ArchiveInfo`).
 3. Finalize `access-mode-and-cost` — streaming-mode enforcement and **CostReceipt
    values verified per format**; `error-handling` translation contract (cause/
    traceback preserved; genuine I/O not reclassified; context filled by base reader).
-4. **Finalize the public config surface** — graduate the Phase 4 *stopgap* keyword args
-   into their finalized public form per `SPEC.md`: the decompression-bomb limits
-   (`max_extracted_bytes`, `max_ratio`, `ratio_activation_threshold`, `max_entries`), the
-   `strict_eof` flag (shipped bare on `open_archive()` in `phase-4-tar-streaming`), and the
-   extraction policies (`ExtractionPolicy` / `OverwritePolicy` / `OnError`). Decide whether
-   these live as keyword args or a consolidated config object and lock their defaults —
-   Phase 4 deliberately deferred this "full public config surface" here.
+4. **Finalize the public config surface** — **decided** (see the `phase-5-public-api`
+   change): a frozen `ArchiveyConfig` object passed explicitly (`config=`), carrying the
+   accelerator modes, `strict_archive_eof` (the renamed Phase 4 `strict_eof` stopgap,
+   default False), and `ExtractionLimits` (the bomb knobs). Extraction policies
+   (`ExtractionPolicy` / `OverwritePolicy` / `OnError`) stay per-call keyword args. No
+   ambient (contextvars/global) configuration. Also decided there: the password
+   candidate-sequence + provider model, multi-source acceptance + path volume-set
+   discovery, and the MemberSelector collection semantics.
 
 ### Tests added
 `archive-data-model`, `access-mode-and-cost`, `error-handling`, and the remaining
@@ -370,7 +372,18 @@ correct for every format implemented so far.
 ### Tasks
 `ArchiveWriter` ABC (`add`/`add_bytes`/`add_stream`/`add_member`/`add_members`/
 `close`); `ZipWriter` (`ZipFile.open(name,'w')`, data descriptor for unknown
-size); `TarWriter`; `create_archive()`; `CompressionSpec` model.
+size); `TarWriter` (incl. compressed-tar output — `w:zst` and friends, moved here
+from the original Phase 8); `create_archive()`; `CompressionSpec` model.
+
+> **Pending decisions (resolve in this phase's change proposal):**
+> - *Per-entry `compression` on stream-compressed containers* (`tar.gz`/`tar.zst`):
+>   the codec is stream-level, so a per-entry override is meaningless — error, or
+>   warn-and-ignore? (Leaning: `ValueError` on an explicit per-entry algo; the
+>   writer-level `CompressionSpec` selects the outer codec.)
+> - *`password=` on formats whose writer can't encrypt* (stdlib zipfile cannot write
+>   encryption): must fail fast at `create()` — decide the error type
+>   (`UnsupportedFeatureError` vs `UnsupportedOperationError`) and add a
+>   SUPPORTS_PASSWORD-style WriteBackend field to enforce it centrally.
 
 ### Tests added
 `archive-writing` scenarios; `testing-contract` ZIP/TAR round-trip; conversion
@@ -390,7 +403,12 @@ passing; wire the oracles. See `format-7z/spec.md`, `format-rar/spec.md`,
 `testing-contract/spec.md`.
 
 **Entry criteria:** Phase 6 green; `py7zr`/`rarfile`/`unrar` available as
-dev-group oracles.
+dev-group oracles; the **shared-source stream plumbing** decided/landed — a
+`streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
+handle + a lock + per-view positions) so the native readers support multiple
+concurrently-open member streams by construction, and a decided concurrency
+contract (what is supported vs. what fails loudly — never silent interleaving);
+see the parallel-extraction entry in `IDEAS.md`.
 
 ### Tasks
 1. **Native 7z** header parse (packed streams, folders/coder chains, substreams,
@@ -417,21 +435,36 @@ output matches oracles across the corpus; solid `stream_members()` uses one
 
 ---
 
-## Phase 8 — Zstandard & extended compression
+## Phase 8 — Seekable zstd & blocked-gzip native readers
 
-**Goal:** `.zst`/`.tar.zst` and `.tar.lz4` support.
+> **Rescoped (2026-07):** the original Phase 8 goal — `.zst`/`.tar.zst`/`.tar.lz4`
+> *reading* and `.zst` magic detection — landed early with the Phase 2/3 codec layer
+> (round-trip tests pass today). The remaining write-side piece (`w:zst`) moves to
+> Phase 6 with the other writers. This phase is repurposed for the seekable-stream
+> follow-ons that reuse the segmented-decompressor infrastructure.
+
+**Goal:** frame/block-granular random access for zstd (native, no new dependency) and
+blocked gzip (BGZF/mgzip), per the `seekable-gzip-and-block-writing` change and the
+seekable-zstd analysis in `IDEAS.md` (now scheduled).
 
 ### Tasks
-Single-file `ZST` (`[zstd]`); `.tar.zst` and `w:zst`; `.tar.lz4` (`[lz4]`); `.zst`
-magic in detection.
+1. **Native zstd frame-index reader** on `SegmentedDecompressorStream`: build the frame
+   index from frame headers (`Frame_Content_Size`) and/or the *Seekable Zstd* seek
+   table; fall back to the sequential/rewind path when sizes are absent. Benchmark
+   against stdlib `compression.zstd` and `indexed_zstd` first (per IDEAS: decide with
+   numbers; a `benchmarks/` script).
+2. **Native blocked-gzip (BGZF/mgzip) reader**: member walk via the `BC`/`MZ` extra
+   subfields, per the `seekable-gzip-and-block-writing` proposal (stdlib `zlib` only).
 
 ### Tests added
-`format-single-file-compressors` ZST scenarios; `format-tar` `.tar.zst`/`.tar.lz4`;
-`format-detection` zst magic — all skip when the optional lib is absent.
+Seek-pattern coverage for multi-frame `.zst` (cold sequential, `SEEK_END`, scattered
+seeks, rewind) and BGZF fixtures; plain single-frame `.zst` / non-blocked gzip fall
+back unchanged.
 
 ### Acceptance — spec scenarios covered
-ZST/LZ4 paths of `format-single-file-compressors`, `format-tar`, `format-detection`.
-**Gates:** Pyrefly + ty + ruff clean; tests skip cleanly without the extras.
+The added `seekable-decompressor-streams` requirements (blocked gzip; zstd frame index
+once specced via its own change).
+**Gates:** Pyrefly + ty + ruff clean; no new runtime dependency.
 
 ---
 

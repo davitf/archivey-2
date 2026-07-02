@@ -12,8 +12,9 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     UnsupportedOperationError,
 )
+from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.streamtools import is_seekable
+from archivey.internal.streams.streamtools import is_seekable, source_byte_size
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,
@@ -46,6 +47,11 @@ class ReadBackend(ABC):
     REQUIRES_SEEK: bool = False
     # When True, open_archive(streaming=True) may open a non-seekable source (TAR only).
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
+    # Whether this backend's format has encryption a password could unlock. Checked
+    # centrally by open_archive(): a password passed for a format that cannot use one is
+    # API misuse and is rejected uniformly (backends never see it). ZIP sets this True;
+    # the native 7z/RAR readers (Phase 7) will too.
+    SUPPORTS_PASSWORD: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
@@ -123,10 +129,11 @@ class BaseArchiveReader(ArchiveReader):
       with format detection in Phase 3.)
 
     Access-mode enforcement (independent of the flags above): a ``streaming=True`` reader
-    is forward-only, so ``members``/``len``/``__contains__``/``__getitem__``/``get``/
-    ``open``/``read`` all raise ``UnsupportedOperationError`` — uniformly, not
-    per-backend. Only a single pass of ``__iter__``/``stream_members``/``extract_all``
-    (and ``get_members_if_available``) is allowed.
+    is forward-only, so ``members``/``get``/``open``/``read`` all raise
+    ``UnsupportedOperationError`` — uniformly, not per-backend. Only a single pass of
+    ``__iter__``/``stream_members``/``extract_all`` (and ``get_members_if_available``)
+    is allowed. ``member in reader`` is identity-based and scan-free, so it works in
+    either mode; there is no ``__len__``/``__getitem__`` (name lookup is ``get()``).
 
     **MAY override**:
 
@@ -156,6 +163,9 @@ class BaseArchiveReader(ArchiveReader):
         self._streaming = streaming
         self._archive_name = archive_name
         self._archive_id = str(id(self))
+        # The archive's source, recorded by backends that have one (path or stream);
+        # backs the generalized compressed_source_size property below.
+        self._source: Path | BinaryIO | None = None
         self._members_cache: list[ArchiveMember] | None = None
         self._members_by_name: dict[str, ArchiveMember] | None = None
         self._closed = False
@@ -200,14 +210,20 @@ class BaseArchiveReader(ArchiveReader):
         return None
 
     def _wrap_member_stream(
-        self, inner: BinaryIO, member_name: str | None, *, lazy: bool = False
+        self,
+        inner: BinaryIO,
+        member_name: str | None,
+        *,
+        lazy: bool = False,
+        size: int | None = None,
     ) -> BinaryIO:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
 
-        Backends return ``_wrap_member_stream(raw, member.name)`` from ``_open_member`` so
-        a decode error surfaces as a stamped ``ArchiveyError`` rather than a raw codec
-        exception.
+        Backends return ``_wrap_member_stream(raw, member.name, size=member.size)`` from
+        ``_open_member`` so a decode error surfaces as a stamped ``ArchiveyError`` rather
+        than a raw codec exception, and so the handle advertises its decompressed length
+        (the fsspec-style ``size``) for cheap nested-archive source sizing.
         """
         return ArchiveStream(
             lambda: inner,
@@ -215,6 +231,7 @@ class BaseArchiveReader(ArchiveReader):
             stamp=lambda exc: self._stamp_error_context(exc, member_name),
             lazy=lazy,
             seekable=is_seekable(inner),
+            size=size,
         )
 
     @abstractmethod
@@ -246,6 +263,29 @@ class BaseArchiveReader(ArchiveReader):
         self._members_by_name = by_name
         return members
 
+    @staticmethod
+    def _lookup_link_target(
+        member: ArchiveMember, by_name: Mapping[str, ArchiveMember]
+    ) -> ArchiveMember | None:
+        """The member ``member``'s link target refers to, or ``None`` if not present.
+
+        Resolves the stored target string to an archive-namespace name first (a symlink
+        target is relative to the link's own directory — see
+        :func:`resolve_link_target_name`), then looks it up; directory members carry a
+        trailing ``/`` in their names, so both forms are tried.
+        """
+        if not member.link_target:
+            return None
+        target_name = resolve_link_target_name(
+            member.name, member.link_target, member.type
+        )
+        if target_name is None:
+            return None
+        target = by_name.get(target_name)
+        if target is None and not target_name.endswith("/"):
+            target = by_name.get(target_name + "/")
+        return target
+
     def _resolve_link(
         self,
         member: ArchiveMember,
@@ -255,22 +295,49 @@ class BaseArchiveReader(ArchiveReader):
         visited: set[str] = set()
         current = member
 
-        while current.link_target is not None:
-            target_name = current.link_target
-            if target_name in visited:
+        while current.is_link and current.link_target:
+            if current.name in visited:
                 # Cycle detected; leave link_target_member unset (None) rather than
                 # pointing at an intermediate link in the cycle.
                 return
             visited.add(current.name)
-            target = by_name.get(target_name)
+            target = self._lookup_link_target(current, by_name)
             if target is None:
-                # Missing target - leave link_target_member as None
+                # Missing/unresolvable target - leave link_target_member as None
                 return
             current = target
 
         # Set on the original member (the final resolved target or None on cycle)
         if current is not member:
             member.link_target_member = current
+
+    def _register_progressively(
+        self, members: Iterator[ArchiveMember]
+    ) -> Iterator[ArchiveMember]:
+        """Stamp ids and resolve *backward-pointing* links during a single forward pass.
+
+        Backs the streaming iteration paths. Hardlinks always refer to an earlier member
+        (the TAR model — see ``archive-reading``), so they resolve during the pass; a
+        symlink to an earlier member resolves too, while a forward-pointing one stays
+        unresolved (``link_target_member`` ``None``). A backend that already stamps ids
+        is left untouched (the stamp only fills unset fields).
+        """
+        by_name: dict[str, ArchiveMember] = {}
+        for idx, member in enumerate(members):
+            if member._member_id is None:
+                member._member_id = idx
+                member._archive_id = self._archive_id
+            if member.is_link and member.link_target_member is None:
+                target = self._lookup_link_target(member, by_name)
+                if target is not None and target is not member:
+                    # An earlier link's own resolution is already final; reuse it (an
+                    # unresolved earlier link yields None, i.e. stays unresolved).
+                    if target.is_link:
+                        target = target.link_target_member
+                    if target is not None:
+                        member.link_target_member = target
+            by_name[member.name] = member
+            yield member
 
     # --- Public API ---
 
@@ -305,13 +372,27 @@ class BaseArchiveReader(ArchiveReader):
 
     @property
     def compressed_source_size(self) -> int | None:
-        """Outer compressed byte length when known (``Path``-backed compressed tars); else ``None``."""
-        return None
+        """Byte size of the archive's source when cheaply knowable, else ``None``.
+
+        The denominator for extraction's archive-wide decompression-ratio guard (see
+        ``safe-extraction``): for zip/7z/rar/compressed-tar the source size *is* the
+        compressed size, and for a plain tar or other uncompressed container the
+        resulting ~1:1 ratio simply never trips the guard. Cheap only — see
+        ``source_byte_size``: path ``stat``, a ``size`` attribute (fsspec convention,
+        also on archivey's own member/codec streams, enabling nested archives), a
+        ``try_get_size()`` index scan, or a ``SEEK_END`` probe restricted to provably
+        O(1) types (never a decompressor). Backends record their source in
+        ``self._source``; readers without one (directory) or with an unknowable
+        source report ``None``.
+        """
+        return source_byte_size(self._source) if self._source is not None else None
 
     def __iter__(self) -> Iterator[ArchiveMember]:
         if self._streaming and self._members_cache is None:
-            # Forward-only: stream directly without caching the whole list.
-            yield from self._iter_members()
+            # Forward-only: stream directly without caching the whole list, stamping ids
+            # and resolving backward-pointing links progressively (a forward-pointing
+            # symlink stays unresolved — a single pass cannot see later members).
+            yield from self._register_progressively(self._iter_members())
         else:
             yield from self._get_members_registered()
 
@@ -335,29 +416,22 @@ class BaseArchiveReader(ArchiveReader):
             return self._get_members_registered()
         return None
 
-    def __len__(self) -> int:
-        self._require_random_access("len()")
-        return len(self._get_members_registered())
-
-    def __contains__(self, name: object) -> bool:
-        if not isinstance(name, str):
-            return False
-        self._require_random_access("membership ('in') test")
-        self._get_members_registered()
-        assert self._members_by_name is not None
-        return name in self._members_by_name
-
-    def __getitem__(self, name: str) -> ArchiveMember:
-        self._require_random_access("key lookup")
-        self._get_members_registered()
-        assert self._members_by_name is not None
-        try:
-            return self._members_by_name[name]
-        except KeyError:
-            raise KeyError(f"Member {name!r} not found") from None
+    def __contains__(self, member: object) -> bool:
+        # Identity membership for ArchiveMembers: O(1), no scan, so it works in any
+        # access mode. This method must exist even though it is a convenience — without
+        # a __contains__, the `in` operator falls back to iterating __iter__, which
+        # would silently consume a streaming reader's single forward pass (and compare
+        # members by value). Strings are rejected: name lookup is get().
+        if isinstance(member, ArchiveMember):
+            return member._archive_id == self._archive_id
+        raise TypeError(
+            f"'in <ArchiveReader>' tests whether an ArchiveMember belongs to this "
+            f"reader (by identity); to look up a member by name use reader.get(name). "
+            f"Got {type(member).__name__}.",
+        )
 
     def get(self, name: str, default: ArchiveMember | None = None) -> ArchiveMember | None:
-        self._require_random_access("key lookup")
+        self._require_random_access("get()")
         self._get_members_registered()
         assert self._members_by_name is not None
         return self._members_by_name.get(name, default)
@@ -374,7 +448,10 @@ class BaseArchiveReader(ArchiveReader):
                 "iterate with stream_members() instead.",
             )
         if isinstance(member, str):
-            member = self[member]
+            found = self.get(member)
+            if found is None:
+                raise KeyError(f"Member {member!r} not found")
+            member = found
         return self._open_with_link_follow(member, visited=set())
 
     def _open_with_link_follow(
@@ -397,7 +474,7 @@ class BaseArchiveReader(ArchiveReader):
                     member_name=member.name,
                 )
             target = (
-                self._members_by_name.get(member.link_target)
+                self._lookup_link_target(member, self._members_by_name)
                 if self._members_by_name
                 else None
             )

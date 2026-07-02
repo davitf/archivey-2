@@ -190,33 +190,29 @@ def test_iter_yields_members(simple_dir: Path) -> None:
             assert isinstance(m, ArchiveMember)
 
 
-def test_len(simple_dir: Path) -> None:
+def test_no_len(simple_dir: Path) -> None:
+    # The reader is deliberately not a collection: no __len__ (see archive-reading);
+    # counting goes through members() or iteration.
     with open_archive(simple_dir) as reader:
-        assert len(reader) == len(reader.members())
+        with pytest.raises(TypeError):
+            len(reader)
+        assert len(reader.members()) == len(list(reader))
 
 
-def test_contains(simple_dir: Path) -> None:
-    with open_archive(simple_dir) as reader:
-        assert "a.txt" in reader
-        assert "nonexistent.txt" not in reader
-
-
-def test_getitem(simple_dir: Path) -> None:
-    with open_archive(simple_dir) as reader:
-        member = reader["a.txt"]
-        assert member.name == "a.txt"
-        assert member.type == MemberType.FILE
-
-
-def test_getitem_missing_raises_key_error(simple_dir: Path) -> None:
-    with open_archive(simple_dir) as reader:
-        with pytest.raises(KeyError):
-            _ = reader["does_not_exist.txt"]
-
-
-def test_get_returns_none_for_missing(simple_dir: Path) -> None:
-    with open_archive(simple_dir) as reader:
-        assert reader.get("does_not_exist.txt") is None
+def test_contains_is_identity_membership(simple_dir: Path, tmp_path: Path) -> None:
+    # `member in reader` is identity-based: True for a member this reader yielded,
+    # False for one from a different reader; a string operand raises TypeError
+    # (name lookup is get()).
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    (other_dir / "b.txt").write_bytes(b"x")
+    with open_archive(simple_dir) as reader, open_archive(other_dir) as other:
+        member = reader.get("a.txt")
+        assert member is not None
+        assert member in reader
+        assert member not in other
+        with pytest.raises(TypeError):
+            "a.txt" in reader  # noqa: B015 - the expression itself must raise
 
 
 def test_get_returns_member(simple_dir: Path) -> None:
@@ -224,6 +220,18 @@ def test_get_returns_member(simple_dir: Path) -> None:
         member = reader.get("a.txt")
         assert member is not None
         assert member.name == "a.txt"
+        assert member.type == MemberType.FILE
+
+
+def test_open_missing_name_raises_key_error(simple_dir: Path) -> None:
+    with open_archive(simple_dir) as reader:
+        with pytest.raises(KeyError):
+            reader.open("does_not_exist.txt")
+
+
+def test_get_returns_none_for_missing(simple_dir: Path) -> None:
+    with open_archive(simple_dir) as reader:
+        assert reader.get("does_not_exist.txt") is None
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +247,7 @@ def test_read_file_by_name(simple_dir: Path) -> None:
 
 def test_read_file_by_member(simple_dir: Path) -> None:
     with open_archive(simple_dir) as reader:
-        member = reader["b.txt"]
+        member = reader.get("b.txt")
         data = reader.read(member)
         assert data == b"world"
 
@@ -272,7 +280,7 @@ def test_symlink_member_type(symlink_dir: Path) -> None:
 
 def test_symlink_link_target_member_resolved(symlink_dir: Path) -> None:
     with open_archive(symlink_dir) as reader:
-        link = reader["link.txt"]
+        link = reader.get("link.txt")
         assert link.link_target_member is not None
         assert link.link_target_member.name == "real.txt"
 
@@ -354,7 +362,7 @@ def test_stream_members_with_filter(simple_dir: Path) -> None:
 
 def test_member_is_file_property(simple_dir: Path) -> None:
     with open_archive(simple_dir) as reader:
-        m = reader["a.txt"]
+        m = reader.get("a.txt")
         assert m.is_file is True
         assert m.is_dir is False
         assert m.is_link is False
@@ -362,7 +370,7 @@ def test_member_is_file_property(simple_dir: Path) -> None:
 
 def test_member_is_dir_property(simple_dir: Path) -> None:
     with open_archive(simple_dir) as reader:
-        m = reader["sub/"]
+        m = reader.get("sub/")
         assert m.is_dir is True
         assert m.is_file is False
 
@@ -448,3 +456,12 @@ def test_source_name_for_path_and_stream(tmp_path: Path) -> None:
         assert source_name(f) == str(p)
     # An in-memory stream has no name attribute -> None.
     assert source_name(io.BytesIO(b"")) is None
+
+
+def test_password_rejected(simple_dir: Path) -> None:
+    # Directories carry no encryption; a password is API misuse, rejected like the
+    # other unencrypted formats rather than silently ignored.
+    from archivey.exceptions import UnsupportedOperationError
+
+    with pytest.raises(UnsupportedOperationError):
+        open_archive(simple_dir, password="x")

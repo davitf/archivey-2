@@ -195,7 +195,9 @@ writer (which would force a reopen). When given an `ArchiveReader`, `add_members
 ### Requirement: CompressionSpec model and convenience constants
 
 The system SHALL define a `CompressionSpec` dataclass describing the compression
-algorithm and level for entries written to an archive. The `algo` field is **nullable**
+algorithm and level for entries written to an archive. The algorithm field reuses the
+data model's existing `CompressionAlgorithm` enum (see `archive-data-model`) — no
+separate writer-side enum. The `algo` field is **nullable**
 (`None` = let the backend choose the appropriate algorithm for the format and level),
 and `level` accepts either a numeric value **or** a format-agnostic `CompressionLevel`
 enum so callers can ask for a relative effort without knowing a format's numeric scale.
@@ -209,14 +211,14 @@ class CompressionLevel(Enum):
 
 @dataclass
 class CompressionSpec:
-    algo: CompressionAlgo | None = None                 # None = backend auto-selects
+    algo: CompressionAlgorithm | None = None                 # None = backend auto-selects
     level: int | CompressionLevel = CompressionLevel.DEFAULT
 
 # Convenience constants:
-CompressionSpec.STORED      = CompressionSpec(algo=CompressionAlgo.STORED)
-CompressionSpec.DEFLATE     = CompressionSpec(algo=CompressionAlgo.DEFLATE, level=6)
-CompressionSpec.DEFLATE_MAX = CompressionSpec(algo=CompressionAlgo.DEFLATE, level=CompressionLevel.MAX)
-CompressionSpec.LZMA        = CompressionSpec(algo=CompressionAlgo.LZMA2, level=CompressionLevel.DEFAULT)
+CompressionSpec.STORED      = CompressionSpec(algo=CompressionAlgorithm.STORED)
+CompressionSpec.DEFLATE     = CompressionSpec(algo=CompressionAlgorithm.DEFLATE, level=6)
+CompressionSpec.DEFLATE_MAX = CompressionSpec(algo=CompressionAlgorithm.DEFLATE, level=CompressionLevel.MAX)
+CompressionSpec.LZMA        = CompressionSpec(algo=CompressionAlgorithm.LZMA2, level=CompressionLevel.DEFAULT)
 ```
 
 **Resolution table** (how `(algo, level)` is resolved by the backend). `compression=None`
@@ -233,7 +235,7 @@ at `create()`/`add_*` is equivalent to `CompressionSpec(algo=None, level=DEFAULT
 Convenience constants SHALL be available as class attributes on `CompressionSpec`.
 
 **Fail fast on an unavailable codec — never silently fall back.** When the caller names an
-explicit `algo` whose backend is not installed (e.g. `algo=CompressionAlgo.ZSTD` without the
+explicit `algo` whose backend is not installed (e.g. `algo=CompressionAlgorithm.ZSTD` without the
 `[zstd]` extra, or a `[7z]`-only codec for a 7z write), `create()` (or the first `add_*` that
 would use it) SHALL raise immediately — `PackageNotInstalledError` when a package/tool is
 missing, or `UnsupportedFeatureError` when the target format cannot represent the codec at
@@ -244,7 +246,7 @@ one that is actually available.)
 
 #### Scenario: explicit codec without its extra fails fast
 
-- **WHEN** `archivey.create(dest, fmt, compression=CompressionSpec(algo=CompressionAlgo.ZSTD))` is called and the `[zstd]` extra is not installed
+- **WHEN** `archivey.create(dest, fmt, compression=CompressionSpec(algo=CompressionAlgorithm.ZSTD))` is called and the `[zstd]` extra is not installed
 - **THEN** `PackageNotInstalledError` is raised naming the missing package; no archive is written and no fallback codec is substituted
 
 #### Scenario: auto algorithm at a symbolic level
@@ -264,7 +266,7 @@ one that is actually available.)
 
 #### Scenario: STORE level overrides an explicit algorithm
 
-- **WHEN** `compression=CompressionSpec(algo=CompressionAlgo.LZMA2, level=CompressionLevel.STORE)` is passed
+- **WHEN** `compression=CompressionSpec(algo=CompressionAlgorithm.LZMA2, level=CompressionLevel.STORE)` is passed
 - **THEN** the entry is written `STORED` (uncompressed) and a `logging.WARNING` notes the contradictory combination
 
 #### Scenario: out-of-range numeric level is rejected

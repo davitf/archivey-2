@@ -131,7 +131,7 @@ def test_joliet_namespace_and_fidelity(tmp_path: Path) -> None:
     path.write_bytes(_build_iso(rock_ridge=False, joliet=True))
     with open_archive(path) as ar:
         assert ar.info.extra["iso.namespace"] == "joliet"
-        f = ar["file.txt"]  # Joliet preserves case
+        f = ar.get("file.txt")  # Joliet preserves case
         # Joliet carries no POSIX metadata.
         assert f.mode is None and f.uid is None and f.gid is None
 
@@ -145,7 +145,7 @@ def test_plain_iso_namespace_and_fidelity(tmp_path: Path) -> None:
         # Plain ISO 9660: upper-case 8.3 names, ;version suffix stripped.
         assert "FILE.TXT" in names
         assert "DIR/" in names
-        assert ar["FILE.TXT"].mode is None  # no POSIX metadata
+        assert ar.get("FILE.TXT").mode is None  # no POSIX metadata
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ def test_streaming_over_seekable_iso(rock_ridge_iso: Path) -> None:
 def test_file_member_storage_attributes(rock_ridge_iso: Path) -> None:
     # ISO members are stored uncompressed and unencrypted, with no per-member checksum.
     with open_archive(rock_ridge_iso) as ar:
-        m = ar["file.txt"]
+        m = ar.get("file.txt")
         assert m.type == MemberType.FILE
         assert m.size == len(b"hello world")
         assert m.compressed_size == m.size
@@ -258,3 +258,13 @@ def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
 
 def test_iso_full_support_with_pycdlib() -> None:
     assert format_availability(ArchiveFormat.ISO).support == FormatSupport.FULL
+
+
+def test_open_from_mid_positioned_stream(rock_ridge_iso: Path) -> None:
+    # pycdlib addresses the image with absolute offsets; open_archive normalizes a
+    # mid-positioned stream to a zero-origin view, so an embedded image still opens.
+    junk = b"J" * 51
+    stream = io.BytesIO(junk + rock_ridge_iso.read_bytes())
+    stream.seek(len(junk))
+    with open_archive(stream, format=ArchiveFormat.ISO) as ar:
+        assert any(m.is_file for m in ar.members())

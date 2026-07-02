@@ -23,7 +23,7 @@ import abc
 import io
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from archivey.internal.streams.streamtools.binaryio import is_seekable
+from archivey.internal.streams.streamtools.binaryio import is_seekable, source_name
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -72,6 +72,22 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
 
     def write(self, b: Any, /) -> int:
         raise io.UnsupportedOperation("write")
+
+    @property
+    def mode(self) -> str:
+        # typing.IO declares an abstract `mode` property whose stub body returns None at
+        # runtime; libraries that duck-type it (pycdlib does `'b' not in fp.mode`) then
+        # crash on our wrappers. Every stream here is read-only binary by construction.
+        return "rb"
+
+    @property
+    def name(self) -> str:
+        # Same typing.IO stub issue for `name`: pycdlib on Windows does
+        # `hasattr(fp, 'name') and fp.name.startswith(r'\\.\')` and crashes when the
+        # stub returns None. Streams without a real path name (BytesIO, in-memory views)
+        # must not expose `name` at all — match their duck-typing surface where
+        # hasattr(..., 'name') is False.
+        raise AttributeError("name")
 
 
 class DelegatingStream(ReadOnlyIOStream):
@@ -124,3 +140,10 @@ class DelegatingStream(ReadOnlyIOStream):
             return
         self._inner.close()
         super().close()
+
+    @property
+    def name(self) -> str:
+        resolved = source_name(self._inner)
+        if resolved is not None:
+            return resolved
+        raise AttributeError("name")
