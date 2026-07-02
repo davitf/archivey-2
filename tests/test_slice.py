@@ -131,13 +131,16 @@ class TestFixStreamStartPosition:
         assert fixed.tell() == 0
         assert fixed.read(5) == DATA[10:15]
 
-    def test_midstream_slice_has_no_name(self) -> None:
-        # pycdlib on Windows: hasattr(fp, 'name') and fp.name.startswith(r'\\.\')
-        # crashes when typing.BinaryIO's stub name is None; BytesIO has no name attr.
-        stream = io.BytesIO(DATA)
-        stream.seek(10)
-        fixed = fix_stream_start_position(stream)
-        assert not hasattr(fixed, "name")
+    def test_midstream_slice_has_no_name(self, tmp_path: Path) -> None:
+        # fix_stream_start_position wraps mid-positioned streams; see
+        # TestSlicingStreamName.test_name_not_forwarded_from_underlying for why name
+        # must stay absent (pycdlib Windows + reopen-by-name footgun).
+        path = tmp_path / "data.bin"
+        path.write_bytes(DATA)
+        with open(path, "rb") as stream:
+            stream.seek(10)
+            fixed = fix_stream_start_position(stream)
+            assert not hasattr(fixed, "name")
 
     def test_non_seekable_passthrough(self) -> None:
         stream = NonSeekableBytesIO(DATA)
@@ -145,16 +148,33 @@ class TestFixStreamStartPosition:
 
 
 class TestSlicingStreamName:
-    def test_no_name_for_bytesio_underlying(self) -> None:
-        sliced = SlicingStream(io.BytesIO(DATA), start=5)
-        assert not hasattr(sliced, "name")
+    def test_name_not_forwarded_from_underlying(self, tmp_path: Path) -> None:
+        """SlicingStream must not expose ``name``, even when the underlying stream has one.
 
-    def test_forwards_file_name(self, tmp_path: Path) -> None:
+        Two independent reasons — do not "fix" this by forwarding ``underlying.name``
+        without considering both:
+
+        1. **View semantics.** A slice remaps the origin (``tell()==0`` is mid-file on the
+           underlying). ``stream.name`` conventionally means "reopen this path from byte 0";
+           forwarding would mislead libraries that stat or ``open()`` by name into reading
+           the unsliced file (embedded-archive / ``fix_stream_start_position`` cases).
+
+        2. **Stub vs absent.** Our wrappers inherit ``typing.BinaryIO``'s stub ``name``
+           (``None`` at runtime). ``hasattr(stream, 'name')`` must stay ``False`` on
+           nameless views so consumers like pycdlib's Windows raw-device check
+           (``fp.name.startswith(r'\\.\')``) do not crash on ``None``. Real file objects
+           and ``BytesIO`` already behave this way; the slice wrapper must match.
+
+        Callers that need a path for errors/metadata should use ``source_name()`` on the
+        *original* source before wrapping (``open_archive`` captures ``archive_name`` that
+        way). Logical slice length is ``SlicingStream.size``, not ``name``.
+        """
         path = tmp_path / "data.bin"
         path.write_bytes(DATA)
         with open(path, "rb") as underlying:
+            assert underlying.name == str(path)
             sliced = SlicingStream(underlying, start=5, length=10)
-            assert sliced.name == str(path)
+            assert not hasattr(sliced, "name")
 
 
 class TestSlicingStreamSize:

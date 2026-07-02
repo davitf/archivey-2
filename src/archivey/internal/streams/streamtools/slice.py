@@ -11,11 +11,7 @@ import io
 from typing import BinaryIO
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
-from archivey.internal.streams.streamtools.binaryio import (
-    is_seekable,
-    source_byte_size,
-    source_name,
-)
+from archivey.internal.streams.streamtools.binaryio import is_seekable, source_byte_size
 
 
 class SlicingStream(ReadOnlyIOStream):
@@ -37,6 +33,9 @@ class SlicingStream(ReadOnlyIOStream):
     *non-owning view*: it must NOT close the underlying stream (the container owns it), whereas
     ``DelegatingStream.close`` closes its inner. So delegation would be both useless (almost
     everything is overridden) and unsafe (the close default).
+
+    It also does not expose ``name``: a slice view remaps the origin, so forwarding the
+    underlying path would mislead libraries that reopen or stat by ``stream.name``.
     """
 
     def __init__(
@@ -130,13 +129,6 @@ class SlicingStream(ReadOnlyIOStream):
         if underlying is None:
             return None
         return max(underlying - self._start, 0)
-
-    @property
-    def name(self) -> str:
-        resolved = source_name(self._stream)
-        if resolved is not None:
-            return resolved
-        raise AttributeError("name")
 
 
 def fix_stream_start_position(stream: BinaryIO) -> BinaryIO:
