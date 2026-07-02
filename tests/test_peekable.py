@@ -84,9 +84,10 @@ def test_name_passthrough(tmp_path) -> None:
         assert stream.name == str(path)
 
 
-def test_name_none_for_anonymous_stream() -> None:
+def test_name_absent_for_anonymous_stream() -> None:
+    # Same contract as SlicingStream: no name attr when the underlying has none.
     stream = PeekableStream(NonSeekableBytesIO(b"abc"))
-    assert stream.name is None
+    assert not hasattr(stream, "name")
 
 
 def test_works_as_binaryio_for_buffered_reader() -> None:
