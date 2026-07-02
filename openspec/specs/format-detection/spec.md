@@ -277,10 +277,12 @@ and the backend rather than detection consuming bytes the caller can no longer r
 
 - For **paths and seekable streams**: detection reads via `peek`/`read` and restores
   the stream's **starting position** (its `tell()` on entry) afterwards; no wrapper is
-  needed. The archive is taken to begin wherever the caller positioned the stream, so
-  an archive embedded mid-file detects against the right bytes and the backend then
-  reads from the same origin (backends that address the source absolutely — ISO via
-  `pycdlib` — still require position 0; see `format-iso`).
+  needed for detection itself. The archive is taken to begin wherever the caller
+  positioned the stream, so an archive embedded mid-file detects against the right
+  bytes. `open_archive()` then normalizes the origin for the backend: a seekable
+  stream positioned mid-file is wrapped in a zero-origin view (`SlicingStream`) so
+  every backend — including those that address the source with absolute offsets, like
+  ISO via `pycdlib` — sees the archive begin at `tell() == 0`.
 - For **non-seekable streams**: `open_archive()` SHALL wrap the source in a
   `PeekableStream` **before** running detection and pass that same `PeekableStream`
   to both detection and the backend. Detection inspects bytes through

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.exceptions import StreamNotSeekableError
+from archivey.exceptions import StreamNotSeekableError, UnsupportedOperationError
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.registry import (
     FormatAvailability,
@@ -17,7 +17,12 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.streams.peekable import PeekableStream
-from archivey.internal.streams.streamtools import is_seekable, is_stream, source_name
+from archivey.internal.streams.streamtools import (
+    fix_stream_start_position,
+    is_seekable,
+    is_stream,
+    source_name,
+)
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat
 
@@ -63,11 +68,10 @@ def open_archive(
     consumes bytes the backend still needs.
 
     A seekable stream source is taken to hold the archive **starting at its current
-    position** — detection peeks from there and restores the position, and the TAR /
-    single-file-compressor backends read from there (so an archive embedded mid-file
-    works without slicing). ZIP tolerates prefix data by design (offsets are resolved
-    from the end-of-central-directory). ISO is the exception: ``pycdlib`` addresses the
-    image with absolute offsets, so an ISO stream must start at position 0.
+    position**: detection peeks from there and restores the position, and the opener
+    then wraps a mid-positioned stream in a zero-origin view so every backend sees the
+    archive begin at ``tell() == 0`` (an archive embedded mid-file works uniformly,
+    without manual slicing).
     """
     # Import backends to ensure they are registered
     import archivey.internal.backends  # noqa: F401
@@ -99,6 +103,15 @@ def open_archive(
     registry = get_registry()
     backend_cls = registry.reader_for_format(format)
 
+    # A password for a format that has no encryption is API misuse, rejected centrally
+    # (backends declare SUPPORTS_PASSWORD as data and never see the argument otherwise).
+    if password is not None and not backend_cls.SUPPORTS_PASSWORD:
+        raise UnsupportedOperationError(
+            f"Format {format!r} does not support passwords (it carries no encryption).",
+            source_format=format,
+            archive_name=archive_name,
+        )
+
     # Fail fast for a seek-requiring backend on a non-seekable source (the access-mode
     # contract: streaming=False does not implicitly buffer). Per-backend opt-in only:
     # TAR may open non-seekable sources under streaming=True; ZIP/ISO still fail fast.
@@ -114,6 +127,13 @@ def open_archive(
             source_format=format,
             archive_name=archive_name,
         )
+
+    # Normalize the stream origin once for every backend: a seekable stream positioned
+    # mid-file is wrapped so the backend sees tell() == 0 at the archive's first byte
+    # (the stream-position contract in format-detection). Done after detection, which
+    # peeks from and restores the same origin.
+    if is_stream(open_source) and is_seekable(open_source):
+        open_source = fix_stream_start_position(open_source)
 
     # Thread the encoding: an explicit caller encoding wins, else the detector's hint, else
     # None (the backend auto-detects).

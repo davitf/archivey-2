@@ -47,6 +47,11 @@ class ReadBackend(ABC):
     REQUIRES_SEEK: bool = False
     # When True, open_archive(streaming=True) may open a non-seekable source (TAR only).
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
+    # Whether this backend's format has encryption a password could unlock. Checked
+    # centrally by open_archive(): a password passed for a format that cannot use one is
+    # API misuse and is rejected uniformly (backends never see it). ZIP sets this True;
+    # the native 7z/RAR readers (Phase 7) will too.
+    SUPPORTS_PASSWORD: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None

@@ -91,10 +91,15 @@ class TestSlicingStream:
         assert sliced.seek(0, io.SEEK_END) == len(DATA) - 10
         assert sliced.read(1) == b""
 
-    def test_seek_end_no_length_nonzero_offset_unsupported(self) -> None:
+    def test_seek_end_no_length_nonzero_offset(self) -> None:
+        # With no declared length the slice ends at the underlying EOF; SEEK_END with a
+        # non-zero offset probes that end on demand and positions relative to it.
         sliced = SlicingStream(io.BytesIO(DATA), start=5)
-        with pytest.raises(io.UnsupportedOperation, match="SEEK_END is not supported"):
-            sliced.seek(-1, io.SEEK_END)
+        slice_len = len(DATA) - 5
+        assert sliced.seek(-3, io.SEEK_END) == slice_len - 3
+        assert sliced.read() == DATA[-3:]
+        assert sliced.seek(2, io.SEEK_END) == slice_len + 2  # past-end allowed, like BytesIO
+        assert sliced.read(1) == b""
 
     def test_non_seekable_no_start(self) -> None:
         sliced = SlicingStream(NonSeekableBytesIO(DATA), length=15)

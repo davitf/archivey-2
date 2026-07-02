@@ -73,6 +73,13 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
     def write(self, b: Any, /) -> int:
         raise io.UnsupportedOperation("write")
 
+    @property
+    def mode(self) -> str:
+        # typing.IO declares an abstract `mode` property whose stub body returns None at
+        # runtime; libraries that duck-type it (pycdlib does `'b' not in fp.mode`) then
+        # crash on our wrappers. Every stream here is read-only binary by construction.
+        return "rb"
+
 
 class DelegatingStream(ReadOnlyIOStream):
     """A read-only wrapper around one inner ``BinaryIO``, forwarding to it by default.

@@ -83,7 +83,6 @@ class SlicingStream(ReadOnlyIOStream):
 
         assert self._start is not None  # always set for seekable streams
         start_abs = self._start
-        current_abs = start_abs + self._pos
 
         if whence == io.SEEK_SET:
             new_relative = offset
@@ -91,16 +90,12 @@ class SlicingStream(ReadOnlyIOStream):
             new_relative = self._pos + offset
         elif whence == io.SEEK_END:
             if self._length is None:
-                if offset != 0:
-                    raise io.UnsupportedOperation(
-                        "SEEK_END is not supported when slice length is not defined "
-                        "and offset is non-zero"
-                    )
-                underlying_end = self._stream.seek(0, io.SEEK_END)
-                self._stream.seek(current_abs)  # restore for the caller's mental model
-                new_relative = underlying_end - start_abs
+                # No declared length: the slice ends where the underlying stream does,
+                # so probe that end on demand (the seek below repositions regardless).
+                end_relative = self._stream.seek(0, io.SEEK_END) - start_abs
             else:
-                new_relative = self._length + offset
+                end_relative = self._length
+            new_relative = end_relative + offset
         else:
             raise ValueError(f"Invalid whence: {whence}")
 

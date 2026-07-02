@@ -366,6 +366,7 @@ class ZipReadBackend(ReadBackend):
         MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
     )
     REQUIRES_SEEK = True
+    SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
 
     def open_read(
         self,

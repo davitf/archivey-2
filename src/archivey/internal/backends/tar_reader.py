@@ -27,7 +27,6 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     TruncatedError,
-    UnsupportedOperationError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig
@@ -133,11 +132,7 @@ class TarReader(BaseArchiveReader):
         archive_name: str | None,
         strict_eof: bool = False,
     ) -> None:
-        if password is not None:
-            raise UnsupportedOperationError(
-                "TAR archives do not support passwords (they carry no encryption).",
-                archive_name=archive_name,
-            )
+        # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
         super().__init__(format, streaming, archive_name)
         self._encoding = encoding
         self._strict_eof = strict_eof

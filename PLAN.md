@@ -28,7 +28,7 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 | 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | — |
 | 6 | Writing support | `archive-writing`, `format-zip` / `format-tar` (writers) | — |
 | 7 | Native 7z + RAR read | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
-| 8 | Zstandard + extended compression | `format-single-file-compressors`, `format-tar`, `format-detection` | — |
+| 8 | Seekable zstd + blocked gzip (rescoped; original zst/lz4 read goals landed in Phases 2–3, `w:zst` moved to Phase 6) | `seekable-decompressor-streams`, `format-single-file-compressors` | `seekable-gzip-and-block-writing` (partial) |
 | 9 | CLI | `cli` | — |
 | 10 | Polish + oracle retirement | `packaging-and-extras` (finalize), `cli`, `testing-contract` (full corpus) | — |
 
@@ -332,11 +332,12 @@ as a light tripwire, not a hard ban).
 **Entry criteria:** Phase 4 green.
 
 ### Tasks
-1. Finalize `archive-reading` (metadata access, membership/random access,
-   `read`/`open`, transparent **link following** with depth limit, context-manager
-   lifecycle).
+1. Finalize `archive-reading` (metadata access, name lookup / identity membership,
+   `read`/`open`, transparent **link following** with cycle detection (no fixed depth
+   limit, per the spec), context-manager lifecycle).
 2. Finalize `archive-data-model` (`ArchiveFormat`/`MemberType` taxonomy,
-   compression-method model, the full `Member` record — hashable, `extra`, digests
+   compression-method model, the full `Member` record — deliberately **unhashable**
+   (mutable; callers key by `name`/`member_id`, per the spec), `extra`, digests
    under algorithm keys, name normalization — and `ArchiveInfo`).
 3. Finalize `access-mode-and-cost` — streaming-mode enforcement and **CostReceipt
    values verified per format**; `error-handling` translation contract (cause/
@@ -417,21 +418,36 @@ output matches oracles across the corpus; solid `stream_members()` uses one
 
 ---
 
-## Phase 8 — Zstandard & extended compression
+## Phase 8 — Seekable zstd & blocked-gzip native readers
 
-**Goal:** `.zst`/`.tar.zst` and `.tar.lz4` support.
+> **Rescoped (2026-07):** the original Phase 8 goal — `.zst`/`.tar.zst`/`.tar.lz4`
+> *reading* and `.zst` magic detection — landed early with the Phase 2/3 codec layer
+> (round-trip tests pass today). The remaining write-side piece (`w:zst`) moves to
+> Phase 6 with the other writers. This phase is repurposed for the seekable-stream
+> follow-ons that reuse the segmented-decompressor infrastructure.
+
+**Goal:** frame/block-granular random access for zstd (native, no new dependency) and
+blocked gzip (BGZF/mgzip), per the `seekable-gzip-and-block-writing` change and the
+seekable-zstd analysis in `IDEAS.md` (now scheduled).
 
 ### Tasks
-Single-file `ZST` (`[zstd]`); `.tar.zst` and `w:zst`; `.tar.lz4` (`[lz4]`); `.zst`
-magic in detection.
+1. **Native zstd frame-index reader** on `SegmentedDecompressorStream`: build the frame
+   index from frame headers (`Frame_Content_Size`) and/or the *Seekable Zstd* seek
+   table; fall back to the sequential/rewind path when sizes are absent. Benchmark
+   against stdlib `compression.zstd` and `indexed_zstd` first (per IDEAS: decide with
+   numbers; a `benchmarks/` script).
+2. **Native blocked-gzip (BGZF/mgzip) reader**: member walk via the `BC`/`MZ` extra
+   subfields, per the `seekable-gzip-and-block-writing` proposal (stdlib `zlib` only).
 
 ### Tests added
-`format-single-file-compressors` ZST scenarios; `format-tar` `.tar.zst`/`.tar.lz4`;
-`format-detection` zst magic — all skip when the optional lib is absent.
+Seek-pattern coverage for multi-frame `.zst` (cold sequential, `SEEK_END`, scattered
+seeks, rewind) and BGZF fixtures; plain single-frame `.zst` / non-blocked gzip fall
+back unchanged.
 
 ### Acceptance — spec scenarios covered
-ZST/LZ4 paths of `format-single-file-compressors`, `format-tar`, `format-detection`.
-**Gates:** Pyrefly + ty + ruff clean; tests skip cleanly without the extras.
+The added `seekable-decompressor-streams` requirements (blocked gzip; zstd frame index
+once specced via its own change).
+**Gates:** Pyrefly + ty + ruff clean; no new runtime dependency.
 
 ---
 

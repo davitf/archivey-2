@@ -14,7 +14,6 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
-from archivey.exceptions import UnsupportedOperationError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.registry import register_reader
 from archivey.types import (
@@ -223,14 +222,9 @@ class DirectoryReadBackend(ReadBackend):
         strict_eof: bool = False,
     ) -> DirectoryReader:
         # `format` is always DIRECTORY here (single-format backend); accepted for the
-        # uniform ReadBackend signature.
+        # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
-        if password is not None:
-            raise UnsupportedOperationError(
-                "Directories do not support passwords (they carry no encryption).",
-                archive_name=archive_name,
-            )
         return DirectoryReader(source, streaming, archive_name or str(source))
 
 

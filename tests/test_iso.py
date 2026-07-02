@@ -258,3 +258,13 @@ def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
 
 def test_iso_full_support_with_pycdlib() -> None:
     assert format_availability(ArchiveFormat.ISO).support == FormatSupport.FULL
+
+
+def test_open_from_mid_positioned_stream(rock_ridge_iso: Path) -> None:
+    # pycdlib addresses the image with absolute offsets; open_archive normalizes a
+    # mid-positioned stream to a zero-origin view, so an embedded image still opens.
+    junk = b"J" * 51
+    stream = io.BytesIO(junk + rock_ridge_iso.read_bytes())
+    stream.seek(len(junk))
+    with open_archive(stream, format=ArchiveFormat.ISO) as ar:
+        assert any(m.is_file for m in ar.members())

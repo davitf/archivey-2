@@ -224,8 +224,12 @@ decoded once, its members yielded in archive order as the decompressor produces
 bytes, with no buffering of the whole folder and no background thread or queue.
 Peak memory is bounded by the decompressor's working set rather than the folder's
 uncompressed size. For random `ar.open()` of a member inside a solid folder, the
-backend decodes the folder from its start; it MAY cache the decoded folder so that
-repeated access to members of the same folder is served without re-decoding.
+backend decodes the folder from its start; it MAY retain decoded folder output so that
+repeated access to members of the same folder is served without re-decoding — but any
+such retention MUST honor `archive-reading`'s bounded-memory rule (no growing cache of
+decompressed block data held in RAM until `close()`): a decoded-folder cache is spilled
+to a temporary file on disk and/or explicitly bounded, with the exact mechanism decided
+in the Phase 7 change proposal.
 
 #### Scenario: streaming a solid 7z archive
 
@@ -235,7 +239,7 @@ repeated access to members of the same folder is served without re-decoding.
 #### Scenario: random access into a solid folder
 
 - **WHEN** `ar.open(member)` is called for a member inside a multi-file folder
-- **THEN** the backend decodes the folder from its start to produce the member's bytes, optionally caching the decoded folder for subsequent access
+- **THEN** the backend decodes the folder from its start to produce the member's bytes, optionally retaining the decoded output for subsequent access within the bounded-memory rule (disk spill / explicit bound)
 
 ---
 

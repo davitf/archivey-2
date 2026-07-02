@@ -18,7 +18,7 @@ The system SHALL provide an `archivey` command that exposes at minimum the follo
 #### Scenario: verifying archive integrity
 
 - **WHEN** the user runs `archivey test <archive>`
-- **THEN** the command verifies each member's CRC and SHA256 integrity and reports any failures
+- **THEN** the command reads every member fully, verifying each stored digest (e.g. CRC32; Blake2sp for RAR5) via the shared verification stage, and reports any failures
 
 #### Scenario: extracting archive contents
 

@@ -26,7 +26,7 @@ The system SHALL expose the following cost and capability properties for every o
 #### Scenario: Central directory lookup is O(1)
 
 - **WHEN** `reader.get("some/member.txt")` is called on a ZIP reader
-- **THEN** the lookup is satisfied via the in-memory `NameToInfo` dict with no additional I/O
+- **THEN** the lookup is satisfied via the reader's in-memory name→member map (built from the central directory) with no additional I/O
 
 ### Requirement: Map ZIP member metadata to the unified ArchiveMember model
 
@@ -46,15 +46,21 @@ The system SHALL map each `ZipInfo` entry to a `ArchiveMember` dataclass using t
 - `compression`: map `compress_type` integer to `CompressionMethod`.
 - `is_encrypted`: set to `True` when `flag_bits & 0x1` is non-zero.
 
-> **Phase 3 → 7 gap (member decode via stdlib zipfile).** Until the
-> `compressed-streams` codec layer is wired into ZIP member reads (Phase 7, alongside
-> the native 7z reader's container codecs), member *data* decompression goes through
-> stdlib `zipfile`, which cannot decode deflate64/PPMd (or zstd before Python 3.14)
-> even when the corresponding codec packages are installed — reading such a member
-> raises `UnsupportedFeatureError`. `format_availability(ZIP)`'s FULL/PARTIAL result
-> (see `backend-registry`) describes the intended post-Phase-7 composition over those
-> codecs, so until then it can report FULL while these rare member codecs still fail
-> at read time. Listing is unaffected.
+> **Phase 3 → 7 gap (member decode via stdlib zipfile).** Member *data* decompression
+> currently goes through stdlib `zipfile`, which cannot decode deflate64/PPMd (or zstd
+> before Python 3.14) even when the corresponding codec packages are installed —
+> reading such a member raises `UnsupportedFeatureError`. `format_availability(ZIP)`'s
+> FULL/PARTIAL result (see `backend-registry`) describes the intended composition over
+> those codecs, so until the gap closes it can report FULL while these rare member
+> codecs still fail at read time. Listing is unaffected.
+>
+> The intended fix (Phase 7, alongside the 7z container codecs — see
+> `openspec/project.md`) keeps `zipfile` for the central directory but bypasses its
+> decompressor for member data: locate the member's raw compressed bytes (local-header
+> offset + a `SlicingStream` view) and decode them through the shared
+> `compressed-streams` codec layer. `zipfile` exposes no decompressor plug-in point, so
+> this raw-slice route — a first step toward the full native ZIP reader in `IDEAS.md` —
+> is the mechanism; the Phase 7 change proposal specifies it.
 
 #### Scenario: Unix mode from external_attr
 

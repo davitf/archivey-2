@@ -276,14 +276,27 @@ The transforms per policy are:
 
 ### Requirement: Overwrite Policy
 
-The system SHALL enforce the `OverwritePolicy` when a destination file already exists at the path a member would be written to.
+The system SHALL enforce the `OverwritePolicy` when a destination entry already exists at the path a member would be written to.
 
 ```python
 class OverwritePolicy(Enum):
-    ERROR   = "error"   # raise ExtractionError if destination file exists
-    SKIP    = "skip"    # silently skip existing files
-    REPLACE = "replace" # overwrite unconditionally
+    ERROR   = "error"   # raise ExtractionError if destination entry exists
+    SKIP    = "skip"    # silently skip existing entries
+    REPLACE = "replace" # replace unconditionally (unlink, then create fresh)
 ```
+
+Two symlink-safety rules apply to all three policies:
+
+- **Existence is checked with `lstat` semantics** (the entry itself, never its target).
+  A *dangling* symlink at the destination path counts as an existing entry — a
+  follow-the-link existence check would report "absent" and a subsequent
+  `open(path, "wb")` would create the file at the symlink's **target**, an attacker-
+  controllable location.
+- **`REPLACE` means unlink-then-create, never write-through.** If the existing entry is
+  a symlink (planted by an earlier hostile member, a previous extraction, or anything
+  else), replacing the member MUST remove the link itself and create a fresh entry at
+  the path — it MUST NOT open the existing path for writing, which would follow the
+  link and write somewhere else under the member's name.
 
 #### Scenario: ERROR raises on existing file
 
@@ -298,7 +311,17 @@ class OverwritePolicy(Enum):
 #### Scenario: REPLACE overwrites unconditionally
 
 - **WHEN** a member would write to an existing path and `OverwritePolicy.REPLACE` is active
-- **THEN** the existing file is overwritten with the member's data
+- **THEN** the existing entry is removed and replaced with the member's data
+
+#### Scenario: REPLACE of an existing symlink does not write through it
+
+- **WHEN** the destination path is an existing symlink (e.g. planted by an earlier member) and `OverwritePolicy.REPLACE` is active
+- **THEN** the symlink itself is unlinked and the member is created fresh at the path; no bytes are ever written through the old link to its target
+
+#### Scenario: dangling symlink at the destination counts as existing
+
+- **WHEN** the destination path is a dangling symlink and `OverwritePolicy.ERROR` (or `SKIP`) is active
+- **THEN** the entry is treated as existing — `ExtractionError` is raised (or the member is skipped); the extractor never opens the path for writing, which would create the file at the link's target
 
 ---
 

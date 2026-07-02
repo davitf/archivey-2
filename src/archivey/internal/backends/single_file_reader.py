@@ -25,10 +25,7 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
-from archivey.exceptions import (
-    ArchiveyError,
-    UnsupportedOperationError,
-)
+from archivey.exceptions import ArchiveyError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig
 from archivey.internal.registry import register_reader
@@ -82,20 +79,12 @@ class SingleFileReader(BaseArchiveReader):
         encoding: str | None,
         archive_name: str | None,
     ) -> None:
-        if password is not None:
-            raise UnsupportedOperationError(
-                "Single-file compressors do not support passwords (they carry no encryption)."
-            )
+        # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
         super().__init__(format, streaming, archive_name)
         self._source = source
         self._stream_codec = stream_codec_for_format(format.stream)
         self._codec = self._stream_codec.codec
         self._seekable = not is_stream(source) or is_seekable(source)
-        # The compressed stream starts wherever the caller positioned the source (the
-        # stream-position contract): remember it so re-opens rewind *here*, not to 0.
-        self._source_start = (
-            source.tell() if is_stream(source) and is_seekable(source) else 0
-        )
 
         # A non-seekable source cannot be randomly accessed, so engaging a random-access
         # accelerator (rapidgzip) is pointless — and would in fact fail at *open*: rapidgzip
@@ -164,8 +153,10 @@ class SingleFileReader(BaseArchiveReader):
         if isinstance(src, PeekableStream):
             return src.peek(length)
         if is_seekable(src):
+            # open_archive normalizes the origin (a mid-positioned stream arrives wrapped
+            # with tell() == 0 at the archive's first byte), so 0 is the archive start.
             pos = src.tell()
-            src.seek(self._source_start)
+            src.seek(0)
             data = read_exact(src, length)
             src.seek(pos)
             return data
@@ -197,11 +188,10 @@ class SingleFileReader(BaseArchiveReader):
         yield self._member
 
     def _open_codec_stream(self) -> BinaryIO:
-        """Open a fresh decompression stream over the source (rewinding a seekable one
-        to the position it had when handed to the reader)."""
+        """Open a fresh decompression stream over the source (rewinding a seekable one)."""
         src = self._source
         if is_stream(src) and is_seekable(src):
-            src.seek(self._source_start)
+            src.seek(0)  # origin-normalized by open_archive; 0 is the archive start
         codec_source = str(src) if isinstance(src, Path) else src
         return open_codec_stream(
             self._codec,

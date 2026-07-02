@@ -13,10 +13,10 @@ out of scope (``UnsupportedOperationError``). The image is read uncompressed in 
 compressed ``.iso.xz`` is a single-file compressor wrapping the image, not mounted here
 (see the seek-heavy-container note in the proposal).
 
-Stream-position caveat: unlike the TAR/single-file backends, an ISO stream source must
-start at position 0 — ``pycdlib`` addresses the image with absolute offsets (the PVD at
-32 KiB etc.), so a mid-positioned stream is not supported (wrap the region in a
-``SlicingStream`` first if that is ever needed).
+``pycdlib`` addresses the image with absolute offsets (the PVD at 32 KiB etc.), so it
+needs the archive to start at ``tell() == 0`` — which ``open_archive`` guarantees by
+wrapping any mid-positioned seekable stream in a zero-origin view before handing it to
+a backend (the stream-position contract in ``format-detection``).
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
-    UnsupportedOperationError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.naming import normalize_member_name
@@ -146,12 +145,8 @@ class IsoReader(BaseArchiveReader):
         encoding: str | None,
         archive_name: str | None,
     ) -> None:
+        # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
         super().__init__(format, streaming, archive_name)
-        if password is not None:
-            raise UnsupportedOperationError(
-                "ISO 9660 images do not support passwords (they carry no encryption).",
-                archive_name=archive_name,
-            )
         if pycdlib is None:
             raise PackageNotInstalledError(
                 "The 'pycdlib' package is required to read ISO images "
