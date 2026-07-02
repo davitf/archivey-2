@@ -14,18 +14,30 @@ re-rooted at read time. When normalization changes the presented path, a warning
 emitted via the `archivey.normalization` logger.
 
 Normalization rules applied in order:
-1. Replace all `\` with `/`. This is a deliberate cross-platform **separator** conversion, not
-   a safety mechanism (extraction independently treats both separators and rejects unsafe
-   paths); the verbatim bytes remain in `raw_name`.
+1. Replace `\` with `/` **only when the source format/entry uses backslash as a path
+   separator** — a `backslash_is_separator` signal the backend supplies. Windows-origin
+   entries convert (RAR; ZIP entries whose `create_system` is DOS/Windows — `FAT`,
+   `WINDOWS_NTFS`, `VFAT`, `OS2_HPFS`, …); TAR and other POSIX formats keep `\` as a **literal
+   filename character** (converting would corrupt a valid POSIX name). This is a separator
+   convention, not a safety mechanism (extraction independently treats both separators and
+   rejects unsafe paths); the verbatim bytes remain in `raw_name`.
 2. Strip a leading `./` and collapse interior `/./` segments.
 3. Collapse repeated `//` into a single `/`.
 4. Append `/` for directory members if not already present.
 5. Never produce an empty string — an empty name or a bare root becomes `"."`.
 
-#### Scenario: backslash conversion
+#### Scenario: backslash converted for a Windows-origin entry
 
-- **WHEN** an archive member is stored with the name bytes `b"foo\\bar\\baz.txt"`
+- **WHEN** a Windows-origin member (RAR, or a ZIP entry with a DOS/Windows `create_system`) is
+  stored with the name bytes `b"foo\\bar\\baz.txt"`
 - **THEN** `member.name == "foo/bar/baz.txt"` and `member.raw_name == b"foo\\bar\\baz.txt"`
+
+#### Scenario: backslash kept literal for a POSIX (TAR) entry
+
+- **WHEN** a TAR member is stored with the name bytes `b"weird\\name.txt"` (backslash is a
+  legal POSIX filename character)
+- **THEN** `member.name == "weird\\name.txt"` (the backslash is preserved, not treated as a
+  separator)
 
 #### Scenario: internal traversal is preserved, not collapsed
 

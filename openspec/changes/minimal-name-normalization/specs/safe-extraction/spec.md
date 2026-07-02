@@ -15,31 +15,33 @@ Because `member.name` is now a **faithful** representation of the stored path (s
 verbatim `raw_name` (the interim mechanism introduced while normalization still collapsed
 traversal is removed).
 
+This is the default (`RAISE`) path-safety behavior. A future opt-in `SANITIZE` policy (phase 5)
+re-roots/collapses an unsafe name to a safe in-`dest` path instead of rejecting it; there is no
+path-safety "trust" bypass. The constraints below describe `RAISE`.
+
 Three independent enforcement layers provide defense in depth:
 
 1. **String check on `member.name`** — purely string-based, before any I/O: reject an
-   absolute path (leading `/`, a Windows drive letter, or a UNC `\\`), reject a `..` component
-   that **escapes** the destination root, and reject a `\x00` null byte.
+   absolute path (leading `/`, a Windows drive letter, or a UNC `\\`), reject **any** `..`
+   path component (split on both `/` and `\`), and reject a `\x00` null byte. A `..` is
+   rejected whether it escapes the root or is internal (`foo/../bar`): a well-formed archive
+   has no reason to carry one, so it is treated as almost-certainly-malicious.
 2. **Pre-extraction path computation** — the destination's **parent directory**,
    `(dest / member.name).parent`, is resolved with `.resolve()` and verified to remain within
-   `dest.resolve()`. This is the guarantor: it rejects an escaping `..`, an absolute path, and
-   a **symlinked intermediate component** (an earlier member's symlink that would redirect a
-   later write outside `dest`). The parent — not the full path — is resolved so a pre-existing
-   final-component symlink is handled by the `OverwritePolicy` (unlink-then-create) rather than
-   followed.
+   `dest.resolve()`. With `..` already rejected in layer 1, this layer's remaining job is to
+   catch a **symlinked intermediate component** (an earlier member's symlink that would
+   redirect a later write outside `dest`). The parent — not the full path — is resolved so a
+   pre-existing final-component symlink is handled by the `OverwritePolicy` (unlink-then-create)
+   rather than followed.
 3. **Post-symlink-creation check** — after `os.symlink()`, the created link's target is
    re-resolved with `Path.resolve()` to detect chained symlink attacks (see *Symlink Escape
    Re-Validated at Extraction Time*).
-
-An **internal, non-escaping** `..` (e.g. `foo/../bar`, which resolves within the root) is
-**allowed**: it resolves in-root at write time and the parent-resolution layer guarantees it
-cannot escape. Only a `..` that escapes the destination root is rejected.
 
 The individual universal constraints are:
 
 | Constraint | Violation type | Condition |
 |---|---|---|
-| Path traversal | `PathTraversalError` | A `..` component in `member.name` that escapes the destination root |
+| Path traversal | `PathTraversalError` | Any `..` path component in `member.name` (escaping or internal) |
 | Absolute paths | `PathTraversalError` | `member.name` starts with `/`, a Windows drive letter (`C:\`), or `\\` |
 | Null bytes | `PathTraversalError` | `member.name` contains `\x00` |
 | Symlink escape | `SymlinkEscapeError` | SYMLINK member whose fully-resolved target escapes `dest` |
@@ -51,11 +53,11 @@ The individual universal constraints are:
 - **WHEN** a member's `name` is `"../evil"` or `"../../etc/passwd"` (an escaping `..`)
 - **THEN** `PathTraversalError` is raised and no file is written, regardless of policy
 
-#### Scenario: internal traversal is allowed
+#### Scenario: internal traversal is also rejected
 
-- **WHEN** a member's `name` is `"foo/../bar"` (a `..` that resolves within the root, `foo`
-  being a normal directory)
-- **THEN** the member is extracted to the in-root location and no error is raised
+- **WHEN** a member's `name` is `"foo/../bar"` (a `..` that would resolve within the root)
+- **THEN** `PathTraversalError` is raised under the default `RAISE`; extracting it requires the
+  opt-in `SANITIZE` policy (phase 5)
 
 #### Scenario: absolute path in member name
 

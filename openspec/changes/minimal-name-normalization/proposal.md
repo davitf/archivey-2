@@ -28,16 +28,22 @@ safely make.
 Normalization keeps only **meaning-preserving** steps; unsafe paths are rejected at
 **extraction** time, checked on `member.name` (now faithful).
 
-- **`archive-data-model` (MODIFIED):** `normalize_member_name` keeps `\`→`/` (a documented
-  cross-platform separator step, not a safety mechanism), `//`→`/`, `./` and `/./` cleanup,
-  trailing `/` for directories, and empty/root → `"."`. It **no longer** strips a leading `/`
-  or collapses `..`; those are retained verbatim in `member.name`.
+- **`archive-data-model` (MODIFIED):** `normalize_member_name` keeps `//`→`/`, `./` and `/./`
+  cleanup, trailing `/` for directories, and empty/root → `"."`. It **no longer** strips a
+  leading `/` or collapses `..`; those are retained verbatim in `member.name`. The `\`→`/`
+  conversion becomes **format/entry-aware** (a `backslash_is_separator` parameter the backend
+  supplies): TAR/POSIX keep `\` as a literal filename character, Windows-origin entries (RAR,
+  and ZIP entries whose `create_system` is DOS/Windows) convert it.
 - **`safe-extraction` (MODIFIED):** `check_universal` enforces the path constraints directly
-  on `member.name` — reject absolute paths, an **escaping** `..`, and null bytes; the
-  pre-extraction resolution of the destination's **parent directory** within `dest` is the
-  guarantor (it also catches a symlinked-parent escape). An **internal**, non-escaping `..`
-  (`foo/../bar`) is allowed and resolves in-root. The interim `raw_name` structural check
-  from `phase-4-safe-extraction` is removed.
+  on `member.name` — reject an absolute path, reject **any** `..` component (escaping *or*
+  internal), and reject null bytes; the pre-extraction resolution of the destination's
+  **parent directory** within `dest` remains the guarantor for `..`-free names (it also catches
+  a symlinked-parent escape). The interim `raw_name` structural check from
+  `phase-4-safe-extraction` is removed.
+
+This is the default (`RAISE`) extraction behavior. A future opt-in `SANITIZE` policy and a
+read-time `on_unsafe_name` block option are part of the phase-5 config surface — see the
+layered model in `design.md`.
 
 ## Key insight (why this is smaller and safer than it looks)
 
@@ -55,11 +61,14 @@ fail-safe.
 
 ## Decisions (see design.md)
 
-- **Internal `foo/../bar` is allowed** (resolves in-root), not rejected — matches
-  `testing-contract`, which requires rejecting only *escaping* traversal, and preserves
-  today's net behavior for benign archives.
-- **`\`→`/` is kept** as a deliberate, documented cosmetic separator step (extraction checks
-  both separators, so it carries no safety weight).
+- **Extraction `RAISE` (default) rejects any `..`** — escaping *and* internal (`foo/../bar`) —
+  plus absolute paths and null bytes. A well-formed archive has no reason to carry `..`, so it
+  is treated as almost-certainly-malicious. A future opt-in **`SANITIZE`** policy re-roots such
+  names; there is **no** path-safety `TRUST` (traversal is never something to just trust —
+  `ExtractionPolicy.TRUSTED` governs permissions only).
+- **`\`→`/` is format/entry-aware** — TAR/POSIX keep `\` literal (a legal filename char),
+  Windows-origin entries (RAR; ZIP by `create_system`) convert it. Not a safety mechanism:
+  extraction checks both separators regardless.
 - **`openat2(RESOLVE_BENEATH)` / per-component `O_NOFOLLOW` hardening is out of scope** — the
   `resolve()`+`open()` TOCTOU window is irrelevant for single-archive, single-threaded
   extraction and is unchanged by this work; it is a separate future hardening.
