@@ -446,3 +446,61 @@ def test_ensure_bufferedio_source_still_readable_after_buffer_closed() -> None:
     # guaranteed (the buffer read ahead), but it must remain usable, not closed.
     assert not inner.closed
     assert inner.read(0) == b""  # a live, non-raising operation on an open stream
+
+
+# ---------------------------------------------------------------------------
+# source_byte_size: cheap-only contract
+# ---------------------------------------------------------------------------
+
+
+class TestSourceByteSize:
+    def test_path_is_stated(self, tmp_path) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"x" * 1234)
+        assert source_byte_size(p) == 1234
+        assert source_byte_size(str(p)) == 1234
+
+    def test_size_attribute_is_trusted(self) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        class _Sized(io.BytesIO):
+            @property
+            def size(self) -> int:
+                return 999  # deliberately different from the buffer length
+
+        assert source_byte_size(_Sized(b"abc")) == 999
+
+    def test_whitelisted_types_are_probed(self, tmp_path) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        buf = io.BytesIO(b"x" * 77)
+        buf.seek(10)
+        assert source_byte_size(buf) == 77
+        assert buf.tell() == 10  # position restored
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"y" * 55)
+        with open(p, "rb") as f:  # BufferedReader over FileIO
+            assert source_byte_size(f) == 55
+
+    def test_decompressor_streams_are_never_probed(self, tmp_path) -> None:
+        # SEEK_END on a decompressor means decompressing to the end; the helper must
+        # return None for such streams rather than trigger that work. GzipFile is the
+        # canonical trap: it is seekable and even forwards fileno() to the *compressed*
+        # file, so neither a seekable() check nor an fstat duck-check is safe.
+        import gzip
+
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        p = tmp_path / "f.gz"
+        p.write_bytes(gzip.compress(b"payload " * 10_000))
+        with gzip.open(p, "rb") as f:
+            assert source_byte_size(f) is None
+            assert f.tell() == 0  # nothing was decompressed to answer
+
+    def test_non_seekable_stream_is_none(self) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        assert source_byte_size(NonSeekableBytesIO(b"abc")) is None

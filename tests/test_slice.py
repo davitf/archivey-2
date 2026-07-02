@@ -133,3 +133,17 @@ class TestFixStreamStartPosition:
     def test_non_seekable_passthrough(self) -> None:
         stream = NonSeekableBytesIO(DATA)
         assert fix_stream_start_position(stream) is stream
+
+
+class TestSlicingStreamSize:
+    def test_size_with_declared_length(self) -> None:
+        sliced = SlicingStream(io.BytesIO(DATA), start=5, length=7)
+        assert sliced.size == 7
+
+    def test_size_derived_from_cheap_underlying(self) -> None:
+        sliced = SlicingStream(io.BytesIO(DATA), start=5)
+        assert sliced.size == len(DATA) - 5
+
+    def test_size_none_when_underlying_unknowable(self) -> None:
+        sliced = SlicingStream(NonSeekableBytesIO(DATA), length=None)
+        assert sliced.size is None

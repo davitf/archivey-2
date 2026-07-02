@@ -507,3 +507,36 @@ def test_compressed_source_size_from_size_attribute(simple_zip: Path) -> None:
     data = simple_zip.read_bytes()
     with open_archive(_SizedBytesIO(data), format=ArchiveFormat.ZIP) as ar:
         assert ar.compressed_source_size == len(data)
+
+
+def test_member_stream_advertises_size(simple_zip: Path) -> None:
+    # Member streams expose the fsspec-style `.size` from archive metadata, so a
+    # nested open_archive (or any consumer) can learn the payload size cheaply.
+    with open_archive(simple_zip) as ar:
+        member = ar.get("hello.txt")
+        assert member is not None
+        with ar.open(member) as stream:
+            assert stream.size == member.size == 11
+
+
+def test_nested_archive_source_size_is_cheap(tmp_path: Path) -> None:
+    # A zip inside a tar: opening the inner archive straight from the member stream
+    # gives the bomb tracker its source size from metadata — no end-seek needed.
+    import tarfile as tarfile_mod
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as z:
+        z.writestr("data.txt", b"nested payload")
+    inner_bytes = inner.getvalue()
+
+    outer = tmp_path / "outer.tar"
+    with tarfile_mod.open(outer, "w") as t:
+        info = tarfile_mod.TarInfo("inner.zip")
+        info.size = len(inner_bytes)
+        t.addfile(info, io.BytesIO(inner_bytes))
+
+    with open_archive(outer) as outer_ar:
+        inner_stream = outer_ar.open("inner.zip")
+        with open_archive(inner_stream, format=ArchiveFormat.ZIP) as inner_ar:
+            assert inner_ar.compressed_source_size == len(inner_bytes)
+            assert inner_ar.read("data.txt") == b"nested payload"

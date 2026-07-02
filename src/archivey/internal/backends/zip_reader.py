@@ -326,7 +326,7 @@ class ZipReader(BaseArchiveReader):
             "BinaryIO",
             self._archive.open(info, pwd=self._password),
         )
-        return self._wrap_member_stream(raw, member.name)
+        return self._wrap_member_stream(raw, member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         comment = self._archive.comment

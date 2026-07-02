@@ -412,3 +412,18 @@ def test_gzip_truncation_check_real_seek_disables_verification(tmp_path) -> None
     stream.seek(0)  # genuine random access: the sequential total is meaningless now
     stream.read(-1)
     assert stream.read() == b""  # no spurious TruncatedError after a real seek
+
+
+def test_codec_stream_size_via_cheap_index(tmp_path) -> None:
+    # An xz codec stream reports its decompressed size through the seekable reader's
+    # try_get_size (a backward index scan, no decompression), surfaced as `.size`.
+    import lzma
+
+    payload = b"sizeable " * 4096
+    stream = open_codec_stream(Codec.XZ, io.BytesIO(lzma.compress(payload)))
+    assert stream.size == len(payload)
+    # gzip via stdlib has no cheap index; its stream must not claim a size.
+    gz = open_codec_stream(
+        Codec.GZIP, io.BytesIO(gzip.compress(payload)), config=_STDLIB_GZIP
+    )
+    assert gz.size is None

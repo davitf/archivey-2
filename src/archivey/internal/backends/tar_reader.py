@@ -262,7 +262,7 @@ class TarReader(BaseArchiveReader):
                     if raw is None:
                         raw = BytesIO(b"")
                     yield member, self._wrap_member_stream(
-                        ensure_binaryio(raw), member.name
+                        ensure_binaryio(raw), member.name, size=member.size
                     )
                 else:
                     yield member, None
@@ -389,7 +389,7 @@ class TarReader(BaseArchiveReader):
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.
             raw = BytesIO(b"")
-        return self._wrap_member_stream(ensure_binaryio(raw), member.name)
+        return self._wrap_member_stream(ensure_binaryio(raw), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         stream_cap = self._source_stream_capability()

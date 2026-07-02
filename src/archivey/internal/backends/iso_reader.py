@@ -321,7 +321,7 @@ class IsoReader(BaseArchiveReader):
                 self._stamp_error_context(translated, member.name)
                 raise translated from exc
             raise
-        return self._wrap_member_stream(stream, member.name)
+        return self._wrap_member_stream(stream, member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(

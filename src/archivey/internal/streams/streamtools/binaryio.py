@@ -156,13 +156,42 @@ def source_name(source: Any) -> str | None:
     return name if isinstance(name, str) else None
 
 
-def source_byte_size(source: Any) -> int | None:
-    """Total byte size of a path or stream source when cheaply knowable, else ``None``.
+def _seek_end_is_cheap(stream: Any) -> bool:
+    """Whether ``SEEK_END`` on ``stream`` is O(1) — never a decompression or scan.
 
-    Cheap means no data is read: a path is ``stat``-ed; a stream advertising an integer
-    ``size`` attribute (fsspec's file objects do) is trusted; a seekable stream is probed
-    with a ``SEEK_END``/restore round trip. A non-seekable stream without a ``size``
-    yields ``None`` — its length is unknowable without consuming it.
+    Deliberately a **whitelist** of concrete types whose end-seek is a plain offset
+    move: a decompressor stream (stdlib ``GzipFile``/``BZ2File``/``LZMAFile``, our
+    ``DecompressorStream`` family, accelerator wrappers) services ``SEEK_END`` by
+    decoding to the end, which :func:`source_byte_size` must never trigger. Duck checks
+    (``fileno`` + ``S_ISREG``) are unsafe here — wrappers like ``GzipFile`` forward
+    ``fileno`` to their *compressed* underlying file. Streams outside the whitelist
+    advertise their size via a ``size`` attribute or a ``try_get_size()`` method
+    instead.
+    """
+    if isinstance(stream, (io.BytesIO, io.FileIO, mmap.mmap)):
+        return True
+    if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
+        return _seek_end_is_cheap(stream.raw)
+    return False
+
+
+def source_byte_size(source: Any) -> int | None:
+    """Total byte size of a path or stream source when **cheaply** knowable, else ``None``.
+
+    Cheap means no data is read or decompressed. Probe order:
+
+    1. a path-like is ``stat``-ed;
+    2. an integer ``size`` attribute is trusted — the fsspec convention, also exposed
+       by archivey's own wrappers (``ArchiveStream``, ``SlicingStream``) when they
+       know their length;
+    3. a ``try_get_size()`` method (archivey's decompressor streams) is called — it
+       answers from an index/trailer scan or returns ``None``, and its presence marks
+       the stream as one whose ``SEEK_END`` may decompress, so its answer is final
+       (no fall-through to the probe);
+    4. a ``SEEK_END``/restore round trip, but **only** for types whose end-seek is
+       provably O(1) (real files, ``BytesIO``, ``mmap`` — see ``_seek_end_is_cheap``);
+       an unrecognized seekable stream could be a decompressor whose end-seek decodes
+       the entire payload, so it yields ``None`` instead.
     """
     if is_filename(source):
         try:
@@ -172,7 +201,11 @@ def source_byte_size(source: Any) -> int | None:
     size = getattr(source, "size", None)
     if isinstance(size, int) and not isinstance(size, bool):
         return size
-    if is_seekable(source):
+    try_get_size = getattr(source, "try_get_size", None)
+    if callable(try_get_size):
+        result = try_get_size()
+        return result if isinstance(result, int) else None
+    if is_seekable(source) and _seek_end_is_cheap(source):
         try:
             pos = source.tell()
             end = source.seek(0, io.SEEK_END)

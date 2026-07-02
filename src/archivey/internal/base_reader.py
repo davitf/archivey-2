@@ -210,14 +210,20 @@ class BaseArchiveReader(ArchiveReader):
         return None
 
     def _wrap_member_stream(
-        self, inner: BinaryIO, member_name: str | None, *, lazy: bool = False
+        self,
+        inner: BinaryIO,
+        member_name: str | None,
+        *,
+        lazy: bool = False,
+        size: int | None = None,
     ) -> BinaryIO:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
 
-        Backends return ``_wrap_member_stream(raw, member.name)`` from ``_open_member`` so
-        a decode error surfaces as a stamped ``ArchiveyError`` rather than a raw codec
-        exception.
+        Backends return ``_wrap_member_stream(raw, member.name, size=member.size)`` from
+        ``_open_member`` so a decode error surfaces as a stamped ``ArchiveyError`` rather
+        than a raw codec exception, and so the handle advertises its decompressed length
+        (the fsspec-style ``size``) for cheap nested-archive source sizing.
         """
         return ArchiveStream(
             lambda: inner,
@@ -225,6 +231,7 @@ class BaseArchiveReader(ArchiveReader):
             stamp=lambda exc: self._stamp_error_context(exc, member_name),
             lazy=lazy,
             seekable=is_seekable(inner),
+            size=size,
         )
 
     @abstractmethod
@@ -370,11 +377,13 @@ class BaseArchiveReader(ArchiveReader):
         The denominator for extraction's archive-wide decompression-ratio guard (see
         ``safe-extraction``): for zip/7z/rar/compressed-tar the source size *is* the
         compressed size, and for a plain tar or other uncompressed container the
-        resulting ~1:1 ratio simply never trips the guard. Covers path sources
-        (``stat``), streams advertising a ``size`` attribute (fsspec), and seekable
-        streams (a ``SEEK_END``/restore probe) — see ``source_byte_size``. Backends
-        record their source in ``self._source``; readers without one (directory) or
-        with a non-seekable sizeless stream report ``None``.
+        resulting ~1:1 ratio simply never trips the guard. Cheap only — see
+        ``source_byte_size``: path ``stat``, a ``size`` attribute (fsspec convention,
+        also on archivey's own member/codec streams, enabling nested archives), a
+        ``try_get_size()`` index scan, or a ``SEEK_END`` probe restricted to provably
+        O(1) types (never a decompressor). Backends record their source in
+        ``self._source``; readers without one (directory) or with an unknowable
+        source report ``None``.
         """
         return source_byte_size(self._source) if self._source is not None else None
 

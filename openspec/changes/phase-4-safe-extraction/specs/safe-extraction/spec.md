@@ -6,12 +6,18 @@
 
 The system SHALL evaluate an archive-wide decompression ratio during `extract()` /
 `extract_all()` when a member's `compressed_size` is unknown or zero but the reader exposes a
-known outer `compressed_source_size` (the byte size of the archive's source, generalized:
-any path source is `stat`-ed, a stream advertising an integer `size` attribute — fsspec file
-objects — is trusted, and a seekable stream is probed with a `SEEK_END`/restore round trip;
-only a non-seekable sizeless stream yields `None`. For zip/7z/rar/compressed-tar this *is*
-the compressed size; for an uncompressed container the resulting ~1:1 ratio never trips the
-guard, which is why reporting it for every source is safe), computed as:
+known outer `compressed_source_size` (the byte size of the archive's source, generalized
+and **cheap-only** — it never reads or decompresses data to answer: a path source is
+`stat`-ed; an integer `size` attribute is trusted (the fsspec convention, which archivey's
+own member/codec stream wrappers also expose from archive metadata or a cheap
+index/trailer scan — so a *nested* archive opened from a member stream gets its source
+size for free); a `try_get_size()` method (archivey's decompressor streams) is the final
+answer for streams whose end-seek would decompress; and a `SEEK_END`/restore probe runs
+only for provably O(1) types (real files, `BytesIO`, `mmap`). Anything else — notably any
+foreign decompressor stream like `gzip.GzipFile`, whose end-seek decodes the whole
+payload — yields `None`. For zip/7z/rar/compressed-tar this *is* the compressed size; for
+an uncompressed container the resulting ~1:1 ratio never trips the guard, which is why
+reporting it for every source is safe), computed as:
 
 ```
 cumulative_bytes_written / compressed_source_size
@@ -22,7 +28,7 @@ per-member ratio check. The check SHALL run in `BombTracker.count()` alongside t
 cumulative `max_extracted_bytes` guard. Unlike the per-member ratio (which activates on the
 **current member's** output), the archive-wide ratio activates on the **cumulative** output
 across the call: it is evaluated only once `_total_bytes` exceeds `ratio_activation_threshold`.
-When `compressed_source_size` is `None` (a non-seekable sizeless stream source),
+When `compressed_source_size` is `None` (a source whose size is not cheaply knowable),
 the archive-wide ratio check is skipped.
 
 The `compressed_source_size` is supplied to the `BombTracker` once per extraction call (the

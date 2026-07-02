@@ -11,7 +11,7 @@ import io
 from typing import BinaryIO
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
-from archivey.internal.streams.streamtools.binaryio import is_seekable
+from archivey.internal.streams.streamtools.binaryio import is_seekable, source_byte_size
 
 
 class SlicingStream(ReadOnlyIOStream):
@@ -109,6 +109,23 @@ class SlicingStream(ReadOnlyIOStream):
 
     def seekable(self) -> bool:
         return self._seekable
+
+    @property
+    def size(self) -> int | None:
+        """Total slice length when cheaply knowable (the fsspec-style ``size`` convention).
+
+        A declared ``length`` answers directly; an open-ended slice derives it from the
+        underlying stream's cheap size (``source_byte_size``), and reports ``None`` when
+        that is unknowable — never by an expensive end-seek.
+        """
+        if self._length is not None:
+            return self._length
+        if self._start is None:
+            return None  # non-seekable underlying stream: length unknowable cheaply
+        underlying = source_byte_size(self._stream)
+        if underlying is None:
+            return None
+        return max(underlying - self._start, 0)
 
 
 def fix_stream_start_position(stream: BinaryIO) -> BinaryIO:
