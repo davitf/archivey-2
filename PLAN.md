@@ -25,7 +25,7 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 | 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams` | `archive/2026-06-21-phase-2-stream-layer` ✓ |
 | 3 | Indexed leaf formats + detection | `format-zip`, `format-tar` (random-access read), `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry`, `access-mode-and-cost` | `archive/2026-06-30-phase-3-indexed-leaf-formats` ✓ |
 | 4 | TAR streaming + safe extraction | `format-tar` (forward-only `stream_members`, hardlinks, truncation), `safe-extraction`, `archive-reading` (sequential + `stream_members`), `format-detection` (gzip-wrapped tar regression), `testing-contract` (adversarial + non-seekable `tar.gz`) | `archive/2026-06-30-package-layout-restructure` ✓ → `phase-4-tar-streaming` + `phase-4-safe-extraction` |
-| 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | — |
+| 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | `phase-5-public-api` |
 | 6 | Writing support | `archive-writing`, `format-zip` / `format-tar` (writers) | — |
 | 7 | Native 7z + RAR read | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
 | 8 | Seekable zstd + blocked gzip (rescoped; original zst/lz4 read goals landed in Phases 2–3, `w:zst` moved to Phase 6) | `seekable-decompressor-streams`, `format-single-file-compressors` | `seekable-gzip-and-block-writing` (partial) |
@@ -342,13 +342,14 @@ as a light tripwire, not a hard ban).
 3. Finalize `access-mode-and-cost` — streaming-mode enforcement and **CostReceipt
    values verified per format**; `error-handling` translation contract (cause/
    traceback preserved; genuine I/O not reclassified; context filled by base reader).
-4. **Finalize the public config surface** — graduate the Phase 4 *stopgap* keyword args
-   into their finalized public form per `SPEC.md`: the decompression-bomb limits
-   (`max_extracted_bytes`, `max_ratio`, `ratio_activation_threshold`, `max_entries`), the
-   `strict_eof` flag (shipped bare on `open_archive()` in `phase-4-tar-streaming`), and the
-   extraction policies (`ExtractionPolicy` / `OverwritePolicy` / `OnError`). Decide whether
-   these live as keyword args or a consolidated config object and lock their defaults —
-   Phase 4 deliberately deferred this "full public config surface" here.
+4. **Finalize the public config surface** — **decided** (see the `phase-5-public-api`
+   change): a frozen `ArchiveyConfig` object passed explicitly (`config=`), carrying the
+   accelerator modes, `strict_archive_eof` (the renamed Phase 4 `strict_eof` stopgap,
+   default False), and `ExtractionLimits` (the bomb knobs). Extraction policies
+   (`ExtractionPolicy` / `OverwritePolicy` / `OnError`) stay per-call keyword args. No
+   ambient (contextvars/global) configuration. Also decided there: the password
+   candidate-sequence + provider model, multi-source acceptance + path volume-set
+   discovery, and the MemberSelector collection semantics.
 
 ### Tests added
 `archive-data-model`, `access-mode-and-cost`, `error-handling`, and the remaining
@@ -371,7 +372,18 @@ correct for every format implemented so far.
 ### Tasks
 `ArchiveWriter` ABC (`add`/`add_bytes`/`add_stream`/`add_member`/`add_members`/
 `close`); `ZipWriter` (`ZipFile.open(name,'w')`, data descriptor for unknown
-size); `TarWriter`; `create_archive()`; `CompressionSpec` model.
+size); `TarWriter` (incl. compressed-tar output — `w:zst` and friends, moved here
+from the original Phase 8); `create_archive()`; `CompressionSpec` model.
+
+> **Pending decisions (resolve in this phase's change proposal):**
+> - *Per-entry `compression` on stream-compressed containers* (`tar.gz`/`tar.zst`):
+>   the codec is stream-level, so a per-entry override is meaningless — error, or
+>   warn-and-ignore? (Leaning: `ValueError` on an explicit per-entry algo; the
+>   writer-level `CompressionSpec` selects the outer codec.)
+> - *`password=` on formats whose writer can't encrypt* (stdlib zipfile cannot write
+>   encryption): must fail fast at `create()` — decide the error type
+>   (`UnsupportedFeatureError` vs `UnsupportedOperationError`) and add a
+>   SUPPORTS_PASSWORD-style WriteBackend field to enforce it centrally.
 
 ### Tests added
 `archive-writing` scenarios; `testing-contract` ZIP/TAR round-trip; conversion
@@ -391,7 +403,12 @@ passing; wire the oracles. See `format-7z/spec.md`, `format-rar/spec.md`,
 `testing-contract/spec.md`.
 
 **Entry criteria:** Phase 6 green; `py7zr`/`rarfile`/`unrar` available as
-dev-group oracles.
+dev-group oracles; the **shared-source stream plumbing** decided/landed — a
+`streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
+handle + a lock + per-view positions) so the native readers support multiple
+concurrently-open member streams by construction, and a decided concurrency
+contract (what is supported vs. what fails loudly — never silent interleaving);
+see the parallel-extraction entry in `IDEAS.md`.
 
 ### Tasks
 1. **Native 7z** header parse (packed streams, folders/coder chains, substreams,

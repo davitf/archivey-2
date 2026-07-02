@@ -485,3 +485,25 @@ def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
         assert member.modified == datetime.fromtimestamp(ut_mtime, tz=timezone.utc)
         assert member.accessed == datetime.fromtimestamp(nt_atime, tz=timezone.utc)
         assert member.created is None  # NTFS ctime was 0 = "not set"
+
+
+def test_compressed_source_size(simple_zip: Path) -> None:
+    # The archive-wide extraction ratio guard's denominator: for ZIP the source size is
+    # the compressed size; known for paths and seekable streams alike.
+    with open_archive(simple_zip) as ar:
+        assert ar.compressed_source_size == simple_zip.stat().st_size
+    data = simple_zip.read_bytes()
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as ar:
+        assert ar.compressed_source_size == len(data)
+
+
+def test_compressed_source_size_from_size_attribute(simple_zip: Path) -> None:
+    # An fsspec-style object advertising `.size` is trusted without a seek probe.
+    class _SizedBytesIO(io.BytesIO):
+        @property
+        def size(self) -> int:
+            return len(self.getvalue())
+
+    data = simple_zip.read_bytes()
+    with open_archive(_SizedBytesIO(data), format=ArchiveFormat.ZIP) as ar:
+        assert ar.compressed_source_size == len(data)

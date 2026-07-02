@@ -156,6 +156,33 @@ def source_name(source: Any) -> str | None:
     return name if isinstance(name, str) else None
 
 
+def source_byte_size(source: Any) -> int | None:
+    """Total byte size of a path or stream source when cheaply knowable, else ``None``.
+
+    Cheap means no data is read: a path is ``stat``-ed; a stream advertising an integer
+    ``size`` attribute (fsspec's file objects do) is trusted; a seekable stream is probed
+    with a ``SEEK_END``/restore round trip. A non-seekable stream without a ``size``
+    yields ``None`` — its length is unknowable without consuming it.
+    """
+    if is_filename(source):
+        try:
+            return os.stat(source).st_size
+        except OSError:
+            return None
+    size = getattr(source, "size", None)
+    if isinstance(size, int) and not isinstance(size, bool):
+        return size
+    if is_seekable(source):
+        try:
+            pos = source.tell()
+            end = source.seek(0, io.SEEK_END)
+            source.seek(pos)
+        except OSError:
+            return None
+        return end
+    return None
+
+
 def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
     """Whether ``obj`` already satisfies the ``BinaryIO`` interface we rely on.
 

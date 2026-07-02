@@ -14,7 +14,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.streamtools import is_seekable
+from archivey.internal.streams.streamtools import is_seekable, source_byte_size
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,
@@ -163,6 +163,9 @@ class BaseArchiveReader(ArchiveReader):
         self._streaming = streaming
         self._archive_name = archive_name
         self._archive_id = str(id(self))
+        # The archive's source, recorded by backends that have one (path or stream);
+        # backs the generalized compressed_source_size property below.
+        self._source: Path | BinaryIO | None = None
         self._members_cache: list[ArchiveMember] | None = None
         self._members_by_name: dict[str, ArchiveMember] | None = None
         self._closed = False
@@ -362,8 +365,18 @@ class BaseArchiveReader(ArchiveReader):
 
     @property
     def compressed_source_size(self) -> int | None:
-        """Outer compressed byte length when known (``Path``-backed compressed tars); else ``None``."""
-        return None
+        """Byte size of the archive's source when cheaply knowable, else ``None``.
+
+        The denominator for extraction's archive-wide decompression-ratio guard (see
+        ``safe-extraction``): for zip/7z/rar/compressed-tar the source size *is* the
+        compressed size, and for a plain tar or other uncompressed container the
+        resulting ~1:1 ratio simply never trips the guard. Covers path sources
+        (``stat``), streams advertising a ``size`` attribute (fsspec), and seekable
+        streams (a ``SEEK_END``/restore probe) — see ``source_byte_size``. Backends
+        record their source in ``self._source``; readers without one (directory) or
+        with a non-seekable sizeless stream report ``None``.
+        """
+        return source_byte_size(self._source) if self._source is not None else None
 
     def __iter__(self) -> Iterator[ArchiveMember]:
         if self._streaming and self._members_cache is None:

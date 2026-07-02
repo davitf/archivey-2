@@ -306,12 +306,6 @@ class TarReader(BaseArchiveReader):
             raise err
         backends_logger.warning(msg)
 
-    @property
-    def compressed_source_size(self) -> int | None:
-        if not self._compressed or not isinstance(self._source, Path):
-            return None
-        return self._source.stat().st_size
-
     def _source_stream_capability(self) -> StreamCapability:
         if isinstance(self._source, Path):
             return StreamCapability.SEEKABLE

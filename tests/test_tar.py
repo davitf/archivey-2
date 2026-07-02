@@ -385,10 +385,16 @@ def test_compressed_source_size_on_path(tmp_path: Path) -> None:
         assert ar.compressed_source_size == path.stat().st_size
 
 
-def test_compressed_source_size_none_for_plain_and_stream(plain_tar: Path) -> None:
+def test_compressed_source_size_generalized(plain_tar: Path) -> None:
+    # Generalized (for the archive-wide extraction ratio guard): known for any path
+    # source — a plain tar simply yields a harmless ~1:1 ratio — and for seekable
+    # streams via a SEEK_END probe; only a non-seekable stream is unknowable.
     with open_archive(plain_tar) as ar:
-        assert ar.compressed_source_size is None
-    with open_archive(NonSeekableBytesIO(_build_tar("w:gz")), streaming=True) as ar:
+        assert ar.compressed_source_size == plain_tar.stat().st_size
+    data = _build_tar("w:gz")
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR_GZ) as ar:
+        assert ar.compressed_source_size == len(data)
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
         assert ar.compressed_source_size is None
 
 

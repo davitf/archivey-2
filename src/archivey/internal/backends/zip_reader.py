@@ -184,6 +184,7 @@ class ZipReader(BaseArchiveReader):
         archive_name: str | None,
     ) -> None:
         super().__init__(ArchiveFormat.ZIP, streaming, archive_name)
+        self._source = source
         self._password = password
         self._encoding = encoding
 

@@ -147,6 +147,7 @@ class IsoReader(BaseArchiveReader):
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
         super().__init__(format, streaming, archive_name)
+        self._source = source
         if pycdlib is None:
             raise PackageNotInstalledError(
                 "The 'pycdlib' package is required to read ISO images "

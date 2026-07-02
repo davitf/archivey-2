@@ -147,6 +147,7 @@ class SingleFileReader(BaseArchiveReader):
         from archivey.internal.streams.peekable import PeekableStream
 
         src = self._source
+        assert src is not None  # always set in __init__
         if isinstance(src, Path):
             with open(src, "rb") as f:
                 return f.read(length)
@@ -190,6 +191,7 @@ class SingleFileReader(BaseArchiveReader):
     def _open_codec_stream(self) -> BinaryIO:
         """Open a fresh decompression stream over the source (rewinding a seekable one)."""
         src = self._source
+        assert src is not None  # always set in __init__
         if is_stream(src) and is_seekable(src):
             src.seek(0)  # origin-normalized by open_archive; 0 is the archive start
         codec_source = str(src) if isinstance(src, Path) else src
