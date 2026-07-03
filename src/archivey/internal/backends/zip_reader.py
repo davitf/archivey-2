@@ -277,7 +277,11 @@ class ZipReader(BaseArchiveReader):
         # a Unix (or other) entry keeps a backslash as a literal filename character.
         backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
 
-        decoded = info.filename
+        # Use orig_filename, not filename: stdlib zipfile rewrites filename in a
+        # platform-dependent way (it replaces os.sep -> "/" on Windows and truncates at a
+        # null byte), whereas orig_filename is the raw decoded name, identical on every OS.
+        # Archivey's own backslash_is_separator / extraction checks are the single authority.
+        decoded = info.orig_filename
         name = normalize_member_name(
             decoded, member_type, backslash_is_separator=backslash_is_separator
         )

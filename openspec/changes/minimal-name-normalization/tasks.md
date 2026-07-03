@@ -13,7 +13,9 @@
       `..`.
 - [x] 1.2 Wire the signal at each backend: TAR passes `False` (POSIX literal backslash); RAR
       passes `True`; ZIP derives it per entry from `create_system` (DOS/Windows →`True`, Unix
-      →`False`); directory/ISO as appropriate.
+      →`False`); directory/ISO as appropriate. ZIP also reads the raw name from
+      `ZipInfo.orig_filename` (not `.filename`, which stdlib rewrites per-OS) so backslash and
+      null-byte handling is the same on every platform.
 - [x] 1.3 Update `tests/test_naming.py`: leading `/` retained, `..` retained (internal and
       escaping), backslash converted only when `backslash_is_separator`, `//`/`./ ` cleanups
       still apply, dir trailing slash, root → `"."`.
@@ -24,8 +26,10 @@
       detection, and dedup for reliance on the *collapsed* form. Confirm legitimate archives
       (no `..`, no leading `/`) are byte-identical; fix any spot that keyed on the collapsed
       form for correctness on legitimate input.
-- [x] 2.2 Add a per-entry backslash case to the ZIP reader tests (a DOS/Windows entry converts,
-      a Unix entry with a literal backslash does not).
+- [x] 2.2 Add per-entry backslash coverage as **committed fixtures** under
+      `tests/fixtures/zip_backslash/` (+ `generate.py`): a DOS/Windows entry converts, a Unix
+      entry keeps the literal backslash. Fixtures (not runtime-built zips) so the tests run
+      identically on Windows, where stdlib would rewrite a runtime backslash away.
 - [x] 2.3 Run the ZIP / TAR / directory / ISO reader suites to confirm no regression in
       listing, lookup, or link resolution.
 

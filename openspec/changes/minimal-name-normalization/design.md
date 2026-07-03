@@ -101,10 +101,22 @@ rule is per-entry where the format records origin:
 Mechanism: `normalize_member_name` gains a `backslash_is_separator: bool` parameter the
 backend supplies (TAR `False`; RAR `True`; ZIP from the entry's `create_system`).
 
-Security note: this is not a safety mechanism. Extraction's `..`/absolute check splits on
-**both** `/` and `\`, so a literal-backslash `..\..\evil` in a tar is still rejected. The one
-cost is a rare safe-side false positive — a legitimate POSIX name like `foo\..` (literal
-backslash) could be over-rejected at extraction; acceptable given how exotic such names are.
+**ZIP must read `ZipInfo.orig_filename`, not `ZipInfo.filename`.** Stdlib `zipfile` rewrites
+`filename` in a platform-dependent way — on Windows (`os.sep == "\\"`) it replaces `os.sep`
+with `/` and truncates the name at a null byte — at *both* write and read (the read path
+constructs `ZipInfo(decoded_name)`, whose `__init__` does the rewrite). `orig_filename` is
+the raw decoded name, set before that rewrite and therefore identical on every OS. Reading
+`orig_filename` makes archivey's own `backslash_is_separator` (and the extraction null-byte
+check) the single, platform-independent authority — otherwise a backslash-bearing name would
+behave differently on Windows vs POSIX, and a `evil.txt\x00.jpg` null-byte injection would be
+silently truncated by stdlib to `evil.txt` instead of surfaced faithfully and rejected at
+extraction.
+
+Security note: the backslash conversion itself is not a safety mechanism. Extraction's
+`..`/absolute check splits on **both** `/` and `\`, so a literal-backslash `..\..\evil` in a
+tar is still rejected. The one cost is a rare safe-side false positive — a legitimate POSIX
+name like `foo\..` (literal backslash) could be over-rejected at extraction; acceptable given
+how exotic such names are.
 
 ### D3 — TOCTOU hardening (openat2 / O_NOFOLLOW) is out of scope
 
