@@ -20,10 +20,12 @@ optimization over this core, not a correctness requirement.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, cast
@@ -356,12 +358,11 @@ class ExtractionCoordinator:
         tracker: BombTracker,
         source_paths: dict[int, list[Path]],
     ) -> ExtractionResult:
-        if not self._prepare_destination(transformed, dest_path):
+        if not self._prepare_destination(transformed, dest_path, atomic=True):
             return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
 
         os.makedirs(dest_path.parent, exist_ok=True)
-        self._copy_stream_to(stream, dest_path, tracker)
-        self._apply_metadata(dest_path, transformed)
+        self._write_file_atomic(stream, dest_path, transformed, tracker)
 
         # Record this FILE's path under the ORIGINAL member id so later hardlinks whose
         # link_target_member is this member can os.link against it.
@@ -562,10 +563,20 @@ class ExtractionCoordinator:
 
     # --- filesystem helpers --------------------------------------------------------
 
-    def _prepare_destination(self, member: ArchiveMember, dest_path: Path) -> bool:
+    def _prepare_destination(
+        self, member: ArchiveMember, dest_path: Path, *, atomic: bool = False
+    ) -> bool:
         """Apply the OverwritePolicy. Returns True to proceed with creation, False to
         skip (SKIP over an existing entry). Raises ExtractionError under ERROR when the
-        entry exists. Uses lstat semantics so a dangling symlink counts as existing."""
+        entry exists. Uses lstat semantics so a dangling symlink counts as existing.
+
+        ``atomic=True`` is used for FILE writes, which land via ``os.replace()`` over the
+        destination (see ``_write_file_atomic``): under REPLACE this leaves an existing
+        **file or symlink** in place for that atomic swap (so the old data survives until
+        the new file is fully written, and a symlink is replaced, never written through),
+        removing only an existing **directory** first — ``os.replace`` cannot overwrite a
+        directory with a file. ``atomic=False`` (DIR / SYMLINK / HARDLINK) keeps the plain
+        unlink-then-create."""
         exists = os.path.lexists(dest_path)
         if not exists:
             return True
@@ -585,13 +596,41 @@ class ExtractionCoordinator:
         if self._overwrite is OverwritePolicy.SKIP:
             return False
 
-        # REPLACE: unlink-then-create, never write-through. Remove a symlink/file with
-        # unlink (so bytes never follow the link to its target); remove a real dir tree.
-        if dest_path.is_symlink() or not dest_path.is_dir():
-            dest_path.unlink()
-        else:
+        # REPLACE: never write-through a symlink. For an atomic FILE write, os.replace
+        # handles a file/symlink target atomically, so only a real directory must be
+        # removed up front. Otherwise unlink a symlink/file (bytes never follow the link)
+        # and rmtree a real directory tree.
+        if dest_path.is_dir() and not dest_path.is_symlink():
             shutil.rmtree(dest_path)
+        elif not atomic:
+            dest_path.unlink()
         return True
+
+    def _write_file_atomic(
+        self,
+        stream: BinaryIO | None,
+        dest_path: Path,
+        member: ArchiveMember,
+        tracker: BombTracker | None,
+    ) -> None:
+        """Write a FILE by streaming into a temp sibling, applying metadata, then
+        ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure never
+        truncates or removes an existing destination (only the temp is discarded), and the
+        target name never appears half-written. The temp lives in the destination directory
+        so the rename stays on one filesystem."""
+        fd, tmp_name = tempfile.mkstemp(dir=dest_path.parent, prefix=".archivey-tmp-")
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            self._copy_stream_to(stream, tmp, tracker)
+            self._apply_metadata(tmp, member)
+            os.replace(tmp, dest_path)
+        except BaseException:
+            # os.replace consumes the temp on success; on any earlier failure remove it so
+            # no .archivey-tmp-* file is left behind (the existing destination is untouched).
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
     def _copy_stream_to(
         self, stream: BinaryIO | None, path: Path, tracker: BombTracker | None

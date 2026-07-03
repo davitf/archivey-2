@@ -394,6 +394,30 @@ def test_dangling_symlink_counts_as_existing(tmp_path: Path) -> None:
         extract(src, dest, overwrite=OverwritePolicy.ERROR)
 
 
+def test_replace_failure_preserves_existing_file(tmp_path: Path) -> None:
+    # A mid-extraction failure under REPLACE must not clobber the existing file: FILE writes
+    # land via a temp + os.replace, so the old data survives and no temp is left behind.
+    src = tmp_path / "big.zip"
+    _write_zip(src, {"a.txt": b"x" * 100_000})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.txt").write_bytes(b"OLD DATA")
+    with pytest.raises(ExtractionError):
+        extract(
+            src, dest, overwrite=OverwritePolicy.REPLACE, max_extracted_bytes=1000
+        )
+    assert (dest / "a.txt").read_bytes() == b"OLD DATA"  # untouched
+    assert not list(dest.glob(".archivey-tmp-*"))  # temp cleaned up
+
+
+def test_no_temp_files_after_success(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"hi", "dir/b.txt": b"bye"})
+    dest = tmp_path / "out"
+    extract(src, dest)
+    assert not list(dest.rglob(".archivey-tmp-*"))
+
+
 # ---------------------------------------------------------------------------
 # OnError policy (task 3.5)
 # ---------------------------------------------------------------------------
