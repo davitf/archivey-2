@@ -618,11 +618,12 @@ class ExtractionCoordinator:
         truncates or removes an existing destination (only the temp is discarded), and the
         target name never appears half-written. The temp lives in the destination directory
         so the rename stays on one filesystem."""
+        # mkstemp hands back an already-open fd; write straight into it (no close+reopen).
         fd, tmp_name = tempfile.mkstemp(dir=dest_path.parent, prefix=".archivey-tmp-")
-        os.close(fd)
         tmp = Path(tmp_name)
         try:
-            self._copy_stream_to(stream, tmp, tracker)
+            with os.fdopen(fd, "wb") as dst:
+                self._copy_to_fileobj(stream, dst, tracker)
             self._apply_metadata(tmp, member)
             os.replace(tmp, dest_path)
         except BaseException:
@@ -632,19 +633,28 @@ class ExtractionCoordinator:
                 os.unlink(tmp)
             raise
 
+    @staticmethod
+    def _copy_to_fileobj(
+        stream: BinaryIO | None, dst: BinaryIO, tracker: BombTracker | None
+    ) -> None:
+        """Copy ``stream`` into the already-open ``dst`` in chunks, counting each toward the
+        bomb tracker. Cleanup of a partial ``dst`` on failure is the caller's job."""
+        if stream is None:
+            return
+        while True:
+            chunk = stream.read(_CHUNK)
+            if not chunk:
+                break
+            if tracker is not None:
+                tracker.count(len(chunk))
+            dst.write(chunk)
+
     def _copy_stream_to(
         self, stream: BinaryIO | None, path: Path, tracker: BombTracker | None
     ) -> None:
         try:
             with open(path, "wb") as dst:
-                if stream is not None:
-                    while True:
-                        chunk = stream.read(_CHUNK)
-                        if not chunk:
-                            break
-                        if tracker is not None:
-                            tracker.count(len(chunk))
-                        dst.write(chunk)
+                self._copy_to_fileobj(stream, dst, tracker)
         except BaseException:
             # Remove this member's partial output on any failure (bomb guard, write
             # error, KeyboardInterrupt) and re-raise. No log here on purpose: the failure
