@@ -665,3 +665,89 @@ def test_cross_device_hardlink_reuses_sibling(tmp_path: Path, monkeypatch) -> No
     assert (dest / "C.txt").read_bytes() == b"payload"
     assert os.path.samefile(dest / "B.txt", dest / "C.txt")  # C linked to B's copy
     assert not os.path.samefile(dest / "A.txt", dest / "B.txt")  # B is a separate copy
+
+
+# ---------------------------------------------------------------------------
+# Live (streaming) decompression-ratio guard (live-decompression-ratio-guard)
+# ---------------------------------------------------------------------------
+
+
+def test_counting_reader_counts_bytes() -> None:
+    from archivey.internal.streams.counting import CountingReader
+
+    cr = CountingReader(io.BytesIO(b"abcdefghij"))
+    assert cr.bytes_read == 0
+    assert cr.read(4) == b"abcd"
+    assert cr.bytes_read == 4
+    assert cr.read() == b"efghij"
+    assert cr.bytes_read == 10
+
+
+def test_compressed_bytes_consumed_grows_on_piped_targz() -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = _tar_bytes([("file", "a.txt", b"x" * 200_000)], mode="w:gz")
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        # A compressed pipe has no cheaply-knowable total, but the live counter is present.
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is not None
+        for _member, stream in r.stream_members():
+            if stream is not None:
+                stream.read()
+        assert r.compressed_bytes_consumed > 0
+
+
+def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    # 8 MiB of zeros -> a tiny gz; from a pipe both static denominators are unknown, so
+    # only the live ratio (and the absolute cap, set high) can catch it.
+    raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        assert r.compressed_source_size is None  # no static archive-wide denominator
+        with pytest.raises(ExtractionError):
+            r.extract_all(
+                dest,
+                max_ratio=10.0,
+                ratio_activation_threshold=1024,
+                max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+            )
+
+
+def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        with pytest.raises(ExtractionError):
+            r.extract_all(
+                dest,
+                max_ratio=10.0,
+                ratio_activation_threshold=1024,
+                max_extracted_bytes=100 * 2**20,
+                on_error=OnError.CONTINUE,  # global guard halts anyway
+            )
+
+
+def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    payload = os.urandom(2 * 1024 * 1024)  # incompressible; plain (uncompressed) tar
+    raw = _tar_bytes([("file", "a.bin", payload)], mode="w")
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        assert r.compressed_bytes_consumed is None  # uncompressed: nothing counted
+        r.extract_all(dest, max_ratio=10.0, ratio_activation_threshold=1024)
+    assert (dest / "a.bin").read_bytes() == payload
+
+
+def test_seekable_targz_uses_static_not_live(tmp_path: Path) -> None:
+    # A path (seekable) .tar.gz has a knowable compressed_source_size, so the static
+    # archive-wide ratio applies and no live counter is created.
+    src = tmp_path / "a.tar.gz"
+    src.write_bytes(_tar_bytes([("file", "a.txt", b"hi")], mode="w:gz"))
+    with open_archive(src) as r:
+        assert r.compressed_source_size is not None
+        assert r.compressed_bytes_consumed is None

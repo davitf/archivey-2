@@ -38,6 +38,7 @@ from archivey.internal.streams.codecs import (
     codec_for_stream_format,
     open_codec_stream,
 )
+from archivey.internal.streams.counting import CountingReader
 from archivey.internal.streams.streamtools import (
     ensure_binaryio,
     ensure_bufferedio,
@@ -155,9 +156,18 @@ class TarReader(BaseArchiveReader):
     ) -> tarfile.TarFile:
         if self._compressed:
             codec = codec_for_stream_format(format.stream)
-            codec_source: str | BinaryIO = (
-                str(source) if isinstance(source, Path) else source
-            )
+            codec_source: str | BinaryIO
+            if isinstance(source, Path):
+                # A path source has a cheaply-knowable size (stat), so the static
+                # archive-wide ratio applies; no live counter needed.
+                codec_source = str(source)
+            else:
+                # A stream source (e.g. a pipe) may have no knowable size; count the
+                # compressed bytes the decompressor pulls so the live ratio guard has a
+                # denominator (see safe-extraction / compressed_bytes_consumed).
+                counter = CountingReader(source)
+                self._compressed_input_counter = counter
+                codec_source = counter
             stream = open_codec_stream(
                 codec,
                 codec_source,

@@ -23,6 +23,7 @@ from archivey.internal.extraction_types import (
 )
 from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.counting import CountingReader
 from archivey.internal.streams.streamtools import is_seekable, source_byte_size
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
@@ -175,6 +176,10 @@ class BaseArchiveReader(ArchiveReader):
         # The archive's source, recorded by backends that have one (path or stream);
         # backs the generalized compressed_source_size property below.
         self._source: Path | BinaryIO | None = None
+        # A counter wrapping the raw compressed source, set by a backend that decompresses
+        # a stream source; backs compressed_bytes_consumed (the live decompression-ratio
+        # denominator for a source whose total size is not cheaply knowable).
+        self._compressed_input_counter: CountingReader | None = None
         self._members_cache: list[ArchiveMember] | None = None
         self._members_by_name: dict[str, ArchiveMember] | None = None
         self._closed = False
@@ -395,6 +400,21 @@ class BaseArchiveReader(ArchiveReader):
         source report ``None``.
         """
         return source_byte_size(self._source) if self._source is not None else None
+
+    @property
+    def compressed_bytes_consumed(self) -> int | None:
+        """Running count of compressed bytes pulled from the archive's outer source so far,
+        or ``None`` when nothing is being counted.
+
+        The **live** denominator for extraction's archive-wide decompression-ratio guard
+        (see ``safe-extraction``), used when ``compressed_source_size`` is ``None`` — i.e. a
+        compressed archive read from a non-seekable pipe, whose total size is not cheaply
+        knowable. A backend that decompresses a *stream* source wraps it in a
+        ``CountingReader`` and records it here; readers with a knowable source size (a path,
+        a seekable stream) leave it ``None`` and rely on the cheaper static ratio instead.
+        """
+        c = self._compressed_input_counter
+        return c.bytes_read if c is not None else None
 
     def __iter__(self) -> Iterator[ArchiveMember]:
         if self._streaming and self._members_cache is None:

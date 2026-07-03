@@ -88,11 +88,15 @@ class BombTracker:
         ratio_activation_threshold: int = DEFAULT_RATIO_ACTIVATION_THRESHOLD,
         compressed_source_size: int | None = None,
         max_entries: int = DEFAULT_MAX_ENTRIES,
+        compressed_consumed: Callable[[], int | None] | None = None,
     ) -> None:
         self._max_bytes = max_bytes
         self._max_ratio = max_ratio
         self._ratio_floor = ratio_activation_threshold
         self._compressed_source_size = compressed_source_size
+        # Live-denominator sampler: returns compressed bytes consumed so far (or None).
+        # Used for the archive-wide ratio only when compressed_source_size is unknown.
+        self._compressed_consumed = compressed_consumed
         self._max_entries = max_entries
         self._entry_count = 0
         self._total_bytes = 0  # cumulative across all members
@@ -137,16 +141,29 @@ class BombTracker:
                     f"{self._max_ratio:.0f}:1 for {member.name!r}"
                 )
 
-        # Archive-wide ratio: activates on CUMULATIVE output; only when the outer
-        # compressed size is cheaply known. A whole-archive bomb signal (always-stop).
+        # Archive-wide ratio: activates on CUMULATIVE output; a whole-archive bomb signal
+        # (always-stop). Uses the static outer compressed size when it is cheaply known,
+        # otherwise a LIVE denominator — the compressed bytes consumed from the source so
+        # far — which works for a streaming/pipe source whose total size is unknown. The two
+        # are mutually exclusive (static when known, live otherwise), so the ratio is never
+        # counted twice.
         css = self._compressed_source_size
-        if self._total_bytes > self._ratio_floor and css and css > 0:
-            if self._total_bytes / css > self._max_ratio:
-                raise _AlwaysStopExtractionError(
-                    f"Archive-wide decompression ratio "
-                    f"{self._total_bytes / css:.0f}:1 exceeds limit "
-                    f"{self._max_ratio:.0f}:1"
-                )
+        if self._total_bytes > self._ratio_floor:
+            if css and css > 0:
+                if self._total_bytes / css > self._max_ratio:
+                    raise _AlwaysStopExtractionError(
+                        f"Archive-wide decompression ratio "
+                        f"{self._total_bytes / css:.0f}:1 exceeds limit "
+                        f"{self._max_ratio:.0f}:1"
+                    )
+            elif self._compressed_consumed is not None:
+                consumed = self._compressed_consumed()
+                if consumed and consumed > 0 and self._total_bytes / consumed > self._max_ratio:
+                    raise _AlwaysStopExtractionError(
+                        f"Live decompression ratio "
+                        f"{self._total_bytes / consumed:.0f}:1 exceeds limit "
+                        f"{self._max_ratio:.0f}:1"
+                    )
 
 
 @dataclass
@@ -202,6 +219,7 @@ class ExtractionCoordinator:
             self._ratio_floor,
             reader.compressed_source_size,
             self._max_entries,
+            compressed_consumed=lambda: reader.compressed_bytes_consumed,
         )
 
         selector = self._normalize_selector()
