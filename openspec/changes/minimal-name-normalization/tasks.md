@@ -35,23 +35,21 @@
 
 ## 3. Extraction check on `member.name` (depends on phase-4-safe-extraction)
 
-> **Deferred to the phase-4b rebase.** `internal/filters.py` / `check_universal` is a
-> `phase-4-safe-extraction` (#28) artifact and does not exist on this branch (which is off
-> `main`). These two tasks are performed when #28 is rebased onto the merged normalization —
-> the same commit that removes the interim `raw_name` check. Tracked here so the change is
-> not considered complete until that rebase lands.
+> **Done at the phase-4b rebase** (`phase-4-safe-extraction` / #28): once this change merged,
+> #28 was reset onto the new `main` and these tasks landed in that same PR, removing the
+> interim `raw_name` check.
 
-- [ ] 3.1 Point `check_universal` (`internal/filters.py`) at `member.name`: reject absolute,
+- [x] 3.1 Point `check_universal` (`internal/filters.py`) at `member.name`: reject absolute,
       reject **any** `..` component (split on `/` and `\`), reject null bytes; keep the
-      parent-directory resolve-within-`dest` guarantor for `..`-free names. Remove the interim
+      parent-directory resolve-within-`dest` guarantor for `..`-free names. Removed the interim
       `raw_name` structural check (`_stored_name_violation` / `_decoded_raw`) and the
       `# NOTE (interim)` comment.
-- [ ] 3.2 Update the `safe-extraction` extraction tests: internal `foo/../bar` now rejected
-      under the default `RAISE`; add a test that a *listed* member exposes the true unsafe
-      `name` (e.g. `member.name == "../evil"`).
+- [x] 3.2 Update the `safe-extraction` extraction tests: internal `foo/../bar` now rejected
+      under the default `RAISE`; a *listed* member exposes the true unsafe `name` (verified
+      `member.name == "../evil.txt"`).
 
 ## 4. Gates
 
 - [x] 4.1 `uv run pyrefly check` + `uv run ty check` + `uv run ruff` clean.
-- [ ] 4.2 Full suite green (✓ on this branch: 635 passed); the `testing-contract` traversal
-      scenarios raising on `member.name` land with §3 at the phase-4b rebase.
+- [x] 4.2 Full suite green (684 passed on the rebased phase-4b branch); the `testing-contract`
+      traversal scenarios now raise on `member.name` (verified end-to-end).

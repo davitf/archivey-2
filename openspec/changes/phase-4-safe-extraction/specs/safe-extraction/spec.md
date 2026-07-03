@@ -169,6 +169,72 @@ guarantees, so a failure is surfaced via `OnError` instead. A future opt-in poli
 
 ## MODIFIED Requirements
 
+### Requirement: Overwrite Policy
+
+The system SHALL enforce the `OverwritePolicy` when a destination entry already exists at the
+path a member would be written to.
+
+```python
+class OverwritePolicy(Enum):
+    ERROR   = "error"   # raise ExtractionError if destination entry exists
+    SKIP    = "skip"    # silently skip existing entries
+    REPLACE = "replace" # replace unconditionally (atomically, never write-through)
+```
+
+`ERROR` raises an `ExtractionError` for the member, which is a per-member failure governed by
+the `OnError` policy (`STOP` re-raises and halts; `CONTINUE` records a `FAILED`
+`ExtractionResult` and proceeds). `SKIP` records a `SKIPPED` result regardless of `OnError`.
+
+Two symlink-safety rules apply to all three policies:
+
+- **Existence is checked with `lstat` semantics** (the entry itself, never its target). A
+  *dangling* symlink at the destination path counts as an existing entry — a follow-the-link
+  existence check would report "absent" and a subsequent open-for-writing would create the
+  file at the symlink's **target**, an attacker-controllable location.
+- **`REPLACE` is atomic and never writes through a symlink.** A FILE is streamed into a temp
+  file in the destination directory, has its metadata applied, and is then moved onto the
+  destination path with `os.replace()` — a single atomic operation that overwrites an existing
+  file or **replaces an existing symlink with the fresh file** (it operates on the directory
+  entry, so bytes never follow the link to its target). Because the move is atomic and the
+  existing entry is untouched until the new file is fully written, a failure **mid-extraction**
+  (a decompression error, a bomb-limit trip, a write error) leaves the previous destination
+  intact and discards only the temp file — it never truncates or removes the old data. An
+  existing **directory** being replaced by a file is removed first (`os.replace` cannot
+  overwrite a directory with a file). DIR / SYMLINK / HARDLINK members, which carry no streamed
+  data, are still created by removing any existing entry and creating fresh.
+
+#### Scenario: ERROR raises on existing file
+
+- **WHEN** a member would write to a path that already exists on disk and `OverwritePolicy.ERROR` is active
+- **THEN** `ExtractionError` is raised and the existing file is not modified
+
+#### Scenario: SKIP silently bypasses existing files
+
+- **WHEN** a member would write to an existing path and `OverwritePolicy.SKIP` is active
+- **THEN** the member is skipped; its `ExtractionResult` carries `ExtractionStatus.SKIPPED`
+
+#### Scenario: REPLACE overwrites atomically
+
+- **WHEN** a member would write to an existing path and `OverwritePolicy.REPLACE` is active
+- **THEN** the existing entry is replaced with the member's data via a temp file + `os.replace`
+
+#### Scenario: REPLACE of an existing symlink does not write through it
+
+- **WHEN** the destination path is an existing symlink (e.g. planted by an earlier member) and `OverwritePolicy.REPLACE` is active
+- **THEN** the symlink itself is replaced by the fresh file and no bytes are ever written through the old link to its target
+
+#### Scenario: a failed REPLACE preserves the existing file
+
+- **WHEN** a member is extracted under `OverwritePolicy.REPLACE` over an existing file but extraction fails mid-stream (e.g. a bomb-limit trip or a corrupt/truncated source)
+- **THEN** the existing file is left unchanged and only the temp file is discarded; the old data is never truncated or removed
+
+#### Scenario: dangling symlink at the destination counts as existing
+
+- **WHEN** the destination path is a dangling symlink and `OverwritePolicy.ERROR` (or `SKIP`) is active
+- **THEN** the entry is treated as existing — `ExtractionError` is raised (or the member is skipped); the extractor never opens the path for writing, which would create the file at the link's target
+
+---
+
 ### Requirement: Hardlink Two-Pass Extraction
 
 The system SHALL support hardlinks (as found in TAR archives) through the

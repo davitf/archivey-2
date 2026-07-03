@@ -12,6 +12,15 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     UnsupportedOperationError,
 )
+from archivey.internal.extraction_types import (
+    ExtractionPolicy,
+    ExtractionProgress,
+    ExtractionResult,
+    MemberFilter,
+    MemberSelectorArg,
+    OnError,
+    OverwritePolicy,
+)
 from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import is_seekable, source_byte_size
@@ -502,9 +511,39 @@ class BaseArchiveReader(ArchiveReader):
             elif stream is not None:
                 stream.close()
 
-    def extract_all(self, dest: str | Path) -> None:
-        """Extract all members to dest. (Coordinator implementation deferred to Phase 4.)"""
-        raise NotImplementedError("extract_all is deferred to Phase 4")
+    def extract_all(
+        self,
+        dest: str | Path,
+        *,
+        members: MemberSelectorArg = None,
+        filter: MemberFilter | None = None,
+        policy: ExtractionPolicy = ExtractionPolicy.STRICT,
+        overwrite: OverwritePolicy = OverwritePolicy.ERROR,
+        on_error: OnError = OnError.STOP,
+        on_progress: Callable[[ExtractionProgress], None] | None = None,
+        max_extracted_bytes: int = 2 * 2**30,
+        max_ratio: float = 1000.0,
+        ratio_activation_threshold: int = 5 * 2**20,
+        max_entries: int = 1_048_576,
+    ) -> list[ExtractionResult]:
+        """Extract members to dest via the shared ``ExtractionCoordinator``."""
+        # Imported here (not at module top) to keep the import graph tidy: extraction.py
+        # type-checks against BaseArchiveReader.
+        from archivey.internal.extraction import ExtractionCoordinator
+
+        coordinator = ExtractionCoordinator(
+            policy=policy,
+            overwrite=overwrite,
+            on_error=on_error,
+            on_progress=on_progress,
+            members=members,
+            filter=filter,
+            max_extracted_bytes=max_extracted_bytes,
+            max_ratio=max_ratio,
+            ratio_activation_threshold=ratio_activation_threshold,
+            max_entries=max_entries,
+        )
+        return coordinator.run(self, dest)
 
     def close(self) -> None:
         if not self._closed:

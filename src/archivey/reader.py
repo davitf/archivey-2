@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import BinaryIO, Callable, Iterator
 
 from archivey.cost import CostReceipt
+from archivey.internal.extraction_types import (
+    ExtractionPolicy,
+    ExtractionProgress,
+    ExtractionResult,
+    MemberFilter,
+    MemberSelectorArg,
+    OnError,
+    OverwritePolicy,
+)
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember
 
 # Type alias for the member selector passed to stream_members(). Only the predicate form
@@ -108,8 +117,29 @@ class ArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def extract_all(self, dest: str | Path) -> None:
-        """Extract all members to ``dest`` (safe-by-default; see ``safe-extraction``)."""
+    def extract_all(
+        self,
+        dest: str | Path,
+        *,
+        members: MemberSelectorArg = None,
+        filter: MemberFilter | None = None,
+        policy: ExtractionPolicy = ExtractionPolicy.STRICT,
+        overwrite: OverwritePolicy = OverwritePolicy.ERROR,
+        on_error: OnError = OnError.STOP,
+        on_progress: Callable[[ExtractionProgress], None] | None = None,
+        max_extracted_bytes: int = 2 * 2**30,
+        max_ratio: float = 1000.0,
+        ratio_activation_threshold: int = 5 * 2**20,
+        max_entries: int = 1_048_576,
+    ) -> list[ExtractionResult]:
+        """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
+
+        ``members`` selects which members to extract (names/``ArchiveMember``s, or a
+        predicate; ``None`` = all). ``filter`` runs after the universal safety checks and
+        the ``policy`` transform, and may rename/sanitize a member (return a
+        ``.replace()``d copy) or skip it (return ``None``). Returns one
+        :class:`~archivey.ExtractionResult` per member processed.
+        """
         ...
 
     @abstractmethod
