@@ -1,9 +1,20 @@
 name: CI
 
+# Run on PRs (covers every branch that has one) and on pushes to main (post-merge
+# and direct pushes). Scoping push to main — rather than "**" — avoids running the
+# whole matrix twice for branches with an open PR, where both `push` and
+# `pull_request` would otherwise fire on each commit. No coverage is lost: PR
+# branches are validated by `pull_request`, main by `push`.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+
+# Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
+# rapid pushes don't pile up redundant full-matrix runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Lint + type-check once (these are environment-independent). No continue-on-error:
