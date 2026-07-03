@@ -23,7 +23,7 @@ from archivey.exceptions import (
     SpecialFileError,
     SymlinkEscapeError,
 )
-from archivey.internal.progress import ExtractionPolicy
+from archivey.internal.extraction_types import ExtractionPolicy
 from archivey.types import ArchiveMember, MemberType
 
 # Split a member name into path components on either separator; a ".." component after

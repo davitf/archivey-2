@@ -12,8 +12,7 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     UnsupportedOperationError,
 )
-from archivey.internal.naming import resolve_link_target_name
-from archivey.internal.progress import (
+from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionResult,
@@ -22,6 +21,7 @@ from archivey.internal.progress import (
     OnError,
     OverwritePolicy,
 )
+from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import is_seekable, source_byte_size
 from archivey.reader import ArchiveReader, MemberSelector

@@ -1,4 +1,6 @@
-"""Public extraction value types: policies, per-member results, progress.
+"""Public extraction value types: the ``ExtractionPolicy`` / ``OverwritePolicy`` /
+``OnError`` / ``ExtractionStatus`` enums, the ``ExtractionProgress`` / ``ExtractionResult``
+dataclasses, and the ``members`` / ``filter`` type aliases.
 
 These types are part of the public API (re-exported from ``archivey``), but they live
 under ``internal/`` so the public ``reader.py`` / ``core.py`` surface and the internal
@@ -46,10 +48,16 @@ class ExtractionPolicy(Enum):
 
 
 class OverwritePolicy(Enum):
-    """What to do when a destination entry already exists where a member would be written."""
+    """What to do when a destination entry already exists where a member would be written.
 
-    ERROR = "error"  # raise ExtractionError if a destination entry exists
-    SKIP = "skip"  # silently skip existing entries
+    ``ERROR`` raises an ``ExtractionError`` for the member, which is then a per-member
+    failure governed by the ``OnError`` policy — ``OnError.STOP`` re-raises and halts,
+    ``OnError.CONTINUE`` records a ``FAILED`` ``ExtractionResult`` and proceeds. ``SKIP``
+    is not an error: it records a ``SKIPPED`` result regardless of ``OnError``.
+    """
+
+    ERROR = "error"  # existing entry -> ExtractionError (then handled per OnError)
+    SKIP = "skip"  # silently skip existing entries (records SKIPPED)
     REPLACE = "replace"  # unlink the existing entry, then create fresh (never write-through)
 
 

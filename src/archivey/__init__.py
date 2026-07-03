@@ -47,7 +47,7 @@ from archivey.exceptions import (
     UnsupportedOperationError,
     WriteError,
 )
-from archivey.internal.progress import (
+from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionResult,

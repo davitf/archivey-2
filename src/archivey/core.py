@@ -7,7 +7,7 @@ from typing import BinaryIO, Callable
 
 from archivey.exceptions import StreamNotSeekableError, UnsupportedOperationError
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
-from archivey.internal.progress import (
+from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionResult,

@@ -35,8 +35,7 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     SymlinkEscapeError,
 )
-from archivey.internal.filters import POLICY_TRANSFORMS, check_universal
-from archivey.internal.progress import (
+from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionResult,
@@ -46,6 +45,7 @@ from archivey.internal.progress import (
     OnError,
     OverwritePolicy,
 )
+from archivey.internal.filters import POLICY_TRANSFORMS, check_universal
 from archivey.types import ArchiveMember, MemberType
 
 if TYPE_CHECKING:
@@ -392,9 +392,23 @@ class ExtractionCoordinator:
         # a per-member OnError failure; no copy-the-target fallback.
         os.symlink(target, dest_path)
 
-        # Post-creation re-resolution (defense-in-depth layer 3): the created link's
-        # resolved target must stay within dest, catching chained-symlink TOCTOU. An
-        # unresolvable link (ELOOP / RuntimeError) is treated as an escape.
+        # Re-validate the symlink target AFTER creating it, resolving through the real
+        # filesystem. check_universal already rejected an absolute or escaping target at
+        # planning time, but that check resolves the target lexically against the tree as it
+        # looked *then*. The authoritative question — where does this link actually point? —
+        # can only be answered against the filesystem as it is now, because an *earlier*
+        # extracted member may have planted a symlink on one of this target's path
+        # components that redirects it outside dest (a "chained symlink": e.g. member 1 is
+        # `sub -> /tmp/evil`, member 2 is `sub/link -> x`, so `sub/link` resolves to
+        # `/tmp/evil/x`). Path.resolve() follows those on-disk links, so it catches the
+        # escape the planning check cannot see. We can't do this "just before" creating the
+        # link because there is no link to resolve until it exists; and resolving the *bare
+        # target string* would only repeat check_universal. So: create, resolve, and unlink
+        # if it escaped. A cyclic/adversarial link makes resolve() raise ELOOP/RuntimeError,
+        # which we also treat as an escape (fail safe rather than crash). This is the third
+        # of the three defense-in-depth layers named in the `safe-extraction` spec
+        # ("Symlink Escape Re-Validated at Extraction Time"); layers 1-2 are in
+        # check_universal.
         try:
             resolved = (dest_path.parent / target).resolve()
             escaped = not (resolved == dest_root or resolved.is_relative_to(dest_root))
@@ -594,7 +608,11 @@ class ExtractionCoordinator:
                         dst.write(chunk)
         except BaseException:
             # Remove this member's partial output on any failure (bomb guard, write
-            # error, KeyboardInterrupt) before re-raising.
+            # error, KeyboardInterrupt) and re-raise. No log here on purpose: the failure
+            # propagates to run()'s per-member handler, which under OnError.CONTINUE emits
+            # the WARNING and records the FAILED result, and under OnError.STOP re-raises
+            # for the caller — logging here would either duplicate that or fire on a
+            # deliberate STOP.
             try:
                 os.unlink(path)
             except OSError:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import BinaryIO, Callable, Iterator
 
 from archivey.cost import CostReceipt
-from archivey.internal.progress import (
+from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionResult,
