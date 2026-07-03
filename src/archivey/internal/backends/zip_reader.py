@@ -285,10 +285,11 @@ class ZipReader(BaseArchiveReader):
         name = normalize_member_name(
             decoded, member_type, backslash_is_separator=backslash_is_separator
         )
-        # Recover the stored bytes by re-encoding with the codec zipfile decoded with:
-        # UTF-8 when the entry's UTF-8 flag is set, else the caller's metadata encoding
-        # (when given) or zipfile's cp437 default.
-        raw_name = info.orig_filename.encode(
+        # raw_name recovers the stored bytes by re-encoding the SAME source as name
+        # (decoded == orig_filename) with the codec zipfile decoded with: UTF-8 when the
+        # entry's UTF-8 flag is set, else the caller's metadata encoding (when given) or
+        # zipfile's cp437 default. Using orig_filename keeps name and raw_name consistent.
+        raw_name = decoded.encode(
             "utf-8" if info.flag_bits & 0x800 else (self._encoding or "cp437"),
             errors="surrogateescape",
         )
