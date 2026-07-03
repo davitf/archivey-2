@@ -65,6 +65,18 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     98: CompressionAlgorithm.PPMD,
 }
 
+# ZIP create-system values whose entries use "\" as a path separator (DOS/Windows family).
+# For these, a stored backslash is a separator; for Unix/other entries it is a literal
+# filename character (see the minimal-name-normalization change / archive-data-model spec).
+_BACKSLASH_SEPARATOR_SYSTEMS: frozenset[CreateSystem] = frozenset(
+    {
+        CreateSystem.FAT,
+        CreateSystem.OS2_HPFS,
+        CreateSystem.WINDOWS_NTFS,
+        CreateSystem.VFAT,
+    }
+)
+
 
 def _decode_with_fallback(data: bytes) -> str:
     for encoding in _ZIP_ENCODINGS:
@@ -257,22 +269,32 @@ class ZipReader(BaseArchiveReader):
         else:
             member_type = MemberType.FILE
 
-        decoded = info.filename
-        name = normalize_member_name(decoded.replace("\\", "/"), member_type)
-        # Recover the stored bytes by re-encoding with the codec zipfile decoded with:
-        # UTF-8 when the entry's UTF-8 flag is set, else the caller's metadata encoding
-        # (when given) or zipfile's cp437 default.
-        raw_name = info.orig_filename.encode(
+        try:
+            create_system = CreateSystem(info.create_system)
+        except ValueError:
+            create_system = CreateSystem.UNKNOWN
+        # Convert "\" to "/" only for DOS/Windows-origin entries (where it is a separator);
+        # a Unix (or other) entry keeps a backslash as a literal filename character.
+        backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
+
+        # Use orig_filename, not filename: stdlib zipfile rewrites filename in a
+        # platform-dependent way (it replaces os.sep -> "/" on Windows and truncates at a
+        # null byte), whereas orig_filename is the raw decoded name, identical on every OS.
+        # Archivey's own backslash_is_separator / extraction checks are the single authority.
+        decoded = info.orig_filename
+        name = normalize_member_name(
+            decoded, member_type, backslash_is_separator=backslash_is_separator
+        )
+        # raw_name recovers the stored bytes by re-encoding the SAME source as name
+        # (decoded == orig_filename) with the codec zipfile decoded with: UTF-8 when the
+        # entry's UTF-8 flag is set, else the caller's metadata encoding (when given) or
+        # zipfile's cp437 default. Using orig_filename keeps name and raw_name consistent.
+        raw_name = decoded.encode(
             "utf-8" if info.flag_bits & 0x800 else (self._encoding or "cp437"),
             errors="surrogateescape",
         )
 
         algo = _ZIP_COMPRESSION_ALGOS.get(info.compress_type, CompressionAlgorithm.UNKNOWN)
-
-        try:
-            create_system = CreateSystem(info.create_system)
-        except ValueError:
-            create_system = CreateSystem.UNKNOWN
 
         link_target = None
         if member_type == MemberType.SYMLINK:

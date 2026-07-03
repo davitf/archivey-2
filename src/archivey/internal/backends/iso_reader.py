@@ -224,7 +224,10 @@ class IsoReader(BaseArchiveReader):
         else:
             member_type = MemberType.FILE
 
-        name = normalize_member_name(self._display_name(ns_path), member_type)
+        # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
+        name = normalize_member_name(
+            self._display_name(ns_path), member_type, backslash_is_separator=False
+        )
         raw_name = ns_path.lstrip("/").encode("utf-8", errors="surrogateescape")
 
         modified, accessed, created = self._timestamps(record, rr)

@@ -315,7 +315,8 @@ class TarReader(BaseArchiveReader):
 
     def _to_member(self, info: tarfile.TarInfo) -> ArchiveMember:
         member_type = _member_type(info)
-        name = normalize_member_name(info.name, member_type)
+        # TAR is a POSIX format: a backslash is a legal filename character, not a separator.
+        name = normalize_member_name(info.name, member_type, backslash_is_separator=False)
         # Re-encode the decoded name with the archive's own codec to recover the stored bytes
         # (tarfile decodes with surrogateescape, which round-trips losslessly).
         raw_name = info.name.encode(self._tar.encoding, errors="surrogateescape")

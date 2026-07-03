@@ -16,45 +16,45 @@ from archivey.internal.logs import normalization as logger
 from archivey.types import MemberType
 
 
-def normalize_member_name(decoded: str, member_type: MemberType) -> str:
-    """Normalize a decoded member name per the spec rules.
+def normalize_member_name(
+    decoded: str, member_type: MemberType, *, backslash_is_separator: bool
+) -> str:
+    """Normalize a decoded member name using only **meaning-preserving** rules.
 
-    Rules, applied in order:
-      1. Replace all ``\\`` with ``/``.
-      2. Strip leading ``/`` and ``./``.
-      3. Collapse ``//`` and ``foo/../bar`` sequences.
-      4. Append ``/`` for directory members if not already present.
-      5. Never produce an empty string — the root directory becomes ``"."``.
+    ``member.name`` is a faithful presentation of the stored path: a leading ``/`` and any
+    ``..`` component are **retained** (they are rejected at extraction time — see
+    ``safe-extraction`` — not silently re-rooted here). Rules, applied in order:
 
-    A warning is emitted via the ``archivey.normalization`` logger when
-    normalization changes the logical path.
+      1. Replace ``\\`` with ``/`` **only when** ``backslash_is_separator`` is true — the
+         backend supplies this per the source format/entry (Windows-origin entries convert;
+         TAR and other POSIX formats keep ``\\`` as a literal filename character).
+      2. Drop ``.`` segments and empty segments (collapsing ``//`` and ``/./``); keep ``..``.
+      3. Append ``/`` for directory members if not already present.
+      4. Never produce an empty string — an empty name or a bare root becomes ``"."``.
+
+    A warning is emitted via the ``archivey.normalization`` logger when normalization changes
+    the presented path.
     """
     name = decoded
 
-    # 1. Backslashes -> forward slashes.
-    name = name.replace("\\", "/")
+    # 1. Backslashes -> forward slashes, only when the format/entry treats them as separators.
+    if backslash_is_separator:
+        name = name.replace("\\", "/")
 
-    # 2. Strip leading "/" and "./".
-    while name.startswith("/") or name.startswith("./"):
-        name = name[1:] if name.startswith("/") else name[2:]
+    # 2. Meaning-preserving segment clean-up. Preserve a leading "/" (absolute — rejected at
+    #    extraction) and every ".." (retained faithfully); drop only "." and empty segments.
+    is_absolute = name.startswith("/")
+    kept = [part for part in name.split("/") if part not in (".", "")]
+    if not kept:
+        name = "."  # empty name or a bare root
+    else:
+        name = "/".join(kept)
+        if is_absolute:
+            name = "/" + name
 
-    # 3. Collapse "//" and "foo/../bar" sequences.
-    normalized_parts: list[str] = []
-    for part in name.split("/"):
-        if part == "..":
-            if normalized_parts:
-                normalized_parts.pop()
-        elif part not in (".", ""):
-            normalized_parts.append(part)
-    name = "/".join(normalized_parts)
-
-    # 4. Trailing "/" for directories.
-    if member_type == MemberType.DIRECTORY and not name.endswith("/"):
+    # 3. Trailing "/" for directories.
+    if member_type == MemberType.DIRECTORY and name != "." and not name.endswith("/"):
         name = name + "/"
-
-    # 5. Never empty — root becomes ".".
-    if not name or name == "/":
-        name = "."
 
     if name != decoded:
         logger.warning("Member name normalized: %r -> %r", decoded, name)
