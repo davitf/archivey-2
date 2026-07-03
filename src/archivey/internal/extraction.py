@@ -534,10 +534,11 @@ class ExtractionCoordinator:
         tracker.start_member(source_member)
         first = group[0]
         # The excluded source is written to the first selected link's destination path,
-        # never to its own name.
-        if self._prepare_destination(first.original, first.dest_path):
+        # never to its own name — atomically (temp + os.replace), same as a normal FILE, so a
+        # failure while re-reading the source doesn't clobber an existing entry there.
+        if self._prepare_destination(first.original, first.dest_path, atomic=True):
             os.makedirs(first.dest_path.parent, exist_ok=True)
-            self._copy_stream_to(stream, first.dest_path, tracker)
+            self._write_file_atomic(stream, first.dest_path, None, tracker)
             source_paths.setdefault(source_member.member_id, []).append(first.dest_path)
             results[first.result_index] = ExtractionResult(
                 first.original, first.dest_path, ExtractionStatus.EXTRACTED, None
@@ -610,21 +611,24 @@ class ExtractionCoordinator:
         self,
         stream: BinaryIO | None,
         dest_path: Path,
-        member: ArchiveMember,
+        member: ArchiveMember | None,
         tracker: BombTracker | None,
     ) -> None:
-        """Write a FILE by streaming into a temp sibling, applying metadata, then
-        ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure never
-        truncates or removes an existing destination (only the temp is discarded), and the
-        target name never appears half-written. The temp lives in the destination directory
-        so the rename stays on one filesystem."""
+        """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata
+        (when given), then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a
+        mid-stream failure never truncates or removes an existing destination (only the temp
+        is discarded), and the target name never appears half-written. The temp lives in the
+        destination directory so the rename stays on one filesystem. ``member`` is ``None``
+        when materializing an orphaned hardlink source's content (it applies no metadata; the
+        links each carry their own)."""
         # mkstemp hands back an already-open fd; write straight into it (no close+reopen).
         fd, tmp_name = tempfile.mkstemp(dir=dest_path.parent, prefix=".archivey-tmp-")
         tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as dst:
                 self._copy_to_fileobj(stream, dst, tracker)
-            self._apply_metadata(tmp, member)
+            if member is not None:
+                self._apply_metadata(tmp, member)
             os.replace(tmp, dest_path)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
@@ -648,25 +652,6 @@ class ExtractionCoordinator:
             if tracker is not None:
                 tracker.count(len(chunk))
             dst.write(chunk)
-
-    def _copy_stream_to(
-        self, stream: BinaryIO | None, path: Path, tracker: BombTracker | None
-    ) -> None:
-        try:
-            with open(path, "wb") as dst:
-                self._copy_to_fileobj(stream, dst, tracker)
-        except BaseException:
-            # Remove this member's partial output on any failure (bomb guard, write
-            # error, KeyboardInterrupt) and re-raise. No log here on purpose: the failure
-            # propagates to run()'s per-member handler, which under OnError.CONTINUE emits
-            # the WARNING and records the FAILED result, and under OnError.STOP re-raises
-            # for the caller — logging here would either duplicate that or fire on a
-            # deliberate STOP.
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-            raise
 
     def _place_link(
         self,
