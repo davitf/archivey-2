@@ -268,6 +268,15 @@ def test_extract_zip_basic(tmp_path: Path) -> None:
     assert {r.status for r in results} == {ExtractionStatus.EXTRACTED}
 
 
+# Windows has no Unix permission bits — os.chmod there can only toggle the read-only
+# flag, so a regular file always reads back ~0o666 with no execute/group/other bits. The
+# permission-normalization behavior is a POSIX concept, so assert it only on POSIX.
+_posix_perms = pytest.mark.skipif(
+    os.name != "posix", reason="Unix permission bits (chmod) are a no-op on Windows"
+)
+
+
+@_posix_perms
 def test_extract_zip_strict_normalizes_mode(tmp_path: Path) -> None:
     src = tmp_path / "m.zip"
     _write_zip(src, {"x.sh": b"#!/bin/sh"}, mode=0o777)
@@ -276,6 +285,7 @@ def test_extract_zip_strict_normalizes_mode(tmp_path: Path) -> None:
     assert (dest / "x.sh").stat().st_mode & 0o777 == 0o644
 
 
+@_posix_perms
 def test_extract_zip_standard_keeps_execute(tmp_path: Path) -> None:
     src = tmp_path / "m.zip"
     _write_zip(src, {"x.sh": b"#!/bin/sh"}, mode=0o755)
