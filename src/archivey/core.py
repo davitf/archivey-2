@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from archivey.exceptions import StreamNotSeekableError, UnsupportedOperationError
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
+from archivey.internal.progress import (
+    ExtractionPolicy,
+    ExtractionProgress,
+    ExtractionResult,
+    OnError,
+    OverwritePolicy,
+)
 from archivey.internal.registry import (
     FormatAvailability,
     FormatSupport,
@@ -33,6 +40,7 @@ __all__ = [
     "FormatSupport",
     "MissingComponent",
     "detect_format",
+    "extract",
     "format_availability",
     "list_known_formats",
     "list_supported_formats",
@@ -151,3 +159,42 @@ def open_archive(
         archive_name=archive_name,
         strict_eof=strict_eof,
     )
+
+
+def extract(
+    source: str | Path | BinaryIO,
+    dest: str | Path,
+    *,
+    policy: ExtractionPolicy = ExtractionPolicy.STRICT,
+    overwrite: OverwritePolicy = OverwritePolicy.ERROR,
+    on_error: OnError = OnError.STOP,
+    format: ArchiveFormat | None = None,
+    password: bytes | str | None = None,
+    on_progress: Callable[[ExtractionProgress], None] | None = None,
+    max_extracted_bytes: int = 2 * 2**30,
+    max_ratio: float = 1000.0,
+    ratio_activation_threshold: int = 5 * 2**20,
+    max_entries: int = 1_048_576,
+) -> list[ExtractionResult]:
+    """Open ``source``, apply safety checks, and write **all** members to ``dest``.
+
+    The one-shot extraction API (see ``safe-extraction``). It deliberately has **no**
+    member-selection parameter — selecting a subset requires the member list, which would
+    force a reopen; use :meth:`ArchiveReader.extract_all` with ``members=`` on an already
+    open reader instead. Extraction is safe-by-default: ``ExtractionPolicy.STRICT`` and
+    ``OverwritePolicy.ERROR``, with the decompression-bomb guards active.
+
+    Returns one :class:`~archivey.ExtractionResult` per member processed.
+    """
+    with open_archive(source, format=format, password=password) as reader:
+        return reader.extract_all(
+            dest,
+            policy=policy,
+            overwrite=overwrite,
+            on_error=on_error,
+            on_progress=on_progress,
+            max_extracted_bytes=max_extracted_bytes,
+            max_ratio=max_ratio,
+            ratio_activation_threshold=ratio_activation_threshold,
+            max_entries=max_entries,
+        )

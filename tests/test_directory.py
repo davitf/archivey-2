@@ -414,16 +414,20 @@ def test_deep_nested_read(deep_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# extract_all stub
+# extract_all — basic smoke test via the ExtractionCoordinator
 # ---------------------------------------------------------------------------
 
 
-def test_extract_all_raises_not_implemented(simple_dir: Path, tmp_path: Path) -> None:
+def test_extract_all_writes_members(simple_dir: Path, tmp_path: Path) -> None:
+    from archivey import ExtractionStatus
+
     dest = tmp_path / "out"
-    dest.mkdir()
     with open_archive(simple_dir) as reader:
-        with pytest.raises(NotImplementedError):
-            reader.extract_all(dest)
+        results = reader.extract_all(dest)
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert (dest / "b.txt").read_bytes() == b"world"
+    assert (dest / "sub" / "c.txt").read_bytes() == b"nested"
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in results)
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ from archivey.core import (
     FormatSupport,
     MissingComponent,
     detect_format,
+    extract,
     format_availability,
     list_known_formats,
     list_supported_formats,
@@ -46,6 +47,14 @@ from archivey.exceptions import (
     UnsupportedOperationError,
     WriteError,
 )
+from archivey.internal.progress import (
+    ExtractionPolicy,
+    ExtractionProgress,
+    ExtractionResult,
+    ExtractionStatus,
+    OnError,
+    OverwritePolicy,
+)
 from archivey.reader import ArchiveReader
 from archivey.types import (
     ArchiveFormat,
@@ -62,6 +71,13 @@ from archivey.types import (
 __all__ = [
     "__version__",
     "open_archive",
+    "extract",
+    "ExtractionPolicy",
+    "OverwritePolicy",
+    "OnError",
+    "ExtractionStatus",
+    "ExtractionProgress",
+    "ExtractionResult",
     "detect_format",
     "FormatInfo",
     "DetectionConfidence",
