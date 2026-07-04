@@ -344,10 +344,23 @@ class ZipReader(BaseArchiveReader):
         # — and a duplicate member name can't resolve to the wrong entry.
         info = member._raw
         assert isinstance(info, zipfile.ZipInfo), "ZIP member is missing its ZipInfo handle"
-        raw = cast(
-            "BinaryIO",
-            self._archive.open(info, pwd=self._password),
-        )
+        # zipfile validates the local header when opening a member — the "Overlapped
+        # entries" zip-bomb guard, the name-mismatch check, a missing-password
+        # RuntimeError, and unsupported-compression NotImplementedError all fire here,
+        # before any byte flows through the ArchiveStream translator. Translate them at
+        # the source so callers only ever see ArchiveyErrors (a genuine OSError from the
+        # underlying source is not in the caught set, so it propagates unchanged).
+        try:
+            raw = cast(
+                "BinaryIO",
+                self._archive.open(info, pwd=self._password),
+            )
+        except (zipfile.BadZipFile, RuntimeError, io.UnsupportedOperation) as exc:
+            translated = self._translate_exception(exc)
+            if translated is not None:
+                self._stamp_error_context(translated, member.name)
+                raise translated from exc
+            raise
         return self._wrap_member_stream(raw, member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
