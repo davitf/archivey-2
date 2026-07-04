@@ -751,3 +751,23 @@ def test_seekable_targz_uses_static_not_live(tmp_path: Path) -> None:
     with open_archive(src) as r:
         assert r.compressed_source_size is not None
         assert r.compressed_bytes_consumed is None
+
+
+def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
+    # A bare .gz single-file compressor from a pipe (SingleFileReader) is covered too.
+    import gzip
+
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = gzip.compress(b"\x00" * (8 * 1024 * 1024))
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is not None  # counter wired for single-file too
+        with pytest.raises(ExtractionError):
+            r.extract_all(
+                dest,
+                max_ratio=10.0,
+                ratio_activation_threshold=1024,
+                max_extracted_bytes=100 * 2**20,
+            )

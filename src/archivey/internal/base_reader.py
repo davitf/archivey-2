@@ -24,7 +24,11 @@ from archivey.internal.extraction_types import (
 from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.counting import CountingReader
-from archivey.internal.streams.streamtools import is_seekable, source_byte_size
+from archivey.internal.streams.streamtools import (
+    is_seekable,
+    is_stream,
+    source_byte_size,
+)
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,
@@ -415,6 +419,20 @@ class BaseArchiveReader(ArchiveReader):
         """
         c = self._compressed_input_counter
         return c.bytes_read if c is not None else None
+
+    def _count_compressed_input(self, source: Path | BinaryIO) -> Path | BinaryIO:
+        """Wrap a **non-seekable stream** source in a ``CountingReader`` (recorded for the
+        live decompression-ratio guard) and return the wrapper; return the source unchanged
+        for a path or a seekable stream, whose size is cheaply knowable so the *static*
+        archive-wide ratio applies instead. A compressed backend that decompresses a stream
+        source calls this on the raw source before handing it to the codec layer, so
+        ``compressed_bytes_consumed`` tracks what the decompressor pulls from a pipe.
+        """
+        if is_stream(source) and not is_seekable(source):
+            counter = CountingReader(source)
+            self._compressed_input_counter = counter
+            return counter
+        return source
 
     def __iter__(self) -> Iterator[ArchiveMember]:
         if self._streaming and self._members_cache is None:

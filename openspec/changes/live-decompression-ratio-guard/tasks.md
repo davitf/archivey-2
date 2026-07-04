@@ -15,13 +15,15 @@
       outer compressed stream (solid/streamed) feed the **same** counter (cumulative).
 - [x] 1.3 Confirm accelerator backends (`rapidgzip`, `indexed_bzip2`) either report a
       consumption count that tracks real input pressure, or gate the live guard to the plain
-      sequential decoders (per design D-open-questions). **Resolved structurally:** the live
-      guard only engages when `compressed_source_size` is `None`, which requires a
-      non-seekable source, which requires `streaming=True` — and the accelerators are
-      AUTO-disabled under `streaming=True` (see `internal/config.py`), so the plain sequential
-      decoder is used and consumption tracks output causally. (If an accelerator is ever
-      force-enabled on a streaming source, its read-ahead could make the live ratio
-      conservative — a noted follow-up, not a correctness gap.)
+      sequential decoders (per design D-open-questions). **Resolved by placement:** the
+      `CountingReader` wraps the **raw source**, *below* the decoder, so it counts the
+      compressed bytes any decoder pulls — stdlib gzip or the rapidgzip/indexed_bzip2
+      accelerators alike (rapidgzip *does* run for a streaming `.tar.gz` when installed).
+      The accelerators' bounded read-ahead only makes the live ratio slightly conservative;
+      the streaming-bomb tests are run with rapidgzip installed and still trip the guard.
+      Wiring is shared via `BaseArchiveReader._count_compressed_input`, so **both** the TAR
+      and single-file backends set the counter (a non-seekable `.tar.gz` pipe can be read by
+      either, depending on detection).
 - [x] 1.4 Stream-layer tests: consumed count grows monotonically on a piped `.gz`; `None` for
       uncompressed/directory; observing the count doesn't perturb decoded output.
 
