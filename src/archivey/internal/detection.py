@@ -28,9 +28,9 @@ import io
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
-from archivey.exceptions import ArchiveyError, FormatDetectionError
+from archivey.exceptions import ArchiveyError, FormatDetectionError, TruncatedError
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
@@ -45,6 +45,14 @@ from archivey.types import (
 # Decompressed bytes needed to see a TAR ``ustar`` signature at offset 257 (one 512-byte
 # header block covers it).
 _INNER_TAR_PROBE_BYTES = 512
+
+# Upper bound on compressed input the inner-TAR probe reads from the source when the peeked
+# detection prefix is too short. bzip2 is block-transform (BWT) based: it emits no output
+# until a whole block is read, and a block holds up to 900 KB uncompressed (level 9), which
+# for incompressible leading data compresses to just over 900 KB. 1 MiB covers a full
+# worst-case first block with margin; a stream-oriented codec (gzip/xz/zstd/…) reaches the
+# header region from the ordinary prefix and never triggers this larger read.
+_INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 
 
 class DetectionConfidence(Enum):
@@ -113,14 +121,25 @@ def _match_extension(
     return None
 
 
-def _probe_inner_tar(prefix: bytes, stream_format: StreamFormat) -> bool:
-    """Whether decompressing ``prefix`` yields a TAR (``ustar`` at offset 257).
+def _probe_inner_tar(
+    prefix: bytes,
+    stream_format: StreamFormat,
+    peek_more: Callable[[int], bytes],
+) -> bool:
+    """Whether decompressing the source yields a TAR (``ustar`` at offset 257).
 
-    The codec layer decodes a bounded prefix; the inner ``ustar`` magic confirms a tarball
-    wrapped in the compressor. Returns ``False`` (deferring the determination to open time)
-    when the codec backend is absent or the prefix does not decode to a TAR header.
+    The codec layer decodes the compressed source; the inner ``ustar`` magic confirms a
+    tarball wrapped in the compressor. A **stream-oriented** codec (gzip/xz/zstd/…) emits
+    output incrementally, so the already-peeked ``prefix`` reaches the TAR header region on
+    its own. A **block-transform** codec (bzip2) emits nothing until a whole block has been
+    read; when its first block is larger than ``prefix`` the decode is truncated, so the
+    probe reads up to one maximum block from the source via ``peek_more`` and retries.
+
+    Returns ``False`` (deferring the determination to open time) when the codec backend is
+    absent or the decoded output carries no TAR header.
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
+    from archivey.internal.config import StreamConfig
     from archivey.internal.streams.codecs import (
         codec_for_stream_format,
         is_codec_available,
@@ -133,12 +152,32 @@ def _probe_inner_tar(prefix: bytes, stream_format: StreamFormat) -> bool:
         return False
     if not is_codec_available(codec):
         return False
-    try:
-        with open_codec_stream(codec, io.BytesIO(prefix)) as stream:
-            head = stream.read(_INNER_TAR_PROBE_BYTES)
-    except (ArchiveyError, OSError, ValueError):
-        return False
-    return head[257:262] == b"ustar"
+
+    def _decode(data: bytes) -> bytes | None:
+        """The decompressed header region, or ``None`` when ``data`` holds too little
+        compressed input to produce it (a block codec whose first block exceeds ``data``).
+
+        The sequential backend is forced (``streaming=True``): the rapidgzip accelerator
+        expects a complete/seekable source and rejects a bounded prefix, which would
+        mis-defer a .tar.gz to bare .gz.
+        """
+        try:
+            with open_codec_stream(
+                codec, io.BytesIO(data), config=StreamConfig(streaming=True)
+            ) as stream:
+                return stream.read(_INNER_TAR_PROBE_BYTES)
+        except TruncatedError:
+            return None  # the compressed prefix ended mid-block; more input may complete it
+        except (ArchiveyError, OSError, ValueError):
+            return b""  # not decodable as this codec at all -> not an inner tar
+
+    head = _decode(prefix)
+    if head is None:
+        # A block-transform codec (bzip2) buffered a first block larger than the peeked
+        # prefix; read up to one maximum block from the source and retry once. A genuinely
+        # truncated stream simply yields no more bytes and still resolves to "no inner tar".
+        head = _decode(peek_more(_INNER_TAR_MAX_PROBE_BYTES))
+    return head is not None and head[257:262] == b"ustar"
 
 
 def _resolve_single_file_or_tar(
@@ -146,16 +185,18 @@ def _resolve_single_file_or_tar(
     fmt: ArchiveFormat,
     base_confidence: "DetectionConfidence",
     base_detected_by: str,
+    peek_more: Callable[[int], bytes],
 ) -> FormatInfo:
     """Upgrade a single-file-compressor match to its TAR combo when the payload is a tarball.
 
     A ``RAW_STREAM`` compressor (``.gz``/``.bz2``/``.xz``/…) is probed for an inner TAR; on a
     hit it becomes ``(TAR, <stream>)`` (e.g. ``TAR_GZ``) reported as ``PROBABLE`` /
     ``content_probe`` (the inner-TAR test is structural, weaker than an exact magic).
-    Otherwise the original single-file/container match stands.
+    Otherwise the original single-file/container match stands. ``peek_more`` lets the probe
+    read more of the source than the peeked ``data`` when a block codec needs a full block.
     """
     if fmt.container == ContainerFormat.RAW_STREAM and fmt.stream != StreamFormat.UNCOMPRESSED:
-        if _probe_inner_tar(data, fmt.stream):
+        if _probe_inner_tar(data, fmt.stream, peek_more):
             tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
             return FormatInfo(tar_fmt, DetectionConfidence.PROBABLE, "content_probe")
     return FormatInfo(fmt, base_confidence, base_detected_by)
@@ -215,12 +256,19 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
     )
     data = _peek_prefix(source, near_needed)
 
+    # The inner-TAR probe reaches the header region from `data` for stream-oriented codecs,
+    # but a block codec (bzip2) may need a full block; this reads more of the source on
+    # demand (bounded, restoring position / buffering in the PeekableStream, like the prefix
+    # peek above) so a large-block .tar.bz2 is not mis-reported as bare .bz2.
+    def peek_more(length: int) -> bytes:
+        return _peek_prefix(source, length)
+
     # 1. Exact magic in the default window. A single-file compressor is additionally probed
     #    for an inner TAR (so .tar.gz → TAR_GZ, not bare GZ).
     magic_fmt = _match_magic(data, near)
     if magic_fmt is not None:
         info = _resolve_single_file_or_tar(
-            data, magic_fmt, DetectionConfidence.CERTAIN, "magic"
+            data, magic_fmt, DetectionConfidence.CERTAIN, "magic", peek_more
         )
         _warn_on_conflict(name, ext_fmt, info.format)
         return info
@@ -232,7 +280,7 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
     for probe_fmt, probe in registry.content_probes():
         if probe(data):
             return _resolve_single_file_or_tar(
-                data, probe_fmt, DetectionConfidence.PROBABLE, "content_probe"
+                data, probe_fmt, DetectionConfidence.PROBABLE, "content_probe", peek_more
             )
 
     # 3. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on

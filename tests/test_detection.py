@@ -272,6 +272,61 @@ def test_inner_tar_over_xz_is_tar_xz() -> None:
     assert info.format == ArchiveFormat.TAR_XZ
 
 
+def _large_block_tar_bz2() -> bytes:
+    """A ``.tar.bz2`` whose first bzip2 block is far larger than the detection prefix.
+
+    bzip2 is block-transform (BWT) based: it emits *no* decompressed output until a whole
+    block (up to 900 KB) has been read. A first member of incompressible data makes the
+    first block's *compressed* size exceed ``DETECTION_LIMIT`` (4096), so the header region
+    (``ustar`` at offset 257) is unreachable from the peeked prefix alone.
+    """
+    import bz2
+    import os
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        data = os.urandom(200_000)  # incompressible => first block compresses poorly
+        info = tarfile.TarInfo("first.bin")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    return bz2.compress(buf.getvalue(), 9)
+
+
+def test_inner_tar_over_bzip2_large_block_is_tar_bz2() -> None:
+    # Regression: a tar.bz2 whose first block exceeds the 4 KiB detection prefix must still
+    # be recognized as TAR_BZ2 — the probe reads a full block from the source, not just the
+    # prefix. Previously this decoded to zero bytes and was mis-reported as bare BZ2.
+    info = detect_format(io.BytesIO(_large_block_tar_bz2()))
+    assert info.format == ArchiveFormat.TAR_BZ2
+    assert info.detected_by == "content_probe"
+
+
+def test_inner_tar_over_bzip2_large_block_non_seekable() -> None:
+    # Same, from a non-seekable pipe wrapped as the opener does: the PeekableStream buffers
+    # enough of the prefix for the probe to reach the header region, and the source is not
+    # consumed (the backend can still read the whole archive afterwards).
+    from archivey.internal.streams.peekable import PeekableStream
+
+    data = _large_block_tar_bz2()
+    stream = PeekableStream(NonSeekableBytesIO(data))
+    info = detect_format(stream)
+    assert info.format == ArchiveFormat.TAR_BZ2
+    assert stream.read(len(data)) == data
+
+
+def test_bare_bzip2_large_block_stays_bare_bz2() -> None:
+    # A large-block bare .bz2 that is NOT a tar must not be mis-promoted: the probe reads a
+    # full block, finds no ustar, and reports bare BZ2 (bounded read, no false positive).
+    import bz2
+    import os
+
+    data = bz2.compress(b"not a tar; " + os.urandom(200_000), 9)
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.BZ2
+    assert info.detected_by == "magic"
+
+
 def test_inner_tar_probe_skipped_when_codec_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
