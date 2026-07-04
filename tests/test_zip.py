@@ -383,6 +383,66 @@ def test_corrupt_member_data_raises_corruption_on_read() -> None:
             ar.read("data.txt")
 
 
+def _overlapping_entries_zip() -> bytes:
+    """A Fifield-style overlap bomb: many central-directory entries whose data spans
+    overlap a single shared compressed kernel (https://www.bamsoftware.com/hacks/zipbomb/).
+
+    stdlib zipfile's "Overlapped entries (possible zip bomb)" guard fires when a member is
+    opened — before any byte flows through archivey's read-time translator — so this pins
+    that the *open-time* stdlib exception is translated to a CorruptionError like every
+    other backend error, rather than leaking as a raw zipfile.BadZipFile.
+    """
+    import zlib
+
+    n = 8
+    raw = b"\x00" * (1024 * 1024)
+    comp = zlib.compressobj(9, zlib.DEFLATED, -15)
+    blob = comp.compress(raw) + comp.flush()
+    crc, csize, usize = zlib.crc32(raw) & 0xFFFFFFFF, len(blob), len(raw)
+
+    buf = io.BytesIO()
+    names = [f"f{i}".encode() for i in range(n)]
+    offsets = []
+    for nm in names:  # adjacent local headers, each claiming the shared csize
+        offsets.append(buf.tell())
+        buf.write(
+            struct.pack(
+                "<IHHHHHIIIHH", 0x04034B50, 20, 0, 8, 0, 0, crc, csize, usize, len(nm), 0
+            )
+        )
+        buf.write(nm)
+    buf.write(blob)  # one shared kernel; every entry's data span overruns the next header
+
+    cd_start = buf.tell()
+    for nm, off in zip(names, offsets):
+        buf.write(
+            struct.pack(
+                "<IHHHHHHIIIHHHHHII",
+                0x02014B50, 20, 20, 0, 8, 0, 0, crc, csize, usize,
+                len(nm), 0, 0, 0, 0, 0, off,
+            )
+        )
+        buf.write(nm)
+    cd_size = buf.tell() - cd_start
+    buf.write(struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, n, n, cd_size, cd_start, 0))
+    return buf.getvalue()
+
+
+def test_overlapping_entries_bomb_translated_to_corruption() -> None:
+    # The overlap guard is an open-time check, not a read-time one, so it exercises a path
+    # distinct from the CRC check above. Every overlapping member must surface as a
+    # translated CorruptionError carrying the stdlib BadZipFile as its cause.
+    data = _overlapping_entries_zip()
+    with open_archive(io.BytesIO(data)) as ar:
+        overlapping = [m for m in ar.members() if m.name != "f7"]  # last entry is valid
+        assert overlapping, "expected the crafted archive to list overlapping members"
+        for member in overlapping:
+            with pytest.raises(CorruptionError) as excinfo:
+                ar.read(member)
+            assert "Overlapped entries" in str(excinfo.value)
+            assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
+
+
 # ---------------------------------------------------------------------------
 # Encrypted symlink targets and explicit metadata encoding
 # ---------------------------------------------------------------------------
