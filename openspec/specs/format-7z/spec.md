@@ -245,19 +245,20 @@ in the Phase 7 change proposal.
 
 ### Requirement: Report solid block metadata in CostReceipt
 
-The system SHALL populate `CostReceipt` from the natively parsed header:
-`solid_block_count` is the number of folders, and `is_solid` is `True` when any
-folder packs more than one file.
+The system SHALL populate the solidity signals from the natively parsed header:
+`CostReceipt.solid_block_count` is the number of folders, and `ArchiveInfo.is_solid`
+is `True` when any folder packs more than one file (`is_solid` lives on `ArchiveInfo`,
+not on `CostReceipt` — see `access-mode-and-cost`).
 
 #### Scenario: reporting cost for a solid 7z archive
 
 - **WHEN** a 7-Zip archive contains folders that pack multiple files
-- **THEN** `CostReceipt.is_solid` is `True` and `CostReceipt.solid_block_count` reflects the folder count from the header
+- **THEN** `ArchiveInfo.is_solid` is `True` and `CostReceipt.solid_block_count` reflects the folder count from the header
 
 #### Scenario: reporting cost for a non-solid 7z archive
 
 - **WHEN** every folder packs exactly one file
-- **THEN** `CostReceipt.is_solid` is `False` and `CostReceipt.access_cost` is `DIRECT`
+- **THEN** `ArchiveInfo.is_solid` is `False` and `CostReceipt.access_cost` is `DIRECT`
 
 ---
 

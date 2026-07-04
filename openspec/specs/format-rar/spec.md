@@ -159,7 +159,7 @@ archives.
 #### Scenario: CostReceipt for a solid RAR
 
 - **WHEN** a solid RAR archive is opened
-- **THEN** `CostReceipt.is_solid` is `True` and `CostReceipt.solid_block_count` is `None`
+- **THEN** `ArchiveInfo.is_solid` is `True` and `CostReceipt.solid_block_count` is `None` (`is_solid` lives on `ArchiveInfo` — see `access-mode-and-cost`)
 
 ---
 

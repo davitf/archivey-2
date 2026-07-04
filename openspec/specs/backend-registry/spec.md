@@ -142,15 +142,17 @@ class MagicSignature(NamedTuple):
     offset: int
     magic: bytes
     format: ArchiveFormat
-    weak: bool = False   # a too-short/unspecific signal (zlib's 2-byte header): the
-                         # detector confirms it with a content probe before accepting it
+    # No "weak" flag: a match is accepted on the byte comparison alone. A format whose
+    # signature is too short/unspecific to trust (zlib's 2-byte header) or that has no
+    # signature at all (Brotli) is recognized by a CONTENT_PROBES entry instead.
 
 class ReadBackend(ABC):
     FORMATS: tuple[ArchiveFormat, ...]                   # formats this backend reads
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}         # ".gz" -> ArchiveFormat.GZ
-    MAGIC: tuple[MagicSignature, ...] = ()               # magic signals declared as data
-    CONTENT_PROBE_FORMATS: tuple[ArchiveFormat, ...] = ()  # magic-less formats (Brotli)
-                         # the detector confirms by decoding a bounded prefix through the codec
+    MAGIC: tuple[MagicSignature, ...] = ()               # exact magic signals as data
+    CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
+                         # (format, probe) pairs for formats with no trustworthy exact
+                         # magic; the probe inspects a peeked prefix (see format-detection)
     REQUIRES_SEEK: bool = False                          # if True, non-seekable sources rejected
     OPTIONAL_DEPENDENCY: str | None = None               # e.g. "pycdlib"
 
