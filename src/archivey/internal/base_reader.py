@@ -10,6 +10,7 @@ from archivey.cost import CostReceipt
 from archivey.exceptions import (
     ArchiveyError,
     LinkTargetNotFoundError,
+    ReadError,
     UnsupportedOperationError,
 )
 from archivey.internal.extraction_types import (
@@ -269,17 +270,31 @@ class BaseArchiveReader(ArchiveReader):
             member._archive_id = self._archive_id
             members.append(member)
 
-        # Build name lookup for link resolution
-        by_name: dict[str, ArchiveMember] = {m.name: m for m in members}
+        # Last-wins name map (symlinks and hardlink forward-fallback in random access).
+        by_name_last: dict[str, ArchiveMember] = {m.name: m for m in members}
 
-        # Resolve symlinks/hardlinks
         for member in members:
-            if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
-                self._resolve_link(member, by_name)
+            if member.is_link and member.link_target:
+                self._resolve_link(member, members, by_name_last)
 
         self._members_cache = members
-        self._members_by_name = by_name
+        self._members_by_name = by_name_last
         return members
+
+    @staticmethod
+    def _member_name_matches_target(member_name: str, target_name: str) -> bool:
+        if member_name == target_name:
+            return True
+        return not target_name.endswith("/") and member_name == target_name + "/"
+
+    @staticmethod
+    def _lookup_name_in_map(
+        target_name: str, by_name: Mapping[str, ArchiveMember]
+    ) -> ArchiveMember | None:
+        target = by_name.get(target_name)
+        if target is None and not target_name.endswith("/"):
+            target = by_name.get(target_name + "/")
+        return target
 
     @staticmethod
     def _lookup_link_target(
@@ -289,8 +304,9 @@ class BaseArchiveReader(ArchiveReader):
 
         Resolves the stored target string to an archive-namespace name first (a symlink
         target is relative to the link's own directory — see
-        :func:`resolve_link_target_name`), then looks it up; directory members carry a
-        trailing ``/`` in their names, so both forms are tried.
+        :func:`resolve_link_target_name`), then looks it up in ``by_name`` (last-wins for
+        symlinks); directory members carry a trailing ``/`` in their names, so both forms
+        are tried.
         """
         if not member.link_target:
             return None
@@ -299,33 +315,81 @@ class BaseArchiveReader(ArchiveReader):
         )
         if target_name is None:
             return None
-        target = by_name.get(target_name)
-        if target is None and not target_name.endswith("/"):
-            target = by_name.get(target_name + "/")
-        return target
+        return BaseArchiveReader._lookup_name_in_map(target_name, by_name)
+
+    @staticmethod
+    def _lookup_hardlink_target(
+        member: ArchiveMember,
+        members: list[ArchiveMember],
+        by_name_last: Mapping[str, ArchiveMember],
+        *,
+        allow_forward_fallback: bool,
+    ) -> ArchiveMember | None:
+        """Positional hardlink resolution: latest same-named member strictly before ``member``."""
+        if not member.link_target:
+            return None
+        target_name = resolve_link_target_name(
+            member.name, member.link_target, member.type
+        )
+        if target_name is None:
+            return None
+        member_id = member.member_id
+        if member_id is None:
+            return None
+        found: ArchiveMember | None = None
+        for prior in members:
+            if prior.member_id is None or prior.member_id >= member_id:
+                break
+            if BaseArchiveReader._member_name_matches_target(prior.name, target_name):
+                found = prior
+        if found is not None:
+            return found
+        if allow_forward_fallback:
+            return BaseArchiveReader._lookup_name_in_map(target_name, by_name_last)
+        return None
+
+    def _lookup_link_target_for_member(
+        self,
+        member: ArchiveMember,
+        members: list[ArchiveMember],
+        by_name_last: Mapping[str, ArchiveMember],
+        *,
+        allow_forward_fallback: bool = True,
+    ) -> ArchiveMember | None:
+        if member.type == MemberType.HARDLINK:
+            return self._lookup_hardlink_target(
+                member,
+                members,
+                by_name_last,
+                allow_forward_fallback=allow_forward_fallback,
+            )
+        return self._lookup_link_target(member, by_name_last)
 
     def _resolve_link(
         self,
         member: ArchiveMember,
-        by_name: dict[str, ArchiveMember],
+        members: list[ArchiveMember],
+        by_name_last: dict[str, ArchiveMember],
     ) -> None:
-        """Resolve link_target to link_target_member using cycle detection."""
-        visited: set[str] = set()
+        """Resolve link_target to the fully dereferenced link_target_member."""
+        visited: set[int] = set()
         current = member
 
         while current.is_link and current.link_target:
-            if current.name in visited:
-                # Cycle detected; leave link_target_member unset (None) rather than
-                # pointing at an intermediate link in the cycle.
+            member_id = current.member_id
+            if member_id is None:
                 return
-            visited.add(current.name)
-            target = self._lookup_link_target(current, by_name)
+            if member_id in visited:
+                # Cycle detected; leave link_target_member unset (None).
+                return
+            visited.add(member_id)
+            target = self._lookup_link_target_for_member(
+                current, members, by_name_last
+            )
             if target is None:
-                # Missing/unresolvable target - leave link_target_member as None
                 return
             current = target
 
-        # Set on the original member (the final resolved target or None on cycle)
         if current is not member:
             member.link_target_member = current
 
@@ -341,12 +405,18 @@ class BaseArchiveReader(ArchiveReader):
         is left untouched (the stamp only fills unset fields).
         """
         by_name: dict[str, ArchiveMember] = {}
+        seen: list[ArchiveMember] = []
         for idx, member in enumerate(members):
             if member._member_id is None:
                 member._member_id = idx
                 member._archive_id = self._archive_id
             if member.is_link and member.link_target_member is None:
-                target = self._lookup_link_target(member, by_name)
+                target = self._lookup_link_target_for_member(
+                    member,
+                    seen,
+                    by_name,
+                    allow_forward_fallback=False,
+                )
                 if target is not None and target is not member:
                     # An earlier link's own resolution is already final; reuse it (an
                     # unresolved earlier link yields None, i.e. stays unresolved).
@@ -354,6 +424,7 @@ class BaseArchiveReader(ArchiveReader):
                         target = target.link_target_member
                     if target is not None:
                         member.link_target_member = target
+            seen.append(member)
             by_name[member.name] = member
             yield member
 
@@ -506,20 +577,24 @@ class BaseArchiveReader(ArchiveReader):
             if found is None:
                 raise KeyError(f"Member {member!r} not found")
             member = found
+        else:
+            self._get_members_registered()
         return self._open_with_link_follow(member, visited=set())
 
     def _open_with_link_follow(
         self,
         member: ArchiveMember,
-        visited: set[str],
+        visited: set[int],
     ) -> BinaryIO:
         if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            if member.name in visited:
-                raise LinkTargetNotFoundError(
-                    f"Symlink cycle detected involving {member.name!r}",
-                    member_name=member.name,
-                )
-            visited.add(member.name)
+            member_id = member.member_id
+            if member_id is not None:
+                if member_id in visited:
+                    raise ReadError(
+                        f"Link cycle detected at '{member.name}'",
+                        member_name=member.name,
+                    )
+                visited.add(member_id)
             if member.link_target_member is not None:
                 return self._open_with_link_follow(member.link_target_member, visited)
             if member.link_target is None:
@@ -527,9 +602,11 @@ class BaseArchiveReader(ArchiveReader):
                     f"Link target for {member.name!r} is unknown",
                     member_name=member.name,
                 )
+            members = self._members_cache
+            by_name = self._members_by_name
             target = (
-                self._lookup_link_target(member, self._members_by_name)
-                if self._members_by_name
+                self._lookup_link_target_for_member(member, members, by_name)
+                if members is not None and by_name is not None
                 else None
             )
             if target is None:

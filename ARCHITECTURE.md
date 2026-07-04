@@ -192,7 +192,10 @@ def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
 `open()` and `read()` in the ABC add link-following on top of `_open_member()`. Chains are
 followed recursively with **cycle detection** via a visited member-id set (there is no
 fixed depth limit); a missing target raises `LinkTargetNotFoundError`; hardlinks always
-resolve to an **earlier** member (the TAR model), so they resolve in a single forward pass:
+resolve to an **earlier** member (the TAR model), so they resolve in a single forward pass.
+The sketch below is **illustrative only** — the real implementation is
+`_open_with_link_follow()` with `_lookup_link_target()` for name resolution (not
+`get(name)` on the raw stored target string):
 ```python
 def open(self, member: str | ArchiveMember,
          _seen: frozenset[int] = frozenset()) -> BinaryIO:
@@ -204,7 +207,9 @@ def open(self, member: str | ArchiveMember,
     if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
         if member.member_id in _seen:
             raise ReadError(f"Link cycle detected at '{member.name}'")
-        target = member.link_target_member or self.get(member.link_target)
+        target = member.link_target_member or self._lookup_link_target(
+            member, self._members_by_name
+        )
         if target is None:
             raise LinkTargetNotFoundError(
                 f"Link target '{member.link_target}' not in archive")

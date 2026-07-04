@@ -74,16 +74,16 @@
 
 ## 5. Link-resolution sweep & safety test gaps
 
-- [ ] 5a.1 Positional hardlink resolution in `_get_members_registered` /
+- [x] 5a.1 Positional hardlink resolution in `_get_members_registered` /
       `_resolve_link`: walk members in order with an incremental map (latest earlier
       occurrence wins); fall back to a later member only when no earlier one exists;
       symlinks keep resolving against the full last-wins map. Streaming and
       random-access modes must agree on the duplicate-name cases.
-- [ ] 5a.2 Cycle detection by member id (not name) in `_resolve_link` and
+- [x] 5a.2 Cycle detection by member id (not name) in `_resolve_link` and
       `_open_with_link_follow`; error message reports a cycle (not "target not
       found"). Tests: cyclic symlink pair (`a → b`, `b → a`) raises on `open()`;
       a chain through two distinct same-named members does NOT false-positive.
-- [ ] 5a.3 Duplicate-name positional test: `[A(content1), hardlink L→A, A(content2)]`
+- [x] 5a.3 Duplicate-name positional test: `[A(content1), hardlink L→A, A(content2)]`
       — `read(L)` returns content1 and extraction links `L` to the content1 inode, in
       both access modes (the regression the last-wins map caused).
 - [ ] 5a.4 Port the chained-symlink attack test from `_dev_oracle` into the v2 suite

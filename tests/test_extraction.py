@@ -891,6 +891,28 @@ def test_orphan_materialized_source_carries_link_metadata(tmp_path: Path) -> Non
     assert int(st.st_mtime) == link_mtime  # the link member's mtime, not the source's
 
 
+def test_hardlink_duplicate_name_extraction_links_first_inode(tmp_path: Path) -> None:
+    src = tmp_path / "dup-hardlink.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("file", "A.txt", b"content1"),
+                ("hard", "L.txt", "A.txt"),
+                ("file", "A.txt", b"content2"),
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        results = r.extract_all(dest, overwrite=OverwritePolicy.REPLACE)
+    assert all(res.status is ExtractionStatus.EXTRACTED for res in results)
+    assert (dest / "L.txt").read_bytes() == b"content1"
+    assert (dest / "A.txt").read_bytes() == b"content2"
+    # L was linked against the first A.txt inode; the second duplicate replaced the path.
+    if os.name == "posix":
+        assert not os.path.samefile(dest / "A.txt", dest / "L.txt")
+
+
 def test_hardlink_before_source_shares_inode_and_counts_once(tmp_path: Path) -> None:
     # Regression: a hardlink PRECEDING its source in archive order (legal in crafted /
     # non-GNU-ordered archives) was re-read in the second pass and written as an
