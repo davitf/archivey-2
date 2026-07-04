@@ -194,7 +194,10 @@ class SingleFileReader(BaseArchiveReader):
         assert src is not None  # always set in __init__
         if is_stream(src) and is_seekable(src):
             src.seek(0)  # origin-normalized by open_archive; 0 is the archive start
-        codec_source = str(src) if isinstance(src, Path) else src
+        # Count compressed bytes pulled from a non-seekable stream so the live ratio guard
+        # has a denominator (a path / seekable stream keeps its cheap static size).
+        counted = self._wrap_compressed_input(src)
+        codec_source = str(counted) if isinstance(counted, Path) else counted
         return open_codec_stream(
             self._codec,
             codec_source,

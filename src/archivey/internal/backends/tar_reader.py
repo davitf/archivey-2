@@ -155,8 +155,12 @@ class TarReader(BaseArchiveReader):
     ) -> tarfile.TarFile:
         if self._compressed:
             codec = codec_for_stream_format(format.stream)
+            # A non-seekable stream source is wrapped so the live decompression-ratio guard
+            # can see compressed bytes consumed; a path / seekable stream (cheap size known)
+            # is returned unchanged and uses the static ratio.
+            counted = self._wrap_compressed_input(source)
             codec_source: str | BinaryIO = (
-                str(source) if isinstance(source, Path) else source
+                str(counted) if isinstance(counted, Path) else counted
             )
             stream = open_codec_stream(
                 codec,

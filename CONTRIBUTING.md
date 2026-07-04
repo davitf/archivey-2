@@ -30,16 +30,30 @@ with no extra path arguments.
 RAR *data* tests need the system `unrar` binary (`apt-get install -y unrar`, etc.);
 without it those tests skip cleanly.
 
-To reproduce CI's **minimum-supported-versions** leg locally — every declared dependency
-pinned to its floor (`pycdlib 1.14`, `zstandard 0.23`, …), so version-specific library bugs
-in the supported range surface — run the suite under `uv`'s lowest-version resolution:
+**Before pushing, run the suite in all three dependency configurations CI runs** —
+optional libraries change behaviour by their presence *and* their version, so a change
+that passes one way can break another (a codec that's absent, a floor-version library bug,
+an accelerator that's only installed at current versions). Run:
 
 ```bash
-uv run --resolution lowest-direct --extra all pytest    # min versions of every dependency
+# 1. Current versions, all extras — the everyday leg.
+uv sync --group dev --extra all && uv run --no-sync pytest
+
+# 2. Minimum supported versions — every declared dependency pinned to its floor
+#    (`pycdlib 1.14`, `zstandard 0.23`, …), so version-specific library bugs in the
+#    supported range surface. --no-sync keeps the lowest resolution for the test run.
+uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest
+
+# 3. Zero-dependency core — no extras, no dev group; proves tests needing an optional
+#    library skip/xfail cleanly (see the `requires` helper in tests/conftest.py) and the
+#    core imports nothing third-party.
+uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
+  && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov pytest tests/ -q
 ```
 
-CI runs the `[all]` matrix legs at current versions and one `[all-lowest]` leg at the
-floors; both must stay green.
+These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
+green. (After the core-only leg, `uv sync --group dev --extra all` to restore your
+everyday environment.)
 
 ## Tooling decisions
 
