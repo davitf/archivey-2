@@ -758,7 +758,10 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
             super().__init__(ArchiveFormat.TAR, streaming=False, archive_name=None)
             self._payloads = payloads
             self._members_cache = members
-            self._members_by_name = {m.name: m for m in members}
+            by_name_lists: dict[str, list[ArchiveMember]] = {}
+            for m in members:
+                BaseArchiveReader._index_member_name(by_name_lists, m)
+            self._members_by_name_lists = by_name_lists
 
         def _iter_members(self):
             return iter(self._members_cache or [])

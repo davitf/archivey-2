@@ -208,7 +208,7 @@ def open(self, member: str | ArchiveMember,
         if member.member_id in _seen:
             raise ReadError(f"Link cycle detected at '{member.name}'")
         target = member.link_target_member or self._lookup_link_target(
-            member, self._members_by_name
+            member, self._members_by_name_lists
         )
         if target is None:
             raise LinkTargetNotFoundError(

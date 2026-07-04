@@ -186,7 +186,7 @@ class BaseArchiveReader(ArchiveReader):
         # denominator for a source whose total size is not cheaply knowable).
         self._compressed_input_counter: CountingReader | None = None
         self._members_cache: list[ArchiveMember] | None = None
-        self._members_by_name: dict[str, ArchiveMember] | None = None
+        self._members_by_name_lists: dict[str, list[ArchiveMember]] | None = None
         self._closed = False
 
     @abstractmethod
@@ -270,43 +270,83 @@ class BaseArchiveReader(ArchiveReader):
             member._archive_id = self._archive_id
             members.append(member)
 
-        # Last-wins name map (symlinks and hardlink forward-fallback in random access).
-        by_name_last: dict[str, ArchiveMember] = {m.name: m for m in members}
+        by_name_lists: dict[str, list[ArchiveMember]] = {}
+        for m in members:
+            self._index_member_name(by_name_lists, m)
 
         for member in members:
             if member.is_link and member.link_target:
-                self._resolve_link(member, members, by_name_last)
+                self._resolve_link(member, by_name_lists)
 
         self._members_cache = members
-        self._members_by_name = by_name_last
+        self._members_by_name_lists = by_name_lists
         return members
 
     @staticmethod
-    def _member_name_matches_target(member_name: str, target_name: str) -> bool:
-        if member_name == target_name:
-            return True
-        return not target_name.endswith("/") and member_name == target_name + "/"
+    def _index_member_name(
+        by_name_lists: dict[str, list[ArchiveMember]], member: ArchiveMember
+    ) -> None:
+        by_name_lists.setdefault(member.name, []).append(member)
 
     @staticmethod
-    def _lookup_name_in_map(
-        target_name: str, by_name: Mapping[str, ArchiveMember]
+    def _target_name_keys(target_name: str) -> tuple[str, ...]:
+        if target_name.endswith("/"):
+            return (target_name,)
+        return (target_name, target_name + "/")
+
+    @staticmethod
+    def _latest_prior_named_member(
+        target_name: str,
+        before_id: int,
+        by_name_lists: Mapping[str, list[ArchiveMember]],
     ) -> ArchiveMember | None:
-        target = by_name.get(target_name)
-        if target is None and not target_name.endswith("/"):
-            target = by_name.get(target_name + "/")
-        return target
+        """Latest member matching ``target_name`` with ``member_id`` strictly before ``before_id``."""
+        best: ArchiveMember | None = None
+        best_id = -1
+        for name in BaseArchiveReader._target_name_keys(target_name):
+            for prior in reversed(by_name_lists.get(name, [])):
+                prior_id = prior._member_id
+                if prior_id is None:
+                    continue
+                if prior_id < before_id:
+                    if prior_id > best_id:
+                        best = prior
+                        best_id = prior_id
+                    break
+        return best
+
+    @staticmethod
+    def _last_by_exact_name(
+        name: str, by_name_lists: Mapping[str, list[ArchiveMember]]
+    ) -> ArchiveMember | None:
+        candidates = by_name_lists.get(name)
+        if not candidates:
+            return None
+        return candidates[-1]
+
+    @staticmethod
+    def _last_named_member(
+        target_name: str, by_name_lists: Mapping[str, list[ArchiveMember]]
+    ) -> ArchiveMember | None:
+        """Last-wins lookup for a link target (tries bare and ``/``-suffixed names)."""
+        for name in BaseArchiveReader._target_name_keys(target_name):
+            candidates = by_name_lists.get(name)
+            if candidates:
+                return candidates[-1]
+        return None
 
     @staticmethod
     def _lookup_link_target(
-        member: ArchiveMember, by_name: Mapping[str, ArchiveMember]
+        member: ArchiveMember,
+        by_name_lists: Mapping[str, list[ArchiveMember]],
     ) -> ArchiveMember | None:
         """The member ``member``'s link target refers to, or ``None`` if not present.
 
         Resolves the stored target string to an archive-namespace name first (a symlink
         target is relative to the link's own directory — see
-        :func:`resolve_link_target_name`), then looks it up in ``by_name`` (last-wins for
-        symlinks); directory members carry a trailing ``/`` in their names, so both forms
-        are tried.
+        :func:`resolve_link_target_name`), then looks it up in ``by_name_lists``
+        (last-wins for symlinks); directory members carry a trailing ``/`` in their names,
+        so both forms are tried.
         """
         if not member.link_target:
             return None
@@ -315,13 +355,12 @@ class BaseArchiveReader(ArchiveReader):
         )
         if target_name is None:
             return None
-        return BaseArchiveReader._lookup_name_in_map(target_name, by_name)
+        return BaseArchiveReader._last_named_member(target_name, by_name_lists)
 
     @staticmethod
     def _lookup_hardlink_target(
         member: ArchiveMember,
-        members: list[ArchiveMember],
-        by_name_last: Mapping[str, ArchiveMember],
+        by_name_lists: Mapping[str, list[ArchiveMember]],
         *,
         allow_forward_fallback: bool,
     ) -> ArchiveMember | None:
@@ -333,59 +372,51 @@ class BaseArchiveReader(ArchiveReader):
         )
         if target_name is None:
             return None
-        member_id = member.member_id
-        if member_id is None:
+        before_id = member._member_id
+        if before_id is None:
             return None
-        found: ArchiveMember | None = None
-        for prior in members:
-            if prior.member_id is None or prior.member_id >= member_id:
-                break
-            if BaseArchiveReader._member_name_matches_target(prior.name, target_name):
-                found = prior
+        found = BaseArchiveReader._latest_prior_named_member(
+            target_name, before_id, by_name_lists
+        )
         if found is not None:
             return found
         if allow_forward_fallback:
-            return BaseArchiveReader._lookup_name_in_map(target_name, by_name_last)
+            return BaseArchiveReader._last_named_member(target_name, by_name_lists)
         return None
 
     def _lookup_link_target_for_member(
         self,
         member: ArchiveMember,
-        members: list[ArchiveMember],
-        by_name_last: Mapping[str, ArchiveMember],
+        by_name_lists: Mapping[str, list[ArchiveMember]],
         *,
         allow_forward_fallback: bool = True,
     ) -> ArchiveMember | None:
         if member.type == MemberType.HARDLINK:
             return self._lookup_hardlink_target(
                 member,
-                members,
-                by_name_last,
+                by_name_lists,
                 allow_forward_fallback=allow_forward_fallback,
             )
-        return self._lookup_link_target(member, by_name_last)
+        return self._lookup_link_target(member, by_name_lists)
 
     def _resolve_link(
         self,
         member: ArchiveMember,
-        members: list[ArchiveMember],
-        by_name_last: dict[str, ArchiveMember],
+        by_name_lists: dict[str, list[ArchiveMember]],
     ) -> None:
         """Resolve link_target to the fully dereferenced link_target_member."""
         visited: set[int] = set()
         current = member
 
         while current.is_link and current.link_target:
-            member_id = current.member_id
-            if member_id is None:
+            if current._member_id is None:
                 return
+            member_id = current._member_id
             if member_id in visited:
                 # Cycle detected; leave link_target_member unset (None).
                 return
             visited.add(member_id)
-            target = self._lookup_link_target_for_member(
-                current, members, by_name_last
-            )
+            target = self._lookup_link_target_for_member(current, by_name_lists)
             if target is None:
                 return
             current = target
@@ -404,8 +435,7 @@ class BaseArchiveReader(ArchiveReader):
         unresolved (``link_target_member`` ``None``). A backend that already stamps ids
         is left untouched (the stamp only fills unset fields).
         """
-        by_name: dict[str, ArchiveMember] = {}
-        seen: list[ArchiveMember] = []
+        by_name_lists: dict[str, list[ArchiveMember]] = {}
         for idx, member in enumerate(members):
             if member._member_id is None:
                 member._member_id = idx
@@ -413,8 +443,7 @@ class BaseArchiveReader(ArchiveReader):
             if member.is_link and member.link_target_member is None:
                 target = self._lookup_link_target_for_member(
                     member,
-                    seen,
-                    by_name,
+                    by_name_lists,
                     allow_forward_fallback=False,
                 )
                 if target is not None and target is not member:
@@ -424,8 +453,7 @@ class BaseArchiveReader(ArchiveReader):
                         target = target.link_target_member
                     if target is not None:
                         member.link_target_member = target
-            seen.append(member)
-            by_name[member.name] = member
+            self._index_member_name(by_name_lists, member)
             yield member
 
     # --- Public API ---
@@ -558,8 +586,9 @@ class BaseArchiveReader(ArchiveReader):
     def get(self, name: str, default: ArchiveMember | None = None) -> ArchiveMember | None:
         self._require_random_access("get()")
         self._get_members_registered()
-        assert self._members_by_name is not None
-        return self._members_by_name.get(name, default)
+        assert self._members_by_name_lists is not None
+        found = self._last_by_exact_name(name, self._members_by_name_lists)
+        return found if found is not None else default
 
     def open(self, member: str | ArchiveMember) -> BinaryIO:
         """Open member for reading. Follows symlinks."""
@@ -587,14 +616,18 @@ class BaseArchiveReader(ArchiveReader):
         visited: set[int],
     ) -> BinaryIO:
         if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            member_id = member.member_id
-            if member_id is not None:
-                if member_id in visited:
-                    raise ReadError(
-                        f"Link cycle detected at '{member.name}'",
-                        member_name=member.name,
-                    )
-                visited.add(member_id)
+            if member._member_id is None:
+                raise LinkTargetNotFoundError(
+                    f"Link target for {member.name!r} is unknown",
+                    member_name=member.name,
+                )
+            member_id = member._member_id
+            if member_id in visited:
+                raise ReadError(
+                    f"Link cycle detected at '{member.name}'",
+                    member_name=member.name,
+                )
+            visited.add(member_id)
             if member.link_target_member is not None:
                 return self._open_with_link_follow(member.link_target_member, visited)
             if member.link_target is None:
@@ -602,11 +635,10 @@ class BaseArchiveReader(ArchiveReader):
                     f"Link target for {member.name!r} is unknown",
                     member_name=member.name,
                 )
-            members = self._members_cache
-            by_name = self._members_by_name
+            by_name_lists = self._members_by_name_lists
             target = (
-                self._lookup_link_target_for_member(member, members, by_name)
-                if members is not None and by_name is not None
+                self._lookup_link_target_for_member(member, by_name_lists)
+                if by_name_lists is not None
                 else None
             )
             if target is None:
