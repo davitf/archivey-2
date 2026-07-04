@@ -57,7 +57,11 @@ class ArchiveReader:
 ```
 
 `members` selects which members to extract (a collection of names/`ArchiveMember`s, or a
-`Callable[[ArchiveMember], bool]` predicate); `None` extracts all. `filter` runs **after**
+`Callable[[ArchiveMember], bool]` predicate); `None` extracts all. In the collection form a
+`str` entry matches **every** member with that name (duplicates included), while an
+`ArchiveMember` entry matches only that exact member, by object identity — so with duplicate
+names the caller can select one specific occurrence (the same semantics the Phase 5
+`MemberSelector` collection form specifies). `filter` runs **after**
 the universal safety checks and the `policy` transform, letting the caller rename or
 further sanitize each member (returning a `.replace()`d copy) or skip it (returning
 `None`). `policy` and `overwrite` carry the same meaning as on the top-level function.
@@ -215,10 +219,19 @@ link-creation state. The source always precedes its hardlinks in archive order.
   when filtering): the implementation MUST NOT materialize the excluded source at its own
   destination path (that would leak a file the caller deliberately excluded). It SHALL instead
   make the source's **content** available only through the selected link(s) — write the source
-  data to the **first selected link's** path and `os.link()` further selected links to it (an
-  implementation MAY equivalently stage in a hidden temp inside `dest`, e.g.
-  `dest/.archivey-tmp-<id>`). If no link to the source is selected either, the source's data is
-  not extracted at all. **How** the excluded source's bytes are obtained is chosen so no pass
+  data to the **first selected link whose destination the `OverwritePolicy` allows writing**
+  (under `SKIP`, links whose destinations already exist are recorded `SKIPPED` and the content
+  moves on to the next selected link; if every link is skipped, nothing is written) and
+  `os.link()` further selected links to it (an implementation MAY equivalently stage in a
+  hidden temp inside `dest`, e.g. `dest/.archivey-tmp-<id>`). The materialized file carries the
+  **transformed metadata of the link it is written as** (mode/timestamps per the "copy supplies
+  the identity" rule below — hardlinks share one inode, so the metadata goes on the file that
+  carries the content). If no link to the source is selected either, the source's data is
+  not extracted at all.
+  A hardlink that merely *precedes* its source in archive order (the source is selected and
+  extracted later in the same pass) is NOT re-read: it SHALL be `os.link()`ed against the
+  already-extracted source file, sharing its inode, with no second read of the source's bytes
+  (and no double-counting against the bomb limits). **How** the excluded source's bytes are obtained is chosen so no pass
   is wasted (see `format-tar`): when a member list is available for free
   (`get_members_if_available()` — a true index or an already-materialized list) the source is
   staged during a single planned forward pass; otherwise (plain `.tar` or compressed tar, with
@@ -239,7 +252,17 @@ link-creation state. The source always precedes its hardlinks in archive order.
 #### Scenario: selected hardlink whose source was excluded (recoverable)
 
 - **WHEN** a selected HARDLINK points to a source the `members` selector / `filter` excluded, and the source is recoverable (a free member list, or a seekable stream via one second pass)
-- **THEN** the source content is written to the first selected link's path (further selected links are `os.link`'d to it), and the excluded source is never created at its own destination path
+- **THEN** the source content is written to the first selected link's path with that link's transformed mode/timestamps (further selected links are `os.link`'d to it), and the excluded source is never created at its own destination path
+
+#### Scenario: excluded source with the first link's destination skipped
+
+- **WHEN** an excluded source's selected links are materialized under `OverwritePolicy.SKIP` and the first link's destination already exists
+- **THEN** that link is recorded `SKIPPED`, the source content is written to the next selected link instead, and no error escapes; if every link's destination exists, all are `SKIPPED` and the content is not written anywhere
+
+#### Scenario: hardlink preceding its source in archive order
+
+- **WHEN** a selected HARDLINK appears before its (also selected) source member in archive order
+- **THEN** after the pass the link is `os.link`'d against the extracted source file (same inode); the source's bytes are read once and counted once against the bomb limits
 
 ### Requirement: Policy-Specific Metadata Transforms
 
@@ -821,9 +844,12 @@ guarantees, so a failure is surfaced via `OnError` instead. A future opt-in poli
 
 The system SHALL evaluate a **live** archive-wide decompression ratio during `extract()` /
 `extract_all()` when neither a per-member `compressed_size` nor a cheap outer
-`compressed_source_size` is available to serve as a denominator — the case of a `streaming=True`
-compressed archive (e.g. a `.tar.gz`) read from a non-seekable pipe, where today only the
-cumulative `max_extracted_bytes` cap applies.
+`compressed_source_size` is available to serve as a denominator — a compressed archive (e.g. a
+`.tar.gz`) read from a non-seekable pipe, **or from a seekable stream whose size is not cheaply
+knowable** (not a whitelisted O(1)-seek type, no `size` attribute, no `try_get_size()`), where
+otherwise only the cumulative `max_extracted_bytes` cap would apply. A compressed backend
+therefore wraps any stream source whose `source_byte_size()` is `None` in the counting reader —
+the exact complement of the static denominator, so one of the two is always available.
 
 The live ratio is computed as:
 
@@ -876,4 +902,13 @@ Whichever guard has a usable denominator may trip first.
 - **WHEN** a `.tar.gz` with a cheaply knowable `compressed_source_size` is extracted
 - **THEN** the static archive-wide ratio is used and the live path is not engaged (the ratio is
   not counted twice)
+
+#### Scenario: seekable stream with no cheap size still gets the live ratio
+
+- **WHEN** a compressed archive is extracted from a *seekable* stream whose size is not cheaply
+  knowable (an opaque stream type: not whitelisted for `SEEK_END`, no `size` attribute, no
+  `try_get_size()`), so `compressed_source_size` is `None`
+- **THEN** the source is wrapped in the counting reader and the live archive-wide ratio applies —
+  the archive is not left with only the `max_extracted_bytes` cap. (Codec-layer seeks may re-read
+  counted bytes; that only inflates the denominator, weakening the guard, never a false positive.)
 

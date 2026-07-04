@@ -172,11 +172,16 @@ class BombTracker:
 
 @dataclass
 class _Orphan:
-    """A selected hardlink whose (re-readable) source was excluded, awaiting the second
-    pass."""
+    """A selected hardlink whose source was not yet on disk, awaiting the second pass.
+
+    ``transformed`` is the policy/filter-transformed copy from the first pass: it supplies
+    the on-disk identity (mode, timestamps) when the source's content is materialized at
+    this link's path (see the ``safe-extraction`` "copy supplies the identity" rule).
+    """
 
     result_index: int
     original: ArchiveMember
+    transformed: ArchiveMember
     dest_path: Path
     source: ArchiveMember
 
@@ -215,7 +220,7 @@ class ExtractionCoordinator:
         dest = Path(dest)
         os.makedirs(dest, exist_ok=True)
         dest_root = dest.resolve()
-        forward_only = bool(getattr(reader, "_streaming", False))
+        forward_only = reader._streaming
 
         tracker = BombTracker(
             self._max_extracted_bytes,
@@ -307,9 +312,19 @@ class ExtractionCoordinator:
         # A predicate is callable; a names/members collection is not.
         if callable(members):
             return cast("Callable[[ArchiveMember], bool]", members)
+        # Collection form: a str entry matches EVERY member with that name (duplicates
+        # included); an ArchiveMember entry matches only that exact member, by object
+        # identity (id-set — members are deliberately unhashable), so with duplicate
+        # names the caller can select one specific occurrence.
         collection = cast("Collection[str | ArchiveMember]", members)
-        names = {m.name if isinstance(m, ArchiveMember) else m for m in collection}
-        return lambda member: member.name in names
+        names: set[str] = set()
+        identities: set[int] = set()
+        for entry in collection:
+            if isinstance(entry, ArchiveMember):
+                identities.add(id(entry))
+            else:
+                names.add(entry)
+        return lambda member: member.name in names or id(member) in identities
 
     def _transform(
         self, original: ArchiveMember, dest_root: Path
@@ -474,7 +489,10 @@ class ExtractionCoordinator:
             self._place_link(source_paths, source.member_id, dest_path, transformed)
             return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
 
-        # Source not written yet: the link is orphaned (its source was excluded).
+        # Source not on disk yet: either it was excluded by the selector/filter, or (in a
+        # crafted/non-TAR-ordered archive) it simply appears later in archive order. The
+        # second pass distinguishes the two: a source written later in this same pass is
+        # just linked against; a truly excluded one is re-read and materialized.
         if forward_only:
             # Forward-only: the source's bytes already streamed past — unrecoverable. Per
             # spec this is a per-member ExtractionError handled by OnError.
@@ -484,7 +502,7 @@ class ExtractionCoordinator:
                 member_name=transformed.name,
             )
         # Re-readable: resolve in the second pass.
-        orphans.append(_Orphan(result_index, original, dest_path, source))
+        orphans.append(_Orphan(result_index, original, transformed, dest_path, source))
         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
 
     # --- orphan (second pass) ------------------------------------------------------
@@ -497,13 +515,24 @@ class ExtractionCoordinator:
         tracker: BombTracker,
         results: list[ExtractionResult],
     ) -> None:
-        needed = {orphan.source.member_id for orphan in orphans}
         orphans_by_source: dict[int, list[_Orphan]] = {}
         for orphan in orphans:
             orphans_by_source.setdefault(orphan.source.member_id, []).append(orphan)
 
-        # One second forward pass over the (re-readable) source; write each needed source
-        # to the first of its selected link paths and os.link the rest.
+        # A source that was written LATER in the first pass (a link preceding its source in
+        # archive order) is already on disk: just link against it — re-reading its bytes
+        # here would create an independent inode and double-count against the bomb limits.
+        needed: set[int] = set()
+        for source_id, group in orphans_by_source.items():
+            if source_id in source_paths:
+                self._link_orphan_group(group, source_paths, source_id, results)
+            else:
+                needed.add(source_id)
+        if not needed:
+            return
+
+        # One second forward pass over the (re-readable) source; write each needed source's
+        # content to the first writable link path and os.link the rest.
         for member, stream in reader._iter_with_data():
             if member.member_id not in needed:
                 self._close(stream)
@@ -553,32 +582,68 @@ class ExtractionCoordinator:
     ) -> None:
         # Count the recovered source bytes toward the cumulative/ratio guards too.
         tracker.start_member(source_member)
-        first = group[0]
-        # The excluded source is written to the first selected link's destination path,
-        # never to its own name — atomically (temp + os.replace), same as a normal FILE, so a
-        # failure while re-reading the source doesn't clobber an existing entry there.
-        if self._prepare_destination(first.original, first.dest_path, atomic=True):
-            os.makedirs(first.dest_path.parent, exist_ok=True)
-            self._write_file_atomic(stream, first.dest_path, None, tracker)
-            source_paths.setdefault(source_member.member_id, []).append(first.dest_path)
-            results[first.result_index] = ExtractionResult(
-                first.original, first.dest_path, ExtractionStatus.EXTRACTED, None
-            )
-        else:
-            results[first.result_index] = ExtractionResult(
-                first.original, None, ExtractionStatus.SKIPPED, None
-            )
 
-        for orphan in group[1:]:
-            if not self._prepare_destination(orphan.original, orphan.dest_path):
+        # The excluded source's content is written to the FIRST link whose destination the
+        # OverwritePolicy allows writing (a SKIP over an existing entry moves on to the next
+        # link), never to the source's own name — atomically (temp + os.replace), same as a
+        # normal FILE, so a failure while re-reading doesn't clobber an existing entry. The
+        # link's transformed copy supplies the on-disk mode/timestamps: hardlinks share one
+        # inode, so the metadata must be applied to the file that carries the content.
+        writer: _Orphan | None = None
+        remaining: list[_Orphan] = []
+        for orphan in group:
+            if writer is not None:
+                remaining.append(orphan)
+            elif self._prepare_destination(
+                orphan.transformed, orphan.dest_path, atomic=True
+            ):
+                writer = orphan
+            else:
                 results[orphan.result_index] = ExtractionResult(
                     orphan.original, None, ExtractionStatus.SKIPPED, None
                 )
+        if writer is None:
+            return  # every link's destination already exists under SKIP: nothing to write
+
+        os.makedirs(writer.dest_path.parent, exist_ok=True)
+        self._write_file_atomic(stream, writer.dest_path, writer.transformed, tracker)
+        source_paths.setdefault(source_member.member_id, []).append(writer.dest_path)
+        results[writer.result_index] = ExtractionResult(
+            writer.original, writer.dest_path, ExtractionStatus.EXTRACTED, None
+        )
+        self._link_orphan_group(remaining, source_paths, source_member.member_id, results)
+
+    def _link_orphan_group(
+        self,
+        group: list[_Orphan],
+        source_paths: dict[int, list[Path]],
+        source_id: int,
+        results: list[ExtractionResult],
+    ) -> None:
+        """Link each orphan in ``group`` against the source content already on disk
+        (recorded under ``source_id``), applying the OverwritePolicy per link and
+        recording per-link results; per-link failures follow ``OnError``."""
+        for orphan in group:
+            try:
+                if not self._prepare_destination(orphan.transformed, orphan.dest_path):
+                    results[orphan.result_index] = ExtractionResult(
+                        orphan.original, None, ExtractionStatus.SKIPPED, None
+                    )
+                    continue
+                os.makedirs(orphan.dest_path.parent, exist_ok=True)
+                self._place_link(
+                    source_paths, source_id, orphan.dest_path, orphan.transformed
+                )
+            except (ArchiveyError, OSError) as exc:
+                results[orphan.result_index] = ExtractionResult(
+                    orphan.original, None, ExtractionStatus.FAILED, exc
+                )
+                if self._on_error is OnError.STOP:
+                    raise
+                logger.warning(
+                    "Skipping hardlink %r: %s", orphan.original.name, exc
+                )
                 continue
-            os.makedirs(orphan.dest_path.parent, exist_ok=True)
-            self._place_link(
-                source_paths, source_member.member_id, orphan.dest_path, orphan.original
-            )
             results[orphan.result_index] = ExtractionResult(
                 orphan.original, orphan.dest_path, ExtractionStatus.EXTRACTED, None
             )
