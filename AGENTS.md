@@ -25,11 +25,13 @@ in place. Run tools with `--no-sync` to avoid a redundant re-resolve, e.g.:
 
 Non-obvious gotchas:
 
-- **`unrar` is preinstalled** (system binary, from the `multiverse` apt component). RAR
-  *data* tests need it; without it they skip cleanly rather than fail.
-- **`openspec` CLI is preinstalled** at `~/.local/bin` (on `PATH`). `CLAUDE.md`'s
+- The startup update script also installs the system `unrar` binary and the `openspec`
+  CLI (in addition to `uv sync`), so both are present without manual steps.
+- **`unrar`** (system binary, from the `multiverse` apt component) backs RAR *data*
+  tests; without it they skip cleanly rather than fail.
+- **`openspec` CLI** lives at `~/.local/bin` (on `PATH`). `CLAUDE.md`'s
   `npm install -g @fission-ai/openspec` fails with `EACCES` here because the global npm
-  prefix is not user-writable — if it ever goes missing, reinstall into a writable,
+  prefix is not user-writable — the update script instead installs it into a writable,
   already-on-`PATH` prefix: `npm install -g --prefix "$HOME/.local" @fission-ai/openspec`.
 - The full push gate runs the suite in **three dependency configs** (`[all]`,
   `[all-lowest]`, `[core-only]`); the exact commands are in `CONTRIBUTING.md`. After a
