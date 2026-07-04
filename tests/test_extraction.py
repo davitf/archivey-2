@@ -886,7 +886,8 @@ def test_orphan_materialized_source_carries_link_metadata(tmp_path: Path) -> Non
 
     assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
     st = (dest / "L1.txt").lstat()
-    assert stat_mod.S_IMODE(st.st_mode) == 0o644  # not mkstemp's 0600
+    if os.name == "posix":  # Windows has no Unix permission bits (see _posix_perms)
+        assert stat_mod.S_IMODE(st.st_mode) == 0o644  # not mkstemp's 0600
     assert int(st.st_mtime) == link_mtime  # the link member's mtime, not the source's
 
 
