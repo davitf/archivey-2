@@ -86,17 +86,21 @@ class BombTracker:
         max_bytes: int,
         max_ratio: float,
         ratio_activation_threshold: int = DEFAULT_RATIO_ACTIVATION_THRESHOLD,
-        compressed_source_size: int | None = None,
         max_entries: int = DEFAULT_MAX_ENTRIES,
-        compressed_consumed: Callable[[], int | None] | None = None,
+        *,
+        source: "BaseArchiveReader | None" = None,
     ) -> None:
         self._max_bytes = max_bytes
         self._max_ratio = max_ratio
         self._ratio_floor = ratio_activation_threshold
-        self._compressed_source_size = compressed_source_size
-        # Live-denominator sampler: returns compressed bytes consumed so far (or None).
-        # Used for the archive-wide ratio only when compressed_source_size is unknown.
-        self._compressed_consumed = compressed_consumed
+        # Archive-wide ratio denominators, taken from the reader so the coordinator just
+        # hands over the source: the static outer compressed size when it is cheaply known
+        # (captured once), otherwise a LIVE sample of the compressed bytes consumed from the
+        # source (read fresh on each count(), since it grows as extraction proceeds).
+        self._source = source
+        self._compressed_source_size = (
+            source.compressed_source_size if source is not None else None
+        )
         self._max_entries = max_entries
         self._entry_count = 0
         self._total_bytes = 0  # cumulative across all members
@@ -156,8 +160,8 @@ class BombTracker:
                         f"{self._total_bytes / css:.0f}:1 exceeds limit "
                         f"{self._max_ratio:.0f}:1"
                     )
-            elif self._compressed_consumed is not None:
-                consumed = self._compressed_consumed()
+            elif self._source is not None:
+                consumed = self._source.compressed_bytes_consumed
                 if consumed and consumed > 0 and self._total_bytes / consumed > self._max_ratio:
                     raise _AlwaysStopExtractionError(
                         f"Live decompression ratio "
@@ -217,9 +221,8 @@ class ExtractionCoordinator:
             self._max_extracted_bytes,
             self._max_ratio,
             self._ratio_floor,
-            reader.compressed_source_size,
             self._max_entries,
-            compressed_consumed=lambda: reader.compressed_bytes_consumed,
+            source=reader,
         )
 
         selector = self._normalize_selector()

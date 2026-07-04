@@ -48,7 +48,7 @@ uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync p
 #    library skip/xfail cleanly (see the `requires` helper in tests/conftest.py) and the
 #    core imports nothing third-party.
 uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
-  && uv run --no-sync --with pytest --with pytest-timeout pytest tests/ -q
+  && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov pytest tests/ -q
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay

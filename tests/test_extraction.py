@@ -13,6 +13,7 @@ import os
 import tarfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -221,15 +222,30 @@ def test_ratio_activation_threshold_false_positive_guard() -> None:
 
 
 def test_archive_wide_ratio() -> None:
+    # Static denominator: the reader reports a cheaply-known outer compressed size.
     t = BombTracker(
         max_bytes=10**12,
         max_ratio=2.0,
         ratio_activation_threshold=10,
-        compressed_source_size=10,
+        source=SimpleNamespace(compressed_source_size=10, compressed_bytes_consumed=None),
     )
     t.start_member(_member("f"))  # no per-member compressed_size
     with pytest.raises(_AlwaysStopExtractionError):
         t.count(30)  # total 30 > floor 10, 30/10 = 3 > 2
+
+
+def test_archive_wide_ratio_live_denominator() -> None:
+    # No static size (e.g. a pipe): the tracker samples the reader's live count of
+    # compressed bytes consumed instead.
+    t = BombTracker(
+        max_bytes=10**12,
+        max_ratio=2.0,
+        ratio_activation_threshold=10,
+        source=SimpleNamespace(compressed_source_size=None, compressed_bytes_consumed=10),
+    )
+    t.start_member(_member("f"))
+    with pytest.raises(_AlwaysStopExtractionError):
+        t.count(30)  # total 30 > floor 10, live 30/10 = 3 > 2
 
 
 def test_ratio_skipped_when_denominators_unknown() -> None:

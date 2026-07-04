@@ -158,7 +158,7 @@ class TarReader(BaseArchiveReader):
             # A non-seekable stream source is wrapped so the live decompression-ratio guard
             # can see compressed bytes consumed; a path / seekable stream (cheap size known)
             # is returned unchanged and uses the static ratio.
-            counted = self._count_compressed_input(source)
+            counted = self._wrap_compressed_input(source)
             codec_source: str | BinaryIO = (
                 str(counted) if isinstance(counted, Path) else counted
             )

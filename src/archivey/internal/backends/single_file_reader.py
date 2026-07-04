@@ -196,7 +196,7 @@ class SingleFileReader(BaseArchiveReader):
             src.seek(0)  # origin-normalized by open_archive; 0 is the archive start
         # Count compressed bytes pulled from a non-seekable stream so the live ratio guard
         # has a denominator (a path / seekable stream keeps its cheap static size).
-        counted = self._count_compressed_input(src)
+        counted = self._wrap_compressed_input(src)
         codec_source = str(counted) if isinstance(counted, Path) else counted
         return open_codec_stream(
             self._codec,

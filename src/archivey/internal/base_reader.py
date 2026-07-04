@@ -420,7 +420,7 @@ class BaseArchiveReader(ArchiveReader):
         c = self._compressed_input_counter
         return c.bytes_read if c is not None else None
 
-    def _count_compressed_input(self, source: Path | BinaryIO) -> Path | BinaryIO:
+    def _wrap_compressed_input(self, source: Path | BinaryIO) -> Path | BinaryIO:
         """Wrap a **non-seekable stream** source in a ``CountingReader`` (recorded for the
         live decompression-ratio guard) and return the wrapper; return the source unchanged
         for a path or a seekable stream, whose size is cheaply knowable so the *static*
