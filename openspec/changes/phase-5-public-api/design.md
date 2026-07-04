@@ -34,17 +34,34 @@ them.
 ### 1. Password: single value | sequence | provider callable
 
 `password: str | bytes | Sequence[str | bytes] | PasswordProvider | None` where
-`PasswordProvider = Callable[[ArchiveMember | None], str | bytes | None]`.
+
+```python
+@dataclass(frozen=True)
+class PasswordRequest:
+    member: ArchiveMember | None  # the member being decrypted; None for archive-level
+                                  # (header) decryption, where no member exists yet
+    attempt: int                  # 1 on the first ask for this unit; increments when a
+                                  # previously returned password failed for it
+
+PasswordProvider = Callable[[PasswordRequest], str | bytes | None]
+```
 
 - **Per encrypted unit** (a 7z folder, a RAR/ZIP member, an encrypted header), the
   reader tries the per-archive **known-good list** first (passwords that already
   succeeded, most-recent first), then remaining sequence candidates, then — if a
-  provider was given — calls it, passing the `ArchiveMember` being decrypted (`None`
-  for archive-level/header decryption, where no member exists yet) so interactive UIs
-  can show what is being asked about. A provider may be called repeatedly for the same
-  unit until it returns `None` (= give up → `EncryptionError`). Every success is
-  appended to the known-good list for the rest of the operation, so a provider is asked
-  once per *new* password, not once per member.
+  provider was given — calls it with a `PasswordRequest` so interactive UIs can show
+  what is being asked about *and* whether this is a retry. A provider may be called
+  repeatedly for the same unit (with `attempt` incrementing) until it returns `None`
+  (= give up → `EncryptionError`). Every success is appended to the known-good list for
+  the rest of the operation, so a provider is asked once per *new* password, not once
+  per member.
+- **Why a context object, not a bare member:** a callable's signature cannot be widened
+  compatibly after the freeze — every future need (attempt count, the prior error, the
+  encryption algorithm) would be a breaking change. The frozen dataclass costs one
+  import now and makes those additions non-breaking. The `attempt` field exists from
+  day one because "may be called repeatedly until it returns `None`" *invites* retry
+  loops, and a UI that cannot distinguish first-ask from wrong-password is broken in an
+  obvious, immediately-visible way.
 - **Why not per-call `open(member, password=...)`:** it forces random access — a
   streaming pass over a multi-password 7z could not supply the second password without
   aborting the pass. The candidate list + provider covers both random and streaming
@@ -81,10 +98,13 @@ them.
 ```python
 @dataclass(frozen=True)
 class ExtractionLimits:
-    max_extracted_bytes: int = 2 * 2**30
-    max_ratio: float = 1000.0
+    # None disables that guard; the UNLIMITED preset is all-None.
+    max_extracted_bytes: int | None = 2 * 2**30
+    max_ratio: float | None = 1000.0
     ratio_activation_threshold: int = 5 * 2**20
-    max_entries: int = 1_048_576
+    max_entries: int | None = 1_048_576
+
+    UNLIMITED: ClassVar["ExtractionLimits"]  # every guard disabled (trusted archives)
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
@@ -97,6 +117,25 @@ class ArchiveyConfig:
 - Passed explicitly: `open_archive(..., config=None)` (None → module default constant),
   `extract(..., config=None)`. The reader carries its config; `extract_all()` inherits
   the reader's unless overridden.
+- **Per-call limits override:** `extract()` and `extract_all()` additionally accept
+  `limits: ExtractionLimits | None = None`. Precedence: per-call `limits` >
+  `config.extraction_limits` > library default. Rationale: the bomb limits are the one
+  config field callers legitimately vary *per call* ("tighter cap for this untrusted
+  upload, defaults for our own archives"); forcing a `replace()`d config per call would
+  make the security-relevant knob the least ergonomic one. This replaces the four loose
+  Phase-4b kwargs (`max_extracted_bytes`/`max_ratio`/`ratio_activation_threshold`/
+  `max_entries`) — one structured type, two supply points, no parallel surface.
+- **Presets:** `ExtractionLimits()` (the defaults) is the untrusted posture —
+  safe-by-default already serves that case — and `ExtractionLimits.UNLIMITED` disables
+  all four guards for explicitly trusted archives. Presets are deliberately **not**
+  named by trust (`TRUSTED`/`UNTRUSTED`) and **not** coupled to `ExtractionPolicy`:
+  policy governs metadata/permission semantics, limits govern resource bounds, and an
+  implicit coupling (e.g. `policy=TRUSTED` silently lifting bomb guards) would be a
+  footgun in the dangerous direction. The trusted-archive recipe is two explicit
+  decisions — `extract(src, dest, policy=ExtractionPolicy.TRUSTED,
+  limits=ExtractionLimits.UNLIMITED)` — documented in SPEC.md rather than encoded. A
+  `SecurityConfig` sub-config / umbrella `trust=` convenience was considered and
+  deferred post-v1: a convenience can be added compatibly, unbundling one cannot.
 - **Why not contextvars (DEV's approach):** ambient config makes behavior depend on
   call-site-invisible state — hard to trace in applications embedding archivey, and
   interacts confusingly with threads/executors (a worker thread silently misses the
@@ -138,6 +177,55 @@ garbage later; TAR is just the first implementation.)
   a selector answers "should this member be included", and silently dropping earlier
   duplicates would surprise both streaming consumers and extraction, where writing all
   duplicates is what sequential extraction does anyway.)
+
+### 6. Link resolution: positional hardlinks, last-wins symlinks, member-id cycles
+
+The two access modes currently disagree on duplicate names. Streaming
+(`_register_progressively`) resolves links against an *incremental* name map — a
+hardlink finds the latest **earlier** occurrence. Random access (`_resolve_link`)
+resolves against one *last-wins* map built from all members — a hardlink can resolve
+**forward**, and with duplicate names resolves to the **last occurrence overall**.
+Concretely, for `[A.txt(content1), hardlink L→A.txt, A.txt(content2)]`: real tar
+extraction gives `L` content1 (it links against what is on disk when `L` is written);
+v2 streaming agrees; v2 random access returns content2 from `read(L)` and links `L`
+against the content2 inode. Same archive, different answers by mode.
+
+Decided semantics (both modes, one story):
+
+- **Hardlinks resolve positionally**: the latest occurrence **strictly before** the
+  link (filesystem-faithful — every real tar writer stores the data-bearing entry
+  before its link entries, since hardlinks are detected by inode during archiving;
+  RAR5's redirect model is the same). Implementation: `_resolve_link` walks members in
+  order with an incremental map, as the streaming path already does.
+- **Forward fallback kept in random-access mode**: when no earlier occurrence exists
+  (a crafted / reordered archive), fall back to a later member rather than failing —
+  extraction's orphan second pass already recovers this case gracefully (links against
+  the source once written, bytes bomb-counted once; PR #33's regression test), and
+  that behavior depends on `link_target_member` being set. Strictly-backward-only
+  would regress it. Streaming inherently cannot resolve forward and already fails per
+  `OnError` — an acceptable, documented asymmetry.
+- **Symlinks keep last-wins overall** (random access): a symlink is a *name* resolved
+  at use time, and the final extracted state of a duplicated name is the last
+  occurrence — so the full-map resolution is already correct. Streaming resolves to
+  the latest earlier occurrence because a single pass cannot see forward; documented,
+  not fought.
+- **Cycle detection tracks member ids**, not names, in both `_resolve_link` and
+  `_open_with_link_follow`: name-based visited-sets false-positive on chains passing
+  through distinct same-named members. The raised error's message must say "cycle"
+  (today's `LinkTargetNotFoundError` subclasses `ReadError`, so the spec scenario is
+  technically met, but the message misleads).
+- **Spec wording softened** (`archive-reading`): "hardlinks SHALL always resolve to an
+  earlier member" becomes "resolve to the most recent earlier member; an archive where
+  the source appears only later is malformed but tolerated — random access falls back
+  to the later member, streaming fails per `OnError`."
+
+## Open questions (maintainer decisions, tracked in proposal.md)
+
+1. `max_entries` counting semantics — selector-skips don't count today, filter-skips
+   do; recommendation: count only members actually written.
+2. ZIP `format_availability` reports the intended post-Phase-7 composition, not
+   current read capability; recommendation: report current truth (`PARTIAL` + note)
+   until the Phase 7 codec bypass lands.
 
 ## Risks / Trade-offs
 

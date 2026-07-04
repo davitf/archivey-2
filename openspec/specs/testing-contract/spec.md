@@ -99,12 +99,12 @@ codec" error rather than diverging silently from the oracle.
 
 ### Requirement: Non-seekable stream coverage for every streaming backend
 
-The system SHALL test every backend that supports streaming with a `FakeNonSeekable` wrapper that raises `io.UnsupportedOperation` on all `seek` and `tell` calls. The test verifies that the backend reads and iterates correctly when the source stream cannot be repositioned.
+The system SHALL test every backend that supports streaming with a `FakeNonSeekable` wrapper that raises `io.UnsupportedOperation` on all `seek` and `tell` calls. The test verifies that the backend reads and iterates correctly when the source stream cannot be repositioned. A backend that **requires** a seekable source (ZIP, ISO — see `access-mode-and-cost` and the format specs) SHALL instead be tested to **fail fast** at open time with `StreamNotSeekableError`, never buffering the stream implicitly.
 
-#### Scenario: non-seekable ZIP source
+#### Scenario: non-seekable ZIP source fails fast
 
 - **WHEN** a ZIP archive is opened through a `FakeNonSeekable` wrapper
-- **THEN** the backend reads all members correctly without calling `seek` or `tell` on the underlying stream
+- **THEN** `open_archive` raises `StreamNotSeekableError` at open time (ZIP requires a seekable source; the library never implicitly buffers), and no member data is read
 
 #### Scenario: non-seekable TAR.GZ source
 

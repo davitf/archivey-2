@@ -96,9 +96,10 @@ Because `member.name` is now a **faithful** representation of the stored path (s
 verbatim `raw_name` (the interim mechanism introduced while normalization still collapsed
 traversal is removed).
 
-This is the default (`RAISE`) path-safety behavior. A future opt-in `SANITIZE` policy (phase 5)
-re-roots/collapses an unsafe name to a safe in-`dest` path instead of rejecting it; there is no
-path-safety "trust" bypass. The constraints below describe `RAISE`.
+This is the default (`RAISE`) path-safety behavior. A future opt-in `SANITIZE` policy
+(**post-v1** — deliberately not part of the Phase 5 API freeze) would re-root/collapse an
+unsafe name to a safe in-`dest` path instead of rejecting it; there is no path-safety
+"trust" bypass. The constraints below describe `RAISE`.
 
 Three independent enforcement layers provide defense in depth:
 
@@ -137,8 +138,8 @@ The individual universal constraints are:
 #### Scenario: internal traversal is also rejected
 
 - **WHEN** a member's `name` is `"foo/../bar"` (a `..` that would resolve within the root)
-- **THEN** `PathTraversalError` is raised under the default `RAISE`; extracting it requires the
-  opt-in `SANITIZE` policy (phase 5)
+- **THEN** `PathTraversalError` is raised under the default `RAISE`; extracting it would
+  require the future opt-in `SANITIZE` policy (post-v1, not yet available)
 
 #### Scenario: absolute path in member name
 

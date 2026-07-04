@@ -344,7 +344,10 @@ an actual cycle (or a missing target) fails.
 # ABC implementation (ARCHITECTURE.md §2.3)
 def open(self, member: str | ArchiveMember, _seen: frozenset[int] = frozenset()) -> BinaryIO:
     if isinstance(member, str):
-        member = self[member]
+        found = self.get(member)  # name lookup — there is no __getitem__ on the reader
+        if found is None:
+            raise KeyError(f"Member {member!r} not found")
+        member = found
     if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
         if member.member_id in _seen:
             raise ReadError(f"Link cycle detected at '{member.name}'")
