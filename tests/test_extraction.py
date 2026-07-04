@@ -787,3 +787,177 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                 ratio_activation_threshold=1024,
                 max_extracted_bytes=100 * 2**20,
             )
+
+
+# ---------------------------------------------------------------------------
+# Orphaned-hardlink second pass + selector semantics + live-guard coverage
+# (post-4b review regressions — each test pins a bug found reviewing #28/#31)
+# ---------------------------------------------------------------------------
+
+
+def _orphan_tar(tmp_path: Path, links: list[str]) -> Path:
+    """A tar with source ``A.txt`` followed by hardlinks to it (the orphan-recovery shape:
+    extracting only the links leaves the source excluded)."""
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [("file", "A.txt", b"hello world")] + [("hard", ln, "A.txt") for ln in links]
+        )
+    )
+    return src
+
+
+def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
+    # Regression: with the excluded source's FIRST link skipped (OverwritePolicy.SKIP over
+    # an existing destination), the coordinator crashed with a raw KeyError when linking
+    # the second orphan (source_paths never got an entry). The content must instead be
+    # written to the first link whose destination is writable.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"pre-existing")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],  # source A.txt excluded
+            overwrite=OverwritePolicy.SKIP,
+            on_error=OnError.CONTINUE,
+        )
+
+    statuses = {res.member.name: res.status for res in results}
+    assert statuses["L1.txt"] is ExtractionStatus.SKIPPED
+    assert statuses["L2.txt"] is ExtractionStatus.EXTRACTED
+    assert (dest / "L1.txt").read_bytes() == b"pre-existing"  # untouched under SKIP
+    assert (dest / "L2.txt").read_bytes() == b"hello world"  # content moved to next link
+    assert not (dest / "A.txt").exists()  # excluded source never materialized by name
+
+
+def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
+    # Companion to the above: when EVERY selected link's destination already exists under
+    # SKIP, all links are recorded SKIPPED, existing files stay untouched, and no stray
+    # content or temp file is written anywhere.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"keep-1")
+    (dest / "L2.txt").write_bytes(b"keep-2")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],
+            overwrite=OverwritePolicy.SKIP,
+        )
+
+    assert [res.status for res in results] == [ExtractionStatus.SKIPPED] * 2
+    assert (dest / "L1.txt").read_bytes() == b"keep-1"
+    assert (dest / "L2.txt").read_bytes() == b"keep-2"
+    assert sorted(p.name for p in dest.iterdir()) == ["L1.txt", "L2.txt"]  # no strays
+
+
+def test_orphan_materialized_source_carries_link_metadata(tmp_path: Path) -> None:
+    # Regression: the second-pass-materialized source was written with member=None, so no
+    # chmod/utime ever ran and the file kept mkstemp's 0600 forever. The link's transformed
+    # copy supplies the on-disk identity (spec: "the copy supplies ... mode, timestamps");
+    # hardlinks share one inode, so it must be applied to the file carrying the content.
+    import stat as stat_mod
+
+    link_mtime = 1_600_000_000
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("A.txt")
+        info.size = 11
+        info.mode = 0o644
+        info.mtime = 1_500_000_000  # source's own mtime differs, proving we use the link's
+        t.addfile(info, io.BytesIO(b"hello world"))
+        info = tarfile.TarInfo("L1.txt")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "A.txt"
+        info.mode = 0o644
+        info.mtime = link_mtime
+        t.addfile(info)
+    src = tmp_path / "a.tar"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+
+    with open_archive(src) as r:
+        results = r.extract_all(dest, members=["L1.txt"])
+
+    assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
+    st = (dest / "L1.txt").lstat()
+    if os.name == "posix":  # Windows has no Unix permission bits (see _posix_perms)
+        assert stat_mod.S_IMODE(st.st_mode) == 0o644  # not mkstemp's 0600
+    assert int(st.st_mtime) == link_mtime  # the link member's mtime, not the source's
+
+
+def test_hardlink_before_source_shares_inode_and_counts_once(tmp_path: Path) -> None:
+    # Regression: a hardlink PRECEDING its source in archive order (legal in crafted /
+    # non-GNU-ordered archives) was re-read in the second pass and written as an
+    # independent copy — content matched but the two paths did not share an inode, and the
+    # source's bytes were bomb-counted twice. It must be os.link'd to the extracted source.
+    payload = b"payload bytes"
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("hard", "L1.txt", "A.txt"), ("file", "A.txt", payload)])
+    )
+    dest = tmp_path / "out"
+    progress_bytes: list[int] = []
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, on_progress=lambda p: progress_bytes.append(p.bytes_written)
+        )
+
+    assert all(res.status is ExtractionStatus.EXTRACTED for res in results)
+    assert (dest / "L1.txt").read_bytes() == payload
+    assert os.path.samefile(dest / "A.txt", dest / "L1.txt")  # one inode, truly linked
+    assert progress_bytes[-1] == len(payload)  # bytes read/counted once, not twice
+
+
+def test_selector_archivemember_entry_matches_by_identity(tmp_path: Path) -> None:
+    # The collection selector's ArchiveMember entries match by object identity (the Phase 5
+    # semantics, now specced in safe-extraction): with duplicate names, passing one member
+    # object selects only that occurrence — while a str entry matches every duplicate.
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("file", "dup.txt", b"first"), ("file", "dup.txt", b"second")])
+    )
+
+    with open_archive(src) as r:
+        first, second = r.members()
+        assert first.name == second.name == "dup.txt"
+        results = r.extract_all(tmp_path / "by_member", members=[first])
+    assert len(results) == 1
+    assert (tmp_path / "by_member" / "dup.txt").read_bytes() == b"first"
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            tmp_path / "by_name", members=["dup.txt"], overwrite=OverwritePolicy.REPLACE
+        )
+    assert len(results) == 2  # a str entry matches every same-named duplicate
+    assert (tmp_path / "by_name" / "dup.txt").read_bytes() == b"second"
+
+
+def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> None:
+    # Regression: the live counter was only wired for NON-seekable streams, while the
+    # static denominator needs a cheaply-sizable source — so a compressed archive on a
+    # seekable-but-opaque stream (a custom stream type: not SEEK_END-whitelisted, no
+    # `.size`, no try_get_size()) had NO archive-wide ratio guard at all, leaving only the
+    # absolute byte cap. The counter must engage exactly when the static size is absent.
+    from tests.streams_util import (
+        CountingBytesIO,  # seekable, opaque to source_byte_size
+    )
+
+    raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
+    dest = tmp_path / "out"
+    with open_archive(CountingBytesIO(raw)) as r:
+        assert r.compressed_source_size is None  # opaque: no static denominator...
+        assert r.compressed_bytes_consumed is not None  # ...so the live counter is wired
+        with pytest.raises(ExtractionError):
+            r.extract_all(
+                dest,
+                max_ratio=10.0,
+                ratio_activation_threshold=1024,
+                max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+            )

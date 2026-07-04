@@ -411,24 +411,31 @@ class BaseArchiveReader(ArchiveReader):
         or ``None`` when nothing is being counted.
 
         The **live** denominator for extraction's archive-wide decompression-ratio guard
-        (see ``safe-extraction``), used when ``compressed_source_size`` is ``None`` — i.e. a
-        compressed archive read from a non-seekable pipe, whose total size is not cheaply
-        knowable. A backend that decompresses a *stream* source wraps it in a
+        (see ``safe-extraction``), used when ``compressed_source_size`` is ``None`` — a
+        compressed archive whose source size is not cheaply knowable (a non-seekable pipe,
+        or a seekable stream that is neither a whitelisted O(1)-seek type nor
+        ``.size``-advertising). A backend that decompresses a *stream* source wraps it in a
         ``CountingReader`` and records it here; readers with a knowable source size (a path,
-        a seekable stream) leave it ``None`` and rely on the cheaper static ratio instead.
+        a sizable stream) leave it ``None`` and rely on the cheaper static ratio instead.
         """
         c = self._compressed_input_counter
         return c.bytes_read if c is not None else None
 
     def _wrap_compressed_input(self, source: Path | BinaryIO) -> Path | BinaryIO:
-        """Wrap a **non-seekable stream** source in a ``CountingReader`` (recorded for the
-        live decompression-ratio guard) and return the wrapper; return the source unchanged
-        for a path or a seekable stream, whose size is cheaply knowable so the *static*
-        archive-wide ratio applies instead. A compressed backend that decompresses a stream
-        source calls this on the raw source before handing it to the codec layer, so
-        ``compressed_bytes_consumed`` tracks what the decompressor pulls from a pipe.
+        """Wrap a stream source **whose byte size is not cheaply knowable** in a
+        ``CountingReader`` (recorded for the live decompression-ratio guard) and return the
+        wrapper; return the source unchanged for a path or a sizable stream, whose static
+        archive-wide ratio applies instead — exactly the complement of
+        ``compressed_source_size``, so one of the two denominators is always available for
+        a compressed source. A compressed backend that decompresses a stream source calls
+        this on the raw source before handing it to the codec layer, so
+        ``compressed_bytes_consumed`` tracks what the decompressor pulls.
+
+        For a *seekable* unsizable source the codec layer may seek and re-read (an index
+        scan, an accelerator); re-read bytes are counted again, which only ever inflates
+        the denominator — the guard gets weaker, never a false positive.
         """
-        if is_stream(source) and not is_seekable(source):
+        if is_stream(source) and source_byte_size(source) is None:
             counter = CountingReader(source)
             self._compressed_input_counter = counter
             return counter
