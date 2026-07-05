@@ -9,6 +9,7 @@ import logging
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 from unittest import mock
 
 import pytest
