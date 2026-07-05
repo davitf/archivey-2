@@ -264,16 +264,10 @@ class BaseArchiveReader(ArchiveReader):
         if self._members_cache is not None:
             return self._members_cache
 
-        members: list[ArchiveMember] = []
-        for idx, member in enumerate(self._iter_members()):
-            member._member_id = idx
-            member._archive_id = self._archive_id
-            members.append(member)
-
+        members = list(self._register_progressively(self._iter_members()))
         by_name_lists: dict[str, list[ArchiveMember]] = {}
         for m in members:
             self._index_member_name(by_name_lists, m)
-
         for member in members:
             if member.is_link and member.link_target:
                 self._resolve_link(member, by_name_lists)
@@ -434,6 +428,10 @@ class BaseArchiveReader(ArchiveReader):
         symlink to an earlier member resolves too, while a forward-pointing one stays
         unresolved (``link_target_member`` ``None``). A backend that already stamps ids
         is left untouched (the stamp only fills unset fields).
+
+        Eager registration (:meth:`_get_members_registered`) drains this iterator to
+        collect the full list, then runs :meth:`_resolve_link` on every link member so
+        forward-pointing symlinks and full chains are resolved too.
         """
         by_name_lists: dict[str, list[ArchiveMember]] = {}
         for idx, member in enumerate(members):
