@@ -296,29 +296,6 @@ class ZipReader(BaseArchiveReader):
 
         algo = _ZIP_COMPRESSION_ALGOS.get(info.compress_type, CompressionAlgorithm.UNKNOWN)
 
-        link_target = None
-        if member_type == MemberType.SYMLINK:
-            # A symlink's target is its (possibly encrypted) file data. Listing must stay
-            # usable without a password, so a missing/wrong password leaves link_target
-            # unset (following the link later fails with LinkTargetNotFoundError); other
-            # errors surface translated like any member-read error.
-            try:
-                with self._archive.open(info, pwd=self._password) as f:
-                    link_target = f.read().decode("utf-8", errors="surrogateescape")
-            except (RuntimeError, zipfile.BadZipFile) as exc:
-                translated = self._translate_exception(exc)
-                if isinstance(translated, EncryptionError):
-                    logger.warning(
-                        "Cannot read the symlink target of %r without the correct "
-                        "password; leaving link_target unset.",
-                        info.filename,
-                    )
-                elif translated is not None:
-                    self._stamp_error_context(translated, info.filename)
-                    raise translated from exc
-                else:
-                    raise
-
         modified, accessed, created = _zip_timestamps(info)
         return ArchiveMember(
             type=member_type,
@@ -334,10 +311,35 @@ class ZipReader(BaseArchiveReader):
             is_encrypted=bool(info.flag_bits & 0x1),
             comment=_decode_with_fallback(info.comment) if info.comment else None,
             create_system=create_system,
-            link_target=link_target,
             extra={"zip.compress_type": info.compress_type},
             _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )
+
+    def _ensure_link_target(self, member: ArchiveMember) -> None:
+        if member.type != MemberType.SYMLINK or member.link_target is not None:
+            return
+        info = member._raw
+        assert isinstance(info, zipfile.ZipInfo), "ZIP member is missing its ZipInfo handle"
+        # A symlink's target is its (possibly encrypted) file data. Listing must stay
+        # usable without a password, so a missing/wrong password leaves link_target
+        # unset (following the link later fails with LinkTargetNotFoundError); other
+        # errors surface translated like any member-read error.
+        try:
+            with self._archive.open(info, pwd=self._password) as f:
+                member.link_target = f.read().decode("utf-8", errors="surrogateescape")
+        except (RuntimeError, zipfile.BadZipFile) as exc:
+            translated = self._translate_exception(exc)
+            if isinstance(translated, EncryptionError):
+                logger.warning(
+                    "Cannot read the symlink target of %r without the correct "
+                    "password; leaving link_target unset.",
+                    info.filename,
+                )
+            elif translated is not None:
+                self._stamp_error_context(translated, info.filename)
+                raise translated from exc
+            else:
+                raise
 
     def _open_member(self, member: ArchiveMember) -> BinaryIO:
         # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map

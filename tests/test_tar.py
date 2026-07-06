@@ -736,6 +736,147 @@ def test_symlink_duplicate_name_last_wins_random_access() -> None:
         assert ar.read("S.txt") == b"content2"
 
 
+# ---------------------------------------------------------------------------
+# scan_members(), post-pass cache, one-pass-only streaming
+# ---------------------------------------------------------------------------
+
+
+def _build_forward_symlink_tar() -> bytes:
+    """Symlink appears before its target in archive order."""
+    return _link_tar_bytes(
+        [
+            ("sym", "forward_link", "target.txt"),
+            ("file", "target.txt", b"TARGET"),
+        ]
+    )
+
+
+def test_streaming_scan_members_resolves_forward_symlink() -> None:
+    source = NonSeekableBytesIO(_build_forward_symlink_tar())
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
+        members = ar.scan_members()
+    link = next(m for m in members if m.name == "forward_link")
+    assert link.link_target_member is not None
+    assert link.link_target_member.name == "target.txt"
+
+    with open_archive(
+        io.BytesIO(_build_forward_symlink_tar()), format=ArchiveFormat.TAR
+    ) as ar:
+        expected = ar.get("forward_link")
+    assert link.link_target_member.name == expected.link_target_member.name
+
+
+def test_streaming_iter_materializes_resolved_cache() -> None:
+    source = NonSeekableBytesIO(_build_forward_symlink_tar())
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
+        collected: list = []
+        for member in ar:
+            if member.name == "forward_link":
+                collected.append(member)
+                assert member.link_target_member is None
+        members = ar.get_members_if_available()
+        assert members is not None
+        link = next(m for m in members if m.name == "forward_link")
+        assert link.link_target_member is not None
+        assert link.link_target_member.name == "target.txt"
+        assert collected[0].link_target_member.name == "target.txt"
+
+
+def test_streaming_stream_members_materializes_resolved_cache() -> None:
+    source = NonSeekableBytesIO(_build_forward_symlink_tar())
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
+        collected: list = []
+        for member, _stream in ar.stream_members():
+            if member.name == "forward_link":
+                collected.append(member)
+        members = ar.get_members_if_available()
+        assert members is not None
+        link = next(m for m in members if m.name == "forward_link")
+        assert link.link_target_member is not None
+        assert collected[0].link_target_member.name == "target.txt"
+
+
+def test_scan_members_finishes_interrupted_pass(tmp_path: Path) -> None:
+    source = NonSeekableBytesIO(_build_forward_symlink_tar())
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
+        for member in ar:
+            if member.name == "forward_link":
+                break
+        members = ar.scan_members()
+        link = next(m for m in members if m.name == "forward_link")
+        assert link.link_target_member is not None
+        assert link.link_target_member.name == "target.txt"
+        with pytest.raises(UnsupportedOperationError):
+            list(ar)
+        with pytest.raises(UnsupportedOperationError):
+            list(ar.stream_members())
+        with pytest.raises(UnsupportedOperationError):
+            ar.extract_all(tmp_path)
+
+
+def test_abandoned_partial_pass_leaves_get_members_none() -> None:
+    source = NonSeekableBytesIO(_build_forward_symlink_tar())
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
+        for member in ar:
+            if member.name == "forward_link":
+                break
+        assert ar.get_members_if_available() is None
+
+
+def test_streaming_second_pass_raises_tar_and_zip(
+    plain_tar: Path, tmp_path: Path
+) -> None:
+    zip_path = tmp_path / "second.zip"
+    import zipfile
+
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("hello.txt", b"hello world")
+    with open_archive(plain_tar, streaming=True) as ar:
+        list(ar)
+        with pytest.raises(UnsupportedOperationError):
+            list(ar)
+        with pytest.raises(UnsupportedOperationError):
+            list(ar.stream_members())
+    with open_archive(zip_path, streaming=True) as ar:
+        list(ar)
+        with pytest.raises(UnsupportedOperationError):
+            list(ar)
+
+
+def test_scan_members_random_access_parity(plain_tar: Path, tmp_path: Path) -> None:
+    import zipfile
+
+    zip_path = tmp_path / "scan.zip"
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("hello.txt", b"hello world")
+    simple_dir = tmp_path / "dirscan"
+    simple_dir.mkdir()
+    (simple_dir / "a.txt").write_bytes(b"x")
+    for source in (plain_tar, zip_path, simple_dir):
+        with open_archive(source) as ar:
+            assert ar.scan_members() == ar.members()
+            assert [m.name for m in ar] == [m.name for m in ar.members()]
+
+
+def test_scan_members_before_pass_consumes_streaming_reader(
+    plain_tar: Path, tmp_path: Path
+) -> None:
+    import zipfile
+
+    zip_path = tmp_path / "consume.zip"
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("hello.txt", b"hello world")
+    simple_dir = tmp_path / "dirconsume"
+    simple_dir.mkdir()
+    (simple_dir / "a.txt").write_bytes(b"x")
+    for source in (plain_tar, zip_path, simple_dir):
+        with open_archive(source, streaming=True) as ar:
+            names = {m.name for m in ar.scan_members()}
+            assert len(names) > 0
+            with pytest.raises(UnsupportedOperationError):
+                list(ar.stream_members())
+
+
 def test_link_cycle_raises_read_error() -> None:
     data = _link_tar_bytes(
         [

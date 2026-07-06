@@ -235,8 +235,8 @@ class TarReader(BaseArchiveReader):
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
         """Forward-only member walk — never calls ``getmembers()``.
 
-        Yields bare members; the base's streaming ``__iter__`` (via
-        ``_register_progressively``) stamps ids and resolves backward links.
+        Yields bare members; the base's shared progressive pass stamps ids and resolves
+        backward links.
         """
         try:
             for info in self._tar:
@@ -253,13 +253,10 @@ class TarReader(BaseArchiveReader):
         if not self._streaming:
             yield from super()._iter_with_data()
             return
-        # _register_progressively stamps ids and resolves backward links (hardlinks
-        # always point at an earlier member, so they resolve in this single pass); each
-        # member carries its TarInfo in _raw, which extractfile() uses directly.
+        # Pull from the shared instance-held progressive pass so __iter__,
+        # stream_members, and scan_members share one cursor and finalization.
         try:
-            for member in self._register_progressively(
-                self._to_member(info) for info in self._tar
-            ):
+            for member in self._begin_forward_pass():
                 if member.is_file:
                     info = cast("tarfile.TarInfo", member._raw)
                     raw = self._tar.extractfile(info)
@@ -276,7 +273,6 @@ class TarReader(BaseArchiveReader):
                 self._stamp_error_context(translated)
                 raise translated from exc
             raise
-        self._verify_tar_eof()
 
     def _verify_tar_eof(self) -> None:
         """Verify the two-block null end-of-archive marker.

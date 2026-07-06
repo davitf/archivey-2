@@ -62,7 +62,19 @@ class ArchiveReader(ABC):
     @abstractmethod
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``UnsupportedOperationError``
-        on a streaming reader (use :meth:`get_members_if_available` there)."""
+        on a streaming reader (use :meth:`scan_members` or
+        :meth:`get_members_if_available` there)."""
+        ...
+
+    @abstractmethod
+    def scan_members(self) -> list[ArchiveMember]:
+        """Return the fully-resolved member list in either access mode.
+
+        In random-access mode this is equivalent to :meth:`members` and does not
+        consume the reader. On a streaming reader it finishes the single forward pass
+        (running it from the start, or completing an interrupted one) and returns the
+        resolved list; it may also be called after a completed pass to return the
+        cached list."""
         ...
 
     @abstractmethod

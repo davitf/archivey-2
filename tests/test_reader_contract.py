@@ -75,12 +75,6 @@ class _ForwardOnlyReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> BinaryIO:
         return io.BytesIO(b"x")
 
-    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
-        # Forward-only backends MUST override this: yield progressively, never
-        # pre-register the whole member list.
-        for member in self._iter_members():
-            yield member, (io.BytesIO(b"x") if member.is_file else None)
-
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(
             ArchiveFormat.TAR, ListingCost.REQUIRES_SCANNING, StreamCapability.FORWARD_ONLY
@@ -179,3 +173,24 @@ def test_streaming_iteration_registers_member_ids() -> None:
     (member,) = list(reader)
     assert member.member_id == 0
     assert member.archive_id == reader._archive_id
+
+
+def test_streaming_second_iter_raises() -> None:
+    reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")
+    list(reader)
+    with pytest.raises(archivey.UnsupportedOperationError):
+        list(reader)
+
+
+def test_get_members_if_available_after_streaming_pass() -> None:
+    reader = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")
+    list(reader)
+    members = reader.get_members_if_available()
+    assert members is not None
+    assert [m.name for m in members] == ["a.txt"]
+
+
+def test_scan_members_equals_members_in_random_mode() -> None:
+    reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
+    assert reader.scan_members() == reader.members()
+    assert [m.name for m in reader] == ["a.txt"]

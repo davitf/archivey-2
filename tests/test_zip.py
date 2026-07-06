@@ -172,11 +172,56 @@ def test_symlink_member(tmp_path: Path) -> None:
     info.create_system = 3
     info.external_attr = (stat_module.S_IFLNK | 0o777) << 16
     with zipfile.ZipFile(path, "w") as z:
+        z.writestr("target.txt", b"payload")
         z.writestr(info, b"target.txt")
     with open_archive(path) as ar:
         member = ar.get("link")
         assert member.type == MemberType.SYMLINK
         assert member.link_target == "target.txt"
+
+
+def _symlink_zip(tmp_path: Path) -> Path:
+    import stat as stat_module
+
+    path = tmp_path / "symlink.zip"
+    info = zipfile.ZipInfo("link")
+    info.create_system = 3
+    info.external_attr = (stat_module.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("target.txt", b"payload")
+        z.writestr(info, b"target.txt")
+    return path
+
+
+def test_zip_index_only_listing_leaves_symlink_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _symlink_zip(tmp_path)
+    with open_archive(path) as ar:
+        archive = ar._archive  # type: ignore[attr-defined]
+        opens: list[str] = []
+        original_open = archive.open
+
+        def counting_open(info, pwd=None):
+            opens.append(info.filename)
+            return original_open(info, pwd=pwd)
+
+        monkeypatch.setattr(archive, "open", counting_open)
+        members = ar.get_members_if_available()
+        assert members is not None
+        link = next(m for m in members if m.name == "link")
+        assert link.link_target is None
+        assert link.link_target_member is None
+        assert opens == []
+
+        resolved = ar.scan_members()
+        link_resolved = next(m for m in resolved if m.name == "link")
+        assert link_resolved.link_target == "target.txt"
+        assert link_resolved.link_target_member is not None
+        assert link_resolved.link_target_member.name == "target.txt"
+        assert ar.read("link") == b"payload"
+        ar.extract_all(tmp_path / "out")
+        assert (tmp_path / "out" / "target.txt").read_bytes() == b"payload"
 
 
 def test_compression_method_mapping(tmp_path: Path) -> None:
