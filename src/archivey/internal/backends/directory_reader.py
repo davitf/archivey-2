@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping
 
+from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -47,8 +48,9 @@ class DirectoryReader(BaseArchiveReader):
         root: Path,
         streaming: bool,
         archive_name: str | None,
+        config: ArchiveyConfig,
     ) -> None:
-        super().__init__(ArchiveFormat.DIRECTORY, streaming, archive_name)
+        super().__init__(ArchiveFormat.DIRECTORY, streaming, archive_name, config)
         self._root = root
         # uid/gid -> name caches: most entries in a tree share an owner/group, and
         # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
@@ -219,13 +221,13 @@ class DirectoryReadBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
-        strict_eof: bool = False,
+        config: ArchiveyConfig,
     ) -> DirectoryReader:
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
-        return DirectoryReader(source, streaming, archive_name or str(source))
+        return DirectoryReader(source, streaming, archive_name or str(source), config)
 
 
 # Self-register at import time

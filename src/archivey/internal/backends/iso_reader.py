@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, cast
 if TYPE_CHECKING:
     from pycdlib.pycdlibio import PyCdlibIO
 
+from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -144,9 +145,10 @@ class IsoReader(BaseArchiveReader):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        config: ArchiveyConfig,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name)
+        super().__init__(format, streaming, archive_name, config)
         self._source = source
         if pycdlib is None:
             raise PackageNotInstalledError(
@@ -374,11 +376,11 @@ class IsoReadBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
-        strict_eof: bool = False,
+        config: ArchiveyConfig,
     ) -> IsoReader:
         # `format` is always ISO here (single-format backend); accepted for the uniform
         # ReadBackend signature.
-        return IsoReader(source, format, streaming, password, encoding, archive_name)
+        return IsoReader(source, format, streaming, password, encoding, archive_name, config)
 
 
 register_reader(IsoReadBackend)

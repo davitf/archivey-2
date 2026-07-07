@@ -1,6 +1,6 @@
 """TAR backend tests — random-access read, forward-only streaming on non-seekable
 sources, PAX/GNU/ustar member mapping, cost, corrupt/truncated handling, and
-``strict_eof`` end-of-archive verification."""
+``strict_archive_eof`` end-of-archive verification."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
     CompressionAlgorithm,
     CompressionMethod,
     MemberType,
@@ -401,7 +402,7 @@ def test_compressed_source_size_generalized(plain_tar: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# strict_eof / end-of-archive truncation detection
+# strict_archive_eof / end-of-archive truncation detection
 # ---------------------------------------------------------------------------
 
 
@@ -437,11 +438,13 @@ def test_missing_eof_blocks_warns_by_default(
     assert "truncated" in warnings[0].lower()
 
 
-def test_missing_eof_blocks_strict_eof_raises() -> None:
+def test_missing_eof_blocks_strict_archive_eof_raises() -> None:
     data = _tar_missing_eof_block()
     with pytest.raises(TruncatedError):
         with open_archive(
-            io.BytesIO(data), format=ArchiveFormat.TAR, strict_eof=True
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(strict_archive_eof=True),
         ) as ar:
             ar.members()
 
@@ -465,7 +468,7 @@ def test_missing_eof_blocks_streaming_strict_raises() -> None:
             NonSeekableBytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=True,
-            strict_eof=True,
+            config=ArchiveyConfig(strict_archive_eof=True),
         ) as ar:
             list(ar.stream_members())
 
@@ -495,17 +498,19 @@ def test_minimal_eof_trailer_streaming_silent(
 
 
 def test_minimal_eof_trailer_strict_does_not_raise() -> None:
-    # strict_eof must accept the minimal valid trailer on both access modes.
+    # strict_archive_eof must accept the minimal valid trailer on both access modes.
     data = _tar_minimal_eof()
     with open_archive(
-        io.BytesIO(data), format=ArchiveFormat.TAR, strict_eof=True
+        io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        config=ArchiveyConfig(strict_archive_eof=True),
     ) as ar:
         assert [m.name for m in ar.members()]
     with open_archive(
         NonSeekableBytesIO(data),
         format=ArchiveFormat.TAR,
         streaming=True,
-        strict_eof=True,
+        config=ArchiveyConfig(strict_archive_eof=True),
     ) as ar:
         assert [m for m, _ in ar.stream_members()]
 

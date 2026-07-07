@@ -26,8 +26,9 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.exceptions import ArchiveyError
+from archivey.config import ArchiveyConfig
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.internal.config import StreamConfig
+from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
@@ -78,9 +79,10 @@ class SingleFileReader(BaseArchiveReader):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        config: ArchiveyConfig,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name)
+        super().__init__(format, streaming, archive_name, config)
         self._source = source
         self._stream_codec = stream_codec_for_format(format.stream)
         self._codec = self._stream_codec.codec
@@ -91,7 +93,10 @@ class SingleFileReader(BaseArchiveReader):
         # needs either a seekable stream or a real OS fileno, and archivey wraps a non-seekable
         # source in a PeekableStream that has neither (so it raises StreamNotSeekableError).
         # Keep the codec sequential for such a source regardless of the archive's streaming flag.
-        self._codec_config = StreamConfig(streaming=self._streaming or not self._seekable)
+        self._codec_config = stream_config_from_archivey(
+            self._config,
+            streaming=self._streaming or not self._seekable,
+        )
 
         # The compressed-source header, read at most once and cached (only the gzip metadata
         # hook needs it; codecs without header metadata never trigger a read). See _peek_header.
@@ -264,12 +269,12 @@ class SingleFileBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
-        strict_eof: bool = False,
+        config: ArchiveyConfig,
     ) -> SingleFileReader:
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(
-            source, format, streaming, password, encoding, archive_name
+            source, format, streaming, password, encoding, archive_name, config
         )
 
 

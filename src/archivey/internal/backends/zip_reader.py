@@ -30,6 +30,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
+from archivey.config import ArchiveyConfig
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import normalize_member_name
@@ -194,8 +195,9 @@ class ZipReader(BaseArchiveReader):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
+        config: ArchiveyConfig,
     ) -> None:
-        super().__init__(ArchiveFormat.ZIP, streaming, archive_name)
+        super().__init__(ArchiveFormat.ZIP, streaming, archive_name, config)
         self._source = source
         self._password = password
         self._encoding = encoding
@@ -414,11 +416,11 @@ class ZipReadBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
-        strict_eof: bool = False,
+        config: ArchiveyConfig,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
-        return ZipReader(source, streaming, password, encoding, archive_name)
+        return ZipReader(source, streaming, password, encoding, archive_name, config)
 
 
 register_reader(ZipReadBackend)

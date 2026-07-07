@@ -7,6 +7,12 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
+from archivey.config import (
+    AcceleratorMode,
+    ArchiveyConfig,
+    DEFAULT_ARCHIVEY_CONFIG,
+    ExtractionLimits,
+)
 from archivey.core import (
     DetectionConfidence,
     FormatAvailability,
@@ -72,6 +78,10 @@ __all__ = [
     "__version__",
     "open_archive",
     "extract",
+    "ArchiveyConfig",
+    "DEFAULT_ARCHIVEY_CONFIG",
+    "ExtractionLimits",
+    "AcceleratorMode",
     "ExtractionPolicy",
     "OverwritePolicy",
     "OnError",

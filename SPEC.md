@@ -913,7 +913,7 @@ non-seekable source, `open_read()` raises `StreamNotSeekableError` (a subclass o
 
 **Hardlinks in TAR:** `linkname` field holds the target path. Extraction creates an actual hardlink if the target has already been extracted, or defers to a post-pass if not yet extracted (two-pass extraction). If hardlink creation fails (cross-device), fall back to copying.
 
-**Truncation detection:** After iterating all members, verify that the final 512-byte block(s) are null-filled end-of-archive markers. If not present, emit a `logging.WARNING` and optionally raise `TruncatedError` based on a `strict_eof` parameter (default: warn only).
+**Truncation detection:** After iterating all members, verify that the final 512-byte block(s) are null-filled end-of-archive markers. If not present, emit a `logging.WARNING` and optionally raise `TruncatedError` when `ArchiveyConfig.strict_archive_eof` is `True` (default: warn only; configured via `open_archive(..., config=...)`).
 
 **TAR variants:** compression is detected from the magic of the first bytes and matched to `tarfile` mode strings (`r:gz`, `r:bz2`, `r:xz`, `r:*` for auto).
 
