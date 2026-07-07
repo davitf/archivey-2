@@ -683,17 +683,29 @@ This three-layer approach catches:
 ```python
 class BombTracker:
     def __init__(self, max_bytes: int, max_ratio: float,
-                 ratio_activation_threshold: int = 5 * 2**20):  # 5 MiB
+                 ratio_activation_threshold: int = 5 * 2**20,  # 5 MiB
+                 max_entries: int | None = DEFAULT_MAX_ENTRIES):
         self._max_bytes = max_bytes
         self._max_ratio = max_ratio
         self._ratio_floor = ratio_activation_threshold
+        self._max_entries = max_entries
+        self._entry_count = 0          # members actually written so far
         self._total_bytes = 0          # cumulative across all members
         self._member_bytes = 0         # output of the current member
         self._member = None            # the ORIGINAL member (not a filter copy)
 
     def start_member(self, member: ArchiveMember) -> None:
+        # The coordinator calls this only AFTER the selector and filter accept a member and
+        # the universal check passes — i.e. once for each member that will be written — so
+        # skipped/rejected members create nothing on disk and never count. Like the
+        # cumulative byte guard, the entry-count guard halts even under OnError.CONTINUE.
         self._member = member
         self._member_bytes = 0
+        self._entry_count += 1
+        if self._max_entries is not None and self._entry_count > self._max_entries:
+            raise ExtractionError(
+                f"Entry-count limit reached: {self._entry_count} > {self._max_entries}"
+            )
 
     def count(self, chunk_bytes: int) -> None:
         self._total_bytes += chunk_bytes
@@ -785,7 +797,10 @@ A future `archivey.asyncio` module using async generators is a clean add-on.
 `max_extracted_bytes=2 GiB`, `max_ratio=1000`:
 - 2 GiB is enough for most legitimate use cases and prevents gigabyte-class bombs.
 - 1000:1 is extremely generous (typical DEFLATE is 3:1 to 10:1; text compresses to maybe 20:1). Even 42.zip's outer layer reaches ~391:1. This catches pathological ratios while not triggering on legitimate very-compressible data.
-- Both are caller-configurable via `extract(..., max_extracted_bytes=..., max_ratio=...)`.
+- The limits live on the `ExtractionLimits` dataclass (`max_extracted_bytes`, `max_ratio`,
+  `ratio_activation_threshold`, `max_entries`), configured via `extract(..., limits=ExtractionLimits(...))`
+  or `config.extraction_limits`; the four loose bomb-limit kwargs no longer exist.
+  `ExtractionLimits.UNLIMITED` disables the guards for trusted archives.
 
 ### 5.6 Native streaming 7z reader vs py7zr wrapper
 

@@ -199,6 +199,15 @@ class BackendRegistry:
                 assert requirement is not None  # an optional codec always declares one
                 missing.append(requirement)
 
+        # ZIP exception (until Phase 7): member *data* still decodes via stdlib zipfile,
+        # which cannot use the optional codecs (deflate64/PPMd/zstd) even when installed,
+        # so ZIP never reports FULL — it is PARTIAL regardless of codec installation. The
+        # `missing` list still names absent packages, and is empty when all are present
+        # (the read-time gap is implementation stage, not a missing install). See the
+        # `backend-registry` / `format-zip` Phase 5 deltas.
+        if fmt.container == ContainerFormat.ZIP:
+            return FormatAvailability(fmt, FormatSupport.PARTIAL, tuple(missing))
+
         if not missing:
             return FormatAvailability(fmt, FormatSupport.FULL, ())
         return FormatAvailability(fmt, FormatSupport.PARTIAL, tuple(missing))
