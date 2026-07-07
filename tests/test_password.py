@@ -14,8 +14,8 @@ from archivey.types import ArchiveMember, MemberType
 
 
 def _make_multi_password_zip(path: Path) -> None:
-    (path.parent / "f1.txt").write_text("secret1\n")
-    (path.parent / "f2.txt").write_text("secret2\n")
+    (path.parent / "f1.txt").write_bytes(b"secret1\n")
+    (path.parent / "f2.txt").write_bytes(b"secret2\n")
     subprocess.run(
         ["7z", "a", "-tzip", str(path), "f1.txt", "-psecret1", "-y"],
         cwd=path.parent,
@@ -117,9 +117,9 @@ def test_multi_password_zip_streaming_pass(tmp_path: Path) -> None:
 
 def test_zip_provider_receives_member(tmp_path: Path) -> None:
     archive = tmp_path / "one.zip"
-    (tmp_path / "only.txt").write_text("hello\n")
+    (tmp_path / "only.txt").write_bytes(b"hello\n")
     subprocess.run(
-        ["zip", "-P", "hunter2", str(archive), "only.txt"],
+        ["7z", "a", "-tzip", str(archive), "only.txt", "-phunter2", "-y"],
         cwd=tmp_path,
         check=True,
         capture_output=True,
