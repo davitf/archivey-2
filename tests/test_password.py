@@ -53,8 +53,11 @@ def test_password_candidates_provider_attempt_increments() -> None:
 
     def provider(request: PasswordRequest) -> str | None:
         attempts.append(request.attempt)
+        # Distinct guesses each time: a *repeated* guess is provably useless (decrypt is
+        # deterministic in the password) and terminates the loop early — see
+        # test_password_candidates_provider_repeat_terminates.
         if request.attempt < 3:
-            return "wrong"
+            return f"wrong{request.attempt}"
         return None
 
     candidates = _PasswordCandidates.from_input(provider)
@@ -86,6 +89,49 @@ def test_password_candidates_provider_reuses_known_good() -> None:
     assert candidates.attempt(first, decrypt) == b"ok"
     assert candidates.attempt(second, decrypt) == b"ok"
     assert calls == 1
+
+
+def test_password_candidates_provider_repeat_terminates() -> None:
+    # A provider that keeps returning the same wrong password can make no progress;
+    # attempt() must stop instead of re-running decrypt on it forever.
+    calls = 0
+
+    def provider(request: PasswordRequest) -> str | None:
+        nonlocal calls
+        calls += 1
+        return "same-wrong"
+
+    decrypt_calls = 0
+
+    def decrypt(password: bytes) -> bytes:
+        nonlocal decrypt_calls
+        decrypt_calls += 1
+        raise EncryptionError("bad")
+
+    candidates = _PasswordCandidates.from_input(provider)
+    with pytest.raises(EncryptionError):
+        candidates.attempt(None, decrypt)
+    # The repeated password is tried once; the repeat breaks the loop.
+    assert calls == 2
+    assert decrypt_calls == 1
+
+
+def test_password_candidates_provider_repeat_of_candidate_terminates() -> None:
+    # A provider echoing a static candidate that already failed also makes no progress.
+    decrypt_calls: list[bytes] = []
+
+    def decrypt(password: bytes) -> bytes:
+        decrypt_calls.append(password)
+        raise EncryptionError("bad")
+
+    def provider(request: PasswordRequest) -> str | None:
+        return "cand"
+
+    candidates = _PasswordCandidates(candidates=[b"cand"], provider=provider)
+    with pytest.raises(EncryptionError):
+        candidates.attempt(None, decrypt)
+    # "cand" is tried once as a static candidate; the provider echo doesn't re-run it.
+    assert decrypt_calls == [b"cand"]
 
 
 def test_password_candidates_sequence_order() -> None:
