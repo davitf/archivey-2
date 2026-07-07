@@ -803,6 +803,7 @@ def test_scan_members_finishes_interrupted_pass(tmp_path: Path) -> None:
             if member.name == "forward_link":
                 break
         members = ar.scan_members()
+        assert [m.name for m in members] == ["forward_link", "target.txt"]
         link = next(m for m in members if m.name == "forward_link")
         assert link.link_target_member is not None
         assert link.link_target_member.name == "target.txt"

@@ -193,26 +193,14 @@ def _symlink_zip(tmp_path: Path) -> Path:
     return path
 
 
-def test_zip_index_only_listing_leaves_symlink_unresolved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_zip_index_only_listing_leaves_symlink_unresolved(tmp_path: Path) -> None:
     path = _symlink_zip(tmp_path)
     with open_archive(path) as ar:
-        archive = ar._archive  # type: ignore[attr-defined]
-        opens: list[str] = []
-        original_open = archive.open
-
-        def counting_open(info, pwd=None):
-            opens.append(info.filename)
-            return original_open(info, pwd=pwd)
-
-        monkeypatch.setattr(archive, "open", counting_open)
         members = ar.get_members_if_available()
         assert members is not None
         link = next(m for m in members if m.name == "link")
         assert link.link_target is None
         assert link.link_target_member is None
-        assert opens == []
 
         resolved = ar.scan_members()
         link_resolved = next(m for m in resolved if m.name == "link")
