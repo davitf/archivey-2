@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, BinaryIO, Callable, Iterator, Mapping
+
+if TYPE_CHECKING:
+    from archivey.internal.password import _PasswordCandidates
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
@@ -81,7 +84,7 @@ class ReadBackend(ABC):
         source: Path | BinaryIO,
         format: ArchiveFormat,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,

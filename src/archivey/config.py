@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from archivey.types import ArchiveMember
 
 
 class AcceleratorMode(Enum):
@@ -77,3 +81,20 @@ class ArchiveyConfig:
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()
+
+
+@dataclass(frozen=True)
+class PasswordRequest:
+    """Context passed to a :data:`PasswordProvider` when a password is needed."""
+
+    member: ArchiveMember | None
+    """The member being decrypted, or ``None`` for archive-level (header) decryption."""
+
+    attempt: int
+    """1 on the first ask for this unit; increments after a wrong-password retry."""
+
+
+PasswordProvider = Callable[[PasswordRequest], str | bytes | None]
+"""Callable consulted when static password candidates fail for an encrypted unit."""
+
+PasswordInput = str | bytes | Sequence[str | bytes] | PasswordProvider | None

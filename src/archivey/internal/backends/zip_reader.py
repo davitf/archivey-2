@@ -34,6 +34,7 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.streamtools import is_seekable, is_stream
 from archivey.types import (
@@ -192,14 +193,14 @@ class ZipReader(BaseArchiveReader):
         self,
         source: Path | BinaryIO,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
     ) -> None:
         super().__init__(ArchiveFormat.ZIP, streaming, archive_name, config)
         self._source = source
-        self._password = password
+        self._passwords = passwords or _PasswordCandidates()
         self._encoding = encoding
 
         if is_stream(source) and not is_seekable(source):
@@ -317,6 +318,38 @@ class ZipReader(BaseArchiveReader):
             _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )
 
+    def _open_zip_entry(
+        self,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        *,
+        member_name: str,
+    ) -> BinaryIO:
+        encrypted = bool(info.flag_bits & 0x1)
+
+        def decrypt(password: bytes) -> BinaryIO:
+            try:
+                return cast(
+                    "BinaryIO",
+                    self._archive.open(info, pwd=password if encrypted else None),
+                )
+            except (zipfile.BadZipFile, RuntimeError, io.UnsupportedOperation) as exc:
+                translated = self._translate_exception(exc)
+                if translated is not None:
+                    if isinstance(translated, EncryptionError):
+                        raise translated
+                    self._stamp_error_context(translated, member_name)
+                    raise translated from exc
+                raise
+
+        if encrypted:
+            try:
+                return self._passwords.attempt(member, decrypt)
+            except EncryptionError as exc:
+                self._stamp_error_context(exc, member_name)
+                raise
+        return decrypt(b"")
+
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
@@ -327,44 +360,27 @@ class ZipReader(BaseArchiveReader):
         # unset (following the link later fails with LinkTargetNotFoundError); other
         # errors surface translated like any member-read error.
         try:
-            with self._archive.open(info, pwd=self._password) as f:
+            with self._open_zip_entry(info, member, member_name=member.name) as f:
                 member.link_target = f.read().decode("utf-8", errors="surrogateescape")
-        except (RuntimeError, zipfile.BadZipFile) as exc:
+        except EncryptionError:
+            logger.warning(
+                "Cannot read the symlink target of %r without the correct "
+                "password; leaving link_target unset.",
+                info.filename,
+            )
+        except (zipfile.BadZipFile, RuntimeError) as exc:
             translated = self._translate_exception(exc)
-            if isinstance(translated, EncryptionError):
-                logger.warning(
-                    "Cannot read the symlink target of %r without the correct "
-                    "password; leaving link_target unset.",
-                    info.filename,
-                )
-            elif translated is not None:
+            if translated is not None:
                 self._stamp_error_context(translated, info.filename)
                 raise translated from exc
-            else:
-                raise
+            raise
 
     def _open_member(self, member: ArchiveMember) -> BinaryIO:
         # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map
         # — and a duplicate member name can't resolve to the wrong entry.
         info = member._raw
         assert isinstance(info, zipfile.ZipInfo), "ZIP member is missing its ZipInfo handle"
-        # zipfile validates the local header when opening a member — the "Overlapped
-        # entries" zip-bomb guard, the name-mismatch check, a missing-password
-        # RuntimeError, and unsupported-compression NotImplementedError all fire here,
-        # before any byte flows through the ArchiveStream translator. Translate them at
-        # the source so callers only ever see ArchiveyErrors (a genuine OSError from the
-        # underlying source is not in the caught set, so it propagates unchanged).
-        try:
-            raw = cast(
-                "BinaryIO",
-                self._archive.open(info, pwd=self._password),
-            )
-        except (zipfile.BadZipFile, RuntimeError, io.UnsupportedOperation) as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated, member.name)
-                raise translated from exc
-            raise
+        raw = self._open_zip_entry(info, member, member_name=member.name)
         return self._wrap_member_stream(raw, member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
@@ -413,14 +429,14 @@ class ZipReadBackend(ReadBackend):
         source: Path | BinaryIO,
         format: ArchiveFormat,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
-        return ZipReader(source, streaming, password, encoding, archive_name, config)
+        return ZipReader(source, streaming, passwords, encoding, archive_name, config)
 
 
 register_reader(ZipReadBackend)

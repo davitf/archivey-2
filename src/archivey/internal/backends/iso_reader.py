@@ -46,6 +46,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import (
@@ -142,7 +143,7 @@ class IsoReader(BaseArchiveReader):
         source: Path | BinaryIO,
         format: ArchiveFormat,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
@@ -373,14 +374,14 @@ class IsoReadBackend(ReadBackend):
         source: Path | BinaryIO,
         format: ArchiveFormat,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
     ) -> IsoReader:
         # `format` is always ISO here (single-format backend); accepted for the uniform
         # ReadBackend signature.
-        return IsoReader(source, format, streaming, password, encoding, archive_name, config)
+        return IsoReader(source, format, streaming, passwords, encoding, archive_name, config)
 
 
 register_reader(IsoReadBackend)

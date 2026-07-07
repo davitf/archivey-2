@@ -12,6 +12,8 @@ from archivey.config import (
     AcceleratorMode,
     ArchiveyConfig,
     ExtractionLimits,
+    PasswordProvider,
+    PasswordRequest,
 )
 from archivey.core import (
     DetectionConfidence,
@@ -82,6 +84,8 @@ __all__ = [
     "DEFAULT_ARCHIVEY_CONFIG",
     "ExtractionLimits",
     "AcceleratorMode",
+    "PasswordRequest",
+    "PasswordProvider",
     "ExtractionPolicy",
     "OverwritePolicy",
     "OnError",

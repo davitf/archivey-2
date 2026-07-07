@@ -29,6 +29,7 @@ from archivey.cost import (
 from archivey.exceptions import ArchiveyError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
@@ -76,7 +77,7 @@ class SingleFileReader(BaseArchiveReader):
         source: Path | BinaryIO,
         format: ArchiveFormat,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
@@ -266,7 +267,7 @@ class SingleFileBackend(ReadBackend):
         source: Path | BinaryIO,
         format: ArchiveFormat,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
@@ -274,7 +275,7 @@ class SingleFileBackend(ReadBackend):
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(
-            source, format, streaming, password, encoding, archive_name, config
+            source, format, streaming, passwords, encoding, archive_name, config
         )
 
 
