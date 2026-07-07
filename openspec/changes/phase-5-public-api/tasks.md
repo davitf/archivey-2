@@ -48,17 +48,17 @@
 
 ## 3. Multi-source input
 
-- [ ] 3.1 Accept `Sequence[str | Path | BinaryIO]` in `open_archive` (length-1 ≡
+- [x] 3.1 Accept `Sequence[str | Path | BinaryIO]` in `open_archive` (length-1 ≡
       single source); detection runs on the first volume; origin-normalize each
       seekable stream.
-- [ ] 3.2 Single-path volume-set discovery: `.7z.NNN` / `.partN.rar` / `.rNN` name
+- [x] 3.2 Single-path volume-set discovery: `.7z.NNN` / `.partN.rar` / `.rNN` name
       patterns → sibling scan in the path's directory, natural order (path sources
       only; a helper the Phase 7 readers reuse).
-- [ ] 3.3 Phase-5 behavior: a resolved multi-source open raises
+- [x] 3.3 Phase-5 behavior: a resolved multi-source open raises
       `UnsupportedFeatureError` with a format-appropriate message (7z/RAR: "lands in
       Phase 7"; others: "not a multi-volume format"). Tests for both messages and
       for discovery ordering (fixture files, no real volume parsing).
-- [ ] 3.4 `extract()` parity: widen its `source` union to the same `Sequence[...]`
+- [x] 3.4 `extract()` parity: widen its `source` union to the same `Sequence[...]`
       form (it delegates to `open_archive`) and add the `encoding` keyword; test a
       one-shot extract of a non-UTF-8-named TAR with an explicit `encoding`.
 
