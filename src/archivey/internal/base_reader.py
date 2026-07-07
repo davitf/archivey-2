@@ -30,6 +30,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     source_byte_size,
 )
+from archivey.config import ArchiveyConfig, DEFAULT_ARCHIVEY_CONFIG, ExtractionLimits
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,
@@ -83,7 +84,7 @@ class ReadBackend(ABC):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
-        strict_eof: bool = False,
+        config: ArchiveyConfig,
     ) -> "BaseArchiveReader":
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller). A
@@ -178,10 +179,12 @@ class BaseArchiveReader(ArchiveReader):
         format: ArchiveFormat,
         streaming: bool,
         archive_name: str | None,
+        config: ArchiveyConfig | None = None,
     ) -> None:
         self._format = format
         self._streaming = streaming
         self._archive_name = archive_name
+        self._config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
         self._archive_id = str(id(self))
         # The archive's source, recorded by backends that have one (path or stream);
         # backs the generalized compressed_source_size property below.
@@ -742,10 +745,8 @@ class BaseArchiveReader(ArchiveReader):
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_error: OnError = OnError.STOP,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
-        max_extracted_bytes: int = 2 * 2**30,
-        max_ratio: float = 1000.0,
-        ratio_activation_threshold: int = 5 * 2**20,
-        max_entries: int = 1_048_576,
+        config: ArchiveyConfig | None = None,
+        limits: ExtractionLimits | None = None,
     ) -> list[ExtractionResult]:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
         if self._streaming:
@@ -754,6 +755,10 @@ class BaseArchiveReader(ArchiveReader):
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator
 
+        effective_config = config if config is not None else self._config
+        effective_limits = (
+            limits if limits is not None else effective_config.extraction_limits
+        )
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
@@ -761,10 +766,7 @@ class BaseArchiveReader(ArchiveReader):
             on_progress=on_progress,
             members=members,
             filter=filter,
-            max_extracted_bytes=max_extracted_bytes,
-            max_ratio=max_ratio,
-            ratio_activation_threshold=ratio_activation_threshold,
-            max_entries=max_entries,
+            limits=effective_limits,
         )
         return coordinator.run(self, dest)
 

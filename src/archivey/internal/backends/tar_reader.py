@@ -5,7 +5,7 @@ Random-access reading (``streaming=False``) scans 512-byte headers on a seekable
 reading (``streaming=True``) walks the archive in one progressive pass — including on a
 non-seekable source for plain and compressed tars — via ``_iter_with_data()`` /
 ``stream_members()``. End-of-archive truncation is checked after a full scan or streaming
-pass when ``strict_eof`` is configured on open.
+pass when ``config.strict_archive_eof`` is enabled.
 """
 
 from __future__ import annotations
@@ -29,7 +29,8 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.internal.config import StreamConfig
+from archivey.config import ArchiveyConfig
+from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.registry import register_reader
@@ -130,12 +131,11 @@ class TarReader(BaseArchiveReader):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
-        strict_eof: bool = False,
+        config: ArchiveyConfig,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name)
+        super().__init__(format, streaming, archive_name, config)
         self._encoding = encoding
-        self._strict_eof = strict_eof
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
         # A decompression stream we open and therefore must close (compressed tars only);
@@ -165,7 +165,7 @@ class TarReader(BaseArchiveReader):
             stream = open_codec_stream(
                 codec,
                 codec_source,
-                config=StreamConfig(streaming=streaming),
+                config=stream_config_from_archivey(self._config, streaming=streaming),
                 stamp=lambda exc: self._stamp_error_context(exc),
             )
             # tarfile can mis-handle a short read() (fewer bytes than requested) from a
@@ -300,7 +300,7 @@ class TarReader(BaseArchiveReader):
             "TAR archive may be truncated: missing or invalid "
             "end-of-archive marker block(s)"
         )
-        if self._strict_eof:
+        if self._config.strict_archive_eof:
             err = TruncatedError(msg)
             self._stamp_error_context(err)
             raise err
@@ -453,12 +453,12 @@ class TarReadBackend(ReadBackend):
         password: bytes | None,
         encoding: str | None,
         archive_name: str | None,
-        strict_eof: bool = False,
+        config: ArchiveyConfig,
     ) -> TarReader:
         # `format` carries the concrete (TAR, <stream>) variant the detector/caller resolved;
         # the backend uses its stream to pick the codec to decompress with.
         return TarReader(
-            source, format, streaming, password, encoding, archive_name, strict_eof
+            source, format, streaming, password, encoding, archive_name, config
         )
 
 

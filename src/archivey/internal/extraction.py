@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, cast
 
+from archivey.config import ExtractionLimits
 from archivey.exceptions import (
     ArchiveyError,
     ExtractionError,
@@ -83,10 +84,10 @@ class BombTracker:
 
     def __init__(
         self,
-        max_bytes: int,
-        max_ratio: float,
+        max_bytes: int | None,
+        max_ratio: float | None,
         ratio_activation_threshold: int = DEFAULT_RATIO_ACTIVATION_THRESHOLD,
-        max_entries: int = DEFAULT_MAX_ENTRIES,
+        max_entries: int | None = DEFAULT_MAX_ENTRIES,
         *,
         source: "BaseArchiveReader | None" = None,
     ) -> None:
@@ -118,7 +119,7 @@ class BombTracker:
         self._member = member
         self._member_bytes = 0
         self._entry_count += 1
-        if self._entry_count > self._max_entries:
+        if self._max_entries is not None and self._entry_count > self._max_entries:
             raise _AlwaysStopExtractionError(
                 f"Entry-count limit reached: {self._entry_count} > {self._max_entries}"
             )
@@ -128,7 +129,7 @@ class BombTracker:
         self._member_bytes += chunk_bytes
 
         # Cumulative byte guard (always-stop).
-        if self._total_bytes > self._max_bytes:
+        if self._max_bytes is not None and self._total_bytes > self._max_bytes:
             raise _AlwaysStopExtractionError(
                 f"Extraction limit reached: {self._total_bytes} bytes > {self._max_bytes}"
             )
@@ -137,7 +138,13 @@ class BombTracker:
         # (skippable under OnError.CONTINUE).
         member = self._member
         cs = member.compressed_size if member is not None else None
-        if member is not None and self._member_bytes > self._ratio_floor and cs and cs > 0:
+        if (
+            self._max_ratio is not None
+            and member is not None
+            and self._member_bytes > self._ratio_floor
+            and cs
+            and cs > 0
+        ):
             ratio = self._member_bytes / cs
             if ratio > self._max_ratio:
                 raise ExtractionError(
@@ -152,7 +159,7 @@ class BombTracker:
         # are mutually exclusive (static when known, live otherwise), so the ratio is never
         # counted twice.
         css = self._compressed_source_size
-        if self._total_bytes > self._ratio_floor:
+        if self._max_ratio is not None and self._total_bytes > self._ratio_floor:
             if css and css > 0:
                 if self._total_bytes / css > self._max_ratio:
                     raise _AlwaysStopExtractionError(
@@ -162,7 +169,11 @@ class BombTracker:
                     )
             elif self._source is not None:
                 consumed = self._source.compressed_bytes_consumed
-                if consumed and consumed > 0 and self._total_bytes / consumed > self._max_ratio:
+                if (
+                    consumed
+                    and consumed > 0
+                    and self._total_bytes / consumed > self._max_ratio
+                ):
                     raise _AlwaysStopExtractionError(
                         f"Live decompression ratio "
                         f"{self._total_bytes / consumed:.0f}:1 exceeds limit "
@@ -198,10 +209,7 @@ class ExtractionCoordinator:
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         members: MemberSelectorArg = None,
         filter: MemberFilter | None = None,
-        max_extracted_bytes: int = DEFAULT_MAX_EXTRACTED_BYTES,
-        max_ratio: float = DEFAULT_MAX_RATIO,
-        ratio_activation_threshold: int = DEFAULT_RATIO_ACTIVATION_THRESHOLD,
-        max_entries: int = DEFAULT_MAX_ENTRIES,
+        limits: ExtractionLimits | None = None,
     ) -> None:
         self._policy = policy
         self._overwrite = overwrite
@@ -209,10 +217,7 @@ class ExtractionCoordinator:
         self._on_progress = on_progress
         self._members = members
         self._filter = filter
-        self._max_extracted_bytes = max_extracted_bytes
-        self._max_ratio = max_ratio
-        self._ratio_floor = ratio_activation_threshold
-        self._max_entries = max_entries
+        self._limits = limits if limits is not None else ExtractionLimits()
 
     # --- entry point ---------------------------------------------------------------
 
@@ -223,10 +228,10 @@ class ExtractionCoordinator:
         forward_only = reader._streaming
 
         tracker = BombTracker(
-            self._max_extracted_bytes,
-            self._max_ratio,
-            self._ratio_floor,
-            self._max_entries,
+            self._limits.max_extracted_bytes,
+            self._limits.max_ratio,
+            self._limits.ratio_activation_threshold,
+            self._limits.max_entries,
             source=reader,
         )
 

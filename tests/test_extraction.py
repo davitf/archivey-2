@@ -18,6 +18,8 @@ from types import SimpleNamespace
 import pytest
 
 from archivey import (
+    ArchiveyConfig,
+    ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,
     OnError,
@@ -420,7 +422,7 @@ def test_replace_failure_preserves_existing_file(tmp_path: Path) -> None:
     (dest / "a.txt").write_bytes(b"OLD DATA")
     with pytest.raises(ExtractionError):
         extract(
-            src, dest, overwrite=OverwritePolicy.REPLACE, max_extracted_bytes=1000
+            src, dest, overwrite=OverwritePolicy.REPLACE, limits=ExtractionLimits(max_extracted_bytes=1000)
         )
     assert (dest / "a.txt").read_bytes() == b"OLD DATA"  # untouched
     assert not list(dest.glob(".archivey-tmp-*"))  # temp cleaned up
@@ -471,7 +473,7 @@ def test_cumulative_bomb_halts_even_under_continue(tmp_path: Path) -> None:
     _write_zip(src, {"a.txt": b"x" * 5000, "b.txt": b"y" * 5000})
     dest = tmp_path / "out"
     with pytest.raises(ExtractionError):
-        extract(src, dest, max_extracted_bytes=6000, on_error=OnError.CONTINUE)
+        extract(src, dest, limits=ExtractionLimits(max_extracted_bytes=6000), on_error=OnError.CONTINUE)
 
 
 def test_zip_bomb_per_member_ratio(tmp_path: Path) -> None:
@@ -481,7 +483,7 @@ def test_zip_bomb_per_member_ratio(tmp_path: Path) -> None:
     _write_zip(src, {"bomb.bin": payload})
     dest = tmp_path / "out"
     with pytest.raises(ExtractionError):
-        extract(src, dest, max_ratio=10.0, ratio_activation_threshold=1024)
+        extract(src, dest, limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024))
 
 
 def test_entry_count_bomb(tmp_path: Path) -> None:
@@ -489,7 +491,7 @@ def test_entry_count_bomb(tmp_path: Path) -> None:
     _write_zip(src, {f"f{i}.txt": b"" for i in range(50)})
     dest = tmp_path / "out"
     with pytest.raises(ExtractionError):
-        extract(src, dest, max_entries=10, on_error=OnError.CONTINUE)
+        extract(src, dest, limits=ExtractionLimits(max_entries=10), on_error=OnError.CONTINUE)
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +640,7 @@ def test_seekable_targz_archive_wide_ratio(tmp_path: Path) -> None:
     src.write_bytes(_tar_bytes([("file", "z.bin", payload)], mode="w:gz"))
     dest = tmp_path / "out"
     with pytest.raises(ExtractionError):
-        extract(src, dest, max_ratio=5.0, ratio_activation_threshold=1024)
+        extract(src, dest, limits=ExtractionLimits(max_ratio=5.0, ratio_activation_threshold=1024))
 
 
 def test_non_seekable_targz_extract(tmp_path: Path) -> None:
@@ -725,9 +727,11 @@ def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
         with pytest.raises(ExtractionError):
             r.extract_all(
                 dest,
-                max_ratio=10.0,
-                ratio_activation_threshold=1024,
-                max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+                limits=ExtractionLimits(
+                    max_ratio=10.0,
+                    ratio_activation_threshold=1024,
+                    max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+                ),
             )
 
 
@@ -740,9 +744,11 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
         with pytest.raises(ExtractionError):
             r.extract_all(
                 dest,
-                max_ratio=10.0,
-                ratio_activation_threshold=1024,
-                max_extracted_bytes=100 * 2**20,
+                limits=ExtractionLimits(
+                    max_ratio=10.0,
+                    ratio_activation_threshold=1024,
+                    max_extracted_bytes=100 * 2**20,
+                ),
                 on_error=OnError.CONTINUE,  # global guard halts anyway
             )
 
@@ -755,7 +761,10 @@ def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
         assert r.compressed_bytes_consumed is None  # uncompressed: nothing counted
-        r.extract_all(dest, max_ratio=10.0, ratio_activation_threshold=1024)
+        r.extract_all(
+            dest,
+            limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
+        )
     assert (dest / "a.bin").read_bytes() == payload
 
 
@@ -783,9 +792,11 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
         with pytest.raises(ExtractionError):
             r.extract_all(
                 dest,
-                max_ratio=10.0,
-                ratio_activation_threshold=1024,
-                max_extracted_bytes=100 * 2**20,
+                limits=ExtractionLimits(
+                    max_ratio=10.0,
+                    ratio_activation_threshold=1024,
+                    max_extracted_bytes=100 * 2**20,
+                ),
             )
 
 
@@ -979,7 +990,9 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
         with pytest.raises(ExtractionError):
             r.extract_all(
                 dest,
-                max_ratio=10.0,
-                ratio_activation_threshold=1024,
-                max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+                limits=ExtractionLimits(
+                    max_ratio=10.0,
+                    ratio_activation_threshold=1024,
+                    max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+                ),
             )

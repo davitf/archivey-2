@@ -5,6 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import BinaryIO, Callable
 
+from archivey.config import (
+    AcceleratorMode,
+    ArchiveyConfig,
+    DEFAULT_ARCHIVEY_CONFIG,
+    ExtractionLimits,
+)
 from archivey.exceptions import StreamNotSeekableError, UnsupportedOperationError
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.extraction_types import (
@@ -39,6 +45,10 @@ __all__ = [
     "FormatInfo",
     "FormatSupport",
     "MissingComponent",
+    "ArchiveyConfig",
+    "ExtractionLimits",
+    "AcceleratorMode",
+    "DEFAULT_ARCHIVEY_CONFIG",
     "detect_format",
     "extract",
     "format_availability",
@@ -56,7 +66,7 @@ def open_archive(
     streaming: bool = False,
     password: bytes | str | None = None,
     encoding: str | None = None,
-    strict_eof: bool = False,
+    config: ArchiveyConfig | None = None,
 ) -> ArchiveReader:
     """Open an archive for reading.
 
@@ -64,11 +74,9 @@ def open_archive(
     time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
     access (works on any source, but disables random-access methods).
 
-    ``strict_eof`` controls TAR end-of-archive verification: after all members are read,
-    the TAR backend checks for two null-filled 512-byte EOF blocks. When the check
-    fails, ``strict_eof=False`` (the default) emits a warning; ``strict_eof=True``
-    raises :class:`~archivey.TruncatedError`. This keyword is a Phase 4 stopgap — Phase 5
-    task 4 (``PLAN.md``) folds it into the finalized public config surface.
+    ``config`` supplies library tuning knobs (accelerator modes, TAR end-of-archive
+    strictness via ``strict_archive_eof``, default extraction limits). ``None`` selects
+    the module default :data:`~archivey.DEFAULT_ARCHIVEY_CONFIG`.
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
@@ -87,6 +95,7 @@ def open_archive(
     if isinstance(password, str):
         password = password.encode()
 
+    effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     archive_name = source_name(source)
 
     # A path source: normalize str -> Path; a directory short-circuits detection.
@@ -157,7 +166,7 @@ def open_archive(
         password=password,
         encoding=effective_encoding,
         archive_name=archive_name,
-        strict_eof=strict_eof,
+        config=effective_config,
     )
 
 
@@ -171,10 +180,8 @@ def extract(
     format: ArchiveFormat | None = None,
     password: bytes | str | None = None,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
-    max_extracted_bytes: int = 2 * 2**30,
-    max_ratio: float = 1000.0,
-    ratio_activation_threshold: int = 5 * 2**20,
-    max_entries: int = 1_048_576,
+    config: ArchiveyConfig | None = None,
+    limits: ExtractionLimits | None = None,
 ) -> list[ExtractionResult]:
     """Open ``source``, apply safety checks, and write **all** members to ``dest``.
 
@@ -186,15 +193,13 @@ def extract(
 
     Returns one :class:`~archivey.ExtractionResult` per member processed.
     """
-    with open_archive(source, format=format, password=password) as reader:
+    with open_archive(source, format=format, password=password, config=config) as reader:
         return reader.extract_all(
             dest,
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
             on_progress=on_progress,
-            max_extracted_bytes=max_extracted_bytes,
-            max_ratio=max_ratio,
-            ratio_activation_threshold=ratio_activation_threshold,
-            max_entries=max_entries,
+            config=config,
+            limits=limits,
         )

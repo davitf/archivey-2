@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterator
 
+from archivey.config import ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
@@ -139,18 +140,18 @@ class ArchiveReader(ABC):
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_error: OnError = OnError.STOP,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
-        max_extracted_bytes: int = 2 * 2**30,
-        max_ratio: float = 1000.0,
-        ratio_activation_threshold: int = 5 * 2**20,
-        max_entries: int = 1_048_576,
+        config: ArchiveyConfig | None = None,
+        limits: ExtractionLimits | None = None,
     ) -> list[ExtractionResult]:
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
 
         ``members`` selects which members to extract (names/``ArchiveMember``s, or a
         predicate; ``None`` = all). ``filter`` runs after the universal safety checks and
         the ``policy`` transform, and may rename/sanitize a member (return a
-        ``.replace()``d copy) or skip it (return ``None``). Returns one
-        :class:`~archivey.ExtractionResult` per member processed.
+        ``.replace()``d copy) or skip it (return ``None``). ``config`` defaults to the
+        config the reader was opened with; ``limits`` overrides its extraction limits for
+        this call only. Returns one :class:`~archivey.ExtractionResult` per member
+        processed.
         """
         ...
 

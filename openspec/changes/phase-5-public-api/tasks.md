@@ -7,23 +7,23 @@
 
 ## 1. ArchiveyConfig / ExtractionLimits
 
-- [ ] 1.1 Define public `ExtractionLimits` and `ArchiveyConfig` frozen dataclasses
+- [x] 1.1 Define public `ExtractionLimits` and `ArchiveyConfig` frozen dataclasses
       (fields per design.md), exported from `archivey`; module default constant.
-- [ ] 1.2 `open_archive(..., config: ArchiveyConfig | None = None)`; the reader stores
+- [x] 1.2 `open_archive(..., config: ArchiveyConfig | None = None)`; the reader stores
       its config; internal `StreamConfig` becomes a view derived from
       `ArchiveyConfig` + the access mode (`streaming` stays derived, not public).
-- [ ] 1.3 Relocate `strict_eof` → `config.strict_archive_eof`; **remove** the
+- [x] 1.3 Relocate `strict_eof` → `config.strict_archive_eof`; **remove** the
       `open_archive(strict_eof=)` keyword and the `ReadBackend.open_read` parameter
       (readers read it from their config). Update TAR backend + tests.
-- [ ] 1.4 Tests: default config equivalence; accelerator modes honored via config
+- [x] 1.4 Tests: default config equivalence; accelerator modes honored via config
       (monkeypatched sentinels); `strict_archive_eof=True` raises / default warns;
       frozen-ness (`dataclasses.FrozenInstanceError` on mutation).
-- [ ] 1.5 Per-call `limits: ExtractionLimits | None = None` on `extract()` /
+- [x] 1.5 Per-call `limits: ExtractionLimits | None = None` on `extract()` /
       `extract_all()`; **remove** the four loose bomb-limit kwargs; precedence
       per-call > `config.extraction_limits` > default; `ExtractionLimits.UNLIMITED`
       preset. Tests: override tightens/loosens one call; reader-config limits apply
       when no per-call override; UNLIMITED disables all four guards.
-- [ ] 1.6 `format-tar` spec references updated via the new delta (`strict_eof` →
+- [x] 1.6 `format-tar` spec references updated via the new delta (`strict_eof` →
       `config.strict_archive_eof`); `SPEC.md` §"truncation detection" wording follows.
 
 ## 2. Password candidates and provider
