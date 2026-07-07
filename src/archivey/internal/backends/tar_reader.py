@@ -17,6 +17,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, cast
 
+from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -29,7 +30,6 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.config import ArchiveyConfig
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.naming import normalize_member_name

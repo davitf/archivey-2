@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import BinaryIO, Callable
 
 from archivey.config import (
+    DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
-    DEFAULT_ARCHIVEY_CONFIG,
     ExtractionLimits,
 )
 from archivey.exceptions import StreamNotSeekableError, UnsupportedOperationError

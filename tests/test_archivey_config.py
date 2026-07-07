@@ -11,9 +11,9 @@ import pytest
 
 import archivey
 from archivey import (
+    DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
-    DEFAULT_ARCHIVEY_CONFIG,
     ExtractionLimits,
     extract,
     open_archive,

@@ -8,9 +8,9 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 from archivey.config import (
+    DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
-    DEFAULT_ARCHIVEY_CONFIG,
     ExtractionLimits,
 )
 from archivey.core import (
