@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from collections.abc import Sequence as ABCSequence
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
 from archivey.exceptions import EncryptionError
@@ -38,11 +38,17 @@ class _PasswordCandidates:
             return cls()
         if isinstance(password, (str, bytes)):
             return cls(candidates=[_to_bytes(password)])
-        if isinstance(password, ABCSequence):
-            return cls(candidates=[_to_bytes(p) for p in password])
-        if callable(password):
-            return cls(provider=password)
-        raise TypeError(f"unsupported password type: {type(password)!r}")
+        if isinstance(password, ABCSequence) and not isinstance(password, (str, bytes)):
+            candidates_list: list[bytes] = []
+            for item in password:
+                if not isinstance(item, (str, bytes)):
+                    raise TypeError(
+                        "password sequence items must be str or bytes, "
+                        f"not {type(item)!r}"
+                    )
+                candidates_list.append(_to_bytes(item))
+            return cls(candidates=candidates_list)
+        return cls(provider=cast(PasswordProvider, password))
 
     def has_passwords(self) -> bool:
         return bool(self._known_good or self._candidates or self._provider is not None)
