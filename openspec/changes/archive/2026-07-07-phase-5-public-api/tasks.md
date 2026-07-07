@@ -113,5 +113,5 @@
 
 ## 7. Sync
 
-- [ ] 7.1 Sync delta specs to `openspec/specs/` (archive-reading, safe-extraction,
+- [x] 7.1 Sync delta specs to `openspec/specs/` (archive-reading, safe-extraction,
       format-7z, format-tar, backend-registry, format-zip) and archive the change.
