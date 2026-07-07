@@ -186,9 +186,11 @@ class ArchiveMember:
     # --- Link semantics ---
     link_target: str | None                 # SYMLINK/HARDLINK target path as stored (not normalized);
                                             #   may be None until filled while streaming
-    link_target_member: "ArchiveMember | None"  # the resolved target member within this same archive,
-                                            #   or None when the target is unknown, not yet resolved
-                                            #   (streaming), or absent from the archive
+    link_target_member: "ArchiveMember | None"  # the fully dereferenced target within this same
+                                            #   archive — the terminal member at the end of the
+                                            #   link chain (not the immediate hop); or None when
+                                            #   the target is unknown, not yet resolved (streaming),
+                                            #   or absent from the archive
 
     # --- Compression ---
     compression: tuple[CompressionMethod, ...] = ()

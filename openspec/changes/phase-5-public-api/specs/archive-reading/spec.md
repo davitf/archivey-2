@@ -51,7 +51,7 @@ Phase 4 `strict_eof` keyword is removed — end-of-archive strictness lives at
 
 ### Requirement: Transparent link following
 
-The system SHALL transparently follow symlinks and hardlinks in `open()` and `read()`. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to the target member. This behavior is format-independent and is implemented once in the `ArchiveReader` ABC. The resolved target, when known, is also exposed as `member.link_target_member`.
+The system SHALL transparently follow symlinks and hardlinks in `open()` and `read()`. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to the target member. This behavior is format-independent and is implemented once in the `ArchiveReader` ABC. The fully dereferenced target (the terminal member at the end of the link chain — not the immediate hop — see `archive-data-model`), when known, is also exposed as `member.link_target_member`.
 
 **Hardlinks resolve positionally**: the target is the most recent occurrence of the
 target name **strictly before** the link in archive order (this is the TAR model — every
@@ -93,7 +93,10 @@ falsely report one. There is no fixed depth limit; an acyclic chain of any lengt
 resolves, and only an actual cycle (or a missing target) fails.
 
 ```python
-# ABC implementation (ARCHITECTURE.md §2.3)
+# Illustrative only — the real code lives in internal/base_reader.py:
+#   _open_with_link_follow()  (open()/read() link following)
+#   _lookup_link_target()     (target-name resolution; not get(name))
+#   _resolve_link() / _register_progressively()  (eager link_target_member fill)
 def open(self, member: str | ArchiveMember, _seen: frozenset[int] = frozenset()) -> BinaryIO:
     if isinstance(member, str):
         found = self.get(member)  # name lookup — there is no __getitem__ on the reader
@@ -103,7 +106,9 @@ def open(self, member: str | ArchiveMember, _seen: frozenset[int] = frozenset())
     if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
         if member.member_id in _seen:
             raise ReadError(f"Link cycle detected at '{member.name}'")
-        target = member.link_target_member or self.get(member.link_target)
+        target = member.link_target_member or self._lookup_link_target(
+            member, self._members_by_name_lists
+        )
         if target is None:
             raise LinkTargetNotFoundError(f"Link target '{member.link_target}' not in archive")
         return self.open(target, _seen=_seen | {member.member_id})
