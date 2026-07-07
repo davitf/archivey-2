@@ -182,3 +182,58 @@
 
   Note `pyzstd.SeekableZstdFile` is **not** a substitute either: it reads only the *Seekable
   Zstd* container, not plain `.zst`. See `docs/library-analysis.md` (zstd).
+
+## Strategy & adoption (2026-07 review backlog)
+
+> Parked here from the 2026-07 architecture-review discussion so nothing is lost.
+> Security/compat items with a threat angle live in `docs/threat-model.md` (the gap
+> register); the product framing lives in `VISION.md`. These are the rest.
+
+- **Salvage / best-effort read mode** — the founding use case (indexing decades of
+  messy backups) is full of truncated and corrupt archives, and today every backend is
+  all-or-error. A `salvage=True`-style read mode would yield every recoverable member
+  plus per-member/status errors instead of one terminal exception: for ZIP, walk local
+  headers when the central directory is gone; for TAR, resync on the next valid header;
+  for single-file streams, return the decodable prefix with a truncation flag. Nobody
+  does this well; it is both a founding need and a differentiator. Needs its own spec
+  (interacts with error-handling and the equivalence matrix).
+- **Hashes without decompression** — dedupe workflows can often use the digests the
+  archive already stores (`member.hashes`: CRC32, RAR5 BLAKE2sp, …) instead of reading
+  data. Document the recipe; consider a helper that returns "best available digest +
+  provenance (stored vs computed)" so an indexer can choose cheap-but-weak vs
+  costly-but-strong uniformly.
+- **Benchmarks as a CI gate** — suite tracking open/list/read/extract wall time vs
+  stdlib (`zipfile`/`tarfile`) and py7zr/libarchive where comparable, plus
+  **bytes-decompressed and seek counts** (the real bottlenecks — re-decompression and
+  seek storms — hide in wall time on small corpora). Budget per `VISION.md`: ≤1.3×
+  stdlib common paths, ~2× when justified. Stand up before any perf-sensitive claim.
+- **Public backend API** — stabilize/export the `ReadBackend` ABC + registry so rare
+  formats (CAB, CPIO, SquashFS, WIM, XAR, DMG…) can be third-party plugins instead of
+  a solo compatibility treadmill. Decide pre-1.0 (it constrains how freely the backend
+  contract can change afterwards).
+- **fsspec adapter** — expose an opened archive as an fsspec filesystem
+  (`ArchiveFileSystem`); big adoption channel (pandas/dask/HF datasets ecosystems) and
+  a good stress test of the reader contract. Also the natural place for
+  `open_archive("https://…")` stories rather than teaching core about URLs.
+- **Migration guide** — `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` →
+  archivey, gotcha-by-gotcha ("`tarfile.extractall` without `filter=` does X; here it
+  cannot happen"). Cheap, high-leverage for the "default library" goal.
+- **Warnings-as-data sweep** — audit every `logger.warning` in the library: each should
+  (also) be queryable as data (member/info field, `FormatInfo`, `CostReceipt`,
+  `ExtractionResult`), since most applications never surface logging. See
+  `docs/threat-model.md` C2.
+- **Extraction collision handling + `OverwritePolicy.RENAME`** — deterministic
+  cross-platform handling of casefold/normalization collisions (threat-model O2), plus
+  an opt-in RENAME policy (`name (1)`) for archives with intentional duplicates.
+- **Writing, done properly, later** — writing is deliberately post-reading (possibly
+  post-1.0). When specced, design in from the start: **reproducible output**
+  (`SOURCE_DATE_EPOCH`, stable member ordering, normalized metadata — the build-tool
+  adoption wedge) and the **metadata-fidelity boundary** (xattrs/ACLs — threat-model
+  C3; read-side is additive later, but write-side fidelity must be a day-one decision
+  of the writing spec, since it shapes `add_member` and the round-trip contract).
+- **Free-threading position** (threat-model C4) — parallel extraction / parallel
+  decode under 3.13t; interacts with the existing parallel-extraction idea above.
+- **CLI earlier, as dev tool + demo** — `archivey list/test/extract` was invaluable for
+  eyeballing DEV against real archives and is the ten-second demo of safe extraction
+  ("the unzip that can't be zip-slipped"). Roadmap moves it right after the native
+  readers (see PLAN); a selling point, though not the main one.
