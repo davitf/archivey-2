@@ -106,11 +106,12 @@
       the test suite; add the missing ones.
 - [ ] 6.4 `SPEC.md` §2 signature blocks + `ARCHITECTURE.md` sketches updated to the
       final signatures; `openspec validate --strict` clean for the touched specs.
-- [ ] 6.5 Resolve the two open maintainer decisions recorded in proposal.md
-      (`max_entries` counting semantics; ZIP `format_availability` truthfulness) and
-      spec the outcomes.
+- [ ] 6.5 Implement the two maintainer decisions recorded in proposal.md
+      (`max_entries`: count only written members — move `start_member` after selector +
+      filter; ZIP `format_availability`: always PARTIAL until Phase 7 codec bypass).
+      Spec deltas landed; code + tests still pending.
 
 ## 7. Sync
 
 - [ ] 7.1 Sync delta specs to `openspec/specs/` (archive-reading, safe-extraction,
-      format-7z, format-tar) and archive the change.
+      format-7z, format-tar, backend-registry, format-zip) and archive the change.

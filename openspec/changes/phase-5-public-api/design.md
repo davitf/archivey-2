@@ -219,13 +219,15 @@ Decided semantics (both modes, one story):
   the source appears only later is malformed but tolerated — random access falls back
   to the later member, streaming fails per `OnError`."
 
-## Open questions (maintainer decisions, tracked in proposal.md)
+## Resolved decisions (2026-07 maintainer review)
 
-1. `max_entries` counting semantics — selector-skips don't count today, filter-skips
-   do; recommendation: count only members actually written.
-2. ZIP `format_availability` reports the intended post-Phase-7 composition, not
-   current read capability; recommendation: report current truth (`PARTIAL` + note)
-   until the Phase 7 codec bypass lands.
+1. **`max_entries` counting semantics — count only members written.** Move
+   `BombTracker.start_member()` to after the `members` selector and user `filter`;
+   selector-skips and filter-skips do not count. Spec delta: `safe-extraction`.
+2. **ZIP `format_availability` — report current read truth.** ZIP stays **PARTIAL**
+   until Phase 7 wires optional member codecs into ZIP member reads; `missing` lists
+   absent packages when applicable and is empty when the gap is implementation-stage.
+   Spec deltas: `backend-registry`, `format-zip`.
 
 ## Risks / Trade-offs
 

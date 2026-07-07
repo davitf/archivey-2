@@ -145,3 +145,49 @@ phase-5 design document).
 
 - **WHEN** a reader opened with a custom `ArchiveyConfig` runs `extract_all(dest)` with no `config` argument
 - **THEN** the reader's config (including its extraction limits) governs the run
+
+### Requirement: Enforce Maximum Entry Count
+
+The system SHALL track the number of archive members **written to disk** during a single
+`extract()` / `extract_all()` call and SHALL raise `ExtractionError` when it exceeds
+`max_entries`. This guards against an **entry-count / inode-exhaustion bomb** — an archive
+packing an enormous number of tiny (often zero-byte) files or directories that overwhelms
+the filesystem (inodes, per-directory entries, per-file syscall overhead) *without*
+tripping `max_extracted_bytes` (there is little data) or the decompression ratio (each
+entry compresses normally).
+
+Only members that will actually be written count toward the limit: a member excluded by
+the `members` selector or skipped by the user `filter` (returning `None`) or dropped by
+the policy transform creates nothing on disk and SHALL NOT increment the counter. The
+extraction coordinator calls `BombTracker.start_member()` only after the selector and
+filter have accepted a member and immediately before writing begins. Every written member
+type counts (FILE, DIR, SYMLINK, HARDLINK).
+
+Like the cumulative `max_extracted_bytes` limit, this is a global resource guard, so
+exceeding it halts extraction **even under `OnError.CONTINUE`** (continuing would defeat
+the guard). The caller supplies the limit via `config.extraction_limits.max_entries` or
+the per-call `limits` override (see the configuration requirement above). The default is
+`1_048_576` (2²⁰) entries — generous enough for large legitimate archives (a Linux
+source tarball or a `node_modules` bundle can hold hundreds of thousands of files) while
+still bounding a pathological many-entries bomb. This limit is independent of the byte
+and ratio guards; any of them may trip first.
+
+#### Scenario: archive with too many written entries is rejected
+
+- **WHEN** an archive containing more than `max_entries` members is extracted in full
+- **THEN** `ExtractionError` is raised once the count of written members crosses the limit, and extraction halts even under `OnError.CONTINUE`
+
+#### Scenario: caller overrides the entry-count limit
+
+- **WHEN** `archivey.extract(src, dest, limits=ExtractionLimits(max_entries=100))` is called on an archive with more than 100 members
+- **THEN** `ExtractionError` is raised after the 100th member is written
+
+#### Scenario: selector and filter skips do not count
+
+- **WHEN** `reader.extract_all(dest, members=["one.txt"], limits=ExtractionLimits(max_entries=1))` is called on an archive with millions of members
+- **THEN** extraction completes without tripping the entry-count guard, because only the selected member is written
+
+#### Scenario: entry count is independent of byte and ratio limits
+
+- **WHEN** an archive of many tiny files stays well under `max_extracted_bytes` and never trips the decompression ratio but more than `max_entries` members are written
+- **THEN** `ExtractionError` is still raised on the entry-count guard

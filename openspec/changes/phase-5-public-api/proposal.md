@@ -107,32 +107,28 @@ _None — this change finalizes existing capabilities._
 - `format-7z`: the per-call-password phrasing is replaced by the
   candidate-list/provider model (no separate `open(member, password=...)` parameter).
   (`format-rar`'s password wording already fits the model; no delta needed.)
+- `backend-registry` / `format-zip`: ZIP `format_availability` reports **PARTIAL**
+  until Phase 7 wires optional member codecs into ZIP reads (even when packages are
+  installed); see the resolved decisions below.
 - (`compressed_source_size` generalization — any path source, `size`-advertising
   streams, seekable streams — is implemented and recorded in the in-flight
   `phase-4-safe-extraction` delta, not here.)
 
-## Open decisions (maintainer input needed before the freeze)
+## Resolved decisions (2026-07 maintainer review)
 
-Two items surfaced by the 2026-07 pre-Phase-5 reviews are deliberately **not** decided
-by this change; they need an explicit maintainer call (per the pause-and-ask rule):
+Two items surfaced by the 2026-07 pre-Phase-5 reviews were decided as follows:
 
-1. **`max_entries` counting semantics.** Today the count is inconsistent: members
-   excluded by the `members` selector are skipped *before* `BombTracker.start_member()`
-   and never count, while members skipped by the user `filter` count (the tracker runs
-   first). The safe-extraction spec's "every member counts" matches neither exactly.
-   **Recommendation:** count only members that will actually be written (move
-   `start_member` after the filter) — the guard's stated rationale is filesystem/inode
-   exhaustion, and a skipped member creates nothing on disk. Either way the spec and
-   the two exclusion paths must be made to agree.
-2. **ZIP `format_availability` vs. actual read capability.** The availability table
-   describes the intended post-Phase-7 composition (`registry.py` documents this):
-   with the deflate64/ppmd packages installed ZIP reports `FULL`, yet member reads
-   still go through stdlib `zipfile` and fail with `UnsupportedFeatureError`; without
-   them, `PARTIAL`'s install hint suggests an extra that does not actually unlock the
-   reads until Phase 7. Options: report `PARTIAL` (with a note) until the Phase 7
-   codec bypass lands, add read-capability granularity, or keep the forward-looking
-   report and document the gap. **Recommendation:** report current truth (`PARTIAL` +
-   spec note), but this is a judgment call on how availability should be defined.
+1. **`max_entries` counting semantics — count only members written.** The entry-count
+   guard exists to bound filesystem/inode pressure, so only members that will actually
+   be written increment the counter. The extraction coordinator calls
+   `BombTracker.start_member()` after the `members` selector and user `filter` have
+   accepted a member. Members excluded by the selector or skipped by the filter do not
+   count. Spec delta: `safe-extraction`.
+2. **ZIP `format_availability` — report current read truth.** Until Phase 7 bypasses
+   stdlib `zipfile` for member data, `format_availability(ZIP)` reports **PARTIAL**
+   regardless of optional codec installation; `missing` lists absent packages when
+   applicable, and is empty when every package is present but the bypass is not yet
+   wired. Spec deltas: `backend-registry`, `format-zip`.
 
 ## Impact
 
