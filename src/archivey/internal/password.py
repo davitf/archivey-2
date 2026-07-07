@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence as ABCSequence
+from collections.abc import Callable, Iterator
+from collections.abc import Sequence as ABCSequence
 from typing import TypeVar
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest

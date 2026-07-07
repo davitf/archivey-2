@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import Callable
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
