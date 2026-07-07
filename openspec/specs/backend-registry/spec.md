@@ -255,8 +255,17 @@ level) and the *codec backends* a format can use (the `compressed-streams` layer
 - A format is **NONE** if its format backend is unavailable, or — for a single-codec
   format (single-file compressors, `tar.<codec>`) — if that one codec backend is
   unavailable.
-- A multi-codec container (7z, ZIP, RAR) whose format backend is available is **FULL**
+- A multi-codec container (7z, RAR) whose format backend is available is **FULL**
   when every optional codec/tool it can use is present, otherwise **PARTIAL**.
+- **ZIP is an exception until Phase 7** (see `format-zip`): member *data* decompression
+  still goes through stdlib `zipfile`, which cannot use deflate64/PPMd (or zstd before
+  Python 3.14) even when the corresponding codec packages are installed. Therefore
+  `format_availability(ArchiveFormat.ZIP)` SHALL report **PARTIAL** regardless of
+  optional codec installation until Phase 7 wires the shared codec layer into ZIP
+  member reads. When optional ZIP member-codec packages are absent, `missing` lists
+  them as for any other multi-codec container; when every package is present, `missing`
+  is empty — support remains `PARTIAL` because the read-time gap is implementation
+  stage, not a missing install.
 - **Missing-dependency** gaps (which determine PARTIAL/NONE) are distinct from
   **by-design** rejections. Codecs the library deliberately does not support — 7z
   **BCJ2** and unknown 7z method IDs — never count against FULL; a member using them
@@ -306,4 +315,17 @@ def list_known_formats() -> list[ArchiveFormat]:  # every format the registry kn
 
 - **WHEN** `format_availability(ArchiveFormat.SEVEN_Z)` is queried on a system with `[7z]` and `[crypto]` installed
 - **THEN** `support` is `FormatSupport.FULL` even though a 7z member using BCJ2 would still raise `UnsupportedFeatureError`
+
+#### Scenario: ZIP reports partial until member-codec bypass lands
+
+- **WHEN** `format_availability(ArchiveFormat.ZIP)` is queried on a system with every optional ZIP member codec installed (deflate64, PPMd, zstd)
+- **THEN** `support` is `FormatSupport.PARTIAL` and `missing` is empty
+- **AND** reading a deflate64/PPMd/zstd member still raises `UnsupportedFeatureError` until Phase 7 wires the codec layer into ZIP member reads
+
+#### Scenario: ZIP partial when optional member codecs are missing
+
+- **WHEN** `format_availability(ArchiveFormat.ZIP)` is queried on a system without deflate64 and/or zstd packages
+- **THEN** `support` is `FormatSupport.PARTIAL`
+- **AND** `missing` names the absent codec packages
+- **AND** stored/deflate members still open and list successfully
 
