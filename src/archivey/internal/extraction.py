@@ -715,7 +715,15 @@ class ExtractionCoordinator:
         """Copy ``stream`` into the already-open ``dst`` in chunks, counting each toward the
         bomb tracker. Cleanup of a partial ``dst`` on failure is the caller's job."""
         if stream is None:
-            return
+            # A FILE reaching the writer with no data stream is a backend bug, not a valid
+            # empty file (a zero-byte FILE still yields a real, empty stream). Silently
+            # writing an empty file here would mask that bug, so raise instead. Both FILE
+            # write paths (the main pass and the orphaned-source second pass) funnel through
+            # here, so this one guard covers them; it surfaces as a per-member failure via
+            # the coordinator's OnError handling, attributed to the member being written.
+            raise ExtractionError(
+                "FILE member has no data stream to extract (backend returned stream=None)"
+            )
         while True:
             chunk = stream.read(_CHUNK)
             if not chunk:

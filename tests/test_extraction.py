@@ -32,7 +32,11 @@ from archivey.exceptions import (
     SpecialFileError,
     SymlinkEscapeError,
 )
-from archivey.internal.extraction import BombTracker, _AlwaysStopExtractionError
+from archivey.internal.extraction import (
+    BombTracker,
+    ExtractionCoordinator,
+    _AlwaysStopExtractionError,
+)
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
     check_universal,
@@ -268,6 +272,14 @@ def test_entry_count_independent_of_bytes() -> None:
     t.start_member(_member("a"))
     with pytest.raises(_AlwaysStopExtractionError):
         t.start_member(_member("b"))  # trips on count, not bytes
+
+
+def test_file_writer_rejects_missing_stream() -> None:
+    # A FILE reaching the writer with stream=None is a backend bug (a zero-byte FILE still
+    # yields a real, empty stream). The writer must raise rather than silently create an
+    # empty file and mask the bug (task 5a.5).
+    with pytest.raises(ExtractionError, match="no data stream"):
+        ExtractionCoordinator._copy_to_fileobj(None, io.BytesIO(), None)
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +568,100 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
     statuses = {r.member.name: r.status for r in results}
     assert statuses["evil"] is ExtractionStatus.REJECTED
     assert (dest / "ok.txt").read_bytes() == b"ok"
+
+
+# ---------------------------------------------------------------------------
+# Chained-symlink attack (task 5a.4, ported from the DEV oracle suite)
+#
+# The classic escape: member 1 plants a directory symlink `sub` that points OUTSIDE the
+# destination, then member 2 is written "through" it as `sub/<payload>`, so a naive
+# extractor lands the payload outside dest. archivey blocks this on two layers, and both
+# the SYMLINK-payload and FILE-payload variants of member 2 must be neutralized:
+#   * the escaping parent symlink is rejected up front by the universal check
+#     (SymlinkEscapeError), so it is never planted, and
+#   * the universal check re-resolves each member's PARENT directory on the real
+#     filesystem, so a payload written through an already-planted hostile parent symlink
+#     is rejected (PathTraversalError) before any bytes are written outside dest.
+# ---------------------------------------------------------------------------
+
+
+def test_chained_symlink_attack_symlink_payload_rejected(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    src = tmp_path / "attack.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("sym", "sub", str(outside)),  # parent symlink escaping dest
+                ("sym", "sub/leak", "target"),  # SYMLINK payload written through it
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    with pytest.raises((SymlinkEscapeError, PathTraversalError)):
+        extract(src, dest)
+    assert list(outside.iterdir()) == []  # nothing leaked outside the destination
+
+
+def test_chained_symlink_attack_file_payload_rejected(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    src = tmp_path / "attack.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("sym", "sub", str(outside)),  # parent symlink escaping dest
+                ("file", "sub/leak.txt", b"pwned"),  # FILE payload written through it
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    # Under CONTINUE the escaping parent symlink is rejected (never planted) while the run
+    # proceeds, proving the FILE payload cannot follow it out of dest.
+    results = extract(src, dest, on_error=OnError.CONTINUE)
+    statuses = {r.member.name: r.status for r in results}
+    assert statuses["sub"] is ExtractionStatus.REJECTED
+    assert not (outside / "leak.txt").exists()
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="directory symlinks / os.symlink semantics are POSIX here"
+)
+def test_file_payload_through_preexisting_parent_symlink_rejected(
+    tmp_path: Path,
+) -> None:
+    # The runtime layer: a hostile symlink already sits at the destination (e.g. planted by
+    # a prior partial run). The universal check resolves the member's parent on disk, so a
+    # FILE written through it is rejected before any bytes escape.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest = tmp_path / "out"
+    dest.mkdir()
+    os.symlink(outside, dest / "sub", target_is_directory=True)
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("file", "sub/leak.txt", b"pwned")]))
+    with pytest.raises(PathTraversalError):
+        extract(src, dest)
+    assert not (outside / "leak.txt").exists()
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="directory symlinks / os.symlink semantics are POSIX here"
+)
+def test_symlink_payload_through_preexisting_parent_symlink_rejected(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest = tmp_path / "out"
+    dest.mkdir()
+    os.symlink(outside, dest / "sub", target_is_directory=True)
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("sym", "sub/leak", "x")]))
+    with pytest.raises(PathTraversalError):
+        extract(src, dest)
+    assert not (outside / "leak").exists()
 
 
 # ---------------------------------------------------------------------------
