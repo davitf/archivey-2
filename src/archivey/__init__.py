@@ -60,10 +60,11 @@ from archivey.internal.extraction_types import (
     ExtractionProgress,
     ExtractionResult,
     ExtractionStatus,
+    MemberFilter,
     OnError,
     OverwritePolicy,
 )
-from archivey.reader import ArchiveReader
+from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -92,6 +93,8 @@ __all__ = [
     "ExtractionStatus",
     "ExtractionProgress",
     "ExtractionResult",
+    "MemberSelector",
+    "MemberFilter",
     "detect_format",
     "FormatInfo",
     "DetectionConfidence",

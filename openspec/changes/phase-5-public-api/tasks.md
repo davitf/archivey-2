@@ -86,13 +86,13 @@
 - [x] 5a.3 Duplicate-name positional test: `[A(content1), hardlink L→A, A(content2)]`
       — `read(L)` returns content1 and extraction links `L` to the content1 inode, in
       both access modes (the regression the last-wins map caused).
-- [ ] 5a.4 Port the chained-symlink attack test from `_dev_oracle` into the v2 suite
+- [x] 5a.4 Port the chained-symlink attack test from `_dev_oracle` into the v2 suite
       (member 1 plants `sub → /outside`, member 2 writes through `sub/...`; both the
       SYMLINK-payload and FILE-payload variants must be rejected).
-- [ ] 5a.5 Defensive raise in `_copy_to_fileobj`/`_write_file` when a FILE member
+- [x] 5a.5 Defensive raise in `_copy_to_fileobj`/`_write_file` when a FILE member
       arrives with `stream=None` (today it silently creates an empty file, masking a
       backend bug; a zero-byte FILE gets a real empty stream, so raising is safe).
-- [ ] 5a.6 Export `MemberSelector`, `MemberFilter`, `ArchiveyConfig`,
+- [x] 5a.6 Export `MemberSelector`, `MemberFilter`, `ArchiveyConfig`,
       `ExtractionLimits`, `PasswordRequest`, `PasswordProvider` from `archivey`
       (`__all__` + test_public_api assertions).
 
