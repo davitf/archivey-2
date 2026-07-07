@@ -10,6 +10,7 @@ from archivey.config import (
     AcceleratorMode,
     ArchiveyConfig,
     ExtractionLimits,
+    PasswordInput,
 )
 from archivey.exceptions import StreamNotSeekableError, UnsupportedOperationError
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
@@ -20,6 +21,7 @@ from archivey.internal.extraction_types import (
     OnError,
     OverwritePolicy,
 )
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import (
     FormatAvailability,
     FormatSupport,
@@ -64,7 +66,7 @@ def open_archive(
     *,
     format: ArchiveFormat | None = None,
     streaming: bool = False,
-    password: bytes | str | None = None,
+    password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
 ) -> ArchiveReader:
@@ -88,12 +90,15 @@ def open_archive(
     then wraps a mid-positioned stream in a zero-origin view so every backend sees the
     archive begin at ``tell() == 0`` (an archive embedded mid-file works uniformly,
     without manual slicing).
+
+    ``password`` accepts a single value, an ordered sequence of candidate passwords, or
+    a provider callable. List the most likely password first — especially for 7z, where
+    each wrong candidate pays an expensive key derivation.
     """
     # Import backends to ensure they are registered
     import archivey.internal.backends  # noqa: F401
 
-    if isinstance(password, str):
-        password = password.encode()
+    passwords = _PasswordCandidates.from_input(password)
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     archive_name = source_name(source)
@@ -122,7 +127,7 @@ def open_archive(
 
     # A password for a format that has no encryption is API misuse, rejected centrally
     # (backends declare SUPPORTS_PASSWORD as data and never see the argument otherwise).
-    if password is not None and not backend_cls.SUPPORTS_PASSWORD:
+    if passwords.has_passwords() and not backend_cls.SUPPORTS_PASSWORD:
         raise UnsupportedOperationError(
             f"Format {format!r} does not support passwords (it carries no encryption).",
             source_format=format,
@@ -163,7 +168,7 @@ def open_archive(
         open_source,
         format=format,
         streaming=streaming,
-        password=password,
+        passwords=passwords,
         encoding=effective_encoding,
         archive_name=archive_name,
         config=effective_config,
@@ -178,7 +183,7 @@ def extract(
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
     on_error: OnError = OnError.STOP,
     format: ArchiveFormat | None = None,
-    password: bytes | str | None = None,
+    password: PasswordInput = None,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     config: ArchiveyConfig | None = None,
     limits: ExtractionLimits | None = None,

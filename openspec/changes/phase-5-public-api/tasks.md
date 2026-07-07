@@ -28,22 +28,22 @@
 
 ## 2. Password candidates and provider
 
-- [ ] 2.1 Widen `password` typing on `open_archive` (`str | bytes | Sequence[str |
+- [x] 2.1 Widen `password` typing on `open_archive` (`str | bytes | Sequence[str |
       bytes] | PasswordProvider | None`); define the frozen `PasswordRequest`
       dataclass (`member: ArchiveMember | None`, `attempt: int`); normalize once into
       an internal `_PasswordCandidates` helper on `BaseArchiveReader` (known-good list
       + remaining candidates + optional provider; `provider(PasswordRequest(...))`).
-- [ ] 2.2 Wire the ZIP backend (the only current consumer) through the helper: try
+- [x] 2.2 Wire the ZIP backend (the only current consumer) through the helper: try
       known-good → candidates → provider per encrypted member; successful password
       appended to known-good; exhaustion → `EncryptionError`. Encrypted-symlink
       listing path uses the same resolution.
-- [ ] 2.3 Tests: sequence across two differently-encrypted members in one pass;
+- [x] 2.3 Tests: sequence across two differently-encrypted members in one pass;
       provider called once per *new* password (call-count assertion) and receives a
       `PasswordRequest` carrying the member; `attempt` increments on a wrong-password
       retry for the same unit; provider `None` → `EncryptionError`; header-level
       request carries `member=None` (unit-test the helper; the real header-encrypted
       case lands with Phase 7).
-- [ ] 2.4 Docs: candidate-order note ("most likely password first" — 7z key derivation
+- [x] 2.4 Docs: candidate-order note ("most likely password first" — 7z key derivation
       is deliberately expensive) in the open_archive docstring.
 
 ## 3. Multi-source input

@@ -33,6 +33,7 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
@@ -128,7 +129,7 @@ class TarReader(BaseArchiveReader):
         source: Path | BinaryIO,
         format: ArchiveFormat,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
@@ -450,7 +451,7 @@ class TarReadBackend(ReadBackend):
         source: Path | BinaryIO,
         format: ArchiveFormat,
         streaming: bool,
-        password: bytes | None,
+        passwords: _PasswordCandidates | None,
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
@@ -458,7 +459,7 @@ class TarReadBackend(ReadBackend):
         # `format` carries the concrete (TAR, <stream>) variant the detector/caller resolved;
         # the backend uses its stream to pick the codec to decompress with.
         return TarReader(
-            source, format, streaming, password, encoding, archive_name, config
+            source, format, streaming, passwords, encoding, archive_name, config
         )
 
 
