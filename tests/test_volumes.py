@@ -46,6 +46,15 @@ def test_discover_old_rar_rnn_volumes(tmp_path: Path) -> None:
     assert [p.name for p in siblings] == ["archive.rar", "archive.r00", "archive.r01"]
 
 
+def test_discover_rnn_without_first_volume_is_not_a_set(tmp_path: Path) -> None:
+    # The first volume `<base>.rar` is missing, so a bare `.rNN` can't be anchored at
+    # its head — treat it as a lone file rather than a truncated set with the wrong
+    # first element.
+    for name in ("archive.r00", "archive.r01"):
+        (tmp_path / name).write_bytes(b"")
+    assert discover_volume_siblings(tmp_path / "archive.r01") is None
+
+
 def test_multi_volume_7z_raises_phase7_message(tmp_path: Path) -> None:
     for name in ("vol.7z.001", "vol.7z.002"):
         (tmp_path / name).write_bytes(_7Z_MAGIC)

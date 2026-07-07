@@ -231,12 +231,13 @@ def extract(
         encoding=encoding,
         config=config,
     ) as reader:
+        # The reader already carries `config` (passed to open_archive above), so
+        # extract_all falls back to it — no need to forward `config` a second time.
         return reader.extract_all(
             dest,
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
             on_progress=on_progress,
-            config=config,
             limits=limits,
         )
