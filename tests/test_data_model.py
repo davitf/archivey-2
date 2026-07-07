@@ -122,3 +122,32 @@ def test_junction_helper() -> None:
     )
     assert junction.is_junction
     assert not ArchiveMember(type=MemberType.SYMLINK, name="s").is_junction
+
+
+def test_modified_utc_normalizes_mixed_timestamps() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    # Aware (e.g. an NTFS-extra UTC time): converted to UTC.
+    aware = ArchiveMember(
+        type=MemberType.FILE,
+        name="aware",
+        modified=datetime(2020, 6, 1, 14, 0, tzinfo=timezone(timedelta(hours=2))),
+    )
+    assert aware.modified_utc() == datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
+
+    # Naive (a wall-clock DOS time): tz_for_naive supplies the caller's assumption.
+    naive = ArchiveMember(
+        type=MemberType.FILE, name="naive", modified=datetime(2020, 6, 1, 14, 0)
+    )
+    as_utc = naive.modified_utc(tz_for_naive=timezone(timedelta(hours=-3)))
+    assert as_utc == datetime(2020, 6, 1, 17, 0, tzinfo=timezone.utc)
+
+    # Default: naive is interpreted in the local timezone; the result is aware UTC and
+    # comparable with the aware member's (mixed naive/aware raises TypeError directly).
+    local_utc = naive.modified_utc()
+    assert local_utc is not None and local_utc.tzinfo == timezone.utc
+    assert (local_utc < aware.modified_utc()) in (True, False)  # comparable, no TypeError
+
+    # The stored field is untouched: provenance stays checkable.
+    assert naive.modified is not None and naive.modified.tzinfo is None
+    assert ArchiveMember(type=MemberType.FILE, name="none").modified_utc() is None

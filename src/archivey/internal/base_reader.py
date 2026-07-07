@@ -65,8 +65,12 @@ class ReadBackend(ABC):
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
-    REQUIRES_SEEK: bool = False
-    # When True, open_archive(streaming=True) may open a non-seekable source (TAR only).
+    # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for
+    # formats walkable front-to-back (TAR, the single-file codecs), false for formats
+    # whose index/metadata is not at the front (ZIP's central directory, ISO's
+    # descriptors). Random access (streaming=False) always requires a seekable source —
+    # repeatable open()/read() cannot be honored over one forward pass, and the library
+    # never implicitly buffers — so that side needs no per-backend flag.
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
     # Whether this backend's format has encryption a password could unlock. Checked
     # centrally by open_archive(): a password passed for a format that cannot use one is
@@ -130,7 +134,10 @@ class BaseArchiveReader(ArchiveReader):
 
     - ``_iter_members()``       — yield every :class:`ArchiveMember` once, in archive
       order.
-    - ``_open_member(member)``  — return a ``BinaryIO`` for a ``FILE`` member's data.
+    - ``_open_member(member)``  — return a ``FILE`` member's data stream, wrapped via
+      ``_wrap_member_stream`` (every member handle the library hands out is an
+      ``ArchiveStream``: uniform error translation/stamping, the ``size``
+      advertisement, and room to grow shared handle features).
     - ``_get_archive_info()``   — return the :class:`ArchiveInfo` (format, solidity,
       cost, …).
     - ``_close_archive()``      — release resources (called exactly once, via
@@ -789,8 +796,11 @@ class BaseArchiveReader(ArchiveReader):
         limits: ExtractionLimits | None = None,
     ) -> list[ExtractionResult]:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
+        # Check (but do not enter) the single-pass guard here, so a second extract_all
+        # on a streaming reader fails with this method's name; the coordinator drives
+        # the pass through the public stream_members(), which enters it properly.
         if self._streaming:
-            self._enter_forward_pass("extract_all()")
+            self._guard_forward_pass_entry("extract_all()")
         # Imported here (not at module top) to keep the import graph tidy: extraction.py
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator

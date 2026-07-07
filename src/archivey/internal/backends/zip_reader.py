@@ -421,7 +421,8 @@ class ZipReadBackend(ReadBackend):
         MagicSignature(0, b"\x50\x4b\x05\x06", ArchiveFormat.ZIP),  # empty archive (EOCD)
         MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
     )
-    REQUIRES_SEEK = True
+    # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
+    # so even a forward-only pass needs a seekable source.
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
 
     def open_read(

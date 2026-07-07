@@ -153,7 +153,10 @@ class ReadBackend(ABC):
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
                          # (format, probe) pairs for formats with no trustworthy exact
                          # magic; the probe inspects a peeked prefix (see format-detection)
-    REQUIRES_SEEK: bool = False                          # if True, non-seekable sources rejected
+    SUPPORTS_STREAMING_NON_SEEKABLE: bool = False        # True for formats walkable front-to-back
+                         # (TAR, single-file codecs): streaming=True may open a non-seekable
+                         # source. Random access (streaming=False) always requires a seekable
+                         # source -- format-independent, so it needs no per-backend flag.
     OPTIONAL_DEPENDENCY: str | None = None               # e.g. "pycdlib"
 
     @abstractmethod

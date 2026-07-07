@@ -8,7 +8,8 @@ Rock Ridge carries POSIX mode/uid/gid and symlinks; Joliet and plain carry none 
 (those fields are ``None``), and plain names are upper-case 8.3 with a ``;version`` suffix.
 
 The directory tree lives in the header region, giving O(1) (``INDEXED``) listing and
-``DIRECT`` random access. A non-seekable source is rejected (``REQUIRES_SEEK``) and write is
+``DIRECT`` random access. A non-seekable source is rejected (random access needs seek,
+and the trailing metadata rules out non-seekable streaming too) and write is
 out of scope (``UnsupportedOperationError``). The image is read uncompressed in place — a
 compressed ``.iso.xz`` is a single-file compressor wrapping the image, not mounted here
 (see the seek-heavy-container note in the proposal).
@@ -365,7 +366,9 @@ class IsoReadBackend(ReadBackend):
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(32769, b"CD001", ArchiveFormat.ISO),
     )
-    REQUIRES_SEEK = True
+    # SUPPORTS_STREAMING_NON_SEEKABLE stays False: pycdlib addresses the image by
+    # absolute offsets (volume descriptors at 32 KiB), so even a forward-only pass
+    # needs a seekable source.
     OPTIONAL_DEPENDENCY = "pycdlib"
     INSTALL_HINT = "pip install archivey[iso]"
 

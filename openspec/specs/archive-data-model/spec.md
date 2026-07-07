@@ -176,6 +176,14 @@ class ArchiveMember:
     accessed: datetime | None
     created: datetime | None
 
+    def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
+        # `modified` normalized to aware UTC, for comparing/sorting members whose formats
+        # mix wall-clock and UTC timestamps (naive vs aware datetimes raise TypeError on
+        # comparison). A naive value gets `tz_for_naive` attached first -- the caller's
+        # explicit assumption about where the archive was created -- defaulting to the
+        # local timezone. The faithful stored form stays on `modified` itself; "was it
+        # wall-clock?" remains checkable as `modified.tzinfo is None`.
+
     # --- Permissions & ownership ---
     mode: int | None                        # low 12 bits: standard Unix permission bits
     uid: int | None
@@ -274,6 +282,12 @@ use `modified`, `hashes["crc32"]`, and the `MemberType` enum directly.
 
 - **WHEN** code attempts to place an `ArchiveMember` in a `set` or use it as a dict key
 - **THEN** the operation fails (the type is unhashable); callers key by `member.name` or `member.member_id` instead
+
+#### Scenario: modified_utc normalizes mixed wall-clock and UTC timestamps
+
+- **WHEN** one member's `modified` is naive (a ZIP DOS wall-clock time) and another's is aware (an NTFS-extra UTC time), and both are passed through `modified_utc()`
+- **THEN** both results are timezone-aware UTC datetimes that compare and sort without error, the naive one interpreted in the local timezone (or in `tz_for_naive` when given)
+- **AND** `member.modified` itself is unchanged, so `modified.tzinfo is None` still tells the caller the stored value was wall-clock
 
 #### Scenario: integrity digests under their algorithm keys
 

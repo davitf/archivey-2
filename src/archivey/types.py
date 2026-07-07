@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple
 
@@ -319,6 +319,28 @@ class ArchiveMember:
         if self._archive_id is None:
             raise AttributeError("archive_id not set; member not yet registered")
         return self._archive_id
+
+    def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
+        """The modification time as a timezone-aware UTC ``datetime``, or ``None``.
+
+        ``modified`` itself is faithful to what the archive stores: **naive** when the
+        format records local wall-clock time (ZIP's DOS field, RAR4), **aware** when it
+        records UTC or an offset — so naive and aware values from one archive cannot be
+        compared or sorted directly. This helper makes that usable: an aware value is
+        converted to UTC; a naive one first gets ``tz_for_naive`` attached (the caller's
+        explicit assumption about where the archive was created), defaulting to the
+        local timezone when not given. Whether the stored value was wall-clock remains
+        visible on the field itself: ``member.modified.tzinfo is None``.
+        """
+        dt = self.modified
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            if tz_for_naive is not None:
+                dt = dt.replace(tzinfo=tz_for_naive)
+            else:
+                dt = dt.astimezone()  # naive -> assume local timezone
+        return dt.astimezone(timezone.utc)
 
     @property
     def is_file(self) -> bool:

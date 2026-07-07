@@ -207,7 +207,12 @@ class DirectoryReader(BaseArchiveReader):
 
     def _open_member(self, member: ArchiveMember) -> BinaryIO:
         full_path = self._root / member.name
-        return open(full_path, "rb")  # noqa: SIM115
+        # Wrapped like every backend's member stream (the uniform-handle contract): the
+        # directory backend has no translator (a genuine OSError propagates unchanged),
+        # but the caller still gets the same ArchiveStream handle type — with its `size`
+        # advertisement — as for any other format.
+        raw = open(full_path, "rb")  # noqa: SIM115
+        return self._wrap_member_stream(raw, member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
@@ -237,7 +242,6 @@ class DirectoryReadBackend(ReadBackend):
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.DIRECTORY,)
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     MAGIC: tuple[MagicSignature, ...] = ()
-    REQUIRES_SEEK = False
 
     def open_read(
         self,

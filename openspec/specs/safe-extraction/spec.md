@@ -633,9 +633,10 @@ class ExtractionProgress:
 **selected** members, and `members_done` counts every selected member processed —
 including members the user `filter` skips and members that fail (the filter runs only
 during extraction and cannot be pre-applied to the totals) — so `members_done` reaches
-`members_total` at the end. Selector-excluded members are invisible to progress. The
-selector predicate is therefore evaluated more than once per member and MUST be pure;
-the collection form always is.
+`members_total` at the end. Selector-excluded members are invisible to progress. A
+predicate selector is evaluated against the upfront index (the already-filtered list is
+then reused as an identity selector for the pass itself), so it MUST be a pure function
+of the member; the collection form always is.
 
 #### Scenario: callback invoked per member
 

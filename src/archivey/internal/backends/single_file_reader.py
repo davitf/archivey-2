@@ -271,11 +271,9 @@ class SingleFileBackend(ReadBackend):
     FORMATS: tuple[ArchiveFormat, ...] = tuple(
         c.single_file_format for c in SINGLE_FILE_CODECS if c.single_file_format is not None
     )
-    # Random access (streaming=False) promises repeatable open()/read(), which a
-    # non-seekable source cannot honor (one decompression pass) — so it fails fast at
-    # open time like every other format. Forward-only streaming works on a non-seekable
-    # source (except unix-compress, whose codec itself needs seek and rejects it).
-    REQUIRES_SEEK = True
+    # A compressed stream decodes front-to-back, so streaming=True works on a
+    # non-seekable source (except unix-compress, whose codec itself needs seek and
+    # rejects it at open). Random access always needs a seekable source.
     SUPPORTS_STREAMING_NON_SEEKABLE = True
 
     def open_read(

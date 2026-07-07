@@ -241,16 +241,27 @@ class ExtractionCoordinator:
         # Progress totals cover what this call will actually attempt: when a member list
         # is free (an upfront index) and a selector is given, totals count only the
         # selected members — so members_done can reach members_total and the byte
-        # estimate matches the selected output. The selector is therefore evaluated an
-        # extra time per member here (it must be a pure predicate; the collection form
-        # always is). The user `filter` runs only during extraction and cannot be
-        # pre-applied, so members it skips still count as processed below. Streaming
-        # readers with no free list report None totals.
+        # estimate matches the selected output. The user `filter` runs only during
+        # extraction and cannot be pre-applied, so members it skips still count as
+        # processed below. Streaming readers with no free list report None totals.
         all_members = reader.get_members_if_available()
         if all_members is not None and selector is not None:
             all_members = [m for m in all_members if selector(m)]
         members_total = len(all_members) if all_members is not None else None
         total_estimate = self._estimate_total_bytes(all_members)
+
+        # The pass is driven through the public stream_members(), which applies the
+        # selection (skipped members never surface here — they are invisible to progress
+        # and results, matching the totals above). When the totals pre-filtered the free
+        # member list, that list is reused as an identity selector, so a user predicate
+        # runs once per member (on the index) rather than once per pre-filter plus once
+        # per yield; a stateful predicate still sees each member a single time. Without
+        # a free list the predicate itself is passed through.
+        stream_selector = (
+            None if selector is None
+            else all_members if all_members is not None
+            else selector
+        )
 
         results: list[ExtractionResult] = []
         # source member_id -> list of on-disk paths holding that source's content.
@@ -258,15 +269,7 @@ class ExtractionCoordinator:
         orphans: list[_Orphan] = []
         members_done = 0
 
-        for original, stream in reader._iter_with_data():
-            # Selector-skipped members are invisible to progress and results alike: they
-            # are not part of what this call attempts (and were excluded from the totals
-            # above). Checked outside the try so the per-member accounting below runs for
-            # exactly the selected members.
-            if selector is not None and not selector(original):
-                self._close(stream)
-                continue
-
+        for original, stream in reader.stream_members(stream_selector):
             try:
                 transformed = self._transform(original, dest_root)
                 if transformed is not None:
@@ -539,11 +542,13 @@ class ExtractionCoordinator:
             return
 
         # One second forward pass over the (re-readable) source; write each needed source's
-        # content to the first writable link path and os.link the rest.
-        for member, stream in reader._iter_with_data():
-            if member.member_id not in needed:
-                self._close(stream)
-                continue
+        # content to the first writable link path and os.link the rest. Driven through the
+        # public stream_members() with the needed sources as an identity selector, so
+        # unneeded members are never surfaced (or opened — the streams are lazy).
+        needed_sources = [
+            orphans_by_source[source_id][0].source for source_id in needed
+        ]
+        for member, stream in reader.stream_members(needed_sources):
             group = orphans_by_source[member.member_id]
             try:
                 self._materialize_orphan_source(
