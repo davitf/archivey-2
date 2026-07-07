@@ -35,8 +35,9 @@ archivey.open_archive(
     *,
     format: ArchiveFormat | None = None,  # override detection
     streaming: bool = False,              # False = random access; True = forward-only, one pass
-    password: str | bytes | None = None,
+    password: str | bytes | Sequence[str | bytes] | PasswordProvider | None = None,
     encoding: str | None = None,         # None = auto-detect member-name encoding
+    config: ArchiveyConfig | None = None,  # tuning knobs; None = DEFAULT_ARCHIVEY_CONFIG
 ) -> ArchiveReader
 
 # Create a new archive for writing
@@ -55,15 +56,18 @@ archivey.create(
 # reopen it here (an anti-pattern). Selective extraction is done on an already-open
 # reader via `reader.extract_all(members=..., filter=...)`.
 archivey.extract(
-    source: str | Path | BinaryIO,
+    source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
     dest: str | Path,
     *,
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,   # pre-existing files
     on_error: OnError = OnError.STOP,                     # member extraction failures
     format: ArchiveFormat | None = None,
-    password: str | bytes | None = None,
+    password: str | bytes | Sequence[str | bytes] | PasswordProvider | None = None,
+    encoding: str | None = None,         # member-name encoding for TAR/ZIP
     on_progress: Callable[[ExtractionProgress], None] | None = None,
+    config: ArchiveyConfig | None = None,     # tuning knobs; None = DEFAULT_ARCHIVEY_CONFIG
+    limits: ExtractionLimits | None = None,   # per-call bomb-limit override; None = config's
 ) -> list[ExtractionResult]
 
 # Detect format without opening
@@ -136,6 +140,8 @@ class ArchiveReader:
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_error: OnError = OnError.STOP,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
+        config: ArchiveyConfig | None = None,     # overrides the reader's config for this call
+        limits: ExtractionLimits | None = None,   # per-call bomb-limit override
     ) -> list[ExtractionResult]: ...
 
     # --- Context manager ---
@@ -718,9 +724,18 @@ Applied **after** universal checks pass:
 
 ### 7.3 Decompression bomb detection
 
+The four limits below live on the `ExtractionLimits` frozen dataclass. It is supplied per
+call via `extract(..., limits=)` / `extract_all(..., limits=)`, or as the app-wide default
+via `config.extraction_limits`; precedence is per-call `limits` > `config.extraction_limits`
+> the library default. `ExtractionLimits.UNLIMITED` disables all four guards for explicitly
+trusted archives.
+
 All extraction paths must track bytes written and raise `ExtractionError` when:
 - **Cumulative** bytes written across all members exceeds `max_extracted_bytes` (default: 2 GiB; caller-configurable).
 - A **single member's** output / `compressed_size` exceeds `max_ratio` (default: 1000:1; caller-configurable) — computed against that member's own output, not the cumulative total.
+- The number of members **actually written** exceeds `max_entries`. Only written members
+  count: members excluded by the `members` selector, skipped by the `filter`, or rejected
+  by the universal safety check create nothing on disk and do not consume the budget.
 
 **Ratio activation floor.** The ratio check is evaluated **only after** a member's output
 exceeds a `ratio_activation_threshold` (default: 5 MiB; caller-configurable). This prevents

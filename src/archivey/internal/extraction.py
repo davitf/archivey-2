@@ -253,11 +253,16 @@ class ExtractionCoordinator:
                 if selector is not None and not selector(original):
                     continue
 
-                tracker.start_member(original)  # entry-count guard + ratio bookkeeping
-
                 transformed = self._transform(original, dest_root)
                 if transformed is None:
                     continue  # user filter skipped this member (deliberate exclusion)
+
+                # Entry-count guard + ratio bookkeeping. Counted only once the selector and
+                # user filter have accepted the member (and the universal check inside
+                # _transform has passed), immediately before writing begins — so
+                # selector-skipped, filter-skipped, and rejected members create nothing on
+                # disk and do not count toward max_entries (resolved 2026-07 decision).
+                tracker.start_member(original)
 
                 result_index = len(results)
                 results.append(

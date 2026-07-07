@@ -98,15 +98,15 @@
 
 ## 6. Finalization sweep
 
-- [ ] 6.1 Per-format `CostReceipt` value assertions (zip/tar/all-compressed-tar/
+- [x] 6.1 Per-format `CostReceipt` value assertions (zip/tar/all-compressed-tar/
       single-file/iso/directory) in one parametrized contract test.
-- [ ] 6.2 Error-context stamping verified end-to-end for every backend (archive_name/
+- [x] 6.2 Error-context stamping verified end-to-end for every backend (archive_name/
       member_name/format present on translated errors).
-- [ ] 6.3 Remaining `archive-reading` / `archive-data-model` scenarios audited against
+- [x] 6.3 Remaining `archive-reading` / `archive-data-model` scenarios audited against
       the test suite; add the missing ones.
-- [ ] 6.4 `SPEC.md` §2 signature blocks + `ARCHITECTURE.md` sketches updated to the
+- [x] 6.4 `SPEC.md` §2 signature blocks + `ARCHITECTURE.md` sketches updated to the
       final signatures; `openspec validate --strict` clean for the touched specs.
-- [ ] 6.5 Implement the two maintainer decisions recorded in proposal.md
+- [x] 6.5 Implement the two maintainer decisions recorded in proposal.md
       (`max_entries`: count only written members — move `start_member` after selector +
       filter; ZIP `format_availability`: always PARTIAL until Phase 7 codec bypass).
       Spec deltas landed; code + tests still pending.
