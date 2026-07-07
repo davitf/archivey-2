@@ -136,8 +136,8 @@ see the next requirement, not rejected.)
 
 ### Requirement: Support multi-volume 7z by joining split volumes
 
-A multi-volume 7z archive (`name.7z.001`, `name.7z.002`, …) is a single 7z byte
-stream split across fixed-size parts. The system SHALL support it by concatenating
+The system SHALL support multi-volume 7z archives (`name.7z.001`, `name.7z.002`, …) —
+a single 7z byte stream split across fixed-size parts — by concatenating
 the volumes, in order, into one logical stream and parsing that stream as a normal
 7z. Two entry paths SHALL be accepted (see `archive-reading` for the multi-source
 `open_archive()` contract):

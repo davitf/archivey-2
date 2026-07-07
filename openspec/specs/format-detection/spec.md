@@ -256,8 +256,8 @@ genuinely truncated), detection reports the bare compressor format.
 
 ### Requirement: Self-extracting (SFX) archives are detected behind an executable stub
 
-RAR and 7z archives are sometimes distributed as self-extracting executables: an EXE
-stub precedes the archive payload. When the leading bytes look like an executable
+The system SHALL detect self-extracting (SFX) RAR and 7z archives distributed as
+executables: an EXE stub precedes the archive payload. When the leading bytes look like an executable
 (the DOS/PE `MZ` header `4D 5A`, or ELF `7F 45 4C 46`) rather than a known archive
 magic, detection SHALL scan for an embedded archive signature — the RAR
 (`52 61 72 21 1A 07`) or 7z (`37 7A BC AF 27 1C`) magic — within a bounded forward

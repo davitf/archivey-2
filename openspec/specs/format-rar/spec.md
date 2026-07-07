@@ -134,14 +134,14 @@ streaming path:
 
 ### Requirement: Small-member extraction optimization (lower priority)
 
-`unrar` may parse metadata for the whole archive before yielding a single member's
-data, which is wasteful for many small random reads. As an optimization the reader MAY
-adopt the `rarfile` technique of building a temporary single-file RAR that contains
-just the requested member and invoking `unrar` on that smaller archive when the member
-is below a size threshold. This is a **lower-priority, benchmark-gated** optimization:
-it SHALL be adopted only if measurements show a worthwhile speedup, and the size
-threshold SHALL be derived from those benchmarks. Output MUST be byte-identical to the
-direct `unrar` path.
+The system SHALL support an optional small-member extraction optimization when `unrar`
+would parse metadata for the whole archive before yielding a single member's data —
+wasteful for many small random reads. The reader MAY adopt the `rarfile` technique of
+building a temporary single-file RAR that contains just the requested member and
+invoking `unrar` on that smaller archive when the member is below a size threshold.
+This is a **lower-priority, benchmark-gated** optimization: it SHALL be adopted only if
+measurements show a worthwhile speedup, and the size threshold SHALL be derived from
+those benchmarks. Output MUST be byte-identical to the direct `unrar` path.
 
 #### Scenario: many small random reads
 
@@ -208,8 +208,10 @@ field:
 
 ### Requirement: Decrypt header-encrypted RAR5 via an optional crypto backend
 
-RAR5 header encryption uses AES, which the standard library cannot perform. The
-native parser SHALL derive the AES key and decrypt encrypted headers *itself* via
+The system SHALL decrypt RAR5 header-encrypted archives via the optional crypto
+backend when a password is supplied. RAR5 header encryption uses AES, which the
+standard library cannot perform. The native parser SHALL derive the AES key and decrypt
+encrypted headers *itself* via
 the wrapped crypto backend (the `[rar]` bundle, or the shared `[crypto]` extra; see
 `compressed-streams`) when a password is supplied — it does NOT need the `unrar`
 binary to list a header-encrypted archive

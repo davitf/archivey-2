@@ -100,16 +100,16 @@ The ZIP central directory resides at the **end** of the file, so a ZIP cannot be
 
 ### Requirement: Reject multi-volume (split/spanned) ZIP archives with a clear error
 
-Unlike multi-volume 7z and RAR (which Archivey joins — see `format-7z` and
-`format-rar`), the stdlib `zipfile` backend cannot read a multi-volume ZIP. A ZIP
-**split** set (`name.z01`, `name.z02`, …, final `name.zip`) or a **spanned** set
-(written across removable media) records each entry's location as a
-*(disk-number, offset-within-disk)* pair; `zipfile` rejects the ZIP64 multi-disk
-locator outright, and naive concatenation of the segments is unreliable (non-zero disk
-fields in the end-of-central-directory, a possible leading spanning marker, and
-non-absolute offsets). The system SHALL detect this case and raise
-`UnsupportedFeatureError` rather than mis-reading the archive or surfacing a cryptic
-stdlib `BadZipFile`.
+The system SHALL detect multi-volume (split/spanned) ZIP archives and raise
+`UnsupportedFeatureError` with a clear error rather than mis-reading the archive or
+surfacing a cryptic stdlib `BadZipFile`. Unlike multi-volume 7z and RAR (which
+Archivey joins — see `format-7z` and `format-rar`), the stdlib `zipfile` backend
+cannot read a multi-volume ZIP. A ZIP **split** set (`name.z01`, `name.z02`, …, final
+`name.zip`) or a **spanned** set (written across removable media) records each entry's
+location as a *(disk-number, offset-within-disk)* pair; `zipfile` rejects the ZIP64
+multi-disk locator outright, and naive concatenation of the segments is unreliable
+(non-zero disk fields in the end-of-central-directory, a possible leading spanning
+marker, and non-absolute offsets).
 
 - Detection MAY use: a non-zero "number of this disk" / "disk where the central
   directory starts" field in the (ZIP64) end-of-central-directory record, a `disks > 1`

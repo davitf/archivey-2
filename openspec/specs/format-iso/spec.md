@@ -86,16 +86,15 @@ The system SHALL surface member metadata according to the capabilities of the se
 
 ### Requirement: Read raw `.bin` CD images via a sector-stripping wrapper (lower priority)
 
-A `.bin` track from the bin/cue CD format is an ISO 9660 filesystem stored in raw
-2 352-byte sectors (sync + header + 2 048 bytes of user data + EDC/ECC) rather than
-the 2 048-byte logical sectors `pycdlib` expects. The system SHOULD support such
-images by interposing a stream wrapper that strips each sector down to its 2 048-byte
-user-data payload and feeds the unwrapped logical stream to `pycdlib`. This is a
-**lower-priority** capability: if supporting it (raw-sector detection, the several
-common Mode 1 / Mode 2 Form 1 sector layouts) grows beyond a thin stripping wrapper,
-this requirement MAY be dropped rather than carrying disproportionate complexity. A
-`.cue` sheet is not required; a Mode 1 `.bin` can be detected from its sector sync
-pattern.
+The system SHALL support raw `.bin` CD images (bin/cue tracks) — ISO 9660 filesystems
+stored in raw 2 352-byte sectors (sync + header + 2 048 bytes of user data + EDC/ECC)
+rather than the 2 048-byte logical sectors `pycdlib` expects — by interposing a stream
+wrapper that strips each sector down to its 2 048-byte user-data payload and feeds the
+unwrapped logical stream to `pycdlib`. This is a **lower-priority** capability: if
+supporting it (raw-sector detection, the several common Mode 1 / Mode 2 Form 1 sector
+layouts) grows beyond a thin stripping wrapper, this requirement MAY be dropped rather
+than carrying disproportionate complexity. A `.cue` sheet is not required; a Mode 1
+`.bin` can be detected from its sector sync pattern.
 
 #### Scenario: Mode 1 .bin image
 

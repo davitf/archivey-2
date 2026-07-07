@@ -44,13 +44,14 @@ The system SHALL support optional accelerator backends for formats that have no 
 
 ### Requirement: Accelerator backends surface corruption and truncation uniformly
 
-The `rapidgzip` accelerator (driving gzip via `RapidgzipFile` and bzip2 via its bundled
-`IndexedBzip2File`) has its own exception taxonomy that differs from the stdlib decoders' and
-**varies by platform** (e.g. `rapidgzip` raises a `RuntimeError` "Failed to parse gzip/zlib
-header" on Linux but a `ValueError` "… Invalid gzip magic bytes" on macOS for the same corrupt
-input). Regardless, corrupt or truncated input read through an accelerator SHALL surface as the
-same `compressed-streams` error types as the stdlib path — `CorruptionError` or `TruncatedError`
-— never as a raw third-party exception, per the error-translation contract.
+The system SHALL surface corrupt or truncated input read through the `rapidgzip`
+accelerator (driving gzip via `RapidgzipFile` and bzip2 via its bundled
+`IndexedBzip2File`) as the same `compressed-streams` error types as the stdlib path —
+`CorruptionError` or `TruncatedError` — never as a raw third-party exception, per the
+error-translation contract. The accelerator has its own exception taxonomy that differs
+from the stdlib decoders' and **varies by platform** (e.g. `rapidgzip` raises a
+`RuntimeError` "Failed to parse gzip/zlib header" on Linux but a `ValueError` "… Invalid
+gzip magic bytes" on macOS for the same corrupt input).
 
 Truncation needs extra care for `rapidgzip`: it does **not** reliably report a truncated
 gzip — it raises for a cut that leaves a partially-decodable block, but for other cuts it
@@ -119,14 +120,14 @@ stays on the sequential backend). See `docs/known-issues.md`.
 
 ### Requirement: Index-less codecs warn on a rewinding seek
 
-A codec with no random-access index services a backward seek by re-decompressing the
-stream from the start — O(n) per rewind. This applies to gzip and bzip2 without an
-accelerator (above) and, with no accelerator available at all, to **brotli, lz4, zstd, and
-zlib**. With the stdlib zstd backend (`compression.zstd` / `backports.zstd`), zstd rewinds
-**in place** like the other index-less codecs (no reopen-from-source special case). The slow
-path is permitted (a slow seek beats failing, and not every format can offer fast random
-access), but it SHALL NOT be silent: the first seek that rewinds such a stream SHALL log a
-warning via the `archivey` streams logger. Where an accelerator backend exists (gzip,
+The system SHALL log a warning via the `archivey` streams logger when a codec with no
+random-access index services a backward seek by re-decompressing the stream from the start
+— O(n) per rewind. This applies to gzip and bzip2 without an accelerator (above) and,
+with no accelerator available at all, to **brotli, lz4, zstd, and zlib**. With the stdlib
+zstd backend (`compression.zstd` / `backports.zstd`), zstd rewinds **in place** like the
+other index-less codecs (no reopen-from-source special case). The slow path is permitted
+(a slow seek beats failing, and not every format can offer fast random access), but the
+rewind SHALL NOT be silent. Where an accelerator backend exists (gzip,
 bzip2) the warning names the `[seekable]` extra; for brotli/lz4/zstd/zlib, which have no
 accelerator, it states that the codec re-decompresses from the start. Forward seeks and
 no-op seeks do not warn.
