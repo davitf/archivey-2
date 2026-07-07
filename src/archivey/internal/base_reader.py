@@ -27,6 +27,7 @@ from archivey.internal.extraction_types import (
     OverwritePolicy,
 )
 from archivey.internal.naming import resolve_link_target_name
+from archivey.internal.selection import normalize_member_selector
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.counting import CountingReader
 from archivey.internal.streams.streamtools import (
@@ -730,10 +731,11 @@ class BaseArchiveReader(ArchiveReader):
         members: MemberSelector = None,
     ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform)."""
+        selector = normalize_member_selector(members)
         if self._streaming:
             self._enter_forward_pass("stream_members()")
         for m, stream in self._iter_with_data():
-            if members is None or members(m):
+            if selector is None or selector(m):
                 yield m, stream
             elif stream is not None:
                 stream.close()

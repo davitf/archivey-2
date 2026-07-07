@@ -24,8 +24,7 @@ from archivey.types import ArchiveMember
 #
 # ``MemberSelectorArg`` — which members to extract: a collection of names / ArchiveMembers,
 # a predicate, or ``None`` (= all). The collection form is normalized to a predicate by the
-# coordinator; the public ``stream_members`` selector stays predicate-only (its
-# duplicate-name semantics are deferred to Phase 5 — see reader.py).
+# shared ``normalize_member_selector`` helper (also used by ``stream_members``).
 MemberSelectorArg = (
     Collection["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
 )

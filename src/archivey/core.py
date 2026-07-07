@@ -139,10 +139,9 @@ def open_archive(
     if format is None:
         # Non-seekable streams must be wrapped before detection so the peeked prefix is
         # replayed to the backend; the same wrapper is then handed over.
-        detect_source: Path | BinaryIO = open_source
-        if is_stream(detect_source) and not is_seekable(detect_source):
-            detect_source = PeekableStream(detect_source)
-        detected = detect_format(detect_source)
+        if is_stream(open_source) and not is_seekable(open_source):
+            open_source = PeekableStream(open_source)
+        detected = detect_format(open_source)
         format = detected.format
 
     if resolved.volume_count > 1:

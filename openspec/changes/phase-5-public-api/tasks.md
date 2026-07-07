@@ -64,11 +64,11 @@
 
 ## 4. MemberSelector collection form
 
-- [ ] 4.1 Normalizer: `Collection[str | ArchiveMember]` → predicate (name set matches
+- [x] 4.1 Normalizer: `Collection[str | ArchiveMember]` → predicate (name set matches
       all duplicates; `ArchiveMember` entries matched by `_archive_id` + `member_id`
       id-set; mixed collections fine); wire into `stream_members` (and the
       `extract_all(members=)` path when 4b lands).
-- [ ] 4.2 Update the `MemberSelector` alias + docstring in `reader.py` (drop the
+- [x] 4.2 Update the `MemberSelector` alias + docstring in `reader.py` (drop the
       "Phase 5 pending" note); tests: duplicate-name tar selects both; member-entry
       selects only its identity; mixed collection.
 

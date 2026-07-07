@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterator
+from typing import BinaryIO, Callable, Collection, Iterator
 
 from archivey.config import ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
@@ -19,12 +19,11 @@ from archivey.internal.extraction_types import (
 )
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember
 
-# Type alias for the member selector passed to stream_members(). Only the predicate form
-# is implemented today. The archive-reading spec also allows a Collection[ArchiveMember |
-# str] form ("yield exactly these names/members"); that lands with the Phase 5 public-API
-# finalization, where its semantics under duplicate member names must be decided (match
-# by name? by identity?) — see PLAN.md Phase 5.
-MemberSelector = Callable[[ArchiveMember], bool] | None
+# Type alias for the member selector passed to stream_members() and extract_all().
+# Accepts a predicate, a collection of names / ArchiveMember objects, or None (all).
+MemberSelector = (
+    Collection[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None
+)
 
 
 class ArchiveReader(ABC):
@@ -125,8 +124,9 @@ class ArchiveReader(ABC):
         self, members: MemberSelector = None
     ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
-        ``members`` is an optional selector predicate (no transform). The yielded stream
-        is valid only until the iterator advances; it is ``None`` for non-file members."""
+        ``members`` is an optional selector (predicate, name/member collection, or
+        ``None`` for all). The yielded stream is valid only until the iterator advances;
+        it is ``None`` for non-file members."""
         ...
 
     @abstractmethod
