@@ -678,6 +678,17 @@ class BaseArchiveReader(ArchiveReader):
             member = found
         else:
             self._get_members_registered()
+            # A member object must have been yielded by THIS reader (same identity rule
+            # as `member in reader`). Without this check, a member from another archive
+            # resolves against the wrong offsets/paths and can silently return the wrong
+            # data (e.g. the directory backend would read whatever sits at the same
+            # relative path under this reader's root).
+            if member._archive_id != self._archive_id:
+                raise ValueError(
+                    f"Member {member.name!r} does not belong to this reader; open a "
+                    f"member yielded by this reader, or look it up by name with "
+                    f"reader.get(name)."
+                )
         return self._open_with_link_follow(member, visited=set())
 
     def _open_with_link_follow(

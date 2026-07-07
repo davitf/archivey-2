@@ -141,6 +141,19 @@ def test_contains_is_identity_and_mode_free() -> None:
         "a.txt" in reader  # noqa: B015 - the expression itself must raise
 
 
+def test_open_rejects_member_from_another_reader() -> None:
+    # The same identity rule as `member in reader`: a member object yielded by a
+    # different reader must not open here — without the check it would resolve against
+    # the wrong offsets/paths and could silently return the wrong data.
+    reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
+    other = _IndexedReader(ArchiveFormat.ZIP, False, "y.zip")
+    foreign = other.members()[0]
+    with pytest.raises(ValueError, match="does not belong to this reader"):
+        reader.open(foreign)
+    # The same name opens fine when looked up on the right reader.
+    assert reader.read("a.txt") == b"x"
+
+
 # --- get_members_if_available: never scans; safe on any reader ----------------------
 
 

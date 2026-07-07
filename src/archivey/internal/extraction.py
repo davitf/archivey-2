@@ -547,6 +547,8 @@ class ExtractionCoordinator:
             finally:
                 self._close(stream)
             needed.discard(member.member_id)
+            if not needed:
+                break  # every orphaned source is materialized; stop opening members
 
         # Any orphan whose source never reappeared (should not happen for a re-readable
         # source) is a per-member failure.

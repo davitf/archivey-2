@@ -109,8 +109,10 @@ class ArchiveReader(ABC):
     @abstractmethod
     def open(self, member: str | ArchiveMember) -> BinaryIO:
         """Open a member as a binary stream, following symlinks/hardlinks. Accepts a
-        member object or a name (an unknown name raises ``KeyError``). The caller is
-        responsible for closing the returned stream."""
+        member object or a name (an unknown name raises ``KeyError``; a member object
+        that was not yielded by this reader raises ``ValueError`` — same identity rule
+        as ``member in reader``). The caller is responsible for closing the returned
+        stream."""
         ...
 
     @abstractmethod

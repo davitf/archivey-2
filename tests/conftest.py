@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,20 @@ def requires(*packages: str) -> pytest.MarkDecorator:
     return pytest.mark.skipif(
         bool(missing),
         reason=f"requires optional package(s): {', '.join(missing)}",
+    )
+
+
+def requires_binary(*names: str) -> pytest.MarkDecorator:
+    """Skip a test when an external tool (e.g. the ``7z`` or ``unrar`` CLI) is not on PATH.
+
+    The oracle-availability rule (see PLAN.md): a test that shells out to an external
+    binary must *skip*, not fail, where that binary is absent, so CI legs and dev
+    machines without it stay green.
+    """
+    missing = [n for n in names if shutil.which(n) is None]
+    return pytest.mark.skipif(
+        bool(missing),
+        reason=f"requires external binary(ies): {', '.join(missing)}",
     )
 
 

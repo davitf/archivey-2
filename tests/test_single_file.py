@@ -209,6 +209,17 @@ def test_non_seekable_gzip_reads_fine() -> None:
         assert ar.read(ar.members()[0]) == b"streamed payload"
 
 
+def test_non_seekable_gzip_second_open_fails_loudly() -> None:
+    # The single decompression pass over a non-seekable source can be handed out once;
+    # a second open must raise (it used to silently return an empty stream).
+    data = gzip.compress(b"streamed payload")
+    with open_archive(NonSeekableBytesIO(data)) as ar:
+        member = ar.members()[0]
+        assert ar.read(member) == b"streamed payload"
+        with pytest.raises(StreamNotSeekableError):
+            ar.open(member)
+
+
 @requires("uncompresspy", "ncompress")
 def test_unix_compress_non_seekable_raises() -> None:
     data = make_unix_compress(b"lzw payload")
