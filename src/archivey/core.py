@@ -12,7 +12,11 @@ from archivey.config import (
     ExtractionLimits,
     PasswordInput,
 )
-from archivey.exceptions import StreamNotSeekableError, UnsupportedOperationError
+from archivey.exceptions import (
+    StreamNotSeekableError,
+    UnsupportedFeatureError,
+    UnsupportedOperationError,
+)
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
@@ -38,8 +42,9 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     source_name,
 )
+from archivey.internal.volumes import OpenSourceInput, resolve_source
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveFormat
+from archivey.types import ArchiveFormat, ContainerFormat
 
 __all__ = [
     "DetectionConfidence",
@@ -61,8 +66,25 @@ __all__ = [
 ]
 
 
+def _raise_multi_volume_not_supported(
+    fmt: ArchiveFormat, archive_name: str | None
+) -> None:
+    if fmt.container in (ContainerFormat.SEVEN_Z, ContainerFormat.RAR):
+        raise UnsupportedFeatureError(
+            f"Multi-volume {fmt.container.value} archives are not supported yet "
+            f"(lands in Phase 7).",
+            source_format=fmt,
+            archive_name=archive_name,
+        )
+    raise UnsupportedFeatureError(
+        f"Format {fmt!r} does not support multi-volume archives.",
+        source_format=fmt,
+        archive_name=archive_name,
+    )
+
+
 def open_archive(
-    source: str | Path | BinaryIO,
+    source: OpenSourceInput,
     *,
     format: ArchiveFormat | None = None,
     streaming: bool = False,
@@ -91,6 +113,10 @@ def open_archive(
     archive begin at ``tell() == 0`` (an archive embedded mid-file works uniformly,
     without manual slicing).
 
+    ``source`` may be an ordered sequence of paths or binary streams that together form
+    a multi-volume archive (volume joining lands in Phase 7). A length-1 sequence is
+    treated as a single source.
+
     ``password`` accepts a single value, an ordered sequence of candidate passwords, or
     a provider callable. List the most likely password first — especially for 7z, where
     each wrong candidate pays an expensive key derivation.
@@ -101,26 +127,26 @@ def open_archive(
     passwords = _PasswordCandidates.from_input(password)
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
-    archive_name = source_name(source)
+    resolved = resolve_source(source)
+    open_source = resolved.open_source
+    archive_name = resolved.archive_name
 
-    # A path source: normalize str -> Path; a directory short-circuits detection.
-    open_source: Path | BinaryIO
-    if isinstance(source, (str, Path)):
-        path = Path(source)
-        if path.is_dir():
-            format = ArchiveFormat.DIRECTORY
-        open_source = path
-    else:
-        open_source = source
+    # A path source: a directory short-circuits detection.
+    if isinstance(open_source, Path) and open_source.is_dir():
+        format = ArchiveFormat.DIRECTORY
 
     detected: FormatInfo | None = None
     if format is None:
         # Non-seekable streams must be wrapped before detection so the peeked prefix is
         # replayed to the backend; the same wrapper is then handed over.
-        if is_stream(open_source) and not is_seekable(open_source):
-            open_source = PeekableStream(open_source)
-        detected = detect_format(open_source)
+        detect_source: Path | BinaryIO = open_source
+        if is_stream(detect_source) and not is_seekable(detect_source):
+            detect_source = PeekableStream(detect_source)
+        detected = detect_format(detect_source)
         format = detected.format
+
+    if resolved.volume_count > 1:
+        _raise_multi_volume_not_supported(format, archive_name)
 
     registry = get_registry()
     backend_cls = registry.reader_for_format(format)
@@ -176,7 +202,7 @@ def open_archive(
 
 
 def extract(
-    source: str | Path | BinaryIO,
+    source: OpenSourceInput,
     dest: str | Path,
     *,
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
@@ -184,6 +210,7 @@ def extract(
     on_error: OnError = OnError.STOP,
     format: ArchiveFormat | None = None,
     password: PasswordInput = None,
+    encoding: str | None = None,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     config: ArchiveyConfig | None = None,
     limits: ExtractionLimits | None = None,
@@ -198,7 +225,13 @@ def extract(
 
     Returns one :class:`~archivey.ExtractionResult` per member processed.
     """
-    with open_archive(source, format=format, password=password, config=config) as reader:
+    with open_archive(
+        source,
+        format=format,
+        password=password,
+        encoding=encoding,
+        config=config,
+    ) as reader:
         return reader.extract_all(
             dest,
             policy=policy,
