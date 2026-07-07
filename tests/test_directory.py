@@ -469,3 +469,56 @@ def test_password_rejected(simple_dir: Path) -> None:
 
     with pytest.raises(UnsupportedOperationError):
         open_archive(simple_dir, password="x")
+
+
+# ---------------------------------------------------------------------------
+# Scan errors: genuine OSErrors are loud, mid-walk races are tolerated
+# ---------------------------------------------------------------------------
+
+
+def _scandir_raising_for(target: Path, exc: OSError):
+    """A wrapper for os.scandir that raises ``exc`` for one specific directory."""
+    real_scandir = os.scandir
+
+    def wrapper(path=None):
+        if path is not None and Path(path) == target:
+            raise exc
+        return real_scandir(path)
+
+    return wrapper
+
+
+def test_unreadable_subdirectory_fails_listing(
+    simple_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A genuine OSError (permission denied) propagates: silently dropping entries
+    # would present an incomplete listing as complete.
+    sub = simple_dir / "sub"
+    monkeypatch.setattr(
+        os, "scandir", _scandir_raising_for(sub, PermissionError(13, "denied"))
+    )
+    with open_archive(simple_dir) as ar:
+        with pytest.raises(PermissionError):
+            ar.members()
+
+
+def test_subdirectory_vanishing_mid_walk_is_skipped(
+    simple_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A directory that vanished between listing and descent is a filesystem race,
+    # not an error: skipped with a warning, and the rest of the tree still lists.
+    import logging
+
+    sub = simple_dir / "sub"
+    monkeypatch.setattr(
+        os, "scandir", _scandir_raising_for(sub, FileNotFoundError(2, "gone"))
+    )
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(simple_dir) as ar:
+            names = {m.name for m in ar.members()}
+    assert "a.txt" in names
+    assert "sub/" in names  # the dir entry itself was listed before it vanished
+    assert not any(n.startswith("sub/") and n != "sub/" for n in names)
+    assert any("vanished" in r.message for r in caplog.records)

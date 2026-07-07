@@ -26,7 +26,7 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, StreamNotSeekableError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.password import _PasswordCandidates
@@ -217,6 +217,17 @@ class SingleFileReader(BaseArchiveReader):
             stream = self._first_stream
             self._first_stream = None
             return stream
+        if not self._seekable:
+            # The single decompression pass over a non-seekable source was already handed
+            # out; a fresh codec stream would read from the consumed underlying stream and
+            # silently yield empty/garbage data, so fail loudly instead.
+            err = StreamNotSeekableError(
+                "Cannot open this member again: the source is non-seekable and its "
+                "single decompression pass has already been consumed. Buffer the "
+                "source to disk or a BytesIO to re-read it.",
+            )
+            self._stamp_error_context(err, member.name)
+            raise err
         return self._open_codec_stream()
 
     def _get_archive_info(self) -> ArchiveInfo:
@@ -260,7 +271,10 @@ class SingleFileBackend(ReadBackend):
     FORMATS: tuple[ArchiveFormat, ...] = tuple(
         c.single_file_format for c in SINGLE_FILE_CODECS if c.single_file_format is not None
     )
-    REQUIRES_SEEK = False  # only unix-compress needs seek; the codec rejects a bad source
+    # A compressed stream decodes front-to-back, so streaming=True works on a
+    # non-seekable source (except unix-compress, whose codec itself needs seek and
+    # rejects it at open). Random access always needs a seekable source.
+    SUPPORTS_STREAMING_NON_SEEKABLE = True
 
     def open_read(
         self,

@@ -38,7 +38,7 @@ The recognized compression extensions are exactly the standalone-stream extensio
 
 #### Scenario: ArchiveMember name defaults when no filename is available
 
-- **WHEN** a single-file compressor archive is opened from a non-seekable stream with no associated filename
+- **WHEN** a single-file compressor archive is opened (with `streaming=True`) from a non-seekable stream with no associated filename
 - **THEN** the single member's `name` is `"data"`
 
 #### Scenario: Exactly one member is present
@@ -56,7 +56,7 @@ single-file compressor archive:
 | Listing cost | `INDEXED` — exactly one member, always |
 | Access cost | `DIRECT` — a single member has no inter-member (solid-block) dependency |
 | Supports write | Yes |
-| Requires seek | No (except unix-compress `.Z`, which needs a seekable source) |
+| Requires seek | For random access (`streaming=False`), yes — repeatable `open()`/`read()` cannot be honored over a single decompression pass, so a non-seekable source fails fast at open like every other format (the access-mode contract). Forward-only streaming (`streaming=True`) works on a non-seekable source, except unix-compress `.Z`, whose decoder itself needs a seekable source. |
 
 The access cost is `DIRECT` because the archive holds a single member, so the
 `AccessCost.SOLID` notion ("reading member N may require decompressing earlier members")
@@ -70,10 +70,20 @@ when the stream is opened — not a field of the archive-level `CostReceipt`.
 - **WHEN** a GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, or Z archive is opened
 - **THEN** `cost.listing_cost` is `ListingCost.INDEXED` and `cost.access_cost` is `AccessCost.DIRECT`
 
+#### Scenario: non-seekable source requires streaming mode
+
+- **WHEN** a single-file compressor archive is opened from a non-seekable source with `streaming=False` (the default)
+- **THEN** `StreamNotSeekableError` is raised at open time (random access promises repeatable reads, which one decompression pass cannot honor)
+
+#### Scenario: non-seekable source streams under streaming=True
+
+- **WHEN** a GZ (or other non-`.Z`) single-file archive is opened from a non-seekable source with `streaming=True`
+- **THEN** it opens successfully and `stream_members()` yields the single member's data
+
 #### Scenario: unix-compress requires a seekable source
 
-- **WHEN** a `.Z` (unix-compress) archive is opened from a non-seekable source
-- **THEN** `StreamNotSeekableError` is raised, while the other single-file formats open successfully from a non-seekable source
+- **WHEN** a `.Z` (unix-compress) archive is opened from a non-seekable source (in either access mode)
+- **THEN** `StreamNotSeekableError` is raised, while the other single-file formats stream successfully from a non-seekable source under `streaming=True`
 
 ### Requirement: Report member size with format-specific caveats
 

@@ -333,7 +333,7 @@ def test_non_seekable_zip_fails_fast(simple_zip: Path) -> None:
 
 def test_non_seekable_zip_fails_fast_via_detection(simple_zip: Path) -> None:
     # Even without an explicit format, a non-seekable ZIP is rejected at open time (the
-    # opener wraps it in a PeekableStream for detection, then enforces REQUIRES_SEEK).
+    # opener wraps it in a PeekableStream for detection, then enforces the seekable-source rule).
     data = simple_zip.read_bytes()
     with pytest.raises(StreamNotSeekableError):
         open_archive(NonSeekableBytesIO(data))

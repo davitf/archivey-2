@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Iterator, Mapping
@@ -64,8 +65,12 @@ class ReadBackend(ABC):
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
-    REQUIRES_SEEK: bool = False
-    # When True, open_archive(streaming=True) may open a non-seekable source (TAR only).
+    # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for
+    # formats walkable front-to-back (TAR, the single-file codecs), false for formats
+    # whose index/metadata is not at the front (ZIP's central directory, ISO's
+    # descriptors). Random access (streaming=False) always requires a seekable source —
+    # repeatable open()/read() cannot be honored over one forward pass, and the library
+    # never implicitly buffers — so that side needs no per-backend flag.
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
     # Whether this backend's format has encryption a password could unlock. Checked
     # centrally by open_archive(): a password passed for a format that cannot use one is
@@ -129,7 +134,10 @@ class BaseArchiveReader(ArchiveReader):
 
     - ``_iter_members()``       — yield every :class:`ArchiveMember` once, in archive
       order.
-    - ``_open_member(member)``  — return a ``BinaryIO`` for a ``FILE`` member's data.
+    - ``_open_member(member)``  — return a ``FILE`` member's data stream, wrapped via
+      ``_wrap_member_stream`` (every member handle the library hands out is an
+      ``ArchiveStream``: uniform error translation/stamping, the ``size``
+      advertisement, and room to grow shared handle features).
     - ``_get_archive_info()``   — return the :class:`ArchiveInfo` (format, solidity,
       cost, …).
     - ``_close_archive()``      — release resources (called exactly once, via
@@ -189,7 +197,11 @@ class BaseArchiveReader(ArchiveReader):
         self._streaming = streaming
         self._archive_name = archive_name
         self._config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
-        self._archive_id = str(id(self))
+        # A random, opaque identity token (not id(self), which the allocator can reuse
+        # after a reader is garbage-collected — a member of a dead reader must never
+        # pass another reader's identity check; and not a plain counter, whose small
+        # sequential values invite confusion with member_id or hardcoding).
+        self._archive_id = uuid.uuid4().hex
         # The archive's source, recorded by backends that have one (path or stream);
         # backs the generalized compressed_source_size property below.
         self._source: Path | BinaryIO | None = None
@@ -226,19 +238,38 @@ class BaseArchiveReader(ArchiveReader):
         When ``streaming=True`` and the backend does not override, this default pulls
         from the shared instance-held progressive pass and opens each file member on
         demand.
+
+        The yielded streams are **lazy**: the member's data is opened on the first read,
+        not at yield time. A consumer that skips a member (a ``stream_members`` selector,
+        a filtered extraction) therefore pays nothing for it — no seek to its data, no
+        decompressor setup — and an open-time error (e.g. a wrong password) surfaces only
+        if the member is actually read, not merely iterated past.
         """
-        if self._streaming:
-            for member in self._begin_forward_pass():
-                if member.is_file:
-                    yield member, self._open_member(member)
-                else:
-                    yield member, None
-            return
-        for member in self._get_members_registered():
+        members = (
+            self._begin_forward_pass() if self._streaming
+            else self._get_members_registered()
+        )
+        for member in members:
             if member.is_file:
-                yield member, self._open_member(member)
+                yield member, self._lazy_member_stream(member)
             else:
                 yield member, None
+
+    def _lazy_member_stream(self, member: ArchiveMember) -> BinaryIO:
+        """A stream over ``member``'s data that defers ``_open_member`` to the first read.
+
+        Closing it before any read never opens the member at all. ``_open_member``
+        already translates and stamps its own errors, and ``ArchiveStream`` passes an
+        ``ArchiveyError`` through (re-stamping is a no-op), so deferral does not change
+        what a failed open raises — only when.
+        """
+        return ArchiveStream(
+            lambda: self._open_member(member),
+            translate=self._translate_exception,
+            stamp=lambda exc: self._stamp_error_context(exc, member.name),
+            lazy=True,
+            size=member.size,
+        )
 
     @abstractmethod
     def _open_member(self, member: ArchiveMember) -> BinaryIO: ...
@@ -678,6 +709,17 @@ class BaseArchiveReader(ArchiveReader):
             member = found
         else:
             self._get_members_registered()
+            # A member object must have been yielded by THIS reader (same identity rule
+            # as `member in reader`). Without this check, a member from another archive
+            # resolves against the wrong offsets/paths and can silently return the wrong
+            # data (e.g. the directory backend would read whatever sits at the same
+            # relative path under this reader's root).
+            if member._archive_id != self._archive_id:
+                raise ValueError(
+                    f"Member {member.name!r} does not belong to this reader; open a "
+                    f"member yielded by this reader, or look it up by name with "
+                    f"reader.get(name)."
+                )
         return self._open_with_link_follow(member, visited=set())
 
     def _open_with_link_follow(
@@ -754,8 +796,11 @@ class BaseArchiveReader(ArchiveReader):
         limits: ExtractionLimits | None = None,
     ) -> list[ExtractionResult]:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
+        # Check (but do not enter) the single-pass guard here, so a second extract_all
+        # on a streaming reader fails with this method's name; the coordinator drives
+        # the pass through the public stream_members(), which enters it properly.
         if self._streaming:
-            self._enter_forward_pass("extract_all()")
+            self._guard_forward_pass_entry("extract_all()")
         # Imported here (not at module top) to keep the import graph tidy: extraction.py
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator

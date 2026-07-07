@@ -36,6 +36,17 @@ override (see the configuration requirement below).
 
 The default policy is `ExtractionPolicy.STRICT` and the default overwrite behaviour is `OverwritePolicy.ERROR`.
 
+**Access mode is chosen automatically.** A non-seekable stream source (a pipe, a socket)
+is opened in streaming mode: extraction is a single forward pass, so it needs no random
+access, and failing fast would reject a source the one-shot function can perfectly well
+consume. A seekable source keeps random-access mode, preserving the re-readable second
+pass that recovers a hardlink whose target failed or preceded it in archive order.
+
+#### Scenario: one-shot extraction from a non-seekable pipe
+
+- **WHEN** `archivey.extract(pipe, "/dest/")` is called with a non-seekable stream carrying e.g. a `.tar.gz`
+- **THEN** the archive is opened in streaming mode automatically and all members are extracted, identical to `open_archive(pipe, streaming=True)` + `extract_all(dest)`
+
 #### Scenario: extract all members from an untrusted archive
 
 - **WHEN** `archivey.extract("untrusted.zip", "/safe/output/")` is called with no other arguments
@@ -616,6 +627,16 @@ class ExtractionProgress:
 ```
 
 `total_bytes_estimated` is `None` when the archive format does not provide uncompressed size information. `members_total` is `None` when the total member count cannot be known without a full scan.
+
+**Totals cover what the call will attempt.** When a free member list exists and a
+`members` selector is given, `members_total` and `total_bytes_estimated` count only the
+**selected** members, and `members_done` counts every selected member processed —
+including members the user `filter` skips and members that fail (the filter runs only
+during extraction and cannot be pre-applied to the totals) — so `members_done` reaches
+`members_total` at the end. Selector-excluded members are invisible to progress. A
+predicate selector is evaluated against the upfront index (the already-filtered list is
+then reused as an identity selector for the pass itself), so it MUST be a pure function
+of the member; the collection form always is.
 
 #### Scenario: callback invoked per member
 

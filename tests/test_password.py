@@ -11,6 +11,7 @@ from archivey import PasswordRequest, open_archive
 from archivey.exceptions import EncryptionError
 from archivey.internal.password import _PasswordCandidates
 from archivey.types import ArchiveMember, MemberType
+from tests.conftest import requires_binary
 
 
 def _make_multi_password_zip(path: Path) -> None:
@@ -148,6 +149,7 @@ def test_password_candidates_sequence_order() -> None:
     assert tried == [b"first", b"second"]
 
 
+@requires_binary("7z")
 def test_multi_password_zip_streaming_pass(tmp_path: Path) -> None:
     archive = tmp_path / "mpw.zip"
     _make_multi_password_zip(archive)
@@ -161,6 +163,7 @@ def test_multi_password_zip_streaming_pass(tmp_path: Path) -> None:
     assert contents == {"f1.txt": b"secret1\n", "f2.txt": b"secret2\n"}
 
 
+@requires_binary("7z")
 def test_zip_provider_receives_member(tmp_path: Path) -> None:
     archive = tmp_path / "one.zip"
     (tmp_path / "only.txt").write_bytes(b"hello\n")

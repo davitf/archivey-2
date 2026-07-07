@@ -174,3 +174,36 @@ def test_seek_to_start_rereads(member: tuple[Path, str]) -> None:
         assert f.read(5) == CONTENT[:5]
         f.seek(0)
         assert f.read() == CONTENT
+
+
+# ---------------------------------------------------------------------------
+# Uniform handle type
+# ---------------------------------------------------------------------------
+
+
+def test_member_streams_are_archive_streams(member: tuple[Path, str]) -> None:
+    # Every member handle the library hands out — from open() and from
+    # stream_members() alike — is an ArchiveStream, regardless of backend (even the
+    # directory backend, which has nothing to decompress): uniform error
+    # translation/stamping, the `size` advertisement, and one place to grow shared
+    # handle features.
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    source, name = member
+    with open_archive(source) as ar:
+        with ar.open(name) as f:
+            assert isinstance(f, ArchiveStream)
+        for m, stream in ar.stream_members():
+            if m.is_file:
+                assert isinstance(stream, ArchiveStream)
+            if stream is not None:
+                stream.close()
+
+
+def test_member_stream_advertises_size(member: tuple[Path, str]) -> None:
+    # The fsspec-style `size` attribute carries the decompressed length when the
+    # archive metadata knows it (feeds nested-archive sizing and the bomb tracker).
+    source, name = member
+    with open_archive(source) as ar, ar.open(name) as f:
+        size = getattr(f, "size", None)
+        assert size is None or size == len(CONTENT)

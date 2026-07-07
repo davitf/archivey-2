@@ -573,6 +573,54 @@ def test_on_progress_called_per_member(tmp_path: Path) -> None:
     assert set(seen) == {"a.txt", "b.txt"}
 
 
+def test_progress_totals_respect_selector(tmp_path: Path) -> None:
+    # Totals cover what the call will actually attempt: with a selector, members_total
+    # and total_bytes_estimated count only the selected members, and members_done can
+    # reach members_total.
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"aaaa", "b.txt": b"b" * 100, "c.txt": b"cc"})
+    dest = tmp_path / "out"
+    progress = []
+    with open_archive(src) as r:
+        r.extract_all(dest, members=["a.txt", "c.txt"], on_progress=progress.append)
+    last = progress[-1]
+    assert last.members_total == 2
+    assert last.members_done == 2
+    assert last.total_bytes_estimated == 6  # a.txt (4) + c.txt (2); b.txt excluded
+
+
+def test_progress_counts_filter_skipped_members_as_done(tmp_path: Path) -> None:
+    # A user-filter skip is still a processed member: members_done must reach
+    # members_total at the end (the filter cannot be pre-applied to the totals).
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"a", "b.txt": b"b", "c.txt": b"c"})
+    dest = tmp_path / "out"
+    progress = []
+    with open_archive(src) as r:
+        r.extract_all(
+            dest,
+            filter=lambda m: None if m.name == "b.txt" else m,
+            on_progress=progress.append,
+        )
+    last = progress[-1]
+    assert last.members_total == 3
+    assert last.members_done == 3
+    assert not (dest / "b.txt").exists()
+
+
+def test_extract_one_shot_from_non_seekable_pipe(tmp_path: Path) -> None:
+    # The one-shot extract() auto-selects streaming mode for a non-seekable source:
+    # extraction is a single forward pass, so it needs no random access.
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = _tar_bytes([("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz")
+    dest = tmp_path / "out"
+    results = extract(NonSeekableBytesIO(raw), dest)
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert (dest / "b.txt").read_bytes() == b"world"
+    assert {r.status for r in results} == {ExtractionStatus.EXTRACTED}
+
+
 # ---------------------------------------------------------------------------
 # TAR symlinks (tasks 3.4, 4.5)
 # ---------------------------------------------------------------------------

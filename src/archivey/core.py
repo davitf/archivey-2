@@ -159,21 +159,28 @@ def open_archive(
             archive_name=archive_name,
         )
 
-    # Fail fast for a seek-requiring backend on a non-seekable source (the access-mode
-    # contract: streaming=False does not implicitly buffer). Per-backend opt-in only:
-    # TAR may open non-seekable sources under streaming=True; ZIP/ISO still fail fast.
-    if (
-        backend_cls.REQUIRES_SEEK
-        and not (streaming and backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE)
-        and is_stream(open_source)
-        and not is_seekable(open_source)
-    ):
-        raise StreamNotSeekableError(
-            f"Format {format!r} requires a seekable source, but the given stream is not "
-            f"seekable. Buffer it to disk or a BytesIO and reopen.",
-            source_format=format,
-            archive_name=archive_name,
-        )
+    # Fail fast on a non-seekable source (the access-mode contract: streaming=False
+    # promises repeatable random access, which a single forward pass cannot honor, and
+    # the library never implicitly buffers). Under streaming=True the source is usable
+    # only when the backend can walk its format front-to-back (TAR, single-file codecs);
+    # a trailing-index format (ZIP central directory, ISO descriptors) cannot.
+    if is_stream(open_source) and not is_seekable(open_source):
+        if not streaming:
+            raise StreamNotSeekableError(
+                f"Random access (streaming=False) requires a seekable source. Open with "
+                f"streaming=True for a single forward pass over this {format!r} stream, "
+                f"or buffer it to disk or a BytesIO and reopen.",
+                source_format=format,
+                archive_name=archive_name,
+            )
+        if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
+            raise StreamNotSeekableError(
+                f"Format {format!r} cannot be read from a non-seekable source even in "
+                f"streaming mode (its index/metadata is not at the front of the stream). "
+                f"Buffer it to disk or a BytesIO and reopen.",
+                source_format=format,
+                archive_name=archive_name,
+            )
 
     # Normalize the stream origin once for every backend: a seekable stream positioned
     # mid-file is wrapped so the backend sees tell() == 0 at the archive's first byte
@@ -222,11 +229,23 @@ def extract(
     open reader instead. Extraction is safe-by-default: ``ExtractionPolicy.STRICT`` and
     ``OverwritePolicy.ERROR``, with the decompression-bomb guards active.
 
+    A **non-seekable** stream source (a pipe, a socket) is opened in streaming mode
+    automatically: extraction is a single forward pass, so it needs no random access, and
+    failing fast would reject a source it can perfectly well consume. A seekable source
+    keeps random-access mode — that preserves the re-readable second pass that recovers a
+    hardlink whose target failed or preceded it in archive order.
+
     Returns one :class:`~archivey.ExtractionResult` per member processed.
     """
+    # Peek at the resolved open target only to pick the access mode; open_archive
+    # re-resolves the original source itself (resolution is cheap and idempotent).
+    resolved_target = resolve_source(source).open_source
+    streaming = is_stream(resolved_target) and not is_seekable(resolved_target)
+
     with open_archive(
         source,
         format=format,
+        streaming=streaming,
         password=password,
         encoding=encoding,
         config=config,

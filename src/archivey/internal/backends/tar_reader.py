@@ -441,9 +441,8 @@ class TarReadBackend(ReadBackend):
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(257, b"ustar", ArchiveFormat.TAR),
     )
-    # Random-access open needs a seekable source; forward-only streaming is allowed on
-    # non-seekable sources when streaming=True (see SUPPORTS_STREAMING_NON_SEEKABLE).
-    REQUIRES_SEEK = True
+    # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
+    # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True
 
     def open_read(

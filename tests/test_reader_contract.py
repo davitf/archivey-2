@@ -141,6 +141,49 @@ def test_contains_is_identity_and_mode_free() -> None:
         "a.txt" in reader  # noqa: B015 - the expression itself must raise
 
 
+class _OpenCountingReader(_IndexedReader):
+    """Counts ``_open_member`` calls to observe stream laziness."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self.opens = 0
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
+        yield ArchiveMember(type=MemberType.FILE, name="b.txt", size=1)
+
+    def _open_member(self, member: ArchiveMember) -> BinaryIO:
+        self.opens += 1
+        return io.BytesIO(b"x")
+
+
+def test_stream_members_opens_lazily() -> None:
+    # The yielded streams open the member's data on first read, not at yield time: a
+    # consumer that skips a member (or a selector that filters it) pays nothing for it.
+    reader = _OpenCountingReader(ArchiveFormat.ZIP, False, "x.zip")
+    for _member, stream in reader.stream_members():
+        assert stream is not None
+    assert reader.opens == 0  # iterated, never read -> never opened
+
+    reader = _OpenCountingReader(ArchiveFormat.ZIP, False, "x.zip")
+    read = {m.name: s.read() for m, s in reader.stream_members(["b.txt"]) if s}
+    assert read == {"b.txt": b"x"}
+    assert reader.opens == 1  # only the selected member was opened
+
+
+def test_open_rejects_member_from_another_reader() -> None:
+    # The same identity rule as `member in reader`: a member object yielded by a
+    # different reader must not open here — without the check it would resolve against
+    # the wrong offsets/paths and could silently return the wrong data.
+    reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
+    other = _IndexedReader(ArchiveFormat.ZIP, False, "y.zip")
+    foreign = other.members()[0]
+    with pytest.raises(ValueError, match="does not belong to this reader"):
+        reader.open(foreign)
+    # The same name opens fine when looked up on the right reader.
+    assert reader.read("a.txt") == b"x"
+
+
 # --- get_members_if_available: never scans; safe on any reader ----------------------
 
 

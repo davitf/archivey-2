@@ -202,11 +202,24 @@ def test_archive_info() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_non_seekable_gzip_reads_fine() -> None:
-    # Single-file formats (except .Z) read from a non-seekable source.
+def test_non_seekable_gzip_requires_streaming_mode() -> None:
+    # Random access (streaming=False) promises repeatable open()/read(), which a
+    # non-seekable source cannot honor (one decompression pass) — fail fast at open,
+    # like every other format (it used to open and then silently return an empty
+    # stream on a re-read).
     data = gzip.compress(b"streamed payload")
-    with open_archive(NonSeekableBytesIO(data)) as ar:
-        assert ar.read(ar.members()[0]) == b"streamed payload"
+    with pytest.raises(StreamNotSeekableError):
+        open_archive(NonSeekableBytesIO(data))
+
+
+def test_non_seekable_gzip_streams_fine() -> None:
+    # Single-file formats (except .Z) stream from a non-seekable source under
+    # streaming=True (the mode a non-seekable source requires).
+    data = gzip.compress(b"streamed payload")
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+        ((member, stream),) = list(ar.stream_members())
+        assert stream is not None
+        assert stream.read() == b"streamed payload"
 
 
 @requires("uncompresspy", "ncompress")
@@ -306,20 +319,26 @@ def test_explicit_format_bypasses_detection() -> None:
 # independent of which optional accelerators the environment has installed.
 
 
+def _read_single_streamed_member(ar) -> bytes:
+    ((_member, stream),) = list(ar.stream_members())
+    assert stream is not None
+    return stream.read()
+
+
 def test_truncated_gzip_raises_truncated() -> None:
     full = gzip.compress(b"streamed payload" * 1000)
     truncated = full[: len(full) // 2]  # gzip magic intact -> detection picks GZ
-    with open_archive(NonSeekableBytesIO(truncated)) as ar:
+    with open_archive(NonSeekableBytesIO(truncated), streaming=True) as ar:
         with pytest.raises(TruncatedError):
-            ar.read(ar.members()[0])
+            _read_single_streamed_member(ar)
 
 
 def test_corrupt_gzip_raises_corruption() -> None:
     data = bytearray(gzip.compress(b"streamed payload" * 100))
     data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
-    with open_archive(NonSeekableBytesIO(bytes(data))) as ar:
+    with open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar:
         with pytest.raises(CorruptionError):
-            ar.read(ar.members()[0])
+            _read_single_streamed_member(ar)
 
 
 def test_open_from_mid_positioned_stream() -> None:
