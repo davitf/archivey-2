@@ -28,7 +28,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, cast
+from typing import TYPE_CHECKING, BinaryIO, Callable
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import (
@@ -49,6 +49,7 @@ from archivey.internal.extraction_types import (
     OverwritePolicy,
 )
 from archivey.internal.filters import POLICY_TRANSFORMS, check_universal
+from archivey.internal.selection import normalize_member_selector
 from archivey.types import ArchiveMember, MemberType
 
 if TYPE_CHECKING:
@@ -235,7 +236,7 @@ class ExtractionCoordinator:
             source=reader,
         )
 
-        selector = self._normalize_selector()
+        selector = normalize_member_selector(self._members)
 
         all_members = reader.get_members_if_available()
         members_total = len(all_members) if all_members is not None else None
@@ -309,27 +310,6 @@ class ExtractionCoordinator:
         return results
 
     # --- selection / transform -----------------------------------------------------
-
-    def _normalize_selector(self) -> Callable[[ArchiveMember], bool] | None:
-        members = self._members
-        if members is None:
-            return None
-        # A predicate is callable; a names/members collection is not.
-        if callable(members):
-            return cast("Callable[[ArchiveMember], bool]", members)
-        # Collection form: a str entry matches EVERY member with that name (duplicates
-        # included); an ArchiveMember entry matches only that exact member, by object
-        # identity (id-set — members are deliberately unhashable), so with duplicate
-        # names the caller can select one specific occurrence.
-        collection = cast("Collection[str | ArchiveMember]", members)
-        names: set[str] = set()
-        identities: set[int] = set()
-        for entry in collection:
-            if isinstance(entry, ArchiveMember):
-                identities.add(id(entry))
-            else:
-                names.add(entry)
-        return lambda member: member.name in names or id(member) in identities
 
     def _transform(
         self, original: ArchiveMember, dest_root: Path
