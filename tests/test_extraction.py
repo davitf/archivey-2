@@ -505,6 +505,60 @@ def test_entry_count_bomb(tmp_path: Path) -> None:
         extract(src, dest, limits=ExtractionLimits(max_entries=10), on_error=OnError.CONTINUE)
 
 
+def test_selector_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
+    # Only members actually written count toward max_entries (resolved 2026-07 decision):
+    # a member excluded by the selector creates nothing on disk, so a tiny cap survives a
+    # huge archive when only one member is selected.
+    src = tmp_path / "many.zip"
+    _write_zip(src, {f"f{i}.txt": b"x" for i in range(20)})
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["f0.txt"], limits=ExtractionLimits(max_entries=1)
+        )
+    assert (dest / "f0.txt").read_bytes() == b"x"
+    assert len(results) == 1
+
+
+def test_filter_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
+    # A member the user filter drops (returns None) likewise creates nothing on disk and
+    # must not consume the entry-count budget.
+    src = tmp_path / "many.zip"
+    _write_zip(src, {f"f{i}.txt": b"x" for i in range(20)})
+    dest = tmp_path / "out"
+
+    def keep_one(m: ArchiveMember) -> ArchiveMember | None:
+        return m if m.name == "f0.txt" else None
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, filter=keep_one, limits=ExtractionLimits(max_entries=1)
+        )
+    assert (dest / "f0.txt").read_bytes() == b"x"
+    assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
+
+
+def test_rejected_members_do_not_count_toward_max_entries(tmp_path: Path) -> None:
+    # A member rejected by the universal safety check writes nothing, so it must not
+    # consume the entry-count budget either: two good files + one hostile member with
+    # max_entries=2 completes under CONTINUE (before the fix the rejected member counted
+    # and tripped the guard on the second good file).
+    src = tmp_path / "a.zip"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("good1.txt", b"a")
+        z.writestr("../evil.txt", b"bad")
+        z.writestr("good2.txt", b"b")
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, limits=ExtractionLimits(max_entries=2), on_error=OnError.CONTINUE
+        )
+    statuses = {res.member.name: res.status for res in results}
+    assert statuses["good1.txt"] is ExtractionStatus.EXTRACTED
+    assert statuses["good2.txt"] is ExtractionStatus.EXTRACTED
+    assert ExtractionStatus.REJECTED in statuses.values()
+
+
 # ---------------------------------------------------------------------------
 # Progress callback
 # ---------------------------------------------------------------------------
