@@ -6,9 +6,12 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, TypeGuard
 
 from archivey.internal.streams.streamtools import is_stream, source_name
+
+SourceItem = str | Path | BinaryIO
+SourceSequence = Sequence[SourceItem]
 
 _7Z_VOLUME_RE = re.compile(r"^(?P<base>.+\.7z)\.(?P<part>\d+)$", re.IGNORECASE)
 _RAR_PART_RE = re.compile(r"^(?P<base>.+)\.part(?P<part>\d+)\.rar$", re.IGNORECASE)
@@ -41,8 +44,9 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
             (
                 candidate
                 for candidate in parent.iterdir()
-                if candidate.is_file() and _7Z_VOLUME_RE.match(candidate.name)
-                and _7Z_VOLUME_RE.match(candidate.name).group("base").lower() == base.lower()
+                if candidate.is_file()
+                and (vol_match := _7Z_VOLUME_RE.match(candidate.name)) is not None
+                and vol_match.group("base").lower() == base.lower()
             ),
             key=lambda candidate: _part_number_from_name(candidate.name),
         )
@@ -106,7 +110,7 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     return None
 
 
-OpenSourceInput = str | Path | BinaryIO | Sequence[str | Path | BinaryIO]
+OpenSourceInput = SourceItem | SourceSequence
 
 
 @dataclass(frozen=True)
@@ -118,13 +122,13 @@ class ResolvedSource:
     volume_count: int
 
 
-def _coerce_path_or_stream(item: str | Path | BinaryIO) -> Path | BinaryIO:
+def _coerce_path_or_stream(item: SourceItem) -> Path | BinaryIO:
     if isinstance(item, (str, Path)):
         return Path(item)
     return item
 
 
-def _is_source_sequence(source: OpenSourceInput) -> bool:
+def _is_source_sequence(source: OpenSourceInput) -> TypeGuard[SourceSequence]:
     if isinstance(source, (str, Path, bytes)):
         return False
     if is_stream(source):
@@ -142,7 +146,13 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
             return _resolve_single(items[0])
         first = items[0]
         return ResolvedSource(first, source_name(first), len(items))
-    return _resolve_single(_coerce_path_or_stream(source))
+    if isinstance(source, str):
+        return _resolve_single(Path(source))
+    if isinstance(source, Path):
+        return _resolve_single(source)
+    if not is_stream(source):
+        raise TypeError(f"unsupported source type: {type(source)!r}")
+    return _resolve_single(source)
 
 
 def _resolve_single(source: Path | BinaryIO) -> ResolvedSource:
