@@ -21,6 +21,9 @@ def normalize_member_selector(
     identities: set[tuple[str, int]] = set()
     for entry in collection:
         if isinstance(entry, ArchiveMember):
+            # Match by (archive_id, member_id) identity. A member that carries no ids
+            # (never registered by a reader — e.g. hand-built) is deliberately dropped:
+            # it can't correspond to any real member, so it silently matches nothing.
             if entry._archive_id is not None and entry._member_id is not None:
                 identities.add((entry._archive_id, entry._member_id))
         else:

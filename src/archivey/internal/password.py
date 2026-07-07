@@ -58,14 +58,10 @@ class _PasswordCandidates:
             self._known_good.remove(password)
         self._known_good.insert(0, password)
 
-    def iter_candidates(self, member: ArchiveMember | None) -> Iterator[bytes]:
+    def iter_candidates(self) -> Iterator[bytes]:
         """Yield passwords to try for one encrypted unit (known-good, then candidates)."""
         seen: set[bytes] = set()
-        for password in self._known_good:
-            if password not in seen:
-                seen.add(password)
-                yield password
-        for password in self._candidates:
+        for password in (*self._known_good, *self._candidates):
             if password not in seen:
                 seen.add(password)
                 yield password
@@ -77,11 +73,19 @@ class _PasswordCandidates:
         *,
         on_failure: Callable[[bytes, Exception], EncryptionError | None] | None = None,
     ) -> _T:
-        """Try passwords in order; consult the provider after static candidates fail."""
+        """Try passwords in order; consult the provider after static candidates fail.
+
+        ``decrypt`` must return a non-``None`` value on success: ``attempt`` uses
+        ``None`` as its "wrong password, try the next candidate" sentinel, so a
+        decrypt callable that returned ``None`` for a valid password would be treated
+        as a failure and retried.
+        """
         last_error: EncryptionError | None = None
+        tried: set[bytes] = set()
 
         def try_password(password: bytes) -> _T | None:
             nonlocal last_error
+            tried.add(password)
             try:
                 result = decrypt(password)
             except EncryptionError as exc:
@@ -94,7 +98,7 @@ class _PasswordCandidates:
             self.record_success(password)
             return result
 
-        for password in self.iter_candidates(member):
+        for password in self.iter_candidates():
             result = try_password(password)
             if result is not None:
                 return result
@@ -104,7 +108,13 @@ class _PasswordCandidates:
             raw = self._provider(PasswordRequest(member=member, attempt=attempt))
             if raw is None:
                 break
-            result = try_password(_to_bytes(raw))
+            password = _to_bytes(raw)
+            # A provider that repeats a password we already tried can make no further
+            # progress; stop rather than re-running an expensive decrypt (and, for 7z,
+            # an expensive key derivation) on the same input forever.
+            if password in tried:
+                break
+            result = try_password(password)
             if result is not None:
                 return result
             attempt += 1

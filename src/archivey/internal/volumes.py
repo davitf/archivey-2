@@ -90,9 +90,14 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     if match is not None:
         base = match.group("base")
         first = parent / f"{base}.rar"
-        siblings: list[Path] = []
-        if first.is_file():
-            siblings.append(first)
+        # The first volume of an old-scheme set is always `<base>.rar`; the `.rNN`
+        # files are its continuation volumes. Without the first volume present we can't
+        # anchor the set at its head (siblings[0] must be volume 1), so a bare `.rNN`
+        # with no `.rar` is treated as a lone file — mirrors the `.rar` branch above,
+        # which requires `.r00` to exist.
+        if not first.is_file():
+            return None
+        siblings: list[Path] = [first]
         siblings.extend(
             sorted(
                 (
