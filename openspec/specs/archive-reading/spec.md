@@ -291,7 +291,11 @@ def read(self, member: str | ArchiveMember) -> bytes: ...
 def open(self, member: str | ArchiveMember) -> BinaryIO: ...   # streaming; caller must close
 ```
 
-Both methods accept either a member name string or an `ArchiveMember` object.
+Both methods accept either a member name string or an `ArchiveMember` object. An unknown
+name raises `KeyError`; an `ArchiveMember` object that was **not yielded by this reader**
+raises `ValueError` — the same identity rule as `member in reader`. (Without the check, a
+foreign member would resolve against this reader's offsets/paths and could silently
+return the wrong data.)
 
 **Integrity on full reads.** When a member carries a verifiable digest, reading it fully
 verifies the content (see `compressed-streams`). A mismatch is surfaced **after** all
@@ -319,6 +323,11 @@ limit — another reason to prefer `open()`/`stream_members()` for anything not 
 - **WHEN** `ar.open("data.bin")` is called
 - **THEN** a `BinaryIO` stream is returned; the caller reads from it and closes it when done
 
+#### Scenario: opening a member from a different reader is rejected
+
+- **WHEN** `ar.open(member)` is called with an `ArchiveMember` yielded by a *different* reader
+- **THEN** `ValueError` is raised (never data from the wrong entry)
+
 ---
 
 ### Requirement: Bounded-memory sequential streaming via stream_members
@@ -340,7 +349,14 @@ def stream_members(
 
 `members` **selects** which members to yield — a collection of members/names, or a
 predicate `Callable[[ArchiveMember], bool]`; `None` yields all. Streams are opened lazily,
-so unselected members cost nothing.
+so unselected members cost nothing. A consequence: an open-time failure (e.g. a wrong or
+missing password for an encrypted member) surfaces on the stream's **first read**, not
+while iterating — a caller that only lists names never triggers it.
+
+#### Scenario: skipped members are never opened
+
+- **WHEN** `stream_members(members=...)` iterates past members the selector excludes (or the caller never reads a yielded stream)
+- **THEN** those members' data is never opened or decompressed, and an encrypted member's password is never requested for them
 
 `stream_members()` deliberately takes **only the selector**, not a transform/sanitize
 `MemberFilter`. It is a pure generator that yields the **original, mutable**

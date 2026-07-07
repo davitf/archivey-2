@@ -57,3 +57,18 @@ def test_no_warning_when_unchanged(caplog: pytest.LogCaptureFixture) -> None:
         # A faithful name with an internal ".." is no longer rewritten, so no warning.
         normalize_member_name("foo/../bar", MemberType.FILE, backslash_is_separator=False)
     assert not caplog.records
+
+
+def test_link_target_backslash_is_literal() -> None:
+    # A link target follows the same backslash rule as member names: the backend already
+    # converted separators where the format treats "\" as one, so here it is a literal
+    # filename character (a POSIX tar can legitimately contain "b\c" as a name).
+    from archivey.internal.naming import resolve_link_target_name
+
+    assert (
+        resolve_link_target_name("dir/link", "b\\c", MemberType.SYMLINK) == "dir/b\\c"
+    )
+    assert (
+        resolve_link_target_name("link", "dir\\file", MemberType.HARDLINK)
+        == "dir\\file"
+    )

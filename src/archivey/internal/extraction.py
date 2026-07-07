@@ -238,7 +238,17 @@ class ExtractionCoordinator:
 
         selector = normalize_member_selector(self._members)
 
+        # Progress totals cover what this call will actually attempt: when a member list
+        # is free (an upfront index) and a selector is given, totals count only the
+        # selected members — so members_done can reach members_total and the byte
+        # estimate matches the selected output. The selector is therefore evaluated an
+        # extra time per member here (it must be a pure predicate; the collection form
+        # always is). The user `filter` runs only during extraction and cannot be
+        # pre-applied, so members it skips still count as processed below. Streaming
+        # readers with no free list report None totals.
         all_members = reader.get_members_if_available()
+        if all_members is not None and selector is not None:
+            all_members = [m for m in all_members if selector(m)]
         members_total = len(all_members) if all_members is not None else None
         total_estimate = self._estimate_total_bytes(all_members)
 
@@ -249,37 +259,44 @@ class ExtractionCoordinator:
         members_done = 0
 
         for original, stream in reader._iter_with_data():
+            # Selector-skipped members are invisible to progress and results alike: they
+            # are not part of what this call attempts (and were excluded from the totals
+            # above). Checked outside the try so the per-member accounting below runs for
+            # exactly the selected members.
+            if selector is not None and not selector(original):
+                self._close(stream)
+                continue
+
             try:
-                if selector is not None and not selector(original):
-                    continue
-
                 transformed = self._transform(original, dest_root)
-                if transformed is None:
-                    continue  # user filter skipped this member (deliberate exclusion)
+                if transformed is not None:
+                    # Entry-count guard + ratio bookkeeping. Counted only once the
+                    # selector and user filter have accepted the member (and the
+                    # universal check inside _transform has passed), immediately before
+                    # writing begins — so selector-skipped, filter-skipped, and rejected
+                    # members create nothing on disk and do not count toward max_entries
+                    # (resolved 2026-07 decision).
+                    tracker.start_member(original)
 
-                # Entry-count guard + ratio bookkeeping. Counted only once the selector and
-                # user filter have accepted the member (and the universal check inside
-                # _transform has passed), immediately before writing begins — so
-                # selector-skipped, filter-skipped, and rejected members create nothing on
-                # disk and do not count toward max_entries (resolved 2026-07 decision).
-                tracker.start_member(original)
-
-                result_index = len(results)
-                results.append(
-                    ExtractionResult(original, None, ExtractionStatus.FAILED, None)
-                )
-                results[result_index] = self._write_member(
-                    original,
-                    transformed,
-                    stream,
-                    dest,
-                    dest_root,
-                    tracker,
-                    source_paths,
-                    orphans,
-                    forward_only,
-                    result_index,
-                )
+                    result_index = len(results)
+                    results.append(
+                        ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+                    )
+                    results[result_index] = self._write_member(
+                        original,
+                        transformed,
+                        stream,
+                        dest,
+                        dest_root,
+                        tracker,
+                        source_paths,
+                        orphans,
+                        forward_only,
+                        result_index,
+                    )
+                # A filter-skipped member (transformed is None) records no result, but
+                # still counts as processed for progress below — it is one of the
+                # selected members this pass walked over.
             except _AlwaysStopExtractionError:
                 raise
             except (ArchiveyError, OSError) as exc:

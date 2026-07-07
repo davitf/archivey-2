@@ -16,6 +16,7 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.logs import backends as logger
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.types import (
@@ -64,10 +65,19 @@ class DirectoryReader(BaseArchiveReader):
     def _scan(self, directory: Path, rel_prefix: str) -> Iterator[ArchiveMember]:
         # os.scandir yields DirEntry objects whose stat() is cached, so we avoid a
         # separate os.stat()/os.lstat() syscall per entry.
+        #
+        # Errors: a live filesystem can change under the walk, so an entry (or a whole
+        # subdirectory) that vanished between being listed and being inspected is
+        # skipped with a warning — a race, not an error. Every other OSError (permission
+        # denied, I/O failure) propagates unchanged: silently dropping entries would
+        # present an incomplete listing as complete (see the design authority in
+        # `openspec/project.md` — no silent guesses — and `error-handling`'s rule that
+        # genuine I/O errors are never swallowed or reclassified).
         try:
             with os.scandir(directory) as it:
                 entries = sorted(it, key=lambda e: e.name)
-        except OSError:
+        except FileNotFoundError:
+            logger.warning("Directory vanished during scan, skipping: %r", str(directory))
             return
 
         # Emit all non-directory entries at this level first, then descend into the
@@ -78,12 +88,13 @@ class DirectoryReader(BaseArchiveReader):
             rel_path = rel_prefix + entry.name
             try:
                 st = entry.stat(follow_symlinks=False)
-            except OSError:
+            except FileNotFoundError:
+                logger.warning("Entry vanished during scan, skipping: %r", entry.path)
                 continue
 
             if entry.is_symlink():
                 yield self._make_member(
-                    rel_path, st, MemberType.SYMLINK, os.readlink(entry.path)
+                    rel_path, st, MemberType.SYMLINK, self._read_link_target(entry.path)
                 )
             elif _is_junction(entry):
                 # A Windows NTFS junction points at a directory but is a reparse point,
@@ -93,7 +104,7 @@ class DirectoryReader(BaseArchiveReader):
                     rel_path,
                     st,
                     MemberType.SYMLINK,
-                    os.readlink(entry.path),
+                    self._read_link_target(entry.path),
                     is_junction=True,
                 )
             elif entry.is_dir(follow_symlinks=False):
@@ -110,6 +121,20 @@ class DirectoryReader(BaseArchiveReader):
         for member, path in subdirs:
             yield member
             yield from self._scan(path, member.name)
+
+    @staticmethod
+    def _read_link_target(path: str) -> str:
+        """The symlink/junction target, with separators normalized like member names.
+
+        On Windows ``os.readlink`` returns the target with ``\\`` separators; convert
+        them to ``/`` so link targets live in the same namespace as member names (where
+        the separator conversion is likewise applied only for Windows-origin paths — on
+        POSIX a backslash is a literal filename character and is kept).
+        """
+        target = os.readlink(path)
+        if os.name == "nt":
+            target = target.replace("\\", "/")
+        return target
 
     def _make_member(
         self,

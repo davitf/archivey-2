@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Iterator, Mapping
@@ -189,7 +190,11 @@ class BaseArchiveReader(ArchiveReader):
         self._streaming = streaming
         self._archive_name = archive_name
         self._config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
-        self._archive_id = str(id(self))
+        # A random, opaque identity token (not id(self), which the allocator can reuse
+        # after a reader is garbage-collected — a member of a dead reader must never
+        # pass another reader's identity check; and not a plain counter, whose small
+        # sequential values invite confusion with member_id or hardcoding).
+        self._archive_id = uuid.uuid4().hex
         # The archive's source, recorded by backends that have one (path or stream);
         # backs the generalized compressed_source_size property below.
         self._source: Path | BinaryIO | None = None
@@ -226,19 +231,38 @@ class BaseArchiveReader(ArchiveReader):
         When ``streaming=True`` and the backend does not override, this default pulls
         from the shared instance-held progressive pass and opens each file member on
         demand.
+
+        The yielded streams are **lazy**: the member's data is opened on the first read,
+        not at yield time. A consumer that skips a member (a ``stream_members`` selector,
+        a filtered extraction) therefore pays nothing for it — no seek to its data, no
+        decompressor setup — and an open-time error (e.g. a wrong password) surfaces only
+        if the member is actually read, not merely iterated past.
         """
-        if self._streaming:
-            for member in self._begin_forward_pass():
-                if member.is_file:
-                    yield member, self._open_member(member)
-                else:
-                    yield member, None
-            return
-        for member in self._get_members_registered():
+        members = (
+            self._begin_forward_pass() if self._streaming
+            else self._get_members_registered()
+        )
+        for member in members:
             if member.is_file:
-                yield member, self._open_member(member)
+                yield member, self._lazy_member_stream(member)
             else:
                 yield member, None
+
+    def _lazy_member_stream(self, member: ArchiveMember) -> BinaryIO:
+        """A stream over ``member``'s data that defers ``_open_member`` to the first read.
+
+        Closing it before any read never opens the member at all. ``_open_member``
+        already translates and stamps its own errors, and ``ArchiveStream`` passes an
+        ``ArchiveyError`` through (re-stamping is a no-op), so deferral does not change
+        what a failed open raises — only when.
+        """
+        return ArchiveStream(
+            lambda: self._open_member(member),
+            translate=self._translate_exception,
+            stamp=lambda exc: self._stamp_error_context(exc, member.name),
+            lazy=True,
+            size=member.size,
+        )
 
     @abstractmethod
     def _open_member(self, member: ArchiveMember) -> BinaryIO: ...

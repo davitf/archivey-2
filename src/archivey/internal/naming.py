@@ -80,17 +80,23 @@ def resolve_link_target_name(
     (it points outside the archive namespace) or one that ``..``-escapes the archive
     root. The caller looks the result up against normalized member names; directory
     members carry a trailing ``/`` in their names, so lookups should try both forms.
+
+    A backslash in ``target`` is a literal character, exactly as in member names: the
+    backend that decoded the member already converted ``\\`` to ``/`` where the source
+    format/entry treats it as a separator (see :func:`normalize_member_name`'s
+    ``backslash_is_separator``), and applies the same rule to the link target it stores.
+    Converting unconditionally here would corrupt a POSIX-origin target that legitimately
+    contains a backslash.
     """
     if not target:
         return None
-    normalized_target = target.replace("\\", "/")
     if member_type == MemberType.SYMLINK:
-        if normalized_target.startswith("/"):
+        if target.startswith("/"):
             return None  # absolute: outside the archive namespace
         base_dir = posixpath.dirname(link_name.rstrip("/"))
-        joined = posixpath.join(base_dir, normalized_target)
+        joined = posixpath.join(base_dir, target)
     else:
-        joined = normalized_target
+        joined = target
     resolved = posixpath.normpath(joined)
     if resolved in (".", "/") or resolved.startswith(("../", "/")) or resolved == "..":
         return None  # escapes the archive root (or names the root itself)

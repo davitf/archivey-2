@@ -222,11 +222,23 @@ def extract(
     open reader instead. Extraction is safe-by-default: ``ExtractionPolicy.STRICT`` and
     ``OverwritePolicy.ERROR``, with the decompression-bomb guards active.
 
+    A **non-seekable** stream source (a pipe, a socket) is opened in streaming mode
+    automatically: extraction is a single forward pass, so it needs no random access, and
+    failing fast would reject a source it can perfectly well consume. A seekable source
+    keeps random-access mode — that preserves the re-readable second pass that recovers a
+    hardlink whose target failed or preceded it in archive order.
+
     Returns one :class:`~archivey.ExtractionResult` per member processed.
     """
+    # Peek at the resolved open target only to pick the access mode; open_archive
+    # re-resolves the original source itself (resolution is cheap and idempotent).
+    resolved_target = resolve_source(source).open_source
+    streaming = is_stream(resolved_target) and not is_seekable(resolved_target)
+
     with open_archive(
         source,
         format=format,
+        streaming=streaming,
         password=password,
         encoding=encoding,
         config=config,

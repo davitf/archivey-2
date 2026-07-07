@@ -38,6 +38,26 @@ The system SHALL expose the following cost and capability properties for every o
 - **WHEN** a directory path is opened with `archivey.open_archive()`
 - **THEN** `cost.listing_cost` is `ListingCost.INDEXED`, `cost.access_cost` is `AccessCost.DIRECT`, and `cost.stream_capability` is `StreamCapability.SEEKABLE`
 
+### Requirement: Scan errors are loud, races are tolerated
+
+The system SHALL propagate a genuine `OSError` (permission denied, I/O failure) raised
+while walking the directory tree — silently dropping entries would present an incomplete
+listing as complete (see the design authority: no silent guesses; and `error-handling`:
+genuine I/O errors are not reclassified or swallowed). The one tolerated case is a
+**race**: an entry (or subdirectory) that vanished between being listed and being
+inspected is skipped with a warning on the `archivey.backends` logger — a live filesystem
+changing under the walk is not an error.
+
+#### Scenario: unreadable subdirectory fails the listing
+
+- **WHEN** walking the tree hits a subdirectory the process may not read (`PermissionError`)
+- **THEN** the error propagates unchanged (no silently truncated listing)
+
+#### Scenario: entry deleted mid-walk is skipped with a warning
+
+- **WHEN** an entry disappears between directory listing and its `stat`
+- **THEN** it is skipped, a warning is logged, and the walk continues
+
 ### Requirement: Support use in conversion pipelines
 
 The system SHALL allow a directory reader to act as the source in a conversion pipeline via `writer.add_members(reader)`, enabling a directory to be archived into any writable format without intermediate buffering.
