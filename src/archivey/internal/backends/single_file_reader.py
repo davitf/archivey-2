@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from typing import BinaryIO, Iterator
 
+from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -26,7 +27,6 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.exceptions import ArchiveyError
-from archivey.config import ArchiveyConfig
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.registry import register_reader

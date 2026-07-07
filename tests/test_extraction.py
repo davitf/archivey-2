@@ -18,7 +18,6 @@ from types import SimpleNamespace
 import pytest
 
 from archivey import (
-    ArchiveyConfig,
     ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,

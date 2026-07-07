@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterator, Mapping
 
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.exceptions import (
     ArchiveyError,
@@ -30,7 +31,6 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     source_byte_size,
 )
-from archivey.config import ArchiveyConfig, DEFAULT_ARCHIVEY_CONFIG, ExtractionLimits
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, cast
 
+from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -30,7 +31,6 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
-from archivey.config import ArchiveyConfig
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import normalize_member_name

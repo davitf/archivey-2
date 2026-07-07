@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from archivey.config import (
+    DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
-    DEFAULT_ARCHIVEY_CONFIG,
 )
 
 __all__ = [
