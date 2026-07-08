@@ -419,6 +419,16 @@ def test_replace_recovers_when_dest_is_a_file(tmp_path: Path) -> None:
     assert (dest / "a.txt").read_bytes() == b"new"
 
 
+def test_extract_error_when_dest_is_a_file(tmp_path: Path) -> None:
+    """``_ensure_dest_root`` must not raise raw ``FileExistsError`` on a file dest."""
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.write_bytes(b"not a directory")
+    with pytest.raises(ExtractionError, match="not a directory"):
+        extract(src, dest, overwrite=OverwritePolicy.ERROR)
+
+
 def test_replace_symlink_no_write_through(tmp_path: Path) -> None:
     # A planted symlink at the destination path must be unlinked, not written through.
     src = tmp_path / "a.zip"

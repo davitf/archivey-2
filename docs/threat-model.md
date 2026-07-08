@@ -150,8 +150,8 @@ the destination path itself, replacing the extraction directory with a regular f
 ("poisoned dest"). `check_universal` now rejects non-directory members that name the
 extraction root; the parametrized fuzz loop also asserts the destination stays a
 directory after any successful extract. Unit coverage:
-`test_check_universal_rejects_root_named_file` in `tests/test_extraction.py`; regression
-fixture `test_mutated_archive_poisoned_dest_reextract` in `tests/test_mutation_fuzz.py`.
+`test_check_universal_rejects_root_named_file` and `test_extract_error_when_dest_is_a_file`
+in `tests/test_extraction.py`.
 
 ### O6. Nested-archive amplification
 

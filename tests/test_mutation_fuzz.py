@@ -27,9 +27,8 @@ Reproduce a single failure::
 
 **Stateful-dest bugs:** the loop gives every mutation a fresh extraction directory and
 checks that a successful extract leaves that root a directory (so a corrupt ``"."`` file
-member is caught here). Re-extracting to an already-poisoned destination — raw
-``FileExistsError`` from ``run()`` — still requires an explicit regression test; see
-``test_mutated_archive_poisoned_dest_reextract``.
+member is caught here). Re-extracting to a destination that already exists as a
+non-directory file is covered in ``tests/test_extraction.py`` (``_ensure_dest_root``).
 
 Run only one mutation kind across the corpus::
 
@@ -184,7 +183,6 @@ def _biased_truncate_cut(rng: Random, n: int) -> int:
 
 def apply_mutation(data: bytes, desc: str) -> bytes:
     """Rebuild mutated bytes from a mutation label (no RNG needed)."""
-    n = len(data)
     if desc.startswith("truncate@"):
         cut = int(desc.split("@", 1)[1])
         return data[:cut]
@@ -475,45 +473,3 @@ def test_mutations_fail_typed_or_succeed(
                 )
 
     _clear_active_mutation()
-
-
-def test_mutated_archive_poisoned_dest_reextract(tmp_path: Path) -> None:
-    """Regression: second ``extract_all`` to a dest already replaced by a file.
-
-    The parametrized fuzz loop catches the poison itself (root no longer a directory);
-    this test covers ``run()`` raising raw ``FileExistsError`` on re-extract.
-    """
-    entry = next(e for e in CORPUS if e.id == "adversarial-tar")
-    key = "tar.gz"
-    _skip_unless_runnable(entry, key)
-    data = corpus_archive_path(entry, key, tmp_path).read_bytes()
-    mutated = apply_mutation(data, "bitflip@107:0x10")
-    dest = tmp_path / "out"
-    dest.mkdir()
-    config = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF
-    )
-    limits = ExtractionLimits(
-        max_extracted_bytes=8 << 20, max_ratio=1000.0, max_entries=10_000
-    )
-
-    with open_archive(
-        io.BytesIO(mutated), format=FORMAT_KEYS[key], config=config
-    ) as ar:
-        ar.extract_all(
-            dest,
-            on_error=OnError.CONTINUE,
-            overwrite=OverwritePolicy.REPLACE,
-            limits=limits,
-        )
-    assert dest.is_file(), "fixture must poison the destination root"
-
-    with open_archive(
-        io.BytesIO(mutated), format=FORMAT_KEYS[key], config=config
-    ) as ar:
-        ar.extract_all(
-            dest,
-            on_error=OnError.CONTINUE,
-            overwrite=OverwritePolicy.REPLACE,
-            limits=limits,
-        )
