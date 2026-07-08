@@ -97,8 +97,8 @@ def _install_pycdlib_directory_cycle_guard() -> None:
 
     import collections
 
-    from pycdlib import dr as dr_mod
     import pycdlib.pycdlib as pcd_module
+    from pycdlib import dr as dr_mod
 
     orig_walk = pcd_module.PyCdlib._walk_directories
 
