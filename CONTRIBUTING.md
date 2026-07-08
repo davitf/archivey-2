@@ -38,7 +38,7 @@ an accelerator that's only installed at current versions). Run:
 uv sync --group dev --extra all && uv run --no-sync pytest
 
 # 2. Minimum supported versions — every declared dependency pinned to its floor
-#    (`pycdlib 1.14`, `zstandard 0.23`, …), so version-specific library bugs in the
+#    (`pycdlib 1.16`, `zstandard 0.23`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
 uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest
 

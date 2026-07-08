@@ -7,9 +7,8 @@ all-formats consistency the frozen DEV oracle used to provide, scoped to the mem
 contract.
 
 The payload is deliberately small (well under a 2 KiB ISO sector and not block-aligned), so
-a backend that over-reads — e.g. an ``readinto`` that walks past the logical end into a
-container's padding — is caught rather than masked by alignment. (This is exactly the
-``PyCdlibIO`` EOF-misreport the ISO backend works around.)
+a backend that over-reads — e.g. a ``readinto`` that walks past the logical end into a
+container's padding — is caught rather than masked by alignment.
 """
 
 from __future__ import annotations
