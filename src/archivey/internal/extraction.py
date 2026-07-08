@@ -665,19 +665,25 @@ class ExtractionCoordinator:
     # --- filesystem helpers --------------------------------------------------------
 
     def _ensure_dest_root(self, dest: Path) -> None:
-        """Ensure ``dest`` is a directory, honouring ``OverwritePolicy`` when it exists."""
-        # ``lexists`` (not ``exists``) so a dangling symlink at the dest path is handled
-        # here rather than surfacing as a raw FileExistsError from ``mkdir`` below.
+        """Ensure ``dest`` is a directory to extract into, creating it if absent.
+
+        A dest that resolves to a directory — a real directory or a symlink pointing at
+        one — is reused, and members land inside the resolved target (``run`` resolves
+        ``dest`` before writing). This matches ``tar -C``/``unzip -d`` and leaves the
+        caller's symlink in place; the dest root is trusted (unlike archive-internal
+        symlinks, which are never written through).
+
+        A dest that exists as anything else — a regular file, a symlink to a file, a
+        dangling symlink — is a hard error regardless of ``OverwritePolicy``: we never
+        delete it. Extraction is not an invitation to remove a path the caller pointed at
+        by mistake (e.g. a CLI given a file argument where a directory was meant).
+        """
+        if dest.is_dir():  # real directory or symlink resolving to one: reuse / follow
+            return
+        # ``lexists`` (not ``exists``) so a dangling symlink is caught here rather than
+        # surfacing as a raw FileExistsError from ``mkdir`` below.
         if os.path.lexists(dest):
-            if dest.is_dir() and not dest.is_symlink():
-                return  # already a real directory: reuse it
-            if self._overwrite in (OverwritePolicy.ERROR, OverwritePolicy.SKIP):
-                raise ExtractionError(
-                    f"Destination exists and is not a directory: {dest}"
-                )
-            # A symlink (even one resolving to a directory) or a plain file: remove the
-            # entry itself, never recurse through it.
-            dest.unlink()
+            raise ExtractionError(f"Destination exists and is not a directory: {dest}")
         dest.mkdir(parents=True, exist_ok=True)
 
     def _prepare_destination(

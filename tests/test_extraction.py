@@ -409,24 +409,69 @@ def test_overwrite_replace(tmp_path: Path) -> None:
     assert (dest / "a.txt").read_bytes() == b"new"
 
 
-def test_replace_recovers_when_dest_is_a_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "overwrite", [OverwritePolicy.REPLACE, OverwritePolicy.ERROR, OverwritePolicy.SKIP]
+)
+def test_error_when_dest_is_a_file_never_deletes_it(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """A file at the dest path is a hard error under every policy — never deleted.
+
+    Extracting must not remove a path the caller pointed at by mistake (e.g. a CLI given
+    a file where a directory was meant), and must not surface a raw ``FileExistsError``.
+    """
     src = tmp_path / "a.zip"
     _write_zip(src, {"a.txt": b"new"})
     dest = tmp_path / "out"
-    dest.write_bytes(b"not a directory")
-    extract(src, dest, overwrite=OverwritePolicy.REPLACE)
-    assert dest.is_dir()
-    assert (dest / "a.txt").read_bytes() == b"new"
-
-
-def test_extract_error_when_dest_is_a_file(tmp_path: Path) -> None:
-    """``_ensure_dest_root`` must not raise raw ``FileExistsError`` on a file dest."""
-    src = tmp_path / "a.zip"
-    _write_zip(src, {"a.txt": b"new"})
-    dest = tmp_path / "out"
-    dest.write_bytes(b"not a directory")
+    dest.write_bytes(b"important data")
     with pytest.raises(ExtractionError, match="not a directory"):
-        extract(src, dest, overwrite=OverwritePolicy.ERROR)
+        extract(src, dest, overwrite=overwrite)
+    assert dest.is_file()
+    assert dest.read_bytes() == b"important data"  # untouched
+
+
+@pytest.mark.parametrize(
+    "overwrite", [OverwritePolicy.REPLACE, OverwritePolicy.ERROR, OverwritePolicy.SKIP]
+)
+def test_error_when_dest_is_a_dangling_symlink_never_deletes_it(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """A dangling symlink at the dest is a hard error — the link is preserved, not removed.
+
+    ``lexists`` (not ``exists``) sees the broken link; otherwise ``exists`` reports False
+    and ``mkdir`` raises a raw ``FileExistsError`` on the occupied path.
+    """
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    target = tmp_path / "nonexistent-target"
+    dest.symlink_to(target)  # dangling: target does not exist
+    assert dest.is_symlink() and not dest.exists()
+
+    with pytest.raises(ExtractionError, match="not a directory"):
+        extract(src, dest, overwrite=overwrite)
+
+    assert dest.is_symlink()  # preserved, not unlinked
+    assert not target.exists()  # never created behind the link
+
+
+def test_dest_symlink_to_dir_is_followed_into_target(tmp_path: Path) -> None:
+    """A dest symlink pointing at a real directory is followed (tar -C / unzip -d).
+
+    Members land in the pointed-to directory and the caller's symlink is left in place;
+    the dest root is trusted, unlike archive-internal symlinks.
+    """
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    target = tmp_path / "real_target"
+    target.mkdir()
+    dest = tmp_path / "out"
+    dest.symlink_to(target)
+
+    extract(src, dest, overwrite=OverwritePolicy.REPLACE)
+
+    assert dest.is_symlink()  # symlink preserved, not replaced with a real dir
+    assert (target / "a.txt").read_bytes() == b"new"  # extracted into the target
 
 
 def test_replace_symlink_no_write_through(tmp_path: Path) -> None:
