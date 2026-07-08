@@ -140,6 +140,17 @@ def test_check_universal_rejects_null_byte(tmp_path: Path) -> None:
         check_universal(_member("a\x00b"), tmp_path)
 
 
+def test_check_universal_rejects_root_named_file(tmp_path: Path) -> None:
+    with pytest.raises(PathTraversalError, match="extraction root"):
+        check_universal(_member("."), tmp_path)
+    with pytest.raises(PathTraversalError, match="extraction root"):
+        check_universal(_member(""), tmp_path)
+
+
+def test_check_universal_allows_root_directory(tmp_path: Path) -> None:
+    check_universal(_member(".", type=MemberType.DIRECTORY), tmp_path)
+
+
 def test_check_universal_rejects_special_file(tmp_path: Path) -> None:
     with pytest.raises(SpecialFileError):
         check_universal(_member("dev", type=MemberType.OTHER), tmp_path)
@@ -395,6 +406,16 @@ def test_overwrite_replace(tmp_path: Path) -> None:
     dest.mkdir()
     (dest / "a.txt").write_bytes(b"old")
     extract(src, dest, overwrite=OverwritePolicy.REPLACE)
+    assert (dest / "a.txt").read_bytes() == b"new"
+
+
+def test_replace_recovers_when_dest_is_a_file(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.write_bytes(b"not a directory")
+    extract(src, dest, overwrite=OverwritePolicy.REPLACE)
+    assert dest.is_dir()
     assert (dest / "a.txt").read_bytes() == b"new"
 
 

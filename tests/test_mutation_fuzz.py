@@ -8,9 +8,16 @@ guards that), and never aborts the process. This is the pre-native-parser layer 
 fuzzing program (``docs/threat-model.md`` O5): the corpus doubles as the seed set, and
 the same seeds feed the Phase-6 Atheris harnesses later.
 
-Determinism: every mutation is derived from a seed of (entry id, format, harness
-version), so a failure reproduces exactly; the failing mutation is described in the
-assertion message (kind, offset) for standalone reproduction.
+Determinism: every mutation is derived from a seed of ``(entry id, format, harness
+version)``. Each mutation *kind* uses its own RNG sub-seed so raising
+``ARCHIVEY_FUZZ_MUTATIONS`` only appends more cases of that kind and never perturbs
+earlier ones. Bit flips, zero blocks, and junk are also reproducible from their
+``[desc]`` alone (offset / mask / size / hex junk are embedded in the label).
+
+Reproduce a single failure::
+
+    ARCHIVEY_FUZZ_SELECT='bitflip@305:0x20' \\
+    uv run pytest tests/test_mutation_fuzz.py -k adversarial-tar-tar.gz
 
 The format is passed explicitly to ``open_archive`` — a mutated magic must reach the
 *parser*, not bounce off detection — and detection itself is exercised separately with
@@ -29,6 +36,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from pathlib import Path
 from random import Random
 
@@ -59,6 +67,9 @@ HARNESS_VERSION = 1
 # range per combination. Raise locally for a deeper run: ARCHIVEY_FUZZ_MUTATIONS=50.
 _N = int(os.environ.get("ARCHIVEY_FUZZ_MUTATIONS", "6"))
 
+# Run only mutations whose description contains this substring (exact repro aid).
+_FUZZ_SELECT = os.environ.get("ARCHIVEY_FUZZ_SELECT")
+
 # Cap what we pull from any (possibly lying) member stream, and keep extraction cheap.
 _READ_CAP = 1 << 20
 _FUZZ_LIMITS = ExtractionLimits(
@@ -79,10 +90,52 @@ _PARAMS = [
     if key != "dir"
 ]
 
+_SAFE_OUT = re.compile(r"[^\w.@+-]+")
+
+
+def mutation_seed(entry: CorpusEntry, key: str) -> str:
+    """Stable seed string for an (archive, format) pair."""
+    return f"{entry.id}|{key}|v{HARNESS_VERSION}"
+
+
+def _rng(seed: str, kind: str) -> Random:
+    return Random(f"{seed}|{kind}")
+
+
+def _out_dir(tmp_path: Path, desc: str) -> Path:
+    """Fresh extraction root per mutation (no cross-mutation filesystem residue)."""
+    safe = _SAFE_OUT.sub("_", desc)
+    return tmp_path / "outs" / safe
+
+
+def apply_mutation(data: bytes, desc: str) -> bytes:
+    """Rebuild mutated bytes from a mutation label (no RNG needed)."""
+    n = len(data)
+    if desc.startswith("truncate@"):
+        cut = int(desc.split("@", 1)[1])
+        return data[:cut]
+    if desc.startswith("bitflip@"):
+        spec = desc.split("@", 1)[1]
+        pos_s, bit_s = spec.split(":")
+        pos = int(pos_s)
+        bit = int(bit_s, 16)
+        return data[:pos] + bytes([data[pos] ^ bit]) + data[pos + 1 :]
+    if desc.startswith("zero@"):
+        spec = desc.split("@", 1)[1]
+        pos_s, size_s = spec.split("+")
+        pos, size = int(pos_s), int(size_s)
+        return data[:pos] + b"\x00" * size + data[pos + size :]
+    if desc.startswith("append-junk@"):
+        junk = bytes.fromhex(desc.split("@", 1)[1])
+        return data + junk
+    if desc.startswith("prepend-junk@"):
+        junk = bytes.fromhex(desc.split("@", 1)[1])
+        return junk + data
+    raise ValueError(f"unknown mutation description: {desc!r}")
+
 
 def _mutations(data: bytes, seed: str):
     """Yield (description, mutated_bytes): deterministic, format-agnostic corruptions."""
-    rng = Random(f"{seed}|v{HARNESS_VERSION}")
     n = len(data)
 
     # Truncations: mid-header, mid-body, and just-shy-of-complete cuts.
@@ -91,24 +144,44 @@ def _mutations(data: bytes, seed: str):
         yield f"truncate@{cut}", data[:cut]
 
     # Single bit flips at random offsets (headers and bodies alike).
+    rng = _rng(seed, "bitflip")
     for _ in range(_N):
         pos = rng.randrange(n)
         bit = 1 << rng.randrange(8)
         yield f"bitflip@{pos}:{bit:#04x}", data[:pos] + bytes([data[pos] ^ bit]) + data[pos + 1 :]
 
     # Zeroed blocks (wipes length fields / magic / CRCs wholesale).
+    rng = _rng(seed, "zero")
     for _ in range(_N // 2 or 1):
         pos = rng.randrange(n)
         size = min(rng.choice((4, 16, 64)), n - pos)
         yield f"zero@{pos}+{size}", data[:pos] + b"\x00" * size + data[pos + size :]
 
     # Garbage tail (trailing junk after a valid archive) and garbage head.
+    rng = _rng(seed, "junk")
     junk = rng.randbytes(48)
-    yield "append-junk", data + junk
-    yield "prepend-junk", junk + data
+    yield f"append-junk@{junk.hex()}", data + junk
+    yield f"prepend-junk@{junk.hex()}", junk + data
 
 
-def _exercise(mutated: bytes, entry: CorpusEntry, key: str, tmp_path: Path, desc: str) -> None:
+def _failure_context(entry: CorpusEntry, key: str, seed: str, desc: str) -> str:
+    return (
+        f"invariant violated for {entry.id}-{key} "
+        f"seed={seed!r} mutation [{desc}]: "
+        f"(repro: ARCHIVEY_FUZZ_SELECT={desc!r} "
+        f"ARCHIVEY_FUZZ_MUTATIONS={_N} "
+        f"pytest tests/test_mutation_fuzz.py -k {entry.id}-{key})"
+    )
+
+
+def _exercise(
+    mutated: bytes,
+    entry: CorpusEntry,
+    key: str,
+    out_dir: Path,
+    seed: str,
+    desc: str,
+) -> None:
     """The invariant: full read path over corrupted bytes -> success or ArchiveyError."""
     try:
         with open_archive(
@@ -129,7 +202,7 @@ def _exercise(mutated: bytes, entry: CorpusEntry, key: str, tmp_path: Path, desc
                 except ArchiveyError:
                     pass  # per-member decode failure: exactly the contract
             ar.extract_all(
-                tmp_path / "out",
+                out_dir,
                 on_error=OnError.CONTINUE,
                 overwrite=OverwritePolicy.REPLACE,
                 limits=_FUZZ_LIMITS,
@@ -138,7 +211,7 @@ def _exercise(mutated: bytes, entry: CorpusEntry, key: str, tmp_path: Path, desc
         return  # typed failure: the contract holds
     except Exception as exc:  # noqa: BLE001 - the harness exists to catch exactly this
         pytest.fail(
-            f"invariant violated for {entry.id}-{key} mutation [{desc}]: "
+            f"{_failure_context(entry, key, seed, desc)} "
             f"raw {type(exc).__name__}: {exc!r}"
         )
 
@@ -150,9 +223,12 @@ def test_mutations_fail_typed_or_succeed(
     _skip_unless_runnable(entry, key)
     source = corpus_archive_path(entry, key, tmp_path)
     data = source.read_bytes()
+    seed = mutation_seed(entry, key)
 
-    for desc, mutated in _mutations(data, f"{entry.id}|{key}"):
-        _exercise(mutated, entry, key, tmp_path, desc)
+    for desc, mutated in _mutations(data, seed):
+        if _FUZZ_SELECT is not None and _FUZZ_SELECT not in desc:
+            continue
+        _exercise(mutated, entry, key, _out_dir(tmp_path, desc), seed, desc)
 
         # Detection must uphold the same invariant on arbitrary bytes (it may return
         # any format, or raise FormatDetectionError — never a raw codec exception).
@@ -162,6 +238,6 @@ def test_mutations_fail_typed_or_succeed(
             pass
         except Exception as exc:  # noqa: BLE001 - invariant check
             pytest.fail(
-                f"detect_format raw exception for {entry.id}-{key} [{desc}]: "
-                f"{type(exc).__name__}: {exc!r}"
+                f"{_failure_context(entry, key, seed, desc)} "
+                f"detect_format raw {type(exc).__name__}: {exc!r}"
             )
