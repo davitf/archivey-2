@@ -28,6 +28,10 @@
 - **Path traversal:** `..` components (any separator), absolute paths, drive letters,
   UNC prefixes, and null bytes are rejected before any write; the destination parent is
   resolved and containment-checked (`safe-extraction`, `internal/filters.py`).
+- **Extraction-root overwrite:** a *file* member whose normalized name is `"."` or `""`
+  is rejected (`PathTraversalError`); only a directory member may name the extraction
+  root. Prevents a corrupt archive from replacing the destination directory with a
+  regular file (`internal/filters.py` `check_universal`).
 - **Symlink escapes, three layers:** lexical target check at planning time; parent-dir
   resolution; and post-`os.symlink` re-resolution against the real filesystem (catches
   chained-symlink attacks staged by earlier members). Escaping links are removed and
@@ -129,6 +133,25 @@ opt-in performance path, not part of the defended parsing surface for untrusted 
 callers processing untrusted archives under a hard latency budget should leave them off
 (`AcceleratorMode.OFF`) or enforce their own timeout. Worth surfacing in the eventual
 `SECURITY.md`.
+
+**pycdlib directory-cycle hang (found by the mutation harness).** `pycdlib` can **loop
+forever** in ``_walk_directories`` whenever corrupt directory records form a back-edge
+(plain ISO 9660 PVD, Rock Ridge PVD, Joliet SVD — any namespace ``open_fp`` walks). The
+harness found a Joliet case (`bitflip@71746:0x01` on `basic-iso`); the same one-bit
+corruption in ``/subdir``'s directory extent reproduces on plain-only and Rock-Ridge-only
+images built the same way (`tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang`
+parametrizes all three). The ISO backend installs a one-time guard that skips
+re-enqueueing a directory extent already scheduled (valid trees never revisit an extent).
+
+**Destination-root poisoning via `"."` file member (found by the mutation harness).**
+Corrupted headers can surface a *file* (not a directory) whose normalized name is `"."`
+— e.g. `bitflip@107:0x10` on `adversarial-tar.tar.gz`. Extracting it would write through
+the destination path itself, replacing the extraction directory with a regular file
+("poisoned dest"). `check_universal` now rejects non-directory members that name the
+extraction root; the parametrized fuzz loop also asserts the destination stays a
+directory after any successful extract. Unit coverage:
+`test_check_universal_rejects_root_named_file` in `tests/test_extraction.py`; regression
+fixture `test_mutated_archive_poisoned_dest_reextract` in `tests/test_mutation_fuzz.py`.
 
 ### O6. Nested-archive amplification
 

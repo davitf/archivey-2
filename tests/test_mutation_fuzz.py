@@ -35,6 +35,10 @@ Run only one mutation kind across the corpus::
 
     uv run pytest tests/test_mutation_fuzz.py -k bitflip
 
+On timeout or an unexpected error, pytest prints the active mutation and a repro
+command (same shape as invariant failures) via ``active_mutation_report()`` in
+``conftest.py``.
+
 The format is passed explicitly to ``open_archive`` — a mutated magic must reach the
 *parser*, not bounce off detection — and detection itself is exercised separately with
 the mutated bytes.
@@ -54,6 +58,7 @@ import io
 import os
 import tempfile
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from random import Random
 
@@ -117,6 +122,20 @@ _PARAMS = [
     for kind in MUTATION_KINDS
     if _FUZZ_KIND is None or _FUZZ_KIND in kind
 ]
+
+
+@dataclass(frozen=True)
+class _ActiveFuzz:
+    entry_id: str
+    key: str
+    kind: str
+    seed: str
+    desc: str
+
+
+# Set for the mutation currently under test; read by conftest on timeout/failure.
+_ACTIVE_FUZZ: _ActiveFuzz | None = None
+
 
 def mutation_seed(entry: CorpusEntry, key: str) -> str:
     """Stable seed string for an (archive, format) pair."""
@@ -283,15 +302,91 @@ def _mutations(data: bytes, seed: str) -> Iterator[tuple[str, bytes]]:
         yield from _mutations_for_kind(data, seed, kind)
 
 
+def _select_matches_kind(select: str, kind: str) -> bool:
+    if kind == "junk":
+        return select.startswith(("append-junk@", "prepend-junk@"))
+    return select.startswith(f"{kind}@")
+
+
+def _repro_command(entry_id: str, key: str, kind: str, desc: str) -> str:
+    parts = [f"ARCHIVEY_FUZZ_SELECT={desc!r}", "uv", "run", "pytest"]
+    parts.append("tests/test_mutation_fuzz.py")
+    parts.append(f"-k {entry_id}-{key}-{kind}")
+    return " ".join(parts)
+
+
+def _mutations_for_test(
+    data: bytes, seed: str, kind: str
+) -> Iterator[tuple[str, bytes]]:
+    """Mutations to run in the parametrized test (honours ``ARCHIVEY_FUZZ_SELECT``)."""
+    if _FUZZ_SELECT is None:
+        yield from _mutations_for_kind(data, seed, kind)
+        return
+
+    if not _select_matches_kind(_FUZZ_SELECT, kind):
+        return
+
+    # Exact label: rebuild bytes directly — no dependence on ``_N`` or the RNG stream.
+    try:
+        yield _FUZZ_SELECT, apply_mutation(data, _FUZZ_SELECT)
+        return
+    except ValueError:
+        pass
+
+    # Substring filter (partial select) over the generated set.
+    for desc, mutated in _mutations_for_kind(data, seed, kind):
+        if _FUZZ_SELECT in desc:
+            yield desc, mutated
+
+
+def _mutation_context(
+    entry_id: str,
+    key: str,
+    kind: str,
+    seed: str,
+    desc: str,
+    *,
+    headline: str,
+) -> str:
+    return (
+        f"{headline} for {entry_id}-{key}-{kind} "
+        f"seed={seed!r} mutation [{desc}]: "
+        f"(repro: {_repro_command(entry_id, key, kind, desc)})"
+    )
+
+
+def _set_active_mutation(
+    entry: CorpusEntry, key: str, kind: str, seed: str, desc: str
+) -> None:
+    global _ACTIVE_FUZZ
+    _ACTIVE_FUZZ = _ActiveFuzz(entry.id, key, kind, seed, desc)
+
+
+def _clear_active_mutation() -> None:
+    global _ACTIVE_FUZZ
+    _ACTIVE_FUZZ = None
+
+
+def active_mutation_report() -> str | None:
+    """Repro context for the in-flight mutation (used by conftest on timeout)."""
+    active = _ACTIVE_FUZZ
+    if active is None:
+        return None
+    return _mutation_context(
+        active.entry_id,
+        active.key,
+        active.kind,
+        active.seed,
+        active.desc,
+        headline="timed out or failed while running",
+    )
+
+
 def _failure_context(
     entry: CorpusEntry, key: str, kind: str, seed: str, desc: str
 ) -> str:
-    return (
-        f"invariant violated for {entry.id}-{key}-{kind} "
-        f"seed={seed!r} mutation [{desc}]: "
-        f"(repro: ARCHIVEY_FUZZ_SELECT={desc!r} "
-        f"ARCHIVEY_FUZZ_MUTATIONS={_N} "
-        f"uv run pytest tests/test_mutation_fuzz.py -k {entry.id}-{key}-{kind})"
+    return _mutation_context(
+        entry.id, key, kind, seed, desc, headline="invariant violated"
     )
 
 
@@ -359,9 +454,8 @@ def test_mutations_fail_typed_or_succeed(
     data = source.read_bytes()
     seed = mutation_seed(entry, key)
 
-    for desc, mutated in _mutations_for_kind(data, seed, kind):
-        if _FUZZ_SELECT is not None and _FUZZ_SELECT not in desc:
-            continue
+    for desc, mutated in _mutations_for_test(data, seed, kind):
+        _set_active_mutation(entry, key, kind, seed, desc)
         # One extraction tree per mutation; deleted before the next iteration so deep
         # sweeps (ARCHIVEY_FUZZ_MUTATIONS=5000) do not accumulate under tmp_path.
         with tempfile.TemporaryDirectory(prefix="out-", dir=tmp_path) as out_raw:
@@ -379,6 +473,8 @@ def test_mutations_fail_typed_or_succeed(
                     f"{_failure_context(entry, key, kind, seed, desc)} "
                     f"detect_format raw {type(exc).__name__}: {exc!r}"
                 )
+
+    _clear_active_mutation()
 
 
 def test_mutated_archive_poisoned_dest_reextract(tmp_path: Path) -> None:

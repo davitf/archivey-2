@@ -81,6 +81,20 @@ def zstd_backend():
     raise RuntimeError("no zstd backend installed")
 
 
+def pytest_exception_interact(node, call, report) -> None:
+    """Print the active fuzz mutation when a parametrized case times out or errors."""
+    if call.when != "call" or "test_mutation_fuzz.py" not in node.nodeid:
+        return
+    from tests.test_mutation_fuzz import active_mutation_report
+
+    msg = active_mutation_report()
+    if msg is None:
+        return
+    tr = node.config.pluginmanager.get_plugin("terminalreporter")
+    if tr is not None:
+        tr.write_line(msg, red=True, bold=True)
+
+
 @pytest.fixture
 def test_dir(tmp_path: Path) -> Path:
     """Create a test directory with some files and subdirectories."""
