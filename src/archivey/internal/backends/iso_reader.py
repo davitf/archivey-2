@@ -80,13 +80,19 @@ _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 # genuine OSError from the underlying handle (file not found, permission, physical media
 # error) is unrelated to ISO decoding and MUST propagate unchanged (see error-handling:
 # "Genuine runtime and I/O errors are not reclassified"). pycdlib raises its own
-# PyCdlibException for most format errors, but a truncated/crafted image can also surface
-# a bare IndexError or struct.error from deep in header parsing (e.g. indexing off the end
-# of a short path table) — those are corruption too. Built defensively so the module
-# imports without pycdlib.
+# pycdlib wraps *most* format errors in PyCdlibException, but it is not hardened against
+# crafted/truncated input: fuzzing surfaces bare IndexError, struct.error, UnicodeDecodeError,
+# AttributeError ("'NoneType' object has no attribute …"), KeyError, and ValueError raised deep
+# in its header/path-table/directory-record parsing. At the pycdlib call boundary (this backend
+# never does its own attribute access or indexing on pycdlib internals) every one of these means
+# "this ISO structure is corrupt", so all are translated to CorruptionError — never a raw
+# exception. A genuine OSError from the underlying handle (file not found, permission, media
+# error) is deliberately NOT in this set: it is real I/O and MUST propagate unchanged (see
+# error-handling: "Genuine runtime and I/O errors are not reclassified"). Built defensively so
+# the module imports without pycdlib.
 _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
     ((_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ())
-    + (IndexError, struct.error)
+    + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 )
 
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
@@ -199,7 +205,12 @@ class IsoReader(BaseArchiveReader):
         # its header parsing (e.g. `data[offset]` off the end of a short path table). Those
         # are corruption in the ISO structure, not archivey/runtime bugs, so translate them
         # rather than letting a raw IndexError escape. (Found by the corpus mutation harness.)
-        if isinstance(exc, (IndexError, struct.error)):
+        if isinstance(
+            exc,
+            (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError),
+        ):
+            # pycdlib choked on corrupt structure (see the _PYCDLIB_ERRORS note). Never a
+            # genuine OSError — that is not in this set and propagates unchanged.
             return CorruptionError(f"Error reading ISO image: {exc!r}")
         return None
 

@@ -98,21 +98,37 @@ stream on NTFS. Not currently rejected.
 *Direction:* fold into the O3 policy work (reject `:` in names under `STRICT` on all
 platforms; it is never a portable filename character).
 
-### O5. Fuzzing does not exist yet
+### O5. Fuzzing — mutation harness landed; property + native-parser fuzzing still open
 
-The safety claims rest on curated tests. Before the native 7z/RAR parsers (which parse
-untrusted binary headers in Python) ship — and before any public "safe" claim:
+The safety claims rest on curated tests plus, now, a mutation harness. Remaining work,
+before the native 7z/RAR parsers (which parse untrusted binary headers in Python) ship and
+before any public "safe" claim:
 
-1. **Now:** property-based tests (Hypothesis) for the pure safety logic
+1. **Landed:** the corpus **mutation harness** (`tests/test_mutation_fuzz.py`) — every
+   corpus archive is deterministically mutated (truncations, bit flips, zeroed blocks,
+   garbage prefixes/suffixes) and driven through open/list/read/extract + detection,
+   asserting *typed `ArchiveyError` or success — never a raw exception, never a hang*. It
+   exercises archivey's own **deterministic zero-dep parsing path** (accelerators forced
+   off) and already found and fixed a batch of untranslated-exception bugs in the ZIP and
+   ISO backends. `ARCHIVEY_FUZZ_MUTATIONS` deepens the sweep; green at 500 mutations/kind.
+2. **Still open:** property-based tests (Hypothesis) for the pure safety logic
    (`normalize_member_name`, `check_universal`, `resolve_link_target_name`, volume
-   discovery, detection over arbitrary prefixes); a mutation harness (bit-flips /
-   truncations over the generated corpus) asserting *never crashes, never hangs,
-   always a typed `ArchiveyError` or correct data*.
-2. **Native-reader entry gate:** coverage-guided fuzzing (Atheris) of the 7z/RAR
-   header parsers, seeded from the corpus + adversarial fixtures; nightly short runs
-   in CI.
-3. **At public release:** OSS-Fuzz onboarding; `SECURITY.md` with a disclosure
-   process.
+   discovery, detection over arbitrary prefixes) — narrow, high-value, not yet written.
+3. **Native-reader entry gate:** coverage-guided fuzzing (Atheris) of the 7z/RAR header
+   parsers, seeded from the corpus + adversarial fixtures; nightly short runs in CI.
+4. **At public release:** OSS-Fuzz onboarding; `SECURITY.md` with a disclosure process.
+
+**Accelerator hang (found by the mutation harness).** The optional `[seekable]`
+accelerators (`rapidgzip`, and its bundled bzip2 decoder) are third-party C++ that can
+**busy-loop on crafted input** — a hang no Python-level translator can convert into an
+`ArchiveyError`, and one that SIGALRM/pytest-timeout cannot cleanly interrupt (the loop is
+in a C++ thread). So the mutation harness runs with accelerators **off**, and fuzzing that
+native code is deferred to a **resource-limited subprocess sandbox** (wall-clock + memory
+capped, killed on breach) alongside the Atheris work. Until then: the accelerators are an
+opt-in performance path, not part of the defended parsing surface for untrusted input —
+callers processing untrusted archives under a hard latency budget should leave them off
+(`AcceleratorMode.OFF`) or enforce their own timeout. Worth surfacing in the eventual
+`SECURITY.md`.
 
 ### O6. Nested-archive amplification
 
