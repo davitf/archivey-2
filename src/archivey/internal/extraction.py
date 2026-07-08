@@ -224,7 +224,7 @@ class ExtractionCoordinator:
 
     def run(self, reader: "BaseArchiveReader", dest: str | Path) -> list[ExtractionResult]:
         dest = Path(dest)
-        os.makedirs(dest, exist_ok=True)
+        self._ensure_dest_root(dest)
         dest_root = dest.resolve()
         forward_only = reader._streaming
 
@@ -663,6 +663,25 @@ class ExtractionCoordinator:
             )
 
     # --- filesystem helpers --------------------------------------------------------
+
+    def _ensure_dest_root(self, dest: Path) -> None:
+        """Ensure ``dest`` is a directory, honouring ``OverwritePolicy`` when it exists."""
+        if dest.exists():
+            if dest.is_dir() and not dest.is_symlink():
+                return
+            if self._overwrite is OverwritePolicy.ERROR:
+                raise ExtractionError(
+                    f"Destination exists and is not a directory: {dest}"
+                )
+            if self._overwrite is OverwritePolicy.SKIP:
+                raise ExtractionError(
+                    f"Destination exists and is not a directory: {dest}"
+                )
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        dest.mkdir(parents=True, exist_ok=True)
 
     def _prepare_destination(
         self, member: ArchiveMember, dest_path: Path, *, atomic: bool = False
