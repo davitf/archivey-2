@@ -25,6 +25,7 @@ from __future__ import annotations
 import importlib
 import re
 import stat
+import struct
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -75,12 +76,17 @@ def _optional(name: str) -> ModuleType | None:
 pycdlib = _optional("pycdlib")
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 
-# Only pycdlib's *own* exception is translated to an ArchiveyError. A genuine OSError from
-# the underlying handle (file not found, permission, physical media error) is unrelated to
-# ISO decoding and MUST propagate unchanged (see error-handling: "Genuine runtime and I/O
-# errors are not reclassified"). Built defensively so the module imports without pycdlib.
+# Exceptions that mean "this ISO structure is bad", translated to CorruptionError. A
+# genuine OSError from the underlying handle (file not found, permission, physical media
+# error) is unrelated to ISO decoding and MUST propagate unchanged (see error-handling:
+# "Genuine runtime and I/O errors are not reclassified"). pycdlib raises its own
+# PyCdlibException for most format errors, but a truncated/crafted image can also surface
+# a bare IndexError or struct.error from deep in header parsing (e.g. indexing off the end
+# of a short path table) — those are corruption too. Built defensively so the module
+# imports without pycdlib.
 _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
-    (_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ()
+    ((_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ())
+    + (IndexError, struct.error)
 )
 
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
@@ -187,6 +193,13 @@ class IsoReader(BaseArchiveReader):
         if _pycdlib_exc is not None and isinstance(
             exc, _pycdlib_exc.PyCdlibException
         ):
+            return CorruptionError(f"Error reading ISO image: {exc!r}")
+        # pycdlib does not wrap every parse failure in its own exception type: a truncated
+        # or crafted image can raise a bare IndexError/struct.error/ValueError from deep in
+        # its header parsing (e.g. `data[offset]` off the end of a short path table). Those
+        # are corruption in the ISO structure, not archivey/runtime bugs, so translate them
+        # rather than letting a raw IndexError escape. (Found by the corpus mutation harness.)
+        if isinstance(exc, (IndexError, struct.error)):
             return CorruptionError(f"Error reading ISO image: {exc!r}")
         return None
 
