@@ -38,7 +38,8 @@ from archivey.types import ArchiveFormat, ContainerFormat, MemberType, StreamFor
 from tests.conftest import ARCHIVEY_TEST_CACHE
 
 # Bump when any builder's output changes, so cached archives regenerate.
-GENERATOR_VERSION = 1
+# v2: the ZIP builder's Windows output changed (backslash names are now preserved).
+GENERATOR_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
