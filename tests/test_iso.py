@@ -234,6 +234,97 @@ def test_non_seekable_iso_rejected() -> None:
 # Corrupt input
 # ---------------------------------------------------------------------------
 
+# Fixed tree (same member order as corpus ``basic``); layout varies by namespace flags.
+_PYCDLIB_CYCLE_ENTRIES: tuple[tuple[str, bytes, bool], ...] = (
+    ("file1.txt", b"Hello, world!", False),
+    ("subdir/", b"", True),
+    ("empty_file.txt", b"", False),
+    ("empty_subdir/", b"", True),
+    ("subdir/file2.txt", b"Hello, universe!", False),
+    ("implicit_subdir/file3.txt", b"Hello there!", False),
+)
+# ``(rock_ridge, joliet) -> (image_len, bitflip_offset, byte_before_flip, namespace)``
+_PYCDLIB_CYCLE_CASES: tuple[tuple[bool, bool, int, int, int, str], ...] = (
+    # Plain ISO 9660 PVD walk: ``/SUBDIR`` extent 26, +66 closes a back-edge to root 23.
+    (False, False, 61440, 53314, 0x01, "iso9660"),
+    # Rock Ridge PVD walk: RR padding shifts the cycle byte to +32 on the same extent.
+    (True, False, 63488, 53280, 0x01, "rock_ridge"),
+    # Joliet SVD walk on the RR+Joliet image (found by the mutation harness).
+    (True, True, 81920, 71746, 0x01, "rock_ridge"),
+)
+
+
+def _build_pycdlib_cycle_fixture(*, rock_ridge: bool, joliet: bool) -> bytes:
+    """ISO built from ``_PYCDLIB_CYCLE_ENTRIES`` with the requested namespaces."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    kwargs: dict[str, object] = {"interchange_level": 3}
+    if rock_ridge:
+        kwargs["rock_ridge"] = "1.09"
+    if joliet:
+        kwargs["joliet"] = 3
+    iso.new(**kwargs)
+    made_dirs: set[str] = set()
+
+    def _ensure_dirs(rel: str) -> None:
+        parts = rel.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            joined = "/".join(parts[:i])
+            if joined and joined not in made_dirs:
+                made_dirs.add(joined)
+                iso_path = "/" + "/".join(p.upper()[:8] for p in joined.split("/"))
+                iso.add_directory(
+                    iso_path,
+                    rr_name=parts[i - 1] if rock_ridge else None,
+                    joliet_path="/" + joined if joliet else None,
+                )
+
+    counter = 0
+    for name, contents, is_dir in _PYCDLIB_CYCLE_ENTRIES:
+        rel = name.rstrip("/")
+        _ensure_dirs(name)
+        if is_dir:
+            if rel not in made_dirs:
+                made_dirs.add(rel)
+                iso_path = "/" + "/".join(p.upper()[:8] for p in rel.split("/"))
+                iso.add_directory(
+                    iso_path,
+                    rr_name=rel.split("/")[-1] if rock_ridge else None,
+                    joliet_path="/" + rel if joliet else None,
+                )
+        else:
+            counter += 1
+            iso_dir = "/".join(p.upper()[:8] for p in rel.split("/")[:-1])
+            iso_path = ("/" + iso_dir + "/" if iso_dir else "/") + f"F{counter}.TXT;1"
+            iso.add_fp(
+                io.BytesIO(contents),
+                len(contents),
+                iso_path,
+                rr_name=rel.split("/")[-1] if rock_ridge else None,
+                joliet_path="/" + rel if joliet else None,
+            )
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def _pycdlib_directory_cycle_image(
+    *,
+    rock_ridge: bool,
+    joliet: bool,
+    expected_len: int,
+    bitflip_offset: int,
+    byte_before_flip: int,
+) -> bytes:
+    """Flip one bit in ``/subdir``'s directory extent so pycdlib's open walk cycles."""
+    data = bytearray(_build_pycdlib_cycle_fixture(rock_ridge=rock_ridge, joliet=joliet))
+    assert len(data) == expected_len, "fixture layout drifted — revisit cycle case table"
+    assert data[bitflip_offset] == byte_before_flip
+    data[bitflip_offset] ^= 0x01
+    return bytes(data)
+
 
 def test_corrupt_iso_raises() -> None:
     # CD001 is present (so detection still picks ISO) but the volume descriptor is cut off,
@@ -241,6 +332,51 @@ def test_corrupt_iso_raises() -> None:
     truncated = _build_iso(rock_ridge=True, joliet=False)[:32780]
     with pytest.raises(CorruptionError):
         open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    ("rock_ridge", "joliet", "expected_len", "bitflip_offset", "byte_before_flip", "namespace"),
+    [
+        pytest.param(*case, id=case_id)
+        for case, case_id in zip(
+            _PYCDLIB_CYCLE_CASES,
+            ("plain", "rock-ridge", "joliet"),
+            strict=True,
+        )
+    ],
+)
+def test_pycdlib_directory_cycle_does_not_hang(
+    rock_ridge: bool,
+    joliet: bool,
+    expected_len: int,
+    bitflip_offset: int,
+    byte_before_flip: int,
+    namespace: str,
+) -> None:
+    """Regression: corrupt ``/subdir`` must not hang pycdlib during ``open_fp``.
+
+    ``pycdlib._walk_directories`` (used for the PVD / Rock Ridge tree *and* each
+    supplementary namespace such as Joliet) enqueues child directory extents with no visit
+    tracking. One flipped bit in a directory record can add a child that points back at an
+    ancestor extent; pycdlib then loops forever. ``open_fp`` walks every present namespace,
+    so a Joliet-only cycle still bites RR+Joliet images even when archivey reads Rock Ridge.
+    Without archivey's extent cycle guard these cases hang until pytest-timeout kills them.
+    """
+    image = _pycdlib_directory_cycle_image(
+        rock_ridge=rock_ridge,
+        joliet=joliet,
+        expected_len=expected_len,
+        bitflip_offset=bitflip_offset,
+        byte_before_flip=byte_before_flip,
+    )
+    with open_archive(io.BytesIO(image), format=ArchiveFormat.ISO) as ar:
+        assert ar.info.extra["iso.namespace"] == namespace
+        names = {m.name for m in ar.members()}
+    if namespace == "iso9660":
+        assert "F1.TXT" in names
+    else:
+        assert "file1.txt" in names
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:

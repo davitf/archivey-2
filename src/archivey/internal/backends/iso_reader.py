@@ -75,6 +75,65 @@ def _optional(name: str) -> ModuleType | None:
 
 pycdlib = _optional("pycdlib")
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
+_PYCDLIB_CYCLE_GUARD_INSTALLED = False
+
+
+def _install_pycdlib_directory_cycle_guard() -> None:
+    """Prevent pycdlib from hanging on cyclic ISO/Joliet directory trees.
+
+    ``pycdlib._walk_directories`` enqueues child directory extents on a deque with no
+    visit tracking. Corrupt directory records can close a cycle in any namespace pycdlib
+    walks during ``open_fp`` (plain ISO 9660 PVD, Rock Ridge PVD, Joliet SVD, …). The
+    mutation harness found a Joliet case on ``basic-iso``; the same mechanism reproduces on
+    plain and Rock Ridge trees (see ``test_pycdlib_directory_cycle_does_not_hang``). Skip
+    re-enqueueing an extent that was already scheduled; valid trees never revisit a
+    directory extent.
+    """
+    if pycdlib is None:
+        return
+    global _PYCDLIB_CYCLE_GUARD_INSTALLED
+    if _PYCDLIB_CYCLE_GUARD_INSTALLED:
+        return
+
+    import collections
+
+    from pycdlib import dr as dr_mod
+    import pycdlib.pycdlib as pcd_module
+
+    orig_walk = pcd_module.PyCdlib._walk_directories
+
+    def _walk_directories_with_cycle_guard(
+        self: Any,
+        vd: Any,
+        extent_to_ptr: Any,
+        extent_to_inode: Any,
+        path_table_records: Any,
+    ) -> Any:
+        visited: set[int] = {vd.root_directory_record().extent_location()}
+        orig_deque = collections.deque
+
+        class _ExtentGuardedDeque(orig_deque):
+            def append(self, dir_record: Any) -> None:
+                if isinstance(dir_record, dr_mod.DirectoryRecord):
+                    extent = dir_record.extent_location()
+                    if extent in visited:
+                        return
+                    visited.add(extent)
+                super().append(dir_record)
+
+        setattr(collections, "deque", _ExtentGuardedDeque)
+        try:
+            return orig_walk(
+                self, vd, extent_to_ptr, extent_to_inode, path_table_records
+            )
+        finally:
+            setattr(collections, "deque", orig_deque)
+
+    pcd_module.PyCdlib._walk_directories = _walk_directories_with_cycle_guard
+    _PYCDLIB_CYCLE_GUARD_INSTALLED = True
+
+
+_install_pycdlib_directory_cycle_guard()
 
 # Exceptions that mean "this ISO structure is bad", translated to CorruptionError. A
 # genuine OSError from the underlying handle (file not found, permission, physical media
