@@ -666,21 +666,18 @@ class ExtractionCoordinator:
 
     def _ensure_dest_root(self, dest: Path) -> None:
         """Ensure ``dest`` is a directory, honouring ``OverwritePolicy`` when it exists."""
-        if dest.exists():
+        # ``lexists`` (not ``exists``) so a dangling symlink at the dest path is handled
+        # here rather than surfacing as a raw FileExistsError from ``mkdir`` below.
+        if os.path.lexists(dest):
             if dest.is_dir() and not dest.is_symlink():
-                return
-            if self._overwrite is OverwritePolicy.ERROR:
+                return  # already a real directory: reuse it
+            if self._overwrite in (OverwritePolicy.ERROR, OverwritePolicy.SKIP):
                 raise ExtractionError(
                     f"Destination exists and is not a directory: {dest}"
                 )
-            if self._overwrite is OverwritePolicy.SKIP:
-                raise ExtractionError(
-                    f"Destination exists and is not a directory: {dest}"
-                )
-            if dest.is_dir() and not dest.is_symlink():
-                shutil.rmtree(dest)
-            else:
-                dest.unlink()
+            # A symlink (even one resolving to a directory) or a plain file: remove the
+            # entry itself, never recurse through it.
+            dest.unlink()
         dest.mkdir(parents=True, exist_ok=True)
 
     def _prepare_destination(

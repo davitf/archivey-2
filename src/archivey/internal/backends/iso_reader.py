@@ -78,16 +78,41 @@ _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 _PYCDLIB_CYCLE_GUARD_INSTALLED = False
 
 
+class _DequeGuardedCollections:
+    """Proxy over the real ``collections`` module that overrides only ``deque``.
+
+    Installed once as ``pycdlib.pycdlib.collections`` so the extent-cycle guard is confined
+    to pycdlib's own namespace — no other code in the process ever sees a patched ``deque``,
+    unlike a global ``collections.deque`` swap. Every other attribute delegates to the real
+    module.
+    """
+
+    def __init__(self, real: ModuleType, deque_cls: type) -> None:
+        self._real = real
+        self.deque = deque_cls
+
+    def __getattr__(self, name: str) -> Any:
+        # Reached only for attributes not set in __init__ (i.e. everything but ``deque``).
+        return getattr(self._real, name)
+
+
 def _install_pycdlib_directory_cycle_guard() -> None:
     """Prevent pycdlib from hanging on cyclic ISO/Joliet directory trees.
 
-    ``pycdlib._walk_directories`` enqueues child directory extents on a deque with no
-    visit tracking. Corrupt directory records can close a cycle in any namespace pycdlib
-    walks during ``open_fp`` (plain ISO 9660 PVD, Rock Ridge PVD, Joliet SVD, …). The
-    mutation harness found a Joliet case on ``basic-iso``; the same mechanism reproduces on
-    plain and Rock Ridge trees (see ``test_pycdlib_directory_cycle_does_not_hang``). Skip
-    re-enqueueing an extent that was already scheduled; valid trees never revisit a
-    directory extent.
+    pycdlib walks directory trees with a plain ``collections.deque`` and no visit tracking,
+    so corrupt directory records that close a cycle (a child extent pointing back at an
+    ancestor) loop forever — in any namespace ``open_fp`` walks (plain ISO 9660 PVD, Rock
+    Ridge PVD, Joliet SVD, …). The mutation harness found a Joliet case on ``basic-iso``; the
+    same mechanism reproduces on plain and Rock Ridge trees (see
+    ``test_pycdlib_directory_cycle_does_not_hang``).
+
+    The guard is a ``deque`` subclass that tracks the directory extents scheduled on *that
+    instance* and skips re-enqueueing one already seen — valid trees never revisit an extent,
+    so this is transparent on well-formed images and no-ops entirely for deques that hold
+    anything other than directory records. Because the visit set lives on the instance (not a
+    per-walk closure), the subclass is installed **once, permanently**, confined to pycdlib's
+    ``collections`` reference: no per-walk swap, no shared mutable state, and concurrent ISO
+    opens on separate threads never interfere (each walk builds its own deque instance).
     """
     if pycdlib is None:
         return
@@ -100,36 +125,35 @@ def _install_pycdlib_directory_cycle_guard() -> None:
     import pycdlib.pycdlib as pcd_module
     from pycdlib import dr as dr_mod
 
-    orig_walk = pcd_module.PyCdlib._walk_directories
+    real_deque = collections.deque
 
-    def _walk_directories_with_cycle_guard(
-        self: Any,
-        vd: Any,
-        extent_to_ptr: Any,
-        extent_to_inode: Any,
-        path_table_records: Any,
-    ) -> Any:
-        visited: set[int] = {vd.root_directory_record().extent_location()}
-        orig_deque = collections.deque
+    class _ExtentGuardedDeque(real_deque):
+        """A ``deque`` that drops a directory record whose extent it has already scheduled."""
 
-        class _ExtentGuardedDeque(orig_deque):
-            def append(self, dir_record: Any) -> None:
-                if isinstance(dir_record, dr_mod.DirectoryRecord):
-                    extent = dir_record.extent_location()
-                    if extent in visited:
-                        return
-                    visited.add(extent)
-                super().append(dir_record)
+        def __init__(self, iterable: Any = (), *args: Any, **kwargs: Any) -> None:
+            items = list(iterable)
+            super().__init__(items, *args, **kwargs)
+            # Seed from the initial contents (which bypass ``append``) so a cycle back to a
+            # root/seed extent is caught too.
+            self._visited_extents: set[int] = {
+                item.extent_location()
+                for item in items
+                if isinstance(item, dr_mod.DirectoryRecord)
+            }
 
-        setattr(collections, "deque", _ExtentGuardedDeque)
-        try:
-            return orig_walk(
-                self, vd, extent_to_ptr, extent_to_inode, path_table_records
-            )
-        finally:
-            setattr(collections, "deque", orig_deque)
+        def append(self, dir_record: Any) -> None:
+            if isinstance(dir_record, dr_mod.DirectoryRecord):
+                extent = dir_record.extent_location()
+                if extent in self._visited_extents:
+                    return
+                self._visited_extents.add(extent)
+            super().append(dir_record)
 
-    pcd_module.PyCdlib._walk_directories = _walk_directories_with_cycle_guard
+    # setattr (not a direct assignment) so the type checkers don't flag the deliberate
+    # module -> proxy substitution against pcd_module.collections's declared Module type.
+    setattr(
+        pcd_module, "collections", _DequeGuardedCollections(collections, _ExtentGuardedDeque)
+    )
     _PYCDLIB_CYCLE_GUARD_INSTALLED = True
 
 
