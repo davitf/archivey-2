@@ -392,7 +392,9 @@ def _zip_build(entry: CorpusEntry, path: Path) -> None:
         if entry.archive_comment:
             zf.comment = entry.archive_comment.encode()
         for m in entry.members:
-            zi = zipfile.ZipInfo(m.name, date_time=(2020, 9, 13, 12, 26, 41))
+            zi = zipfile.ZipInfo(date_time=(2020, 9, 13, 12, 26, 41))
+            # Post-assign: ZipInfo.__init__ replaces os.sep on Windows (see zip_backslash/generate.py).
+            zi.filename = m.name
             zi.create_system = 3  # force Unix so modes/symlinks are deterministic on all OSes
             if m.type is MemberType.DIRECTORY:
                 zi.external_attr = (0o40755 << 16) | 0x10
