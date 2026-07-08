@@ -34,7 +34,7 @@ crypto = [
     "py7zr>=1.0.0",
 ]
 iso = [
-    "pycdlib>=1.14.0",
+    "pycdlib>=1.16.0",
 ]
 zstd = [
     "backports.zstd>=1.0.0; python_version < '3.14'",
@@ -91,7 +91,7 @@ dev = [
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
     # there and the zero-dep core / graceful-degradation paths are still exercised.
-    "pycdlib>=1.14.0",
+    "pycdlib>=1.16.0",
     # uncompresspy is the runtime decoder for unix-compress (.Z); ncompress is a test-only
     # LZW *compressor* (uncompresspy only decompresses) used to generate .Z fixtures.
     "uncompresspy>=0.4.0",

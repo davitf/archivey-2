@@ -80,9 +80,8 @@ jobs:
           - { os: ubuntu-latest, python-version: "3.14", install: all }
           # Minimum supported library versions (uv --resolution lowest-direct) on the min
           # Python: the [all] legs above run the *current* versions of every dependency, so
-          # this leg pins each declared dep to its floor (pycdlib 1.14, zstandard 0.23, …) to
-          # catch version-specific bugs that the default highest-version resolution hides —
-          # e.g. the pycdlib 1.14 readinto over-read the ISO backend works around.
+          # this leg pins each declared dep to its floor (pycdlib 1.16, zstandard 0.23, …) to
+          # catch version-specific bugs that the default highest-version resolution hides.
           - { os: ubuntu-latest, python-version: "3.11", install: all-lowest }
           # macOS + Windows on min/max Python (cross-platform path/symlink/junction surface).
           - { os: macos-latest, python-version: "3.11", install: all }

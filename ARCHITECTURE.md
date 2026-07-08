@@ -877,7 +877,7 @@ tool itself, which is why it stays the decompressor for member data.
 | `[7z]` | `pyppmd`, `inflate64`, `zstandard`, `brotli` | — | optional 7z codecs: PPMd, Deflate64, Zstd, Brotli |
 | `[7z-write]` | `py7zr` | ≥0.20 | 7-Zip **writing** only (reading is native) |
 | `[crypto]` | `cryptography` | — | AES decryption (7z AES, RAR5 header encryption) |
-| `[iso]` | `pycdlib` | ≥1.14 | ISO 9660 read |
+| `[iso]` | `pycdlib` | ≥1.16 | ISO 9660 read |
 | `[zstd]` | `zstandard` | ≥0.21 | Zstandard `.zst` and `.tar.zst` |
 | `[lz4]` | `lz4` | — | LZ4 `.lz4` and `.tar.lz4` |
 | `[seekable]` | `rapidgzip`, `indexed_bzip2` | — | fast seekable random access into gzip/bzip2 streams |

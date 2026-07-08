@@ -9,10 +9,12 @@ clear "rejoin first" error (see ``format-zip``).
 from __future__ import annotations
 
 import io
+import lzma
 import re
 import stat
 import struct
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, cast
@@ -221,8 +223,7 @@ class ZipReader(BaseArchiveReader):
         try:
             # `metadata_encoding` (3.11+) decodes names stored without the UTF-8 flag with
             # the caller's encoding instead of the cp437 default (UTF-8-flagged names are
-            # unaffected). A wrong explicit encoding may raise UnicodeDecodeError — caller
-            # misuse, propagated unchanged like other genuine errors.
+            # unaffected). Reading the central directory here decodes every member name.
             # typeshed types ZipFile too narrowly; a binary stream is valid here.
             self._archive: zipfile.ZipFile = zipfile.ZipFile(  # type: ignore[arg-type]
                 source, "r", metadata_encoding=encoding
@@ -239,6 +240,30 @@ class ZipReader(BaseArchiveReader):
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             ) from exc
+        except UnicodeDecodeError as exc:
+            # A member name failed to decode while reading the central directory: either a
+            # UTF-8-flagged entry whose stored bytes are corrupt, or a wrong explicit
+            # `encoding=`. Both are surfaced as a typed error (never a raw UnicodeDecodeError);
+            # the message points at the encoding when the caller supplied one.
+            hint = (
+                f" (with encoding={encoding!r}; the stored bytes may use a different encoding)"
+                if encoding is not None
+                else ""
+            )
+            raise CorruptionError(
+                f"Could not decode a ZIP member name{hint}: {exc!r}",
+                archive_name=archive_name,
+                source_format=ArchiveFormat.ZIP,
+            ) from exc
+        except NotImplementedError as exc:
+            # zipfile rejects an unsupported "version needed to extract" (e.g. a mutated
+            # "zip file version 8.4") while reading the central directory. Recognized but
+            # unhandled -> UnsupportedFeatureError, not a raw NotImplementedError.
+            raise UnsupportedFeatureError(
+                f"Unsupported ZIP version or feature: {exc!r}",
+                archive_name=archive_name,
+                source_format=ArchiveFormat.ZIP,
+            ) from exc
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, zipfile.BadZipFile):
@@ -251,8 +276,32 @@ class ZipReader(BaseArchiveReader):
                 return EncryptionError("Wrong password for this ZIP member")
         if isinstance(exc, io.UnsupportedOperation) and "seek" in str(exc):
             return StreamNotSeekableError("ZIP archives require a seekable source")
-        if isinstance(exc, NotImplementedError) and "compression method" in str(exc).lower():
-            return UnsupportedFeatureError(f"Unsupported ZIP compression method: {exc!r}")
+        if isinstance(exc, NotImplementedError):
+            # zipfile raises NotImplementedError for a compress_type / flag combination it
+            # cannot decode — an unsupported *method* ("compression method 99"), but also a
+            # corrupt entry whose mutated flags select an unimplemented mode ("compressed
+            # patched data (flag bit 5)"). Either way the member is unreadable here.
+            return UnsupportedFeatureError(f"Unsupported ZIP entry feature: {exc!r}")
+        if isinstance(exc, (zlib.error, lzma.LZMAError)):
+            # Corruption inside a member body: stdlib zipfile surfaces the codec's own error
+            # (zlib.error "invalid distance too far back", lzma.LZMAError "Corrupt input
+            # data") rather than BadZipFile for a deflate/bzip2/LZMA member.
+            return CorruptionError(f"Error decompressing ZIP member: {exc!r}")
+        if isinstance(exc, ValueError):
+            # A corrupt local-header offset makes stdlib zipfile seek to a bad position
+            # ("negative seek value -N") before reading the member. That is archive
+            # corruption, surfaced as a typed error rather than a raw ValueError.
+            return CorruptionError(f"Corrupt ZIP member offset/structure: {exc!r}")
+        if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
+            # The stdlib bz2 decompressor signals a corrupt bzip2 member body as
+            # OSError("Invalid data stream") (a bz2 quirk). Message-scoped so a genuine I/O
+            # OSError still propagates unchanged (error-handling: I/O is not reclassified).
+            return CorruptionError(f"Corrupt bzip2 ZIP member: {exc!r}")
+        if isinstance(exc, UnicodeDecodeError):
+            # zipfile re-reads and re-decodes the member name from the local file header
+            # when opening a member; a corrupt local header with non-UTF-8 name bytes
+            # raises this. It is a bad-archive signal, not a caller/runtime error.
+            return CorruptionError(f"Corrupt ZIP entry name in local header: {exc!r}")
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -333,7 +382,16 @@ class ZipReader(BaseArchiveReader):
                     "BinaryIO",
                     self._archive.open(info, pwd=password if encrypted else None),
                 )
-            except (zipfile.BadZipFile, RuntimeError, io.UnsupportedOperation) as exc:
+            except (
+                zipfile.BadZipFile,
+                RuntimeError,
+                io.UnsupportedOperation,
+                NotImplementedError,
+                zlib.error,
+                lzma.LZMAError,
+                UnicodeDecodeError,
+                ValueError,
+            ) as exc:
                 translated = self._translate_exception(exc)
                 if translated is not None:
                     if isinstance(translated, EncryptionError):
@@ -368,7 +426,19 @@ class ZipReader(BaseArchiveReader):
                 "password; leaving link_target unset.",
                 info.filename,
             )
-        except (zipfile.BadZipFile, RuntimeError) as exc:
+        except (
+            zipfile.BadZipFile,
+            RuntimeError,
+            zlib.error,
+            lzma.LZMAError,
+            OSError,
+            ValueError,
+            NotImplementedError,
+            UnicodeDecodeError,
+        ) as exc:
+            # Reading the symlink's target data (raw zipfile stream, not ArchiveStream-wrapped)
+            # can raise any of the member-read errors on a corrupt entry; translate them the
+            # same way rather than letting a raw codec exception escape the listing.
             translated = self._translate_exception(exc)
             if translated is not None:
                 self._stamp_error_context(translated, info.filename)

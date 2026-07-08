@@ -659,6 +659,16 @@ class Bzip2Codec(StreamCodec):
             # Corrupt block data or block header (e.g. "[BZip2 block header] Invalid Huffman
             # coding group count"); surfaced as ValueError or RuntimeError depending on where.
             return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {exc!r}")
+        if isinstance(exc, (ValueError, RuntimeError)) and (
+            "Huffman" in text
+            or "magic" in text  # "Input header is not BZip2 magic string 'BZh'…"
+            or "bit string" in text
+            or "bad optional access" in text  # accelerator read past a corrupt block
+        ):
+            # Corrupt Huffman tables, stream/block magic, or internal state, outside a
+            # "[BZip2 block]"-tagged context (e.g. "Constructing a Huffman coding … failed!"
+            # or "bad optional access") — all found by the corpus mutation harness.
+            return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {exc!r}")
         if isinstance(exc, ValueError) and "has no valid fileno" in text:
             return StreamNotSeekableError("indexed_bzip2 does not support non-seekable streams")
         if isinstance(exc, io.UnsupportedOperation) and "seek" in text:

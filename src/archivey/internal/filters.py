@@ -71,6 +71,12 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             f"Path traversal ('..') in member name: {name!r}", member_name=name
         )
 
+    rel = name.rstrip("/")
+    if member.type != MemberType.DIRECTORY and rel in ("", "."):
+        raise PathTraversalError(
+            f"Member name refers to the extraction root: {name!r}", member_name=name
+        )
+
     if member.type == MemberType.OTHER:
         raise SpecialFileError(
             f"Special file (device/FIFO/socket) not allowed: {name!r}",
@@ -84,7 +90,6 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     # with the no-".." name check above, a parent inside the root guarantees the member
     # lands inside the root. A symlinked *parent* that escapes is still caught.
     dest_root = dest.resolve()
-    rel = name.rstrip("/")
     if rel not in ("", "."):  # "" / "." is the root dir member itself
         parent = (dest_root / rel).parent.resolve()
         if not _within(parent, dest_root):

@@ -25,6 +25,7 @@ from __future__ import annotations
 import importlib
 import re
 import stat
+import struct
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -74,13 +75,107 @@ def _optional(name: str) -> ModuleType | None:
 
 pycdlib = _optional("pycdlib")
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
+_PYCDLIB_CYCLE_GUARD_INSTALLED = False
 
-# Only pycdlib's *own* exception is translated to an ArchiveyError. A genuine OSError from
-# the underlying handle (file not found, permission, physical media error) is unrelated to
-# ISO decoding and MUST propagate unchanged (see error-handling: "Genuine runtime and I/O
-# errors are not reclassified"). Built defensively so the module imports without pycdlib.
+
+class _DequeGuardedCollections:
+    """Proxy over the real ``collections`` module that overrides only ``deque``.
+
+    Installed once as ``pycdlib.pycdlib.collections`` so the extent-cycle guard is confined
+    to pycdlib's own namespace — no other code in the process ever sees a patched ``deque``,
+    unlike a global ``collections.deque`` swap. Every other attribute delegates to the real
+    module.
+    """
+
+    def __init__(self, real: ModuleType, deque_cls: type) -> None:
+        self._real = real
+        self.deque = deque_cls
+
+    def __getattr__(self, name: str) -> Any:
+        # Reached only for attributes not set in __init__ (i.e. everything but ``deque``).
+        return getattr(self._real, name)
+
+
+def _install_pycdlib_directory_cycle_guard() -> None:
+    """Prevent pycdlib from hanging on cyclic ISO/Joliet directory trees.
+
+    pycdlib walks directory trees with a plain ``collections.deque`` and no visit tracking,
+    so corrupt directory records that close a cycle (a child extent pointing back at an
+    ancestor) loop forever — in any namespace ``open_fp`` walks (plain ISO 9660 PVD, Rock
+    Ridge PVD, Joliet SVD, …). The mutation harness found a Joliet case on ``basic-iso``; the
+    same mechanism reproduces on plain and Rock Ridge trees (see
+    ``test_pycdlib_directory_cycle_does_not_hang``).
+
+    The guard is a ``deque`` subclass that tracks the directory extents scheduled on *that
+    instance* and skips re-enqueueing one already seen — valid trees never revisit an extent,
+    so this is transparent on well-formed images and no-ops entirely for deques that hold
+    anything other than directory records. Because the visit set lives on the instance (not a
+    per-walk closure), the subclass is installed **once, permanently**, confined to pycdlib's
+    ``collections`` reference: no per-walk swap, no shared mutable state, and concurrent ISO
+    opens on separate threads never interfere (each walk builds its own deque instance).
+    """
+    if pycdlib is None:
+        return
+    global _PYCDLIB_CYCLE_GUARD_INSTALLED
+    if _PYCDLIB_CYCLE_GUARD_INSTALLED:
+        return
+
+    import collections
+
+    import pycdlib.pycdlib as pcd_module
+    from pycdlib import dr as dr_mod
+
+    real_deque = collections.deque
+
+    class _ExtentGuardedDeque(real_deque):
+        """A ``deque`` that drops a directory record whose extent it has already scheduled."""
+
+        def __init__(self, iterable: Any = (), *args: Any, **kwargs: Any) -> None:
+            items = list(iterable)
+            super().__init__(items, *args, **kwargs)
+            # Seed from the initial contents (which bypass ``append``) so a cycle back to a
+            # root/seed extent is caught too.
+            self._visited_extents: set[int] = {
+                item.extent_location()
+                for item in items
+                if isinstance(item, dr_mod.DirectoryRecord)
+            }
+
+        def append(self, dir_record: Any) -> None:
+            if isinstance(dir_record, dr_mod.DirectoryRecord):
+                extent = dir_record.extent_location()
+                if extent in self._visited_extents:
+                    return
+                self._visited_extents.add(extent)
+            super().append(dir_record)
+
+    # setattr (not a direct assignment) so the type checkers don't flag the deliberate
+    # module -> proxy substitution against pcd_module.collections's declared Module type.
+    setattr(
+        pcd_module, "collections", _DequeGuardedCollections(collections, _ExtentGuardedDeque)
+    )
+    _PYCDLIB_CYCLE_GUARD_INSTALLED = True
+
+
+_install_pycdlib_directory_cycle_guard()
+
+# Exceptions that mean "this ISO structure is bad", translated to CorruptionError. A
+# genuine OSError from the underlying handle (file not found, permission, physical media
+# error) is unrelated to ISO decoding and MUST propagate unchanged (see error-handling:
+# "Genuine runtime and I/O errors are not reclassified"). pycdlib raises its own
+# pycdlib wraps *most* format errors in PyCdlibException, but it is not hardened against
+# crafted/truncated input: fuzzing surfaces bare IndexError, struct.error, UnicodeDecodeError,
+# AttributeError ("'NoneType' object has no attribute …"), KeyError, and ValueError raised deep
+# in its header/path-table/directory-record parsing. At the pycdlib call boundary (this backend
+# never does its own attribute access or indexing on pycdlib internals) every one of these means
+# "this ISO structure is corrupt", so all are translated to CorruptionError — never a raw
+# exception. A genuine OSError from the underlying handle (file not found, permission, media
+# error) is deliberately NOT in this set: it is real I/O and MUST propagate unchanged (see
+# error-handling: "Genuine runtime and I/O errors are not reclassified"). Built defensively so
+# the module imports without pycdlib.
 _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
-    (_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ()
+    ((_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ())
+    + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 )
 
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
@@ -116,20 +211,13 @@ class _PyCdlibStream(DelegatingStream):
     ``PyCdlibIO`` must be *entered* before use — its context manager sets up the read offset —
     so this enters it in ``__init__`` and relies on ``DelegatingStream.close()`` (which calls
     ``inner.close()``, the exact equivalent of ``PyCdlibIO.__exit__``) to exit it, keeping the
-    enter/exit lifecycle paired. ``readinto_passthrough=False`` routes ``readinto`` through
-    ``read``: on the supported pycdlib floor (verified on 1.14.0) ``PyCdlibIO.readinto``
-    mis-signals EOF — at the member's logical end it returns sector-padding bytes instead of
-    0, so repeated ``readinto`` (e.g. a ``BufferedReader`` over it) reads up to the 2 KiB
-    sector boundary — while ``PyCdlibIO.read`` always clamps to the logical length. (Newer
-    pycdlib, e.g. 1.16, clamps both; the workaround stays for the ``>=1.14`` range and is
-    pinned by the cross-format member-stream contract suite.) Read/seek/tell/seekable are
-    inherited delegation.
+    enter/exit lifecycle paired. Read/seek/tell/seekable are inherited delegation.
     """
 
     def __init__(self, raw: "PyCdlibIO") -> None:
         # PyCdlibIO is an io.RawIOBase, which is a BinaryIO at runtime but not by typeshed's
         # nominal hierarchy, so cast at the DelegatingStream boundary.
-        super().__init__(cast("BinaryIO", raw), readinto_passthrough=False)
+        super().__init__(cast("BinaryIO", raw))
         raw.__enter__()  # set up the read offset; close() -> inner.close() exits the context
 
 
@@ -187,6 +275,18 @@ class IsoReader(BaseArchiveReader):
         if _pycdlib_exc is not None and isinstance(
             exc, _pycdlib_exc.PyCdlibException
         ):
+            return CorruptionError(f"Error reading ISO image: {exc!r}")
+        # pycdlib does not wrap every parse failure in its own exception type: a truncated
+        # or crafted image can raise a bare IndexError/struct.error/ValueError from deep in
+        # its header parsing (e.g. `data[offset]` off the end of a short path table). Those
+        # are corruption in the ISO structure, not archivey/runtime bugs, so translate them
+        # rather than letting a raw IndexError escape. (Found by the corpus mutation harness.)
+        if isinstance(
+            exc,
+            (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError),
+        ):
+            # pycdlib choked on corrupt structure (see the _PYCDLIB_ERRORS note). Never a
+            # genuine OSError — that is not in this set and propagates unchanged.
             return CorruptionError(f"Error reading ISO image: {exc!r}")
         return None
 

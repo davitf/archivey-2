@@ -224,7 +224,7 @@ class ExtractionCoordinator:
 
     def run(self, reader: "BaseArchiveReader", dest: str | Path) -> list[ExtractionResult]:
         dest = Path(dest)
-        os.makedirs(dest, exist_ok=True)
+        self._ensure_dest_root(dest)
         dest_root = dest.resolve()
         forward_only = reader._streaming
 
@@ -663,6 +663,28 @@ class ExtractionCoordinator:
             )
 
     # --- filesystem helpers --------------------------------------------------------
+
+    def _ensure_dest_root(self, dest: Path) -> None:
+        """Ensure ``dest`` is a directory to extract into, creating it if absent.
+
+        A dest that resolves to a directory — a real directory or a symlink pointing at
+        one — is reused, and members land inside the resolved target (``run`` resolves
+        ``dest`` before writing). This matches ``tar -C``/``unzip -d`` and leaves the
+        caller's symlink in place; the dest root is trusted (unlike archive-internal
+        symlinks, which are never written through).
+
+        A dest that exists as anything else — a regular file, a symlink to a file, a
+        dangling symlink — is a hard error regardless of ``OverwritePolicy``: we never
+        delete it. Extraction is not an invitation to remove a path the caller pointed at
+        by mistake (e.g. a CLI given a file argument where a directory was meant).
+        """
+        if dest.is_dir():  # real directory or symlink resolving to one: reuse / follow
+            return
+        # ``lexists`` (not ``exists``) so a dangling symlink is caught here rather than
+        # surfacing as a raw FileExistsError from ``mkdir`` below.
+        if os.path.lexists(dest):
+            raise ExtractionError(f"Destination exists and is not a directory: {dest}")
+        dest.mkdir(parents=True, exist_ok=True)
 
     def _prepare_destination(
         self, member: ArchiveMember, dest_path: Path, *, atomic: bool = False
