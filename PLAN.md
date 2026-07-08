@@ -75,35 +75,36 @@ Port-vs-rewrite is decided by **layer**, not file-by-file:
 | `ExtractionHelper` (pending/deferred state machine) | **Write fresh** as `ExtractionCoordinator` |
 | `io_helpers.py` god-module, `BinaryIOWrapper` method-swap trick | **Write fresh** as the `internal/streams/` package |
 | 7z `py7zr` reader, RAR `rarfile` reader | **Reference only** — not ported (native-first, the native-reader phase) |
-| DEV `test_*.py` drivers | **Reference only** — not ported (frozen oracle, then deleted) |
+| DEV `test_*.py` drivers | **Reference only** — not ported (the in-repo frozen-oracle clone was retired 2026-07; see the test strategy below) |
 
 ---
 
-## Test strategy: frozen oracle, new suite grows, old set deleted
+## Test strategy: declarative corpus + conformance sweep (oracle retired 2026-07)
 
-We do **not** keep DEV's test suite. It is a temporary scaffold.
+> **Revised by the `retire-dev-oracle` change.** The original plan cloned DEV's suite
+> into `tests/_dev_oracle/` as a running regression gate to be deleted in Phase 10. In
+> practice the gate never ran (its drivers import v1 APIs; pytest excluded the tree),
+> so the durable assets were extracted and the clone deleted early.
 
-1. **Durable assets reused from DEV:** (a) the *declarative archive corpus* —
-   `sample_archives.py` specs plus `ArchiveContents`/`FileInfo` expected data,
-   which describe archives independently of any API; and (b) the cross-check
-   *oracle libraries* (`py7zr`, `rarfile`, `7z`/`unrar` CLIs) per
-   `testing-contract`. The DEV `test_*.py` *drivers* are bound to the old API and
-   are **not** ported.
-2. **Frozen oracle.** DEV's suite is cloned into a quarantined, read-only
-   location (`tests/_dev_oracle/`, git-ignored from refactoring) and run as a
-   regression gate while we build. It is never refactored and is allowed to
-   skip/xfail as APIs diverge — we invest only in the new suite.
-3. **New suite grows per phase.** Each phase writes tests covering *its* spec
-   scenarios (migrating expectations from the corpus) and retires the
-   corresponding frozen-oracle coverage as it transfers.
-4. **Old set deleted at the end (Phase 10).** Once every spec scenario is covered
-   by the new suite, the frozen DEV oracle tree is deleted. The new, well-defined
-   suite becomes the sole suite.
+1. **Durable assets kept from DEV:** (a) the *declarative archive corpus* — the
+   archive shapes with expected contents, ported into `tests/sample_archives.py`
+   (provenance: DEV @ `730275b7`), format-independent; and (b) the cross-check
+   *oracle libraries* (`py7zr`, `rarfile`, `7z`/`unrar` CLIs) per `testing-contract`,
+   which remain dev-group cross-validation oracles for the native readers. The DEV
+   `test_*.py` drivers were bound to the old API and were not ported.
+2. **The corpus conformance sweep** (`tests/test_corpus_sweep.py`) is the cross-format
+   regression net: every corpus entry × every implemented format must open, list to
+   its declared expectations, read back (following links), and extract safely — or
+   raise its documented error. Formats gate on registry availability, so the 7z/RAR
+   corpus entries activate automatically when the Phase 6 native readers register.
+3. **Per-phase scenario tests** continue as before: each phase covers *its* spec
+   scenarios; the sweep covers the cross-format parity no single-phase test sees.
+4. **Fuzzing** layers on top (see cross-cutting concerns): the corpus doubles as the
+   seed corpus for the mutation harness and the Phase-6 Atheris harnesses.
 
-Consequence: the test-framework **foundations** (declarative harness, on-demand
-generation + cache, committed-fixture JSON sidecars, no committed binaries, flat
-`tests/`) are built in **Phase 1**, not deferred. `testing-contract` is a
-through-line, finalized in Phase 10.
+Foundations (declarative corpus, on-demand generation + content-keyed cache under
+`ARCHIVEY_TEST_CACHE`, no committed binaries, flat `tests/`) are in place;
+`testing-contract` remains a through-line, finalized in Phase 10.
 
 ---
 
@@ -158,7 +159,8 @@ All codec/detection-dependent formats stay unwired until Phases 2–3.
    generator bug locally always invalidates stale cached archives instead of silently
    reusing them; `tests/fixtures/` with a
    JSON sidecar per committed archive; **no generated binaries committed**; flat
-   `tests/` layout. Clone DEV's suite into `tests/_dev_oracle/` as the frozen gate.
+   `tests/` layout. (The frozen-oracle clone this task originally created was retired
+   2026-07 by the `retire-dev-oracle` change.)
 5. **Directory backend** (`formats/directory_reader.py`): the spine's first real
    consumer — walks a filesystem directory, yields members with filesystem metadata,
    serves data via `read`/`open`, follows in-directory symlinks, reports
@@ -508,16 +510,15 @@ All of `archive-writing`; `testing-contract` (*ZIP round-trip*, *TAR round-trip*
    full corpus generates from scratch. Coverage stays **report-only — no `fail_under`
    gate** (decided).
 3. **Complete the adversarial corpus** and confirm **every spec scenario across
-   all capabilities is covered** by the new suite; then **delete
-   `tests/_dev_oracle/`**. The frozen oracle is gone; DEV is reference-only.
+   all capabilities is covered** by the new suite. (The frozen DEV-oracle clone was
+   already retired by the `retire-dev-oracle` change; DEV is reference-only.)
 
 ### Acceptance — spec scenarios covered
 `packaging-and-extras` (finalized — extras→capability, env matrix, version),
 `cli`, and the full `testing-contract` (equivalence matrix across all formats,
 adversarial corpus, round-trip, non-seekable coverage, oracle cross-validation).
 **Gates:** CI matrix green on a fresh checkout (all archives generated from scratch;
-coverage **reported, not gated**); `tests/_dev_oracle/` removed; no committed generated
-binaries.
+coverage **reported, not gated**); no committed generated binaries.
 
 ---
 

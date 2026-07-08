@@ -119,8 +119,6 @@ validate-bump = false
 
 [tool.ruff]
 target-version = "py311"
-# The frozen DEV oracle under tests/_dev_oracle is reference code, not ours to lint.
-extend-exclude = ["tests/_dev_oracle"]
 
 [tool.ruff.lint]
 extend-select = ["I", "F", "C4", "ISC", "RET", "BLE"]
@@ -138,10 +136,8 @@ python-version = "3.11"
 root = ["src"]
 
 [tool.ty.src]
-# Type-check only the library, mirroring pyrefly's `project-includes = ["src"]`. Like
-# ruff (extend-exclude) and pytest (norecursedirs), ty thus excludes the frozen DEV
-# oracle under tests/_dev_oracle, which imports v1 module paths absent in v2. With this,
-# a bare `uv run ty check` is clean — no `src/` path argument needed.
+# Type-check only the library, mirroring pyrefly's `project-includes = ["src"]`, so a
+# bare `uv run ty check` is clean — no `src/` path argument needed.
 include = ["src"]
 
 [tool.coverage.run]
@@ -163,7 +159,6 @@ testpaths = ["tests"]
 # (SIGALRM on POSIX — suite continues; a process-killing thread dump on Windows). 60s is far
 # above any real test here (all run in milliseconds), so only a genuine hang trips it.
 addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60"
-norecursedirs = ["_dev_oracle"]
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",

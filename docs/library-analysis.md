@@ -139,7 +139,7 @@ Why, against the alternatives:
 `backports.zstd` (3.11–3.13). The `[zstd]` extra pins `backports.zstd` on older
 Pythons only; `_ZstdReopenStream` has been removed. `pyzstd` was previously pinned in
 `[all]` purely as a test-fixture generator and is now removed (the active test suite
-generates zstd fixtures with `backports.zstd`; only the frozen `tests/_dev_oracle`
+generates zstd fixtures with `backports.zstd`; only the (since-retired) frozen `tests/_dev_oracle`
 referenced `pyzstd`, and it guards for its absence).
 
 ### Seekable zstd (efficient random access) — none for now

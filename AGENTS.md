@@ -29,11 +29,10 @@ Non-obvious gotchas:
   CLI (in addition to `uv sync`), so both are present without manual steps.
 - **`unrar`** (system binary, from the `multiverse` apt component) backs RAR *data*
   tests; without it they skip cleanly rather than fail.
-- **`7z`** (system binary, from `p7zip-full`) is required by some tests that build
-  fixtures by shelling out to it — notably the encrypted-ZIP tests in
-  `tests/test_password.py` and the `tests/_dev_oracle/` oracle. Unlike `unrar`, these
-  currently **fail** (subprocess `FileNotFoundError`) rather than skip when it is absent,
-  so install `p7zip-full` if `which 7z` comes up empty.
+- **`7z`** (system binary, from `p7zip-full`) is required by tests that build encrypted
+  ZIP fixtures by shelling out to it (`tests/test_password.py`, the encrypted corpus
+  entries in `tests/test_corpus_sweep.py`); they skip cleanly when it is absent, but
+  install `p7zip-full` to run them.
 - **`openspec` CLI** lives at `~/.local/bin` (on `PATH`). `CLAUDE.md`'s
   `npm install -g @fission-ai/openspec` fails with `EACCES` here because the global npm
   prefix is not user-writable — the update script instead installs it into a writable,
