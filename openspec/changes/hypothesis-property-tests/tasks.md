@@ -78,8 +78,8 @@
 
 ## 6. Gate
 
-- [ ] 6.1 `uv run pytest tests/test_property_safety.py` green at the default profile in all
+- [x] 6.1 `uv run pytest tests/test_property_safety.py` green at the default profile in all
       three dependency configs where `dev` is present.
-- [ ] 6.2 Any counterexample fixed + pinned (task 0.3); re-run deep profile
+- [x] 6.2 Any counterexample fixed + pinned (task 0.3); re-run deep profile
       (`ARCHIVEY_FUZZ_EXAMPLES=…`) locally once, green.
-- [ ] 6.3 Pyrefly + ty + ruff clean.
+- [x] 6.3 Pyrefly + ty + ruff clean.

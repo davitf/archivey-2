@@ -23,32 +23,34 @@ from pathlib import Path
 
 import pytest
 
-hypothesis = pytest.importorskip("hypothesis")
+try:
+    from hypothesis import example, given
+    from hypothesis import strategies as st
+except ImportError:  # pragma: no cover - [core-only] leg
+    pytest.skip("hypothesis not installed (dev group)", allow_module_level=True)
 
-from hypothesis import example, given, strategies as st  # noqa: E402
-
-from archivey.exceptions import (  # noqa: E402
+from archivey.exceptions import (
     ArchiveyError,
     FilterRejectionError,
     FormatDetectionError,
 )
-from archivey.internal.detection import detect_format  # noqa: E402
-from archivey.internal.filters import check_universal  # noqa: E402
-from archivey.internal.naming import (  # noqa: E402
+from archivey.internal.detection import detect_format
+from archivey.internal.filters import check_universal
+from archivey.internal.naming import (
     normalize_member_name,
     resolve_link_target_name,
 )
-from archivey.internal.streams.peekable import PeekableStream  # noqa: E402
-from archivey.internal.volumes import (  # noqa: E402
+from archivey.internal.streams.peekable import PeekableStream
+from archivey.internal.volumes import (
     _7Z_VOLUME_RE,
-    _part_number_from_name,
     _RAR_PART_RE,
     _RAR_RNN_RE,
+    _part_number_from_name,
     _rnn_part_number,
     discover_volume_siblings,
 )
-from archivey.types import ArchiveMember, MemberType  # noqa: E402
-from tests.streams_util import NonSeekableBytesIO  # noqa: E402
+from archivey.types import ArchiveMember, MemberType
+from tests.streams_util import NonSeekableBytesIO
 
 # ---------------------------------------------------------------------------
 # Shared strategies
