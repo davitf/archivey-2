@@ -24,9 +24,9 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 | 1 | Scaffold + spine + test harness + directory | `packaging-and-extras`, `backend-registry`, `archive-data-model`, `error-handling`, `access-mode-and-cost` (types), `format-directory`, `logging`, `testing-contract` (foundations) | `archive/2026-06-19-phase-1-scaffold-and-spine` ✓ |
 | 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams` | `archive/2026-06-21-phase-2-stream-layer` ✓ |
 | 3 | Indexed leaf formats + detection | `format-zip`, `format-tar` (random-access read), `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry`, `access-mode-and-cost` | `archive/2026-06-30-phase-3-indexed-leaf-formats` ✓ |
-| 4 | TAR streaming + safe extraction | `format-tar` (forward-only `stream_members`, hardlinks, truncation), `safe-extraction`, `archive-reading` (sequential + `stream_members`), `format-detection` (gzip-wrapped tar regression), `testing-contract` (adversarial + non-seekable `tar.gz`) | `archive/2026-06-30-package-layout-restructure` ✓ → `phase-4-tar-streaming` + `phase-4-safe-extraction` |
-| 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | `phase-5-public-api` |
-| 6 | Native 7z + RAR read (was Phase 7; **fuzzing is an entry gate** — see cross-cutting) | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
+| 4 | TAR streaming + safe extraction | `format-tar` (forward-only `stream_members`, hardlinks, truncation), `safe-extraction`, `archive-reading` (sequential + `stream_members`), `format-detection` (gzip-wrapped tar regression), `testing-contract` (adversarial + non-seekable `tar.gz`) | `archive/2026-06-30-package-layout-restructure` ✓ → `archive/2026-07-09-phase-4-tar-streaming` ✓ + `archive/2026-07-03-phase-4-safe-extraction` ✓ |
+| 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | `archive/2026-07-07-phase-5-public-api` ✓ |
+| 6 | Native 7z + RAR read (was Phase 7; **fuzzing is an entry gate** — see cross-cutting) | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | entry gates: `hypothesis-property-tests`, `shared-source-streams` → Phase 6 change TBD |
 | 7 | CLI (was Phase 9; pulled forward as dev tool + the safe-extraction demo, per `VISION.md`) | `cli` | — |
 | 8 | Seekable zstd + blocked gzip (rescoped; original zst/lz4 read goals landed in Phases 2–3, `w:zst` moved to the writing phase) | `seekable-decompressor-streams`, `format-single-file-compressors` | `seekable-gzip-and-block-writing` (partial) |
 | 9 | Writing support (was Phase 6; **not a 1.0 requirement** — may land after; spec must design in reproducible output + the metadata-fidelity decision, see `IDEAS.md`) | `archive-writing`, `format-zip` / `format-tar` (writers) | — |
@@ -37,10 +37,12 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 > 1.0 requirement. The CLI moved up next-after (dev tool + demo). The phase sections
 > below are renumbered accordingly; archived changes keep their historical numbering.
 
-**In-flight changes unrelated to a PLAN phase** (do not block Phase 4, but may land
-alongside): `seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`.
-Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor`,
-`compression-library-evaluation`, `zstd-stdlib-backend-migration`.
+**In-flight changes unrelated to a PLAN phase** (may land alongside Phase 6 gates):
+`seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`.
+Phase 6 entry gates (land before the native-reader change): `hypothesis-property-tests`,
+`shared-source-streams`. Recently archived stream-layer / refactor follow-ons:
+`codec-descriptor-refactor`, `compression-library-evaluation`,
+`zstd-stdlib-backend-migration`.
 
 ---
 
