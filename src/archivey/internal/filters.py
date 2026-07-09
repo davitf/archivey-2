@@ -14,6 +14,7 @@ the coordinator, next to the ``os.symlink`` call it guards.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Callable
@@ -62,6 +63,17 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
         raise PathTraversalError(
             f"Null byte in member name: {name!r}", member_name=name
         )
+    # A name the platform filesystem encoding cannot represent (a lone surrogate outside
+    # the surrogateescape range, on POSIX) can never be materialized under dest — and it
+    # would otherwise crash the parent-resolution below with a raw UnicodeEncodeError.
+    # (Windows' surrogatepass encoding represents lone surrogates, so this passes there.)
+    try:
+        os.fsencode(name)
+    except UnicodeEncodeError as exc:
+        raise PathTraversalError(
+            f"Member name cannot be encoded for the filesystem: {name!r}",
+            member_name=name,
+        ) from exc
     if _is_absolute(name):
         raise PathTraversalError(
             f"Absolute path not allowed: {name!r}", member_name=name
@@ -103,6 +115,24 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     # directory; a hardlink target is archive-root relative. An absolute target makes the
     # join absolute, so it resolves outside dest and is caught here too.
     if member.link_target is not None:
+        target = member.link_target
+        if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
+            # Same string-level guards as for names: a NUL or an unencodable target
+            # cannot name a filesystem path, and would crash the resolves below with a
+            # raw ValueError / UnicodeEncodeError instead of a typed rejection.
+            if "\x00" in target:
+                raise SymlinkEscapeError(
+                    f"Null byte in link target: {name!r} -> {target!r}",
+                    member_name=name,
+                )
+            try:
+                os.fsencode(target)
+            except UnicodeEncodeError as exc:
+                raise SymlinkEscapeError(
+                    f"Link target cannot be encoded for the filesystem: "
+                    f"{name!r} -> {target!r}",
+                    member_name=name,
+                ) from exc
         if member.type == MemberType.SYMLINK:
             link_parent = (dest_root / name).parent
             resolved_target = (link_parent / member.link_target).resolve()

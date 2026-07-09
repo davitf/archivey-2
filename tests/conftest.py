@@ -108,7 +108,13 @@ def pytest_configure(config: pytest.Config) -> None:
         from hypothesis import settings
     except ImportError:
         return
-    max_examples = int(os.environ.get("ARCHIVEY_FUZZ_EXAMPLES", "100"))
+    raw = os.environ.get("ARCHIVEY_FUZZ_EXAMPLES", "100")
+    try:
+        max_examples = int(raw)
+    except ValueError as exc:
+        raise pytest.UsageError(
+            f"ARCHIVEY_FUZZ_EXAMPLES must be an integer, got {raw!r}"
+        ) from exc
     settings.register_profile(
         "archivey",
         max_examples=max_examples,

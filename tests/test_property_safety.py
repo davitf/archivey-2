@@ -19,6 +19,7 @@ import io
 import logging
 import re
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -32,10 +33,10 @@ except ImportError:  # pragma: no cover - [core-only] leg
 from archivey.exceptions import (
     ArchiveyError,
     FilterRejectionError,
-    FormatDetectionError,
 )
 from archivey.internal.detection import detect_format
 from archivey.internal.filters import check_universal
+from archivey.internal.logs import normalization as normalization_logger
 from archivey.internal.naming import (
     normalize_member_name,
     resolve_link_target_name,
@@ -53,16 +54,41 @@ from archivey.types import ArchiveMember, MemberType
 from tests.streams_util import NonSeekableBytesIO
 
 # ---------------------------------------------------------------------------
-# Shared strategies
+# Shared fixtures + strategies
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _silence_normalization_logger() -> Iterator[None]:
+    """Silence the (spec-permitted) normalization warnings for this module's runs.
+
+    Module-scoped so it composes with ``@given`` (a function-scoped fixture would trip
+    Hypothesis's health check), and restored afterwards so other test modules keep the
+    logger's normal level.
+    """
+    old_level = normalization_logger.level
+    normalization_logger.setLevel(logging.CRITICAL)
+    yield
+    normalization_logger.setLevel(old_level)
+
+
+@pytest.fixture(scope="module")
+def dest_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One extraction-root dir for all ``check_universal`` examples.
+
+    The filter never writes under ``dest``; per-example tempdirs would only add
+    thousands of mkdir/rmtree calls at the deep profile.
+    """
+    return tmp_path_factory.mktemp("dest")
+
 
 _SEP_SPLIT = re.compile(r"[\\/]")
 
-# Text that includes path-hostile characters without drowning in huge strings.
+# Text that includes path-hostile characters (controls, surrogates, separators) without
+# drowning in huge strings.
 _name_text = st.text(
     alphabet=st.characters(
         whitelist_categories=("L", "N", "P", "S", "Z", "C"),
-        blacklist_characters="",
     ),
     min_size=0,
     max_size=64,
@@ -167,8 +193,6 @@ def test_normalize_total_and_idempotent(
     member_type: MemberType,
     backslash_is_separator: bool,
 ) -> None:
-    # Logging on change is permitted (spec); silence it so the suite stays quiet.
-    logging.getLogger("archivey.normalization").setLevel(logging.CRITICAL)
     out = normalize_member_name(
         decoded, member_type, backslash_is_separator=backslash_is_separator
     )
@@ -254,77 +278,71 @@ def test_normalize_pinned_examples_still_hold(
 
 
 @given(name=_pathish.filter(_has_dotdot_component))
-def test_check_universal_rejects_dotdot(name: str) -> None:
-    with tempfile.TemporaryDirectory() as dest:
-        with pytest.raises(FilterRejectionError):
-            check_universal(_member(name), Path(dest))
+def test_check_universal_rejects_dotdot(dest_root: Path, name: str) -> None:
+    with pytest.raises(FilterRejectionError):
+        check_universal(_member(name), dest_root)
 
 
 @given(name=_pathish.filter(_is_absolute_name))
-def test_check_universal_rejects_absolute(name: str) -> None:
-    with tempfile.TemporaryDirectory() as dest:
-        with pytest.raises(FilterRejectionError):
-            check_universal(_member(name), Path(dest))
+def test_check_universal_rejects_absolute(dest_root: Path, name: str) -> None:
+    with pytest.raises(FilterRejectionError):
+        check_universal(_member(name), dest_root)
 
 
 @given(
     prefix=st.text(min_size=0, max_size=20).filter(lambda s: "\x00" not in s),
     suffix=st.text(min_size=0, max_size=20).filter(lambda s: "\x00" not in s),
 )
-def test_check_universal_rejects_null_byte(prefix: str, suffix: str) -> None:
+def test_check_universal_rejects_null_byte(
+    dest_root: Path, prefix: str, suffix: str
+) -> None:
     name = prefix + "\x00" + suffix
-    with tempfile.TemporaryDirectory() as dest:
-        with pytest.raises(FilterRejectionError):
-            check_universal(_member(name), Path(dest))
+    with pytest.raises(FilterRejectionError):
+        check_universal(_member(name), dest_root)
 
 
 @given(name=st.sampled_from(["", ".", "./", ".//"]))
-def test_check_universal_rejects_root_named_file(name: str) -> None:
+def test_check_universal_rejects_root_named_file(dest_root: Path, name: str) -> None:
     # After strip of trailing ``/``, these refer to the extraction root as a file.
     rel = name.rstrip("/")
     if rel not in ("", "."):
         return
-    with tempfile.TemporaryDirectory() as dest:
-        with pytest.raises(FilterRejectionError):
-            check_universal(_member(name, type=MemberType.FILE), Path(dest))
+    with pytest.raises(FilterRejectionError):
+        check_universal(_member(name, type=MemberType.FILE), dest_root)
 
 
 @given(name=_safe_file_name)
-def test_check_universal_allows_safe_relative_file(name: str) -> None:
-    with tempfile.TemporaryDirectory() as dest:
-        check_universal(_member(name, type=MemberType.FILE), Path(dest))
+def test_check_universal_allows_safe_relative_file(dest_root: Path, name: str) -> None:
+    check_universal(_member(name, type=MemberType.FILE), dest_root)
 
 
+# Pinned counterexamples (task 0.3): a lone high surrogate in a non-final component
+# (or in a link target) used to escape as a raw UnicodeEncodeError from the parent /
+# link-target resolution; an embedded NUL in a link target as a raw ValueError. Fixed
+# in filters.py by typed string-level rejections before any resolve.
+@example(name="\ud800/x", member_type=MemberType.FILE, link_target=None)
+@example(name="lnk", member_type=MemberType.SYMLINK, link_target="\ud800")
+@example(name="lnk", member_type=MemberType.HARDLINK, link_target="a/\ud800/b")
+@example(name="lnk", member_type=MemberType.SYMLINK, link_target="a\x00b")
 @given(
     name=_pathish,
     member_type=_member_types,
     link_target=st.one_of(st.none(), _pathish),
 )
 def test_check_universal_total(
+    dest_root: Path,
     name: str,
     member_type: MemberType,
     link_target: str | None,
 ) -> None:
-    # Link targets with embedded NULs would hit a raw ``ValueError`` from ``Path``;
-    # reject that input shape here — name NULs are already covered above. A real
-    # link-target NUL guard would be a separate filters change.
-    if link_target is not None and "\x00" in link_target:
-        link_target = None
-    if member_type not in (MemberType.SYMLINK, MemberType.HARDLINK):
-        link_target = None
-    with tempfile.TemporaryDirectory() as dest:
-        try:
-            check_universal(
-                _member(name, type=member_type, link_target=link_target), Path(dest)
-            )
-        except FilterRejectionError:
-            pass
-        except ArchiveyError:
-            pass
-        except Exception as exc:  # noqa: BLE001 — property: no raw exceptions
-            pytest.fail(
-                f"raw exception from check_universal: {type(exc).__name__}: {exc}"
-            )
+    try:
+        check_universal(
+            _member(name, type=member_type, link_target=link_target), dest_root
+        )
+    except ArchiveyError:
+        pass
+    except Exception as exc:  # noqa: BLE001 — property: no raw exceptions
+        pytest.fail(f"raw exception from check_universal: {type(exc).__name__}: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -493,10 +511,8 @@ def test_detect_format_peekable_total_and_unadvanced(data: bytes) -> None:
     stream = PeekableStream(NonSeekableBytesIO(data))
     try:
         detect_format(stream)
-    except FormatDetectionError:
-        pass
     except ArchiveyError:
-        pass
+        pass  # typically FormatDetectionError; any typed error satisfies totality
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"raw exception from detect_format: {type(exc).__name__}: {exc}")
     # Peek/replay invariant: nothing consumed; full prefix still readable.
@@ -509,8 +525,6 @@ def test_detect_format_bytesio_total_and_rewound(data: bytes) -> None:
     buf = io.BytesIO(data)
     try:
         detect_format(buf)
-    except FormatDetectionError:
-        pass
     except ArchiveyError:
         pass
     except Exception as exc:  # noqa: BLE001
@@ -526,6 +540,6 @@ def test_detect_format_pinned_examples(data: bytes) -> None:
     buf = io.BytesIO(data)
     try:
         detect_format(buf)
-    except FormatDetectionError:
+    except ArchiveyError:
         pass
     assert buf.tell() == 0
