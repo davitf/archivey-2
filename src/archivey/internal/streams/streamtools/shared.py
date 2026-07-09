@@ -196,7 +196,14 @@ class _SharedSourceView(ReadOnlyIOStream):
             raise ValueError(f"Invalid whence: {whence}")
 
         if new_relative < 0:
-            raise ValueError("Negative seek position")
+            # Match BytesIO: SEEK_END underflow clamps to the origin; SEEK_SET/CUR raise.
+            # ZipFile's EOCD probe does ``seek(-22, SEEK_END)`` and expects either a clamp
+            # (BytesIO) or ``OSError`` (real file) — a ``ValueError`` escapes as a raw
+            # exception through the reader boundary.
+            if whence == io.SEEK_END:
+                new_relative = 0
+            else:
+                raise ValueError("Negative seek position")
 
         # Seeking past a defined end is allowed (reads clamp to empty), matching BytesIO /
         # SlicingStream. Only update the view's _pos — do not touch the shared handle here;

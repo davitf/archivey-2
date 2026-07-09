@@ -109,18 +109,21 @@ class SingleFileReader(BaseArchiveReader):
         self._header_cache: bytes | None = None
         self._member = self._build_member(archive_name)
 
-        # Seekable sources go through SharedSource so concurrent/re-entrant member opens
-        # share one handle with per-view positions (the Phase 6 concurrent-open gate).
-        # Non-seekable sources have a single forward pass — no shared view, and a second
-        # open fails loudly once that pass is consumed.
+        # Concurrent/re-entrant member open (no ``_first_stream`` scratch):
+        # - Path source: each open hands the path to the codec (independent FD; keeps
+        #   path-only accelerator features such as the rapidgzip ISIZE truncation
+        #   backstop). Concurrent opens are naturally isolated — same shape as ZIP path.
+        # - Seekable stream: SharedSource.view(0) + a fresh codec per open, so interleaved
+        #   opens never clobber the single shared handle position.
+        # - Non-seekable: one forward pass; a second open fails loudly once consumed.
         self._shared: SharedSource | None = None
         self._pending_stream: BinaryIO | None = None
-        if self._seekable:
+        if self._seekable and is_stream(source):
             self._shared = SharedSource(source)
-            # Eagerly open+close a codec stream so format/seekability errors (e.g.
-            # unix-compress rejecting a bad source via the translator) surface at
+        if self._seekable:
+            # Eagerly open+close a codec stream so format/seekability errors surface at
             # archive-open time rather than on a later read. Not cached — every
-            # _open_member builds a fresh codec over a fresh SharedSource view.
+            # _open_member builds a fresh codec stream.
             probe = self._open_codec_stream()
             probe.close()
         else:
@@ -214,15 +217,15 @@ class SingleFileReader(BaseArchiveReader):
     def _open_codec_stream(self) -> BinaryIO:
         """Open a fresh decompression stream over the source.
 
-        Seekable sources go through a whole-source ``SharedSource`` view so concurrent /
-        re-entrant opens never clobber the shared handle's position. Non-seekable sources
-        read the raw stream once (forward-only).
+        A seekable stream source goes through a whole-source ``SharedSource`` view so
+        concurrent / re-entrant opens never clobber the shared handle's position. A path
+        source is passed through as a path (the codec opens an independent handle — the
+        same concurrent-open shape as ZIP path-source). A non-seekable source is read
+        once, forward-only.
         """
         if self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a
             # single-file archive). The view is non-owning; the SharedSource outlives it.
-            # Path-backed views expose ``name`` so path-only codec features (e.g. the
-            # rapidgzip ISIZE truncation backstop) still engage.
             view = self._shared.view(0)
             counted = self._wrap_compressed_input(view)
             assert not isinstance(counted, Path)  # view is always a stream
@@ -247,8 +250,9 @@ class SingleFileReader(BaseArchiveReader):
         )
 
     def _open_member(self, member: ArchiveMember) -> BinaryIO:
-        if self._shared is not None:
-            # Reentrant: every open mints a fresh view + codec (no per-open scratch on self).
+        if self._seekable:
+            # Reentrant: every open builds a fresh codec (path → independent FD; stream →
+            # SharedSource view). No per-open scratch on self.
             return self._open_codec_stream()
 
         # Non-seekable: serve the one-shot stream opened at init; a second open fails loudly.
