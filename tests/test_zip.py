@@ -3,6 +3,7 @@ fail-fast, multi-volume rejection) and the ZIP slice of access-mode-and-cost."""
 
 from __future__ import annotations
 
+import contextlib
 import io
 import struct
 import zipfile
@@ -22,6 +23,7 @@ from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
+    UnsupportedOperationError,
 )
 from tests.streams_util import NonSeekableBytesIO
 
@@ -394,8 +396,9 @@ def test_concurrent_open_members_interleaved_path_source(simple_zip: Path) -> No
 
 
 def test_concurrent_open_members_interleaved_stream_source(simple_zip: Path) -> None:
-    # Stream source: archivey wraps the handle in SharedSource so interleaved opens stay
-    # correct under the same concurrent-open contract.
+    # Stream source: stdlib zipfile coordinates a passed-in handle exactly like a path
+    # source (_SharedFile keeps a per-open position under ZipFile's lock), so archivey
+    # adds no wrap; this test locks the concurrent-open contract in for that leg too.
     data = simple_zip.read_bytes()
     with open_archive(io.BytesIO(data)) as ar:
         s1 = ar.open("hello.txt")
@@ -406,6 +409,27 @@ def test_concurrent_open_members_interleaved_stream_source(simple_zip: Path) -> 
         assert s2.read() == b" content"
         s1.close()
         s2.close()
+
+
+def test_read_after_source_close_raises_typed_error() -> None:
+    # archive-reading "fail loudly" scenario: once the caller's source stream is closed,
+    # reading a still-open member stream surfaces a typed error at the reader boundary —
+    # not a raw ValueError, and not a misleading CorruptionError. The member must exceed
+    # ZipExtFile's read-ahead so the second read actually touches the closed source.
+    payload = bytes(range(256)) * 1024  # 256 KiB, incompressible-ish and > read-ahead
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", payload)
+    source = io.BytesIO(buf.getvalue())
+    with open_archive(source) as ar:
+        stream = ar.open("big.bin")
+        assert stream.read(16) == payload[:16]
+        source.close()
+        with pytest.raises(UnsupportedOperationError):
+            while stream.read(65536):
+                pass
+        with contextlib.suppress(Exception):
+            stream.close()
 
 
 # ---------------------------------------------------------------------------

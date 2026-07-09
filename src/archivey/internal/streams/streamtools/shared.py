@@ -15,6 +15,12 @@ archivey-dependency-free: it raises stdlib-shaped errors (``ValueError`` / ``OSE
 fresh ``open(path, 'rb')`` handle per view for true parallel I/O (see
 ``independent_handles``). That seam is **default off** for now: every view shares one
 handle + lock. Engaging live per-view handles belongs with parallel extraction.
+
+**Views are unbuffered.** Every ``read`` is one locked seek+read on the shared handle —
+cheap (an in-memory offset move on a regular file / ``BytesIO``), and the current
+consumers (codec streams, which buffer internally) already read in large chunks. A
+consumer that issues many tiny reads should wrap its view in ``io.BufferedReader``
+itself; buffering inside the primitive would double-copy for everyone else.
 """
 
 from __future__ import annotations
@@ -196,14 +202,13 @@ class _SharedSourceView(ReadOnlyIOStream):
             raise ValueError(f"Invalid whence: {whence}")
 
         if new_relative < 0:
-            # Match BytesIO: SEEK_END underflow clamps to the origin; SEEK_SET/CUR raise.
-            # ZipFile's EOCD probe does ``seek(-22, SEEK_END)`` and expects either a clamp
-            # (BytesIO) or ``OSError`` (real file) — a ``ValueError`` escapes as a raw
-            # exception through the reader boundary.
-            if whence == io.SEEK_END:
-                new_relative = 0
-            else:
+            # Match BytesIO exactly: a relative seek (SEEK_CUR/SEEK_END) that underflows
+            # clamps to the origin; only an explicitly negative SEEK_SET raises. Callers
+            # probing backwards from the end (e.g. ZipFile's ``seek(-22, SEEK_END)`` EOCD
+            # probe on a short source) rely on the clamp rather than a raw ``ValueError``.
+            if whence == io.SEEK_SET:
                 raise ValueError("Negative seek position")
+            new_relative = 0
 
         # Seeking past a defined end is allowed (reads clamp to empty), matching BytesIO /
         # SlicingStream. Only update the view's _pos — do not touch the shared handle here;
@@ -219,15 +224,11 @@ class _SharedSourceView(ReadOnlyIOStream):
         if not self.closed:
             super().close()
 
-    @property
-    def name(self) -> str:
-        # Path-backed sources expose the path so codecs that key path-only features off
-        # ``isinstance(source, PathLike)`` *or* ``stream.name`` (e.g. the rapidgzip ISIZE
-        # truncation backstop) still engage when handed a view instead of a bare path.
-        path = self._source._path
-        if path is not None:
-            return os.fspath(path)
-        raise AttributeError("name")
+    # No ``name`` property: like SlicingStream, a view remaps the origin, and no current
+    # construction hands views a path identity (the single-file backend passes path
+    # sources to codecs as paths, keeping path-only features like the rapidgzip ISIZE
+    # backstop on independent handles). If the dormant path-backed mode is engaged later,
+    # revisit how path-only codec features discover the path.
 
     @property
     def size(self) -> int | None:

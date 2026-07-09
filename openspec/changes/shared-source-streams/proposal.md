@@ -75,10 +75,11 @@ tests (see `design.md` §D–E):
 - **single-file** member open goes through `SharedSource.view(...)` (whole-source view + fresh
   codec per open); this also drops the `_first_stream` eager-stream scratch so open is
   reentrant (the invariant owned by the `parallel-reader-exploration` change).
-- **ZIP** — **path source:** stdlib `zipfile` already owns its handle and uses `_SharedFile`,
-  so **no wrap** is added, but a concurrent-open test is still required. **Stream source:** the
-  archivey-owned handle passed to `ZipFile` is wrapped so a second archivey-level open is
-  coordinated by the same contract.
+- **ZIP** — **no wrap for either source kind** (revised at implementation review): stdlib
+  `zipfile` coordinates a passed-in stream exactly as it does its own path handle (every
+  member open goes through `_SharedFile`, per-open position, re-seek under `ZipFile._lock`),
+  so an archivey wrap would duplicate that coordination. Concurrent-open tests are still
+  required for both legs (design §C).
 - **TAR-RA is carved out** (single shared `tarfile` / decompressor): exempt from the
   concurrent-open SHALL; may serve one member stream at a time.
 - **ISO is out of scope, not non-compliant:** `pycdlib` owns member addressing the way
@@ -95,7 +96,8 @@ tests (see `design.md` §D–E):
   single-reader contract lives in `archive-reading` and the cross-thread data-correctness is
   an implementation note only (see `design.md` §G).
 - Affected code: `src/archivey/internal/streams/streamtools/` (new `SharedSource`),
-  `single_file_reader.py`, `zip_reader.py` (stream-source wrap), plus tests. TAR-RA and ISO
+  `single_file_reader.py`, plus tests (ZIP needs no code change — stdlib `_SharedFile`
+  coordinates both source kinds; design §C). TAR-RA and ISO
   untouched (TAR exempt; ISO pycdlib-owned).
 - Risk: medium — touches working backends. Mitigated by the retrofit being a like-for-like
   swap of the slice/seek mechanism with the primitive plus added concurrent-open coverage; no

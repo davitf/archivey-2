@@ -163,12 +163,16 @@ class TestSharedSourceMisuse:
         with pytest.raises(ValueError, match="closed"):
             shared.view(0, 1)
 
-    def test_seek_end_underflow_clamps_like_bytesio(self) -> None:
-        # BytesIO clamps SEEK_END past the origin to 0; ZipFile relies on that (or OSError
-        # from a real file) when probing for the EOCD on a truncated stream.
+    def test_relative_seek_underflow_clamps_like_bytesio(self) -> None:
+        # BytesIO clamps a SEEK_CUR/SEEK_END result past the origin to 0 (only a negative
+        # SEEK_SET raises); backwards-from-end probes on a short source (e.g. ZipFile's
+        # EOCD probe) rely on the clamp rather than a raw ValueError.
         shared = SharedSource(io.BytesIO(DATA[:10]))
         view = shared.view(0)
         assert view.seek(-100, io.SEEK_END) == 0
+        assert view.tell() == 0
+        view.seek(3)
+        assert view.seek(-100, io.SEEK_CUR) == 0
         assert view.tell() == 0
 
     def test_seek_set_negative_still_raises(self) -> None:

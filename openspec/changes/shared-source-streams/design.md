@@ -20,6 +20,14 @@ So "fail loudly with a typed error" in the `archive-reading` delta means *typed 
 surface*, produced by the existing translation layer — **not** a new exception in
 `streamtools`.
 
+Concretely: an inner read failing with the stdlib closed-handle `ValueError` ("I/O
+operation on closed file" — the source was closed underneath a live member stream, e.g.
+the reader was closed) is mapped by `ArchiveStream` itself to `UnsupportedOperationError`,
+*before* the per-library translator runs — the condition is library-agnostic, and a
+backend's generic `ValueError` mapping (ZIP's corrupt-offset rule) must not claim it as
+corruption. The wrapper's own read-after-close keeps plain file semantics (raw
+`ValueError`), exactly like any closed Python file object.
+
 ## B. Path-source independent handles — dormant
 
 The `SharedSource` API carries the seam for minting a *fresh* `open(path, 'rb')` handle per
@@ -34,13 +42,18 @@ not a retrofit.
 - **Path source:** stdlib `zipfile` opens and owns its own handle and already uses
   `_SharedFile` internally, so archivey adds **no wrap** — but a concurrent-open test is still
   required to lock the behavior in.
-- **Stream source:** archivey owns the handle it passes into `ZipFile`; that handle is wrapped
-  so a second archivey-level `open()` is coordinated by the same contract.
+- **Stream source:** likewise **no wrap** (revised at implementation review). Stdlib
+  `zipfile` coordinates a passed-in file object exactly as it does its own path handle —
+  every member open goes through `_SharedFile`, which keeps a per-open position and
+  re-seeks under `ZipFile._lock` on each read — so a SharedSource layer underneath it
+  would duplicate that coordination (an extra lock + re-seek per read) without changing
+  behavior. A concurrent-open test locks this leg in too; ZIP is covered by the delta's
+  "external library already coordinates the shared handle" clause for both source kinds.
 
 ## D. ISO — out of scope (pycdlib owns addressing; not a compliance gap)
 
-ISO is **not** a SharedSource consumer and is **not** listed as non-compliant. Like ZIP's
-path-source case (stdlib `zipfile` owns `_SharedFile`), ISO serves members through
+ISO is **not** a SharedSource consumer and is **not** listed as non-compliant. Like ZIP
+(stdlib `zipfile` owns `_SharedFile` for both source kinds), ISO serves members through
 `pycdlib`'s `open_file_from_iso` → `_PyCdlibStream`, which does its **own** seeking on the
 shared ISO handle. Concurrent-open correctness for ISO is therefore pycdlib's problem (or a
 future archivey wrap around it), not something this gate must retrofit via
@@ -66,7 +79,7 @@ decompressor over its own shared-source view (re-decoding from folder/block star
 here.
 
 ISO is **not** in this carve-out: it is simply outside SharedSource (design §D), analogous to
-ZIP path-source relying on stdlib.
+ZIP relying on stdlib.
 
 ## F. "Fail loudly" (detectable) vs "unsupported" (undefined) — kept distinct
 
@@ -109,8 +122,8 @@ had the bug).
   codec stream per open — there is no per-member byte range); also removes the
   `_first_stream` eager-stream scratch as part of making open reentrant (coordinated with
   `parallel-reader-exploration`, which owns the invariant).
-- **ZIP** — stream-source handle wrap + concurrent-open tests (path source unchanged; stdlib
-  owns addressing).
+- **ZIP** — no code change (stdlib `_SharedFile` coordinates both path and stream sources —
+  design §C); concurrent-open tests for both legs lock the contract in.
 - **TAR-RA** — carved out (single shared decoder; documented exempt in the delta).
 - **ISO** — untouched; pycdlib owns addressing (design §D). Not a SharedSource retrofit and
   not listed as non-compliant.

@@ -16,10 +16,12 @@
       lock). Live per-view handles ship with parallel extraction, not here. (design §B)
 - [x] 0.3 **Primitive raises stdlib-shaped errors** (`ValueError`/`OSError`/
       `io.UnsupportedOperation`); the reader boundary translates to `ArchiveyError`. (design §A)
-- [x] 0.4 **Retrofit = single-file + ZIP(stream-source wrap)**; **TAR-RA is carved out**
-      (single shared decoder, documented exempt). **ISO is out of scope** — pycdlib owns
-      addressing (like ZIP path-source / stdlib); leave a design note, no retrofit, not
-      listed as non-compliant. (design §D–E)
+- [x] 0.4 **Retrofit = single-file**; ZIP needs **no wrap for either source kind**
+      (revised at implementation review: stdlib `_SharedFile` coordinates a passed-in
+      stream exactly like a path handle — design §C) but gets concurrent-open tests for
+      both legs. **TAR-RA is carved out** (single shared decoder, documented exempt).
+      **ISO is out of scope** — pycdlib owns addressing (like ZIP / stdlib); leave a
+      design note, no retrofit, not listed as non-compliant. (design §C–E)
 - [x] 0.5 **No `packaging-and-extras` delta** — public contract stays flat "not thread-safe";
       supported contract lives in `archive-reading`. (design §G)
 - [x] 0.6 **Reader stays one-per-thread** — this change does NOT make `BaseArchiveReader`
@@ -66,9 +68,10 @@
       non-seekable behavior are unchanged.
 - [x] 3.2 **ZIP path source**: no wrap (stdlib `zipfile` already correct); add a concurrent-open
       test (two members interleaved) to lock the behavior in.
-- [x] 3.3 **ZIP stream source**: wrap the archivey-owned handle passed to `zipfile.ZipFile` so a
-      second archivey-level `open()` is coordinated by the contract; verify no regression vs.
-      stdlib `_SharedFile` (existing ZIP tests stay green) + a concurrent-open test.
+- [x] 3.3 **ZIP stream source**: no wrap (revised — stdlib `_SharedFile` coordinates a
+      passed-in stream exactly like a path handle, so a SharedSource layer would duplicate
+      the lock+re-seek per read; design §C); a concurrent-open test locks the behavior in,
+      and a read-after-source-close test pins the typed-error boundary.
 - [x] 3.4 Confirm cost/stream-capability reporting for the touched backends is unchanged.
 - [x] 3.5 **TAR-RA**: no code change; confirm the `archive-reading` carve-out names it as a
       single-decoder exempt. **ISO**: no code change; confirm it is *not* listed as

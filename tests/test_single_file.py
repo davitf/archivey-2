@@ -9,6 +9,7 @@ seekable-decompressor refinements remain for Phase 8.
 from __future__ import annotations
 
 import bz2
+import contextlib
 import gzip
 import io
 import lzma
@@ -17,7 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, MemberType, open_archive
+from archivey import (
+    AcceleratorMode,
+    ArchiveFormat,
+    ArchiveyConfig,
+    MemberType,
+    open_archive,
+)
 from archivey.cost import AccessCost, ListingCost
 from archivey.exceptions import (
     CorruptionError,
@@ -385,3 +392,24 @@ def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
         assert first.read() == payload[8:]
         first.close()
         second.close()
+
+
+def test_read_after_reader_close_raises_typed_error() -> None:
+    # archive-reading "fail loudly" scenario: closing the reader closes the SharedSource
+    # behind a stream-source member stream, so a later read surfaces a typed error at
+    # the reader boundary — never the primitive's raw ValueError. Pinned to the stdlib
+    # gzip path with an incompressible payload larger than its read-ahead, so the
+    # post-close read deterministically touches the closed source on every rapidgzip
+    # version (the accelerator may buffer a small member whole on its first read).
+    payload = bytes(range(256)) * 1024  # 256 KiB, ~incompressible
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
+    ar = open_archive(io.BytesIO(gzip.compress(payload)), config=config)
+    (member,) = ar.members()
+    stream = ar.open(member)
+    assert stream.read(16) == payload[:16]
+    ar.close()
+    with pytest.raises(UnsupportedOperationError):
+        while stream.read(65536):
+            pass
+    with contextlib.suppress(Exception):
+        stream.close()

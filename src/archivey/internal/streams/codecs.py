@@ -53,7 +53,6 @@ from archivey.internal.streams.streamtools import (
     ensure_binaryio,
     ensure_bufferedio,
     fix_stream_start_position,
-    source_name,
 )
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.types import (
@@ -147,19 +146,6 @@ class _AcceleratorStream(DelegatingStream):
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO
-
-
-def _codec_source_path(source: CodecSource) -> str | None:
-    """Filesystem path for a codec source, when one is available.
-
-    A bare path/str qualifies directly. A stream wrapper (notably a ``SharedSource``
-    view over a path) qualifies via its ``name`` attribute when that is a real path —
-    so path-only codec features (e.g. the rapidgzip ISIZE truncation backstop) still
-    engage after a SharedSource retrofit.
-    """
-    if isinstance(source, (str, os.PathLike)):
-        return os.fspath(source)
-    return source_name(source)
 
 
 class Codec(Enum):
@@ -523,12 +509,9 @@ class GzipCodec(StreamCodec):
                 )
             stream = _AcceleratorStream(_rapidgzip.open(source, parallelization=0))
             # rapidgzip does not reliably surface truncation; add the ISIZE backstop when we
-            # have a seekable path to read the trailer / scan for extra members. A bare path
-            # qualifies directly; a SharedSource view (or other wrapper) qualifies via its
-            # ``name`` attribute when that is a filesystem path.
-            path = _codec_source_path(source)
-            if path is not None:
-                return _GzipTruncationCheckStream(stream, path)
+            # have a seekable path to read the trailer / scan for extra members.
+            if isinstance(source, (str, os.PathLike)):
+                return _GzipTruncationCheckStream(stream, os.fspath(source))
             return stream
         # stdlib gzip can seek, but a rewind re-decompresses from the start; the outer
         # ArchiveStream warns about that (see rewind_warning). The [seekable] rapidgzip
