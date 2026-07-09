@@ -78,6 +78,6 @@
 
 - [x] 4.1 `archive-reading` delta (concurrent-open member streams + solid/single-decoder
       carve-out) covered by tests in §2–§3.
-- [ ] 4.2 `openspec validate --strict shared-source-streams` passes.
-- [ ] 4.3 Full suite green in all three dependency configs (`[all]`, `[all-lowest]`,
+- [x] 4.2 `openspec validate --strict shared-source-streams` passes.
+- [x] 4.3 Full suite green in all three dependency configs (`[all]`, `[all-lowest]`,
       `[core-only]`); Pyrefly + ty + ruff clean.
