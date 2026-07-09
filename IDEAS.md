@@ -70,7 +70,7 @@
   cache so ZIP central-directory + member seeks don't re-fetch), and — the real
   unlock — it has **filesystem context**, which a bare stream can never provide:
   multi-volume sets (`name.7z.001`…) need `fs.ls()` to discover sibling volumes, which
-  the Phase 7 volume-joining path requires. Shape TBD: a URL-string branch inside
+  the Phase 6 volume-joining path requires. Shape TBD: a URL-string branch inside
   `open_archive()` (gated on `"://" in source` + fsspec installed) vs. a separate
   `open_archive_url()`; the separate function keeps typing/behavior of the core
   entry point simple and the dependency boundary explicit.
@@ -118,7 +118,7 @@
   **Constraint:** the concurrency model says readers are *not* thread-safe (one per
   thread — `openspec/project.md`), so this must be designed as either N readers over
   the same path or an explicit shared-source primitive — never silent sharing.
-  **Plumbing to consider before the native 7z/RAR/ZIP readers land (Phase 7):** a
+  **Plumbing to consider before the native 7z/RAR/ZIP readers land (Phase 6):** a
   `streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
   underlying handle + a lock + a per-view position, each read seeking under the lock)
   so multiple open member streams over one seekable source are safe by construction;

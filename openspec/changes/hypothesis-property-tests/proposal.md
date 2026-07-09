@@ -10,12 +10,21 @@ staged parts:
    every corpus archive is deterministically mutated and driven through
    open/list/read/extract + detection, asserting *typed `ArchiveyError` or success, never a
    raw exception, never a hang*.
-2. **Open (this change)** — **property-based tests (Hypothesis)** for the pure safety logic:
-   `normalize_member_name`, `check_universal`, `resolve_link_target_name`, volume
-   discovery, and format detection over arbitrary byte prefixes. These functions are the
-   load-bearing core of the safety story, they are pure (no I/O), and their invariants are
+2. **Open (this change)** — **property-based tests (Hypothesis)** for the load-bearing
+   safety logic: `normalize_member_name`, `check_universal`, `resolve_link_target_name`,
+   volume discovery, and format detection over arbitrary byte prefixes. Their invariants are
    expressible as properties — exactly what Hypothesis is good at, and where the curated
    example tests can only cover the cases we already thought of.
+
+   **Not all five are I/O-free** — that matters for how they are tested:
+   - Genuinely pure (string/parse only): `normalize_member_name`, `resolve_link_target_name`,
+     and the name-parsing parts of volume discovery (part-number regexes). Tested as pure
+     properties over generated strings.
+   - Touch the filesystem: `check_universal` calls `Path.resolve()` on the dest / parents (so
+     real symlinks matter), and `discover_volume_siblings` calls `is_file()` / `iterdir()`.
+     These are tested with `tmp_path`-rooted strategies that materialize the relevant tree
+     (including symlink layouts), **not** as pure functions. The proposal deliberately drops
+     any "pure, no I/O" claim over the whole set.
 3. **Deferred to Phase 6 itself** — coverage-guided Atheris fuzzing of the native header
    parsers lands *with* those parsers (see the parser changes), not here.
 

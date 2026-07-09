@@ -16,24 +16,33 @@
 - [ ] 0.3 **Decide the feature with numbers** — no parallel-extraction implementation until the
       benchmark shows a real win under both GIL and free-threaded builds.
 
-## 1. Committed: the `_open_member` reentrancy invariant
+## 1. Committed: the `_open_member` reentrancy invariant (scoped to random-access)
 
-- [ ] 1.1 Add the `archive-reading` delta (this change's spec) — backend member-open is
-      reentrant and reader-state-free, byte access via a shared-source view.
+- [ ] 1.1 Add the `archive-reading` delta (this change's spec) — random-access backend
+      member-open is reentrant and reader-state-free, byte access via a shared-source view;
+      streaming and single-decoder (TAR-RA) backends are out of scope. **Land after / synced
+      with `shared-source-streams`** (the delta references its concurrent-open requirement).
 - [ ] 1.2 **Audit existing backends** (`directory`, `zip`, `tar`, `iso`, `single_file`)
-      `_open_member` against the invariant; record whether each already complies. Note (do not
-      necessarily fix) any per-open scratch on `self` or in-place single-handle seeking.
-- [ ] 1.3 Cross-check with `shared-source-streams`: the ISO/single-file/ZIP retrofit there is
-      what brings those backends into compliance; confirm no gap remains for Phase 6 backends
-      to inherit.
-- [ ] 1.4 Ensure the invariant is discoverable by a Phase 6 implementer (docstring on the ABC
-      `_open_member` and/or a pointer from `ARCHITECTURE.md`).
+      `_open_member` against the invariant; record compliance. Known: directory/ZIP largely
+      comply; `single_file._first_stream` scratch and ISO shared-handle seeks are the gaps;
+      TAR-RA is exempt (single shared decoder).
+- [ ] 1.3 **Fix ownership is explicit, no overlap:** the `single_file` scratch fix and the ISO
+      disposition are owned by **`shared-source-streams`** (single-file retrofitted there; ISO
+      carved out there). This change only *records* them — it does not re-fix them, so the two
+      changes don't fight.
+- [ ] 1.4 Make the invariant discoverable by a Phase 6 implementer: docstring on the ABC
+      `_open_member` **including the materialize-before-fan-out precondition**, plus a pointer
+      from `ARCHITECTURE.md`. (This is the committed doc note; it is small and lands here.)
 
-## 2. Explored (written analysis; no feature code)
+## 2. Explored (written analysis; NO feature code)
+
+> Home for the write-up: this change's `design.md` (decisions) + a seed `docs/parallel-reader.md`
+> (the durable analysis the future `parallel-extraction` change starts from). No runtime code in
+> this section.
 
 - [ ] 2.1 **Member-cache one-time-build safety** — sketch the safe options (init-under-lock vs.
       "materialize-before-fan-out precondition") and recommend one; note it is small and
-      independent of the feature.
+      independent of the feature. (The precondition itself is already documented via task 1.4.)
 - [ ] 2.2 **Benchmark design** — define the workloads and metrics for deciding the feature:
       wall time, bytes-decompressed, seek counts; DIRECT (non-solid) archives vs. multi-folder
       solid 7z; C-codec vs. pure-Python decode; GIL build vs. 3.13t. Home: `benchmarks/`.

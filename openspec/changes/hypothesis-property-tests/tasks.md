@@ -2,11 +2,16 @@
 
 > Run tools through uv: `uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
 > `uv run ruff`. Test-only change; runtime core stays zero-dependency.
-> Target functions (all pure, no I/O):
+> Target functions (note: **not all are I/O-free** — test accordingly):
 > - `src/archivey/internal/naming.py` — `normalize_member_name`, `resolve_link_target_name`
-> - `src/archivey/internal/filters.py` — `check_universal`
-> - `src/archivey/internal/volumes.py` — `discover_volume_siblings` (name-parsing part)
-> - `src/archivey/internal/detection.py` — format detection over a byte prefix
+>   (pure: generated-string strategies)
+> - `src/archivey/internal/filters.py` — `check_universal` (calls `Path.resolve()`: use
+>   `tmp_path`-rooted strategies with real symlink layouts, not pure inputs)
+> - `src/archivey/internal/volumes.py` — `discover_volume_siblings` (name-parsing regexes are
+>   pure; the `is_file()`/`iterdir()` discovery needs a `tmp_path` tree)
+> - `src/archivey/internal/detection.py` — detection over a byte prefix, wrapped in a
+>   `PeekableStream`/`BytesIO` (a **seekable/peekable** source — raw non-seekable streams are
+>   consumed by design and are out of scope)
 
 ## 0. Decisions locked in this change
 
@@ -23,10 +28,11 @@
 ## 1. Dependency + harness setup
 
 - [ ] 1.1 Add `hypothesis` to the `dev` dependency group in `pyproject.toml`; `uv lock`.
-- [ ] 1.2 Add a shared Hypothesis **settings profile** (deterministic seed, bounded
-      `max_examples`, a `deadline` tuned so pure-function tests don't flake on slow CI),
-      registered/loaded in `conftest.py`; env-var `ARCHIVEY_FUZZ_EXAMPLES` selects a deep
-      profile.
+- [ ] 1.2 Add a shared Hypothesis **settings profile**, registered/loaded in `conftest.py`:
+      **default `max_examples=100`, `deadline=None`** (disabled — avoids flaky failures on
+      slow/shared CI runners, matching the mutation harness's cheap default posture),
+      `derandomize=True` for reproducibility. Env-var `ARCHIVEY_FUZZ_EXAMPLES` selects a deep
+      profile (e.g. `2000`) for local/nightly deepening.
 - [ ] 1.3 Confirm `hypothesis` absent under `[core-only]` does not break collection (the
       test module is `dev`-only; guard/skip if the group is not installed).
 
@@ -36,7 +42,9 @@
       control chars, unicode) × `MemberType` × `backslash_is_separator`.
 - [ ] 2.2 Properties: idempotence (`f(f(x)) == f(x)`); never *introduces* a `..` component
       or a leading `/` absent from the input's meaning; backslash handling matches the flag;
-      output is a `str` and never raises.
+      output is a `str` and never raises. **Logging is permitted** — the function logs when it
+      changes a name; run under a captured/silenced logger (`caplog`) and assert on the return
+      value, not on log-free execution.
 
 ## 3. `check_universal` properties
 
@@ -59,9 +67,10 @@
 - [ ] 5.1 `discover_volume_siblings` name-parsing: arbitrary `*.NNN` / `*.partN` / `.z0N`
       style names never crash the parser and never produce an out-of-order or duplicated
       volume sequence.
-- [ ] 5.2 Detection over an arbitrary byte prefix: `detect_format()` on random bytes never
-      raises, never hangs, and **never consumes/leaves-advanced** a non-seekable peek source
-      (peek/replay invariant from `format-detection`).
+- [ ] 5.2 Detection over an arbitrary byte prefix wrapped in a `PeekableStream`/`BytesIO`
+      (seekable/peekable — **not** a raw non-seekable stream, which detection consumes by
+      design): `detect_format()` on random bytes never raises, never hangs, and **leaves the
+      peek source unadvanced** (peek/replay invariant from `format-detection`).
 
 ## 6. Gate
 

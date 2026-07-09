@@ -53,18 +53,33 @@ finished spec:
 
 ## What Changes
 
-- **Committed now (small spec delta):** the **`_open_member` reentrancy/statelessness
-  invariant** as an `archive-reading` backend contract, so Phase 6 backends honor it. Audit
-  the existing backends (directory, ZIP, TAR, ISO, single-file) against it and record any
-  gaps as follow-ups (no behavior change required for correctness today — this is a
-  forward-compatibility contract).
-- **Explored, not committed:** a written analysis (in this change's docs) answering the
-  unknowns above — the benchmark design (what to measure: wall time, bytes-decompressed, seek
-  counts, across GIL and 3.13t), the free-threading position, the solid-format work
-  partitioning, and the "N readers vs. shared source" decision — feeding a **future**
-  parallel-extraction change. If the exploration surfaces that the interface needs *more* than
-  the reentrancy invariant, that becomes an explicit recommendation before Phase 6 locks the
-  ABC.
+**Committed runtime deliverable = the spec delta + an ABC docstring + an audit.** No runtime
+code change is required for correctness today; the only code that lands is any *cheap* fix the
+audit surfaces (and the ABC docstring documenting the invariant + the materialize-before-fan-out
+precondition). Anything larger is recorded, not built.
+
+- **Committed now (small spec delta):** the **`_open_member` reentrancy invariant**, scoped to
+  random-access backends that advertise independent member open (not streaming, not
+  single-decoder TAR), as an `archive-reading` backend contract, so Phase 6 backends honor it.
+  Audit directory / ZIP / TAR-RA / ISO / single-file against it and record gaps. Known today:
+  directory and ZIP largely comply; **single-file's `_first_stream` scratch** and **ISO's
+  shared-handle seeks** are the real gaps, and **TAR-RA** is the hard/exempt case. The
+  single-file and ISO fixes are **owned by `shared-source-streams`** (single-file is retrofitted
+  there; ISO is carved out there) — this change only records that so the two don't fight.
+- **Explored, not committed (written analysis, lives in this change's `design.md` and a seed
+  `docs/parallel-reader.md`):** the benchmark design (wall time, bytes-decompressed, seek
+  counts, across GIL and 3.13t), the free-threading position (`docs/threat-model.md` C4), the
+  solid-format work partitioning, the member-cache one-time-build safety, and the "N readers vs.
+  shared source" decision — feeding a **future** parallel-extraction change. If the analysis
+  finds the ABC needs *more* than this invariant to avoid a retrofit, that becomes an explicit
+  recommendation before Phase 6 locks the ABC.
+
+## Sequencing / dependency
+
+The invariant's delta references the *Multiple concurrently-open member streams* requirement
+introduced by **`shared-source-streams`**; land/sync that change **first** (or in the same
+batch), then this one. The parallel-extraction *feature* is a separate future change, gated on
+the benchmark outcome and a free-threading position.
 
 ## Impact
 
