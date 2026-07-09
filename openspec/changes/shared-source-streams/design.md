@@ -37,18 +37,20 @@ not a retrofit.
 - **Stream source:** archivey owns the handle it passes into `ZipFile`; that handle is wrapped
   so a second archivey-level `open()` is coordinated by the same contract.
 
-## D. ISO — carved out of this change's retrofit
+## D. ISO — out of scope (pycdlib owns addressing; not a compliance gap)
 
-ISO serves member data through `pycdlib`'s `open_file_from_iso` → `_PyCdlibStream`, which does
-its **own** seeking on the shared ISO handle; it is not a byte-range slice we can express as
-`SharedSource.view(start, length)` without extracting extent offsets from pycdlib (a different,
-larger design — "lock around pycdlib's own IO" vs. "bypass to raw extent reads"). Rather than
-force that decision into a *gate*, ISO is **carved out**: it keeps its current single-stream
-behavior and is listed as a known-non-compliant backend (see the delta carve-out), tracked for
-the `parallel-reader-exploration` audit. The primitive is validated instead against
-single-file and ZIP (below), which map cleanly to byte-range views. If we later want ISO
-concurrent-open, the cheap route is a `SharedSource.critical_section()` lock wrapper around
-pycdlib reads — noted, not built here.
+ISO is **not** a SharedSource consumer and is **not** listed as non-compliant. Like ZIP's
+path-source case (stdlib `zipfile` owns `_SharedFile`), ISO serves members through
+`pycdlib`'s `open_file_from_iso` → `_PyCdlibStream`, which does its **own** seeking on the
+shared ISO handle. Concurrent-open correctness for ISO is therefore pycdlib's problem (or a
+future archivey wrap around it), not something this gate must retrofit via
+`SharedSource.view(start, length)`.
+
+This change leaves ISO untouched and does not put it under the byte-range concurrent-open
+SHALL. If we later want archivey-level coordination, the cheap route is a
+`SharedSource.critical_section()` lock wrapper around pycdlib reads (or bypassing to raw
+extent reads) — noted, not built here. The primitive is validated against single-file and ZIP
+instead, which map cleanly to byte-range views.
 
 ## E. TAR (and solid / single-decoder backends) — carved out
 
@@ -62,6 +64,9 @@ time (or serialize). Solid 7z/RAR *can* comply in Phase 6 by giving each `open()
 decompressor over its own shared-source view (re-decoding from folder/block start, as the
 `archive-reading` solid-open scenario already allows); that is a Phase 6 obligation, not a gap
 here.
+
+ISO is **not** in this carve-out: it is simply outside SharedSource (design §D), analogous to
+ZIP path-source relying on stdlib.
 
 ## F. "Fail loudly" (detectable) vs "unsupported" (undefined) — kept distinct
 
@@ -100,8 +105,12 @@ had the bug).
 
 ## Validation scope (what this change actually retrofits)
 
-- **single-file** — routes its member open through the primitive; also removes the
+- **single-file** — routes its member open through the primitive (whole-source view + a fresh
+  codec stream per open — there is no per-member byte range); also removes the
   `_first_stream` eager-stream scratch as part of making open reentrant (coordinated with
   `parallel-reader-exploration`, which owns the invariant).
-- **ZIP** — stream-source handle wrap + concurrent-open tests (path source unchanged).
-- **ISO, TAR-RA** — carved out (documented non-compliant); not retrofitted here.
+- **ZIP** — stream-source handle wrap + concurrent-open tests (path source unchanged; stdlib
+  owns addressing).
+- **TAR-RA** — carved out (single shared decoder; documented exempt in the delta).
+- **ISO** — untouched; pycdlib owns addressing (design §D). Not a SharedSource retrofit and
+  not listed as non-compliant.

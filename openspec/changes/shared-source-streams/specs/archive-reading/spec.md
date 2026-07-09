@@ -12,14 +12,17 @@ view that keeps a **per-view position** and performs each seek+read as an atomic
 the source lock, so that reading one open stream never disturbs another open stream's position.
 
 **Scope / carve-out.** This requirement applies to backends that serve members via independent
-byte-range views over the source (e.g. the native 7z/RAR readers, ZIP, ISO once adapted,
-single-file). A backend that serves members through a **single shared decoder or parser
-object** — notably the stdlib-`tarfile`-backed random-access TAR reader — is **exempt**: it MAY
-require that only one member stream be open at a time (or serialize opens), and MUST NOT be
-expected to support interleaved concurrent opens. A **solid** format (7z folder, RAR block)
-satisfies the requirement by giving each `open()` its own decompressor over its own
-shared-source view, re-decoding from the block start as the *random open on a solid member*
-scenario already permits.
+byte-range views over the source (e.g. the native 7z/RAR readers, ZIP, single-file). A backend
+that serves members through a **single shared decoder or parser object** — notably the
+stdlib-`tarfile`-backed random-access TAR reader — is **exempt**: it MAY require that only one
+member stream be open at a time (or serialize opens), and MUST NOT be expected to support
+interleaved concurrent opens. A **solid** format (7z folder, RAR block) satisfies the
+requirement by giving each `open()` its own decompressor over its own shared-source view,
+re-decoding from the block start as the *random open on a solid member* scenario already
+permits. Backends whose member addressing is owned by an external library that already
+coordinates the shared handle (ISO via `pycdlib`, ZIP path-source via stdlib `zipfile`) are
+outside this SharedSource retrofit; they are not listed as non-compliant under this
+requirement.
 
 **Single-reader guarantee only.** The reader object itself remains **not thread-safe**: it MUST
 NOT be driven (concurrent `open()`, iteration, or `close()`) from multiple threads. That misuse

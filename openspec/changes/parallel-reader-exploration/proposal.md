@@ -62,10 +62,12 @@ precondition). Anything larger is recorded, not built.
   random-access backends that advertise independent member open (not streaming, not
   single-decoder TAR), as an `archive-reading` backend contract, so Phase 6 backends honor it.
   Audit directory / ZIP / TAR-RA / ISO / single-file against it and record gaps. Known today:
-  directory and ZIP largely comply; **single-file's `_first_stream` scratch** and **ISO's
-  shared-handle seeks** are the real gaps, and **TAR-RA** is the hard/exempt case. The
-  single-file and ISO fixes are **owned by `shared-source-streams`** (single-file is retrofitted
-  there; ISO is carved out there) — this change only records that so the two don't fight.
+  directory and ZIP largely comply; **single-file's `_first_stream` scratch** is the real
+  archivey-owned gap; **TAR-RA** is the hard/exempt case (single shared decoder). **ISO** is
+  not treated as non-compliant under this invariant — `pycdlib` owns member addressing (same
+  shape as ZIP path-source / stdlib). The single-file fix is **owned by
+  `shared-source-streams`**; ISO's "leave alone + design note" disposition lives there too —
+  this change only records that so the two don't fight.
 - **Explored, not committed (written analysis, lives in this change's `design.md` and a seed
   `docs/parallel-reader.md`):** the benchmark design (wall time, bytes-decompressed, seek
   counts, across GIL and 3.13t), the free-threading position (`docs/threat-model.md` C4), the

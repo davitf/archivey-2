@@ -1,4 +1,4 @@
-# Hypothesis property tests for the pure safety logic (Phase 6 fuzzing gate)
+# Hypothesis property tests for the safety logic (Phase 6 fuzzing gate)
 
 ## Why
 
@@ -36,10 +36,12 @@ This change closes part 2, which is one of the two named pre-Phase-6 entry gates
 - Add `hypothesis` to the **`dev` dependency group** (test-only; the runtime core stays
   zero-dependency).
 - Add `tests/test_property_safety.py` with Hypothesis strategies + property tests for the
-  pure safety functions. Each test asserts an **invariant**, not a golden value — e.g.
-  "`check_universal` never returns normally for a name containing a `..` component,"
-  "`normalize_member_name` output never introduces a `..` that the input lacked,"
-  "detection over an arbitrary byte prefix never raises and never consumes the stream."
+  safety functions above (pure string/parse properties where applicable; `tmp_path`
+  strategies for the filesystem-touching ones). Each test asserts an **invariant**, not a
+  golden value — e.g. "`check_universal` never returns normally for a name containing a
+  `..` component," "`normalize_member_name` output never introduces a `..` that the input
+  lacked," "detection over an arbitrary byte prefix never raises and never consumes the
+  peekable source."
 - Run **inline in the normal pytest suite**: a bounded, deterministic example budget on
   every CI job (a fixed `derandomize`/seed profile so failures are reproducible), with a
   deeper sweep gated behind an env var (`ARCHIVEY_FUZZ_EXAMPLES`, mirroring the mutation

@@ -16,10 +16,14 @@ index) read-only.
 
 **Scope.** This invariant does **not** apply to forward-only/streaming reads (`streaming=True`),
 which are inherently single-pass, nor to backends exempted from concurrent-open (a single shared
-decoder/parser object, such as the random-access TAR reader). It is a forward-compatibility
-contract that keeps the reader ABC ready for a future parallel-extraction consumer without an
-interface retrofit; it does not by itself make the reader object thread-safe, and it imposes no
-ordering or performance guarantee.
+decoder/parser object, such as the random-access TAR reader). Backends whose member addressing
+is owned by an external library that already coordinates the shared handle (ISO via `pycdlib`,
+ZIP path-source via stdlib `zipfile`) are outside the SharedSource retrofit and are not required
+to route opens through an archivey shared-source view; they remain subject to the no-per-open-
+scratch rule on archivey-owned reader state. It is a forward-compatibility contract that keeps
+the reader ABC ready for a future parallel-extraction consumer without an interface retrofit; it
+does not by itself make the reader object thread-safe, and it imposes no ordering or performance
+guarantee.
 
 **Materialize-before-fan-out.** A future concurrent consumer MUST materialize the member list
 (a completed random-access pass) before opening members concurrently; the one-time member-cache
@@ -40,9 +44,12 @@ backends and any future consumer honor it.
   seeking a single shared handle in place, so concurrent opens cannot corrupt each other's
   position
 
-#### Scenario: streaming and single-decoder backends are out of scope
+#### Scenario: streaming and single-decoder backends are out of scope; ISO is library-owned
 
 - **WHEN** the reader is a forward-only streaming pass, or a backend served by a single shared
   decoder object (random-access TAR)
 - **THEN** this invariant does not apply and the backend is not required to support concurrent
   member opens
+- **WHEN** the backend is ISO (`pycdlib` owns member addressing)
+- **THEN** it is not required to route opens through an archivey shared-source view and is not
+  listed as non-compliant; archivey-owned reader state still MUST NOT hold per-open scratch

@@ -53,46 +53,50 @@ Add a `SharedSource` factory to `streamtools` (which stays archivey-dependency-f
 
 ### The concurrency contract (decided; specced)
 
-- **Supported:** any number of concurrently-open member streams from **one reader**, read in
-  interleaved order, all correct.
-- **Supported, correct-but-serialized:** reading already-opened member streams from different
-  threads does not corrupt data (the lock), but is not parallel I/O and is not a supported
-  performance path in v1.
-- **Rejected loudly:** using the *reader object itself* from multiple threads (concurrent
-  `open()`/iteration/`close`) is unsupported; misuse that the primitive can detect (e.g. a
-  read after `close`, or a view over a closed source) raises a typed error rather than
-  returning silent garbage. `ArchiveReader` remains one-per-thread.
+- **Supported (public, in `archive-reading`):** any number of concurrently-open member streams
+  from **one reader**, read in interleaved order on one thread, all correct — for backends that
+  serve members via independent byte-range views (see the delta carve-out).
+- **Detectable primitive misuse → fail loudly:** read/seek after `close()`, or a view whose
+  bounds fall outside the source, raises at the reader surface (translated from the primitive's
+  stdlib-shaped error).
+- **Unsupported / undefined (not "rejected loudly"):** driving the *reader object itself*
+  from multiple threads (concurrent `open()` / iteration / `close()`). The reader holds no lock
+  and does not detect this. `ArchiveReader` remains one-per-thread.
+- **Implementation note only (not a public SHALL):** the shared-source lock also makes
+  already-open member-stream reads data-correct across threads (serialized, not parallel). That
+  is not promised in `packaging-and-extras`; see `design.md` §F–G.
 
 ### Retrofit current backends (validate the primitive before Phase 6)
 
-Route archivey-owned seekable readers that map cleanly to a byte-range view through
-`SharedSource`, so the primitive is exercised by a real backend now, not only unit tests. The
-target list is deliberately the *clean-mapping* backends (see `design.md` §D–E for why ISO and
-TAR are carved out):
+Route archivey-owned seekable readers that map cleanly to a byte-range (or whole-source) view
+through `SharedSource`, so the primitive is exercised by a real backend now, not only unit
+tests (see `design.md` §D–E):
 
-- **single-file** member open goes through `SharedSource.view(...)`; this also drops the
-  `_first_stream` eager-stream scratch so open is reentrant (the invariant owned by the
-  `parallel-reader-exploration` change).
+- **single-file** member open goes through `SharedSource.view(...)` (whole-source view + fresh
+  codec per open); this also drops the `_first_stream` eager-stream scratch so open is
+  reentrant (the invariant owned by the `parallel-reader-exploration` change).
 - **ZIP** — **path source:** stdlib `zipfile` already owns its handle and uses `_SharedFile`,
   so **no wrap** is added, but a concurrent-open test is still required. **Stream source:** the
   archivey-owned handle passed to `ZipFile` is wrapped so a second archivey-level open is
   coordinated by the same contract.
-- **ISO and random-access TAR are carved out** (not retrofitted here): ISO's `pycdlib` does its
-  own addressing rather than byte-range slicing, and TAR-RA serves members through one shared
-  `tarfile` object. Both are recorded as known-non-compliant in the `archive-reading`
-  carve-out and tracked for the parallel-reader audit.
+- **TAR-RA is carved out** (single shared `tarfile` / decompressor): exempt from the
+  concurrent-open SHALL; may serve one member stream at a time.
+- **ISO is out of scope, not non-compliant:** `pycdlib` owns member addressing the way
+  `zipfile` owns `_SharedFile` for path sources — leave a design note, leave the code alone
+  (`design.md` §D).
 - Add a concurrent-open test (two members open and interleaved) for the ZIP retrofit and the
   primitive itself.
 
 ## Impact
 
 - Affected specs: `archive-reading` (ADDED — concurrent-open member streams, with the
-  solid/single-decoder carve-out). **No** `packaging-and-extras` delta — the public install
-  contract keeps its flat "not thread-safe (one per thread)"; the supported single-reader
-  contract lives in `archive-reading` and the cross-thread data-correctness is an
-  implementation note only (see `design.md` §G).
+  solid/single-decoder carve-out for TAR-RA). **No** `packaging-and-extras` delta — the public
+  install contract keeps its flat "not thread-safe (one per thread)"; the supported
+  single-reader contract lives in `archive-reading` and the cross-thread data-correctness is
+  an implementation note only (see `design.md` §G).
 - Affected code: `src/archivey/internal/streams/streamtools/` (new `SharedSource`),
-  `single_file_reader.py`, `zip_reader.py` (stream-source wrap), plus tests. ISO/TAR untouched.
+  `single_file_reader.py`, `zip_reader.py` (stream-source wrap), plus tests. TAR-RA and ISO
+  untouched (TAR exempt; ISO pycdlib-owned).
 - Risk: medium — touches working backends. Mitigated by the retrofit being a like-for-like
   swap of the slice/seek mechanism with the primitive plus added concurrent-open coverage; no
   behavior change for single-stream use.

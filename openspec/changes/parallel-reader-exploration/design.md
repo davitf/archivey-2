@@ -13,8 +13,11 @@ is the analysis home; the durable version lands as `docs/parallel-reader.md`.
 - **Materialize-before-fan-out precondition:** documented on the ABC now (task 1.4). A future
   concurrent consumer must complete the random-access member pass before opening members
   concurrently; the one-time cache build is not itself concurrency-safe.
-- **No fixes here that another change owns:** `single_file._first_stream` and ISO are fixed /
-  dispositioned by `shared-source-streams`. This change records, does not re-fix.
+- **No fixes here that another change owns:** `single_file._first_stream` is fixed by
+  `shared-source-streams`. **ISO** is not a gap under this invariant: like ZIP path-source,
+  member addressing is owned by an external library (`pycdlib`); `shared-source-streams`
+  leaves a design note and does not retrofit it. This change records that disposition and
+  does not re-fix.
 
 ## To analyse (no code; feeds the future feature)
 

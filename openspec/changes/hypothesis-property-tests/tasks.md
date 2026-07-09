@@ -1,4 +1,4 @@
-# Tasks — Hypothesis property tests for the pure safety logic
+# Tasks — Hypothesis property tests for the safety logic
 
 > Run tools through uv: `uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
 > `uv run ruff`. Test-only change; runtime core stays zero-dependency.
@@ -22,8 +22,9 @@
       re-implement the function under test as the checker.
 - [ ] 0.3 **Counterexamples become pinned regressions** — every shrunk failure is added as
       an `@example`/unit case and (if it is a real bug) fixed in this change.
-- [ ] 0.4 **Scope = the five listed pure functions** — no property tests over I/O paths,
-      backends, or the accelerator C-extensions.
+- [ ] 0.4 **Scope = the five listed safety targets** — string/parse properties plus the
+      `tmp_path`-rooted filesystem cases for `check_universal` / volume discovery. No
+      property tests over backends or the accelerator C-extensions.
 
 ## 1. Dependency + harness setup
 
@@ -64,9 +65,12 @@
 
 ## 5. Volume-discovery + detection properties
 
-- [ ] 5.1 `discover_volume_siblings` name-parsing: arbitrary `*.NNN` / `*.partN` / `.z0N`
-      style names never crash the parser and never produce an out-of-order or duplicated
-      volume sequence.
+- [ ] 5.1 `discover_volume_siblings` **name-parsing** (pure): arbitrary `*.NNN` / `*.partN` /
+      `.rNN` style names never crash the part-number / regex helpers and never produce an
+      out-of-order or duplicated volume sequence from the parse alone.
+- [ ] 5.1b `discover_volume_siblings` **discovery** (`tmp_path`): materialize sibling volume
+      trees (present / missing anchor / mixed bases) and assert the public function returns
+      an ordered sibling list or `None` without raising a raw exception.
 - [ ] 5.2 Detection over an arbitrary byte prefix wrapped in a `PeekableStream`/`BytesIO`
       (seekable/peekable — **not** a raw non-seekable stream, which detection consumes by
       design): `detect_format()` on random bytes never raises, never hangs, and **leaves the

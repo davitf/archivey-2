@@ -2,7 +2,7 @@
 
 ## ADDED Requirements
 
-### Requirement: Property-based tests for the pure safety logic
+### Requirement: Property-based tests for the safety logic
 
 The test suite SHALL include property-based (Hypothesis) tests over the library's
 load-bearing safety functions — at minimum member-name normalization

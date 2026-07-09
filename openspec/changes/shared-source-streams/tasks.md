@@ -16,8 +16,10 @@
       lock). Live per-view handles ship with parallel extraction, not here. (design §B)
 - [ ] 0.3 **Primitive raises stdlib-shaped errors** (`ValueError`/`OSError`/
       `io.UnsupportedOperation`); the reader boundary translates to `ArchiveyError`. (design §A)
-- [ ] 0.4 **Retrofit = single-file + ZIP(stream-source wrap)**; **ISO and TAR-RA are carved
-      out** (documented non-compliant, tracked for the parallel-reader audit). (design §D–E)
+- [ ] 0.4 **Retrofit = single-file + ZIP(stream-source wrap)**; **TAR-RA is carved out**
+      (single shared decoder, documented exempt). **ISO is out of scope** — pycdlib owns
+      addressing (like ZIP path-source / stdlib); leave a design note, no retrofit, not
+      listed as non-compliant. (design §D–E)
 - [ ] 0.5 **No `packaging-and-extras` delta** — public contract stays flat "not thread-safe";
       supported contract lives in `archive-reading`. (design §G)
 - [ ] 0.6 **Reader stays one-per-thread** — this change does NOT make `BaseArchiveReader`
@@ -68,8 +70,9 @@
       second archivey-level `open()` is coordinated by the contract; verify no regression vs.
       stdlib `_SharedFile` (existing ZIP tests stay green) + a concurrent-open test.
 - [ ] 3.4 Confirm cost/stream-capability reporting for the touched backends is unchanged.
-- [ ] 3.5 **ISO + TAR-RA**: no code change; confirm the `archive-reading` carve-out names them
-      and that their current single-stream behavior is unaffected.
+- [ ] 3.5 **TAR-RA**: no code change; confirm the `archive-reading` carve-out names it as a
+      single-decoder exempt. **ISO**: no code change; confirm it is *not* listed as
+      non-compliant (pycdlib-owned addressing — design §D).
 
 ## 4. Spec + gate
 

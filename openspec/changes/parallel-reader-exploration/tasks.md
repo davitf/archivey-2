@@ -24,12 +24,13 @@
       with `shared-source-streams`** (the delta references its concurrent-open requirement).
 - [ ] 1.2 **Audit existing backends** (`directory`, `zip`, `tar`, `iso`, `single_file`)
       `_open_member` against the invariant; record compliance. Known: directory/ZIP largely
-      comply; `single_file._first_stream` scratch and ISO shared-handle seeks are the gaps;
-      TAR-RA is exempt (single shared decoder).
-- [ ] 1.3 **Fix ownership is explicit, no overlap:** the `single_file` scratch fix and the ISO
-      disposition are owned by **`shared-source-streams`** (single-file retrofitted there; ISO
-      carved out there). This change only *records* them — it does not re-fix them, so the two
-      changes don't fight.
+      comply; `single_file._first_stream` scratch is the archivey-owned gap; TAR-RA is exempt
+      (single shared decoder); ISO is out of SharedSource scope (`pycdlib` owns addressing —
+      not listed as non-compliant).
+- [ ] 1.3 **Fix ownership is explicit, no overlap:** the `single_file` scratch fix is owned by
+      **`shared-source-streams`**. ISO's disposition (leave alone; pycdlib-owned; design note
+      only) also lives there. This change only *records* them — it does not re-fix them, so
+      the two changes don't fight.
 - [ ] 1.4 Make the invariant discoverable by a Phase 6 implementer: docstring on the ABC
       `_open_member` **including the materialize-before-fan-out precondition**, plus a pointer
       from `ARCHITECTURE.md`. (This is the committed doc note; it is small and lands here.)
