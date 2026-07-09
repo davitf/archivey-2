@@ -39,7 +39,12 @@ from archivey.internal.streams.codecs import (
     stream_codec_for_format,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
-from archivey.internal.streams.streamtools import is_seekable, is_stream, read_exact
+from archivey.internal.streams.streamtools import (
+    SharedSource,
+    is_seekable,
+    is_stream,
+    read_exact,
+)
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -103,11 +108,23 @@ class SingleFileReader(BaseArchiveReader):
         # hook needs it; codecs without header metadata never trigger a read). See _peek_header.
         self._header_cache: bytes | None = None
         self._member = self._build_member(archive_name)
-        # Open the decompression stream eagerly so format/seekability errors (e.g. a
-        # non-seekable unix-compress source, which the codec rejects via the translator)
-        # surface here at open time rather than on a later read. The opened stream is cached
-        # and served by the first _open_member(); subsequent opens build fresh streams.
-        self._first_stream: BinaryIO | None = self._open_codec_stream()
+
+        # Seekable sources go through SharedSource so concurrent/re-entrant member opens
+        # share one handle with per-view positions (the Phase 6 concurrent-open gate).
+        # Non-seekable sources have a single forward pass — no shared view, and a second
+        # open fails loudly once that pass is consumed.
+        self._shared: SharedSource | None = None
+        self._pending_stream: BinaryIO | None = None
+        if self._seekable:
+            self._shared = SharedSource(source)
+            # Eagerly open+close a codec stream so format/seekability errors (e.g.
+            # unix-compress rejecting a bad source via the translator) surface at
+            # archive-open time rather than on a later read. Not cached — every
+            # _open_member builds a fresh codec over a fresh SharedSource view.
+            probe = self._open_codec_stream()
+            probe.close()
+        else:
+            self._pending_stream = self._open_codec_stream()
 
     def _build_member(self, archive_name: str | None) -> ArchiveMember:
         compressed_size = (
@@ -195,11 +212,29 @@ class SingleFileReader(BaseArchiveReader):
         yield self._member
 
     def _open_codec_stream(self) -> BinaryIO:
-        """Open a fresh decompression stream over the source (rewinding a seekable one)."""
+        """Open a fresh decompression stream over the source.
+
+        Seekable sources go through a whole-source ``SharedSource`` view so concurrent /
+        re-entrant opens never clobber the shared handle's position. Non-seekable sources
+        read the raw stream once (forward-only).
+        """
+        if self._shared is not None:
+            # Whole-source view + fresh codec per open (no per-member byte range for a
+            # single-file archive). The view is non-owning; the SharedSource outlives it.
+            # Path-backed views expose ``name`` so path-only codec features (e.g. the
+            # rapidgzip ISIZE truncation backstop) still engage.
+            view = self._shared.view(0)
+            counted = self._wrap_compressed_input(view)
+            assert not isinstance(counted, Path)  # view is always a stream
+            return open_codec_stream(
+                self._codec,
+                counted,
+                config=self._codec_config,
+                stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+            )
+
         src = self._source
         assert src is not None  # always set in __init__
-        if is_stream(src) and is_seekable(src):
-            src.seek(0)  # origin-normalized by open_archive; 0 is the archive start
         # Count compressed bytes pulled from a non-seekable stream so the live ratio guard
         # has a denominator (a path / seekable stream keeps its cheap static size).
         counted = self._wrap_compressed_input(src)
@@ -212,23 +247,22 @@ class SingleFileReader(BaseArchiveReader):
         )
 
     def _open_member(self, member: ArchiveMember) -> BinaryIO:
-        # Serve the stream opened eagerly at init on the first call; build fresh ones after.
-        if self._first_stream is not None:
-            stream = self._first_stream
-            self._first_stream = None
+        if self._shared is not None:
+            # Reentrant: every open mints a fresh view + codec (no per-open scratch on self).
+            return self._open_codec_stream()
+
+        # Non-seekable: serve the one-shot stream opened at init; a second open fails loudly.
+        if self._pending_stream is not None:
+            stream = self._pending_stream
+            self._pending_stream = None
             return stream
-        if not self._seekable:
-            # The single decompression pass over a non-seekable source was already handed
-            # out; a fresh codec stream would read from the consumed underlying stream and
-            # silently yield empty/garbage data, so fail loudly instead.
-            err = StreamNotSeekableError(
-                "Cannot open this member again: the source is non-seekable and its "
-                "single decompression pass has already been consumed. Buffer the "
-                "source to disk or a BytesIO to re-read it.",
-            )
-            self._stamp_error_context(err, member.name)
-            raise err
-        return self._open_codec_stream()
+        err = StreamNotSeekableError(
+            "Cannot open this member again: the source is non-seekable and its "
+            "single decompression pass has already been consumed. Buffer the "
+            "source to disk or a BytesIO to re-read it.",
+        )
+        self._stamp_error_context(err, member.name)
+        raise err
 
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
@@ -251,11 +285,15 @@ class SingleFileReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        # Close the eagerly-opened stream if it was never served; opened member streams are
-        # the caller's to close, and the source itself is the caller's.
-        if self._first_stream is not None:
-            self._first_stream.close()
-            self._first_stream = None
+        # Close an unserved non-seekable pending stream; close the SharedSource (which
+        # closes an owned path handle, but never a caller-owned stream). Opened member
+        # streams are the caller's to close.
+        if self._pending_stream is not None:
+            self._pending_stream.close()
+            self._pending_stream = None
+        if self._shared is not None:
+            self._shared.close()
+            self._shared = None
 
 
 class SingleFileBackend(ReadBackend):

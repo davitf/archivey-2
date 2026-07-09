@@ -352,3 +352,36 @@ def test_open_from_mid_positioned_stream() -> None:
         (member,) = ar.members()
         assert ar.read(member) == payload
         assert ar.read(member) == payload  # re-open rewinds to the embedded origin
+
+
+def test_concurrent_open_same_member_interleaved() -> None:
+    # Single-file routes through SharedSource: two opens of the one member stay correct
+    # when read in interleaved partial chunks (and open is reentrant — no _first_stream).
+    payload = b"abcdefghijklmnopqrstuvwxyz" * 40
+    with open_archive(io.BytesIO(gzip.compress(payload))) as ar:
+        (member,) = ar.members()
+        s1 = ar.open(member)
+        s2 = ar.open(member)
+        assert s1.read(10) == payload[:10]
+        assert s2.read(7) == payload[:7]
+        assert s1.read(5) == payload[10:15]
+        assert s2.read() == payload[7:]
+        assert s1.read() == payload[15:]
+        s1.close()
+        s2.close()
+
+
+def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
+    # Path source: open, read partially, open again, both complete independently.
+    path = tmp_path / "data.txt.gz"
+    payload = b"reentrant payload " * 50
+    path.write_bytes(gzip.compress(payload))
+    with open_archive(path) as ar:
+        (member,) = ar.members()
+        first = ar.open(member)
+        assert first.read(8) == payload[:8]
+        second = ar.open(member)
+        assert second.read() == payload
+        assert first.read() == payload[8:]
+        first.close()
+        second.close()

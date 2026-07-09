@@ -27,6 +27,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_byte_size,
     source_name,
 )
+from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import (
     SlicingStream,
     fix_stream_start_position,
@@ -37,6 +38,7 @@ __all__ = [
     "DelegatingStream",
     "ReadOnlyIOStream",
     "ReadableStream",
+    "SharedSource",
     "SlicingStream",
     "ensure_binaryio",
     "ensure_bufferedio",

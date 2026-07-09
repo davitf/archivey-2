@@ -380,6 +380,34 @@ def test_read_roundtrip_from_stream_source(simple_zip: Path) -> None:
         assert ar.read("hello.txt") == b"hello world"
 
 
+def test_concurrent_open_members_interleaved_path_source(simple_zip: Path) -> None:
+    # Path source: stdlib zipfile's _SharedFile already coordinates; lock the contract in.
+    with open_archive(simple_zip) as ar:
+        s1 = ar.open("hello.txt")
+        s2 = ar.open("dir/nested.txt")
+        assert s1.read(5) == b"hello"
+        assert s2.read(6) == b"nested"
+        assert s1.read() == b" world"
+        assert s2.read() == b" content"
+        s1.close()
+        s2.close()
+
+
+def test_concurrent_open_members_interleaved_stream_source(simple_zip: Path) -> None:
+    # Stream source: archivey wraps the handle in SharedSource so interleaved opens stay
+    # correct under the same concurrent-open contract.
+    data = simple_zip.read_bytes()
+    with open_archive(io.BytesIO(data)) as ar:
+        s1 = ar.open("hello.txt")
+        s2 = ar.open("dir/nested.txt")
+        assert s1.read(5) == b"hello"
+        assert s2.read(6) == b"nested"
+        assert s1.read() == b" world"
+        assert s2.read() == b" content"
+        s1.close()
+        s2.close()
+
+
 # ---------------------------------------------------------------------------
 # Corrupt / truncated input -> CorruptionError (with the original cause attached).
 # (Per-format slice of testing-contract's adversarial-corpus requirement, pulled

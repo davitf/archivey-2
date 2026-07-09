@@ -38,7 +38,7 @@ from archivey.internal.logs import backends as logger
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
-from archivey.internal.streams.streamtools import is_seekable, is_stream
+from archivey.internal.streams.streamtools import SharedSource, is_seekable, is_stream
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -220,13 +220,23 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
 
+        # Path source: stdlib zipfile opens and owns its own handle (and uses
+        # ``_SharedFile`` internally) — no archivey wrap. Stream source: archivey owns
+        # the handle, so wrap it in SharedSource and hand ZipFile a whole-archive view
+        # so a second archivey-level open is coordinated by the same contract.
+        self._shared: SharedSource | None = None
+        zip_source: Path | BinaryIO = source
+        if is_stream(source):
+            self._shared = SharedSource(source)
+            zip_source = self._shared.view(0)
+
         try:
             # `metadata_encoding` (3.11+) decodes names stored without the UTF-8 flag with
             # the caller's encoding instead of the cp437 default (UTF-8-flagged names are
             # unaffected). Reading the central directory here decodes every member name.
             # typeshed types ZipFile too narrowly; a binary stream is valid here.
             self._archive: zipfile.ZipFile = zipfile.ZipFile(  # type: ignore[arg-type]
-                source, "r", metadata_encoding=encoding
+                zip_source, "r", metadata_encoding=encoding
             )
         except zipfile.BadZipFile as exc:
             if _looks_like_multivolume(exc):
@@ -474,6 +484,9 @@ class ZipReader(BaseArchiveReader):
 
     def _close_archive(self) -> None:
         self._archive.close()
+        if self._shared is not None:
+            self._shared.close()
+            self._shared = None
 
 
 def _looks_like_multivolume(exc: zipfile.BadZipFile) -> bool:
