@@ -13,6 +13,7 @@ import lzma
 import re
 import stat
 import struct
+import tempfile
 import zipfile
 import zlib
 from datetime import datetime, timezone
@@ -36,7 +37,10 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import normalize_member_name
-from archivey.internal.password import _PasswordCandidates
+from archivey.internal.password import (
+    _PasswordCandidates,
+    _PasswordCandidatesExhausted,
+)
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.streamtools import is_seekable, is_stream
 from archivey.types import (
@@ -54,9 +58,15 @@ from archivey.types import (
 # which maps every byte and therefore never fails — no further fallbacks are reachable).
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
-# Read chunk used when confirming a candidate password by reading a member to completion
-# (forcing the decompressor + CRC), for the multi-password disambiguation in _open_zip_entry.
+# Candidate confirmation reads in bounded chunks and keeps only this much plaintext in
+# memory; larger members spill to a temporary file. Total temporary storage remains
+# proportional to the member size because ZipCrypto cannot be authenticated before EOF.
 _VALIDATION_CHUNK = 256 * 1024
+_VALIDATION_SPOOL_MAX_SIZE = 8 * 1024 * 1024
+
+# bz2 uses OSError for this decoder-specific failure. Match the complete message so an
+# unrelated filesystem/source OSError remains a genuine I/O error and propagates unchanged.
+_BZIP2_INVALID_DATA = "Invalid data stream"
 
 # A ".z01"/".z42"/… segment name — the obvious signal of a split (multi-volume) ZIP set.
 _SPLIT_SEGMENT_RE = re.compile(r"\.z\d{2}$", re.IGNORECASE)
@@ -93,6 +103,17 @@ def _decode_with_fallback(data: bytes) -> str:
         except UnicodeDecodeError:
             continue
     raise AssertionError("unreachable: cp437 decodes every byte")
+
+
+def _is_candidate_integrity_failure(exc: Exception) -> bool:
+    """Whether ``exc`` can be caused by a ZipCrypto verification-byte collision."""
+    if isinstance(exc, zipfile.BadZipFile):
+        # A wrong ZipCrypto candidate can produce a CRC mismatch after decrypting bytes,
+        # but cannot alter the unencrypted local header or archive structure.
+        return str(exc).startswith("Bad CRC-32 for file ")
+    return isinstance(exc, (zlib.error, lzma.LZMAError)) or (
+        isinstance(exc, OSError) and str(exc) == _BZIP2_INVALID_DATA
+    )
 
 
 # Seconds between the NTFS FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
@@ -304,7 +325,7 @@ class ZipReader(BaseArchiveReader):
             # ("negative seek value -N") before reading the member. That is archive
             # corruption, surfaced as a typed error rather than a raw ValueError.
             return CorruptionError(f"Corrupt ZIP member offset/structure: {exc!r}")
-        if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
+        if isinstance(exc, OSError) and str(exc) == _BZIP2_INVALID_DATA:
             # The stdlib bz2 decompressor signals a corrupt bzip2 member body as
             # OSError("Invalid data stream") (a bz2 quirk). Message-scoped so a genuine I/O
             # OSError still propagates unchanged (error-handling: I/O is not reclassified).
@@ -391,33 +412,39 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
     ) -> BinaryIO:
         encrypted = bool(info.flag_bits & 0x1)
-        # Traditional ZipCrypto validates only a single verification byte at open() time
-        # (~1/256 of wrong passwords slip through); the authoritative check is the CRC,
-        # which zipfile defers to read time. So when we must disambiguate among several
-        # candidate passwords, accepting a candidate on open() alone lets a false-accept
-        # win and the real password is never tried — the CRC mismatch then surfaces later
-        # as a spurious CorruptionError. In that case, confirm the candidate by reading
-        # the member to completion (forcing the decompressor and the CRC) before accepting
-        # it. (A read-time failure under a candidate password therefore means "wrong
-        # password", not corruption.) Perf note: this reads the member during trial; a
-        # size-gated / first-block variant and richer disambiguation heuristics are a
-        # separate follow-up — see the multi-password-disambiguation change.
+        # ZipCrypto's one-byte open check admits ~1/256 of wrong passwords. With more than
+        # one possible candidate, validate decompression + CRC before accepting one. The
+        # validated plaintext is spooled and returned directly, avoiding a second decrypt.
+        # A provider also requires confirmation: it may produce another candidate after a
+        # collision, and there is no sound way to pre-enumerate a callable.
         validate = encrypted and self._passwords.is_ambiguous()
+        ambiguous_failure: EncryptionError | None = None
 
         def decrypt(password: bytes) -> BinaryIO:
+            nonlocal ambiguous_failure
+            stream: BinaryIO | None = None
+            spool: BinaryIO | None = None
             try:
                 stream = cast(
                     "BinaryIO",
                     self._archive.open(info, pwd=password if encrypted else None),
                 )
                 if validate:
-                    try:
-                        while stream.read(_VALIDATION_CHUNK):
-                            pass
-                    finally:
-                        stream.close()
-                    # Confirmed: hand back a fresh, unread stream for the caller.
-                    stream = cast("BinaryIO", self._archive.open(info, pwd=password))
+                    spool = cast(
+                        "BinaryIO",
+                        tempfile.SpooledTemporaryFile(
+                            max_size=_VALIDATION_SPOOL_MAX_SIZE, mode="w+b"
+                        ),
+                    )
+                    while chunk := stream.read(_VALIDATION_CHUNK):
+                        spool.write(chunk)
+                    spool.seek(0)
+                    source = stream
+                    stream = None
+                    source.close()
+                    validated = spool
+                    spool = None
+                    return validated
                 return stream
             except (
                 zipfile.BadZipFile,
@@ -428,29 +455,60 @@ class ZipReader(BaseArchiveReader):
                 lzma.LZMAError,
                 UnicodeDecodeError,
                 ValueError,
+                OSError,
             ) as exc:
-                # While disambiguating, a decompress/CRC failure means the candidate
-                # password was wrong (its verification byte happened to match): report it
-                # as an encryption error so the trial moves on to the next candidate,
-                # rather than as corruption.
-                if validate and isinstance(
-                    exc, (zipfile.BadZipFile, zlib.error, lzma.LZMAError)
-                ):
-                    raise EncryptionError(
-                        f"Wrong password for ZIP member {member_name!r}"
-                    ) from exc
+                # This can be either a wrong password that collided on ZipCrypto's check
+                # byte or the correct password applied to corrupt encrypted data. Keep
+                # trying, but retain the ambiguity so exhaustion reports it honestly.
+                if validate and _is_candidate_integrity_failure(exc):
+                    failure = EncryptionError(
+                        f"Password candidate failed integrity validation for ZIP "
+                        f"member {member_name!r}"
+                    )
+                    if ambiguous_failure is None:
+                        ambiguous_failure = failure
+                    raise failure from exc
                 translated = self._translate_exception(exc)
                 if translated is not None:
                     if isinstance(translated, EncryptionError):
-                        raise translated
+                        raise translated from exc
                     self._stamp_error_context(translated, member_name)
                     raise translated from exc
                 raise
+            finally:
+                if validate:
+                    try:
+                        if stream is not None:
+                            stream.close()
+                    finally:
+                        # A source close failure must not leak the candidate's spool.
+                        if spool is not None:
+                            spool.close()
 
         if encrypted:
             try:
                 return self._passwords.attempt(member, decrypt)
+            except _PasswordCandidatesExhausted as exc:
+                if ambiguous_failure is not None:
+                    ambiguous = EncryptionError(
+                        f"No password candidate produced integrity-verified data for "
+                        f"ZIP member {member_name!r}; the password(s) may be wrong, or "
+                        "the encrypted member may be corrupt"
+                    )
+                    self._stamp_error_context(ambiguous, member_name)
+                    raise ambiguous from ambiguous_failure
+                if exc.last_error is not None:
+                    # Keep the private exhaustion marker internal and preserve the
+                    # candidate error's original decoder/open cause.
+                    last_error = exc.last_error
+                    self._stamp_error_context(last_error, member_name)
+                    raise last_error from last_error.__cause__
+                required = EncryptionError(exc.message)
+                self._stamp_error_context(required, member_name)
+                raise required from None
             except EncryptionError as exc:
+                # Provider callbacks may raise their own EncryptionError. It is not a
+                # candidate result and must propagate without exhaustion rewriting.
                 self._stamp_error_context(exc, member_name)
                 raise
         return decrypt(b"")

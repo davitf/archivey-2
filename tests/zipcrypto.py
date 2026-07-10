@@ -5,9 +5,9 @@ The stdlib :mod:`zipfile` can *read* ZipCrypto but cannot *write* encryption, an
 (notably the multi-password disambiguation, where a wrong candidate password can pass
 the cipher's single verification byte) build their archives here instead.
 
-This deliberately implements only what those tests need: one STORED or DEFLATED member,
-encrypted with the classic PKWARE stream cipher, in a single-entry ZIP. It is test
-scaffolding, not a general-purpose ZIP writer.
+This deliberately implements only what those tests need: one STORED, DEFLATE, BZIP2, or
+LZMA member encrypted with the classic PKWARE stream cipher in a single-entry ZIP. It is
+test scaffolding, not a general-purpose ZIP writer.
 
 The cipher (APPNOTE.txt §6.1): a 96-bit key state seeded from the password, a 12-byte
 random encryption header whose final byte is a verification value (the high byte of the
@@ -18,6 +18,7 @@ it — which is exactly the hazard :func:`find_check_byte_collision` reproduces.
 
 from __future__ import annotations
 
+import bz2
 import lzma
 import struct
 import zipfile
@@ -73,31 +74,45 @@ def _encrypt(password: bytes, check_byte: int, payload: bytes) -> bytes:
 
 
 def build_zipcrypto_zip(
-    password: bytes, name: bytes, data: bytes, *, compress: bool = True
+    password: bytes,
+    name: bytes,
+    data: bytes,
+    *,
+    compression: int = zipfile.ZIP_DEFLATED,
 ) -> bytes:
     """A single-entry ZIP whose one member is ZipCrypto-encrypted with ``password``.
 
-    ``compress`` selects DEFLATE (like ``7z a -tzip``) vs STORED. No data descriptor is
-    used, so the verification byte is the high byte of the payload CRC-32.
+    Supports the four compression methods decoded by stdlib ``zipfile``. No data
+    descriptor is used, so the verification byte is the high byte of the payload CRC-32.
     """
     crc = zlib.crc32(data) & 0xFFFFFFFF
-    if compress:
-        method = zipfile.ZIP_DEFLATED
+    flags = 0x1  # bit 0: encrypted; no data descriptor
+    if compression == zipfile.ZIP_STORED:
+        stored = data
+        version_needed = 20
+    elif compression == zipfile.ZIP_DEFLATED:
         body = zlib.compressobj(9, zlib.DEFLATED, -15)
         stored = body.compress(data) + body.flush()
+        version_needed = 20
+    elif compression == zipfile.ZIP_BZIP2:
+        stored = bz2.compress(data)
+        version_needed = 46
+    elif compression == zipfile.ZIP_LZMA:
+        body = zipfile.LZMACompressor()
+        stored = body.compress(data) + body.flush()
+        version_needed = 63
+        flags |= 0x2  # ZIP's LZMA end-of-stream marker flag
     else:
-        method = zipfile.ZIP_STORED
-        stored = data
+        raise ValueError(f"unsupported test compression method: {compression}")
     enc = _encrypt(password, (crc >> 24) & 0xFF, stored)
     comp_size = len(enc)  # encryption header is part of the stored/compressed size
-    flags = 0x1  # bit 0: encrypted; no data descriptor
     lfh = (
         struct.pack(
             "<IHHHHHIIIHH",
             0x04034B50,
-            20,
+            version_needed,
             flags,
-            method,
+            compression,
             0,
             0,
             crc,
@@ -114,9 +129,9 @@ def build_zipcrypto_zip(
             "<IHHHHHHIIIHHHHHII",
             0x02014B50,
             20,
-            20,
+            version_needed,
             flags,
-            method,
+            compression,
             0,
             0,
             crc,
@@ -137,6 +152,17 @@ def build_zipcrypto_zip(
     return lfh + enc + cdh + eocd
 
 
+def corrupt_zipcrypto_payload(blob: bytes) -> bytes:
+    """Flip encrypted member data after its intact 12-byte ZipCrypto header."""
+    name_len, extra_len = struct.unpack_from("<HH", blob, 26)
+    payload_start = 30 + name_len + extra_len + 12
+    if payload_start >= len(blob):
+        raise ValueError("ZIP member has no encrypted payload to corrupt")
+    corrupt = bytearray(blob)
+    corrupt[payload_start] ^= 0x80
+    return bytes(corrupt)
+
+
 def find_check_byte_collision(
     blob: bytes, name: str, right_password: bytes, *, search: int = 20000
 ) -> bytes:
@@ -147,8 +173,23 @@ def find_check_byte_collision(
     against. Deterministic for a fixed ``blob`` (fixed search order). Raises if none is
     found within ``search`` attempts (astronomically unlikely: ~1/256 hit rate).
     """
+    return find_check_byte_collisions(
+        blob, name, right_password, count=1, search=search
+    )[0]
+
+
+def find_check_byte_collisions(
+    blob: bytes,
+    name: str,
+    right_password: bytes,
+    *,
+    count: int,
+    search: int = 20000,
+) -> list[bytes]:
+    """Return ``count`` distinct wrong passwords passing the one-byte open check."""
     import io
 
+    collisions: list[bytes] = []
     for i in range(search):
         wrong = f"collide-{i}".encode()
         if wrong == right_password:
@@ -160,11 +201,21 @@ def find_check_byte_collision(
             except RuntimeError:
                 continue  # verification byte mismatched: correctly rejected
             try:
-                handle.read()
+                with handle:
+                    handle.read()
             except (zipfile.BadZipFile, zlib.error, lzma.LZMAError):
                 # Passed the 1-byte check but failed the real check: a corrupt
                 # decompressor stream (compressed member) or a CRC mismatch (stored).
-                return wrong
+                collisions.append(wrong)
+            except OSError as exc:
+                # bz2 uniquely reports invalid compressed bytes as this message-specific
+                # OSError. Never hide an unrelated source/filesystem OSError in a test.
+                if str(exc) != "Invalid data stream":
+                    raise
+                collisions.append(wrong)
+            if len(collisions) == count:
+                return collisions
     raise AssertionError(
-        f"no verification-byte collision found in {search} attempts (unlucky)"
+        f"found only {len(collisions)} of {count} verification-byte collisions "
+        f"in {search} attempts (unlucky)"
     )

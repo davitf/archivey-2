@@ -1,44 +1,55 @@
 # Tasks — multi-candidate password disambiguation
 
-> Specs-only proposal. These tasks describe the implementation when the change is accepted
-> and scheduled; nothing is implemented here. The minimal correctness fix (confirm a ZIP
-> candidate by reading before accepting) already landed on this branch (PR #53); the tasks
-> below extend it into the full ladder. Run tools through `uv` (`uv run pytest`,
-> `uv run pyrefly check`, `uv run ty check`, `uv run ruff`).
+This change contains the focused ZipCrypto fix. Diagnostics-dependent and future-format
+work stays separate and unchecked. Run tools through `uv` (`uv run pytest`,
+`uv run pyrefly check`, `uv run ty check`, `uv run ruff`).
 
-## 1. Cross-format contract (`archive-reading`)
+## 1. Focused ZIP implementation
 
-- [ ] 1.1 In `_PasswordCandidates.attempt`, split "candidate passed a preliminary check"
-      from "candidate confirmed": record known-good / return the stream only after the
-      unit's authoritative check has confirmed the password.
-- [ ] 1.2 Let a backend declare its per-open check strength, so strong-check backends
-      (7z AES, RAR5) skip the ladder and weak-check backends (ZipCrypto) engage it.
+- [x] 1.1 Require confirmation for multiple distinct static candidates and provider
+      answers while preserving the one-distinct-static-candidate lazy path.
+- [x] 1.2 Validate ZipCrypto candidates through decompressor completion and CRC, retaining
+      the winning plaintext in bounded-memory/disk-spilling stdlib storage.
+- [x] 1.3 Return the rewound validated spool without reopening/decrypting the winning
+      member, attempt source closure, and always close owned spools during failure cleanup.
+- [x] 1.4 Treat BZIP2's exact `OSError("Invalid data stream")`, DEFLATE/LZMA failures, and
+      CRC failures as candidate-validation failures while propagating unrelated
+      `OSError` unchanged.
+- [x] 1.5 On exhausted ambiguous validation, raise `EncryptionError` stating both possible
+      causes (wrong passwords or corrupt encrypted data); never select an unvalidated guess.
+- [x] 1.6 Restrict candidate-dependent `BadZipFile` handling to CRC mismatch; preserve
+      structural/local-header failures as `CorruptionError`.
+- [x] 1.7 Distinguish candidate exhaustion from provider-raised `EncryptionError`, and make
+      spool cleanup run even when source closure raises.
 
-## 2. ZIP ladder (`format-zip`)
+## 2. Tests
 
-- [ ] 2.1 Per-open filter: keep only candidates passing ZipCrypto's verification byte
-      (`open()`); **if exactly one survives, accept it without decoding** (removes the
-      extra full read the PR #53 fix does in the ordinary two-password case).
-- [ ] 2.2 Cheap decode probe: for a compressed member, decode a first block under each
-      surviving candidate and drop decompressor failures.
-- [ ] 2.3 Size-gated full decode + CRC (budget ≤ 16 MiB, config-overridable); drop CRC
-      failures. Above the budget, do not full-read every candidate.
-- [ ] 2.4 Residual heuristics: neighbour-member password affinity; optional content/MIME
-      plausibility (opt-in, lowest priority).
-- [ ] 2.5 Unresolved residual: fail-fast on a genuine full-CRC collision; guess-with-record
-      only when a large member exceeded the decode budget.
-- [ ] 2.6 Preserve: single-candidate fast path unchanged; a genuinely corrupt archive still
-      reported as `CorruptionError`, not an encryption problem.
+- [x] 2.1 Cover colliding wrong-before-right candidates for STORED, DEFLATE, BZIP2, and
+      LZMA members.
+- [x] 2.2 Cover all-wrong collisions and corrupt encrypted data under the explicit
+      wrong-password-or-corruption exhaustion contract.
+- [x] 2.3 Cover static candidates, provider retries, duplicate values, known-good reuse,
+      and one-distinct-candidate no-eager-read behavior.
+- [x] 2.4 Verify the winner is opened/decompressed once and unrelated `OSError` propagates
+      after the failed stream is closed.
+- [x] 2.5 Cover structural `BadZipFile`, provider callback failure, disk rollover with
+      partial caller reads, and spool cleanup after source-close failure.
 
-## 3. Surfacing the outcome (depends on C2 warnings-as-data)
+## 3. Specs and design
 
-- [ ] 3.1 When the reader disambiguated among multiple candidates or guessed, record a
-      structured occurrence/warning (via the C2 mechanism when it lands; `logging` interim).
+- [x] 3.1 Document bounded-RAM spooling, proportional temporary-disk/time cost, provider
+      laziness, specific exception mapping, and the irreducible classification ambiguity.
+- [x] 3.2 Remove lone-survivor, heuristic guessing, finite-provider enumeration, and
+      unsupported 7z/RAR authentication claims from this change.
 
-## 4. Tests
+## 4. Verification
 
-- [ ] 4.1 Extend `tests/test_zip_multipassword.py`: lone-survivor fast path does no full
-      read; compressed vs stored disambiguation; size-budget boundary; neighbour-affinity
-      resolution; genuine-collision fail-fast; corrupt-archive-still-corruption.
-- [ ] 4.2 Reuse `tests/zipcrypto.py` (verification-byte collision finder) for the
-      false-accept fixtures. Green in all three dependency configurations.
+- [ ] 4.1 Run focused tests, full tests in all three dependency configurations, Ruff,
+      Pyrefly, ty, and strict OpenSpec validation.
+
+## 5. Deferred changes (not part of this implementation)
+
+- [ ] 5.1 Design structured password-disambiguation diagnostics only after a concrete
+      warnings-as-data API exists; diagnostics must not authorize guesses.
+- [ ] 5.2 Revisit cross-format candidate confirmation when native 7z/RAR readers exist and
+      their actual password/integrity signals can be tested.

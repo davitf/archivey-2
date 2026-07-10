@@ -1,46 +1,56 @@
-# archive-reading — candidate-password confirmation delta
+# archive-reading — weak password-check confirmation delta
 
 ## ADDED Requirements
 
-### Requirement: Confirming a candidate password before acceptance
+### Requirement: Confirm candidates when a weak check permits retries
 
-A candidate password SHALL be accepted for an encrypted unit — used to serve the unit's
-data and added to the per-archive known-good list — only after the format's **authoritative
-integrity check** for that unit confirms it. A format's cheap *per-open* password check
-(for example ZipCrypto's single verification byte) MAY gate which candidates are worth
-trying, but SHALL NOT by itself constitute acceptance when the reader is disambiguating
-among multiple candidates, because a weak per-open check admits wrong passwords with
-non-negligible probability.
+When an implemented format has a password check that can admit wrong values, a candidate
+SHALL NOT be accepted or added to the per-archive known-good list on that weak check alone
+when another distinct candidate may be tried. The backend SHALL first run the strongest
+available full-unit integrity validation. It SHALL return only bytes from the validation
+pass that succeeded, or an equivalent stream over those retained validated bytes; it
+SHALL NOT decrypt the winner a second time merely to restart the caller's stream.
 
-When more than one candidate is available for a unit and the format's per-open check is
-weaker than its authoritative check, the reader SHALL disambiguate: it SHALL confirm a
-candidate against the authoritative check (for ZIP, decoding to the CRC — see `format-zip`)
-before accepting it, and SHALL treat a candidate that passes the per-open check but fails
-the authoritative check as a **wrong password**, continuing to the next candidate rather
-than reporting corruption. A failure that is not attributable to a wrong password (a
-genuinely corrupt or truncated unit) SHALL still surface as the appropriate read error.
+“Another candidate may be tried” includes two or more distinct known-good/static values
+and a provider that can return another answer after failure. A provider SHALL remain lazy;
+the reader SHALL NOT enumerate it in advance or assume it is finite. Duplicate values do
+not create another distinct candidate. An `EncryptionError` raised by the provider
+callback itself is a provider failure, not a candidate decrypt result; it SHALL propagate
+without being rewritten as candidate exhaustion or password/corruption ambiguity.
 
-When exactly one candidate remains after the per-open filter, the reader MAY accept it
-without the extra authoritative pass (there is nothing to disambiguate). When multiple
-candidates satisfy **every** available check for a unit (a genuine ambiguity), the reader
-SHALL NOT silently return data decrypted with an unconfirmed password: it SHALL either
-raise `EncryptionError` for that unit, or select a candidate deterministically **and record
-that the selection was unconfirmed** (surfaced as data where a warnings/occurrences
-mechanism exists, otherwise logged). Backends whose key derivation already authenticates
-the password strongly (e.g. 7z AES, RAR5) satisfy this requirement with their existing
-check and are unaffected.
+If validation fails after a weak check and all candidates are exhausted, the result can be
+intrinsically ambiguous: the candidate may be wrong, or it may be correct and the
+encrypted unit corrupt. The reader SHALL describe both possibilities rather than promise
+an impossible classification. It MAY use `EncryptionError` for this candidate-exhaustion
+state. It SHALL NOT return an unvalidated candidate based on order, heuristics, or a
+warning.
+
+A single distinct static candidate MAY retain the format's normal lazy streaming path;
+read-time integrity failures on that path retain the format's ordinary corruption/error
+translation. This requirement does not assign check strength or authentication behavior
+to formats whose readers are not implemented.
 
 #### Scenario: a wrong candidate that passes a weak per-open check does not shadow the right one
 
 - **WHEN** an encrypted member is opened with two candidate passwords and the wrong one, tried first, happens to pass the format's weak per-open check
-- **THEN** the reader confirms candidates against the authoritative integrity check, rejects the wrong one, and reads the member with the correct password — it does not report a spurious corruption error
+- **THEN** the reader rejects the wrong candidate through full-unit validation and returns the validated bytes produced with the correct candidate
 
-#### Scenario: only wrong passwords are supplied
+#### Scenario: provider remains lazy but retryable
 
-- **WHEN** none of the supplied candidates is correct for an encrypted member (some may pass the weak per-open check)
-- **THEN** the reader raises `EncryptionError` for that member, never silently returning data decrypted with an unconfirmed password
+- **WHEN** a provider's first answer passes a weak check but fails full validation
+- **THEN** the reader requests the provider's next answer without pre-enumerating it, and accepts an answer only after full validation
 
-#### Scenario: a genuinely corrupt encrypted member is not mislabelled
+#### Scenario: provider failure is not candidate exhaustion
 
-- **WHEN** the correct password is supplied for an encrypted member whose stored data is corrupt
-- **THEN** the failure surfaces as the appropriate read error (corruption/truncation), not as a wrong-password result
+- **WHEN** a candidate fails validation and the provider callback subsequently raises its own `EncryptionError`
+- **THEN** that provider exception propagates unchanged rather than being replaced by the candidate-exhaustion ambiguity error
+
+#### Scenario: exhausted validation reports the irreducible ambiguity
+
+- **WHEN** one or more candidates pass a weak check but fail full validation and no candidate succeeds
+- **THEN** the failure states that the passwords may be wrong or the encrypted unit may be corrupt, and no candidate's bytes are returned
+
+#### Scenario: one distinct static candidate retains lazy streaming
+
+- **WHEN** the password input contains one distinct static value, including duplicate copies of that value
+- **THEN** the member is not eagerly consumed solely for candidate disambiguation, and ordinary read-time error translation applies
