@@ -94,7 +94,26 @@ _name_text = st.text(
     max_size=64,
 )
 
-# Path-flavoured names: mix separators, dots, drives, UNC-ish prefixes.
+# Characters hostile to filesystem encodings: lone surrogates around the surrogateescape
+# range (\udc80-\udcff encodes on POSIX; the rest raises), plus a NUL. Under the general
+# text alphabet these are a vanishing slice (the derandomized 100-example budget draws
+# zero surrogates; even 2000 examples drew one) — this dedicated branch makes the
+# encoding-hostility *class* reachable on every run, not just via pinned @examples.
+_hostile_encoding_chars = st.sampled_from(
+    ["\ud800", "\udbff", "\udc00", "\udc7f", "\udc80", "\udcff", "\x00"]
+)
+
+_hostile_pathish = st.lists(
+    st.one_of(
+        st.sampled_from([".", "..", "a", "b", "dir"]),
+        _hostile_encoding_chars,
+        st.tuples(st.sampled_from(["a", "b"]), _hostile_encoding_chars).map("".join),
+    ),
+    min_size=1,
+    max_size=4,
+).map(lambda parts: "/".join(parts))
+
+# Path-flavoured names: mix separators, dots, drives, UNC-ish prefixes, hostile encodings.
 _pathish = st.one_of(
     _name_text,
     st.sampled_from(
@@ -128,6 +147,7 @@ _pathish = st.one_of(
         min_size=1,
         max_size=5,
     ).map(lambda parts: "\\".join(parts)),
+    _hostile_pathish,
 )
 
 _member_types = st.sampled_from(list(MemberType))
