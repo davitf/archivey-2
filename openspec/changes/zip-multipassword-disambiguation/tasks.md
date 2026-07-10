@@ -14,6 +14,9 @@ tools through `uv` (`uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
 - [ ] 1.2 Pin the findings with regression tests: for each codec, wrong-key confirmation
       fails within the confirmation bound with a wide margin (deterministic via the
       collision finder in `tests/zipcrypto.py`).
+- [ ] 1.3 Calibrate the STORED compressibility probe: chunk size, fast-compressor choice
+      (e.g. zlib level 1), the conservative accept margin, and the minimum member size
+      below which the probe is skipped; verify wrong-key chunks never reach the margin.
 
 ## 2. Bounded confirmation implementation
 
@@ -22,10 +25,12 @@ tools through `uv` (`uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
 - [ ] 2.2 Replace the interim full-read/spool validation with a bounded decompressed
       prefix (internal constant, ~1 MiB) for DEFLATE/BZIP2/LZMA members; members within
       the bound get exact full validation. Remove `SpooledTemporaryFile` usage.
-- [ ] 2.3 Implement the STORED single-pass disambiguation: raw ciphertext byte-range read
-      via the local header, a minimal internal ZipCrypto keystream (do not import
-      `zipfile._ZipDecrypter`), per-candidate parallel CRC-32 accumulation, winner by
-      central-directory CRC match, ties by candidate order.
+- [ ] 2.3 Implement the STORED disambiguation: raw ciphertext byte-range read via the
+      local header and a minimal internal ZipCrypto keystream (do not import
+      `zipfile._ZipDecrypter`); first the accept-only compressibility probe on the first
+      chunk, then — when inconclusive — the shared pass with per-candidate parallel
+      CRC-32 accumulation continuing from that chunk, winner by central-directory CRC
+      match, ties by candidate order.
 - [ ] 2.4 Re-open the confirmed candidate fresh through `zipfile` for the caller's
       stream; record it known-good only after confirmation; retain no confirmation
       plaintext.
@@ -52,9 +57,10 @@ tools through `uv` (`uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
       structural `BadZipFile` and provider callback failure.
 - [ ] 3.5 Verify confirmation of a member larger than the bound is bounded: no temporary
       file is created and at most the bounded prefix is decompressed per candidate.
-- [ ] 3.6 Verify the STORED single-pass: all candidates disambiguated in one ciphertext
-      read; the caller's stream is fresh and CRC-checked; CRC-match ties resolve by
-      candidate order.
+- [ ] 3.6 Verify the STORED path: a compressible-plaintext member accepts from the first
+      chunk without a full read; an incompressible-plaintext member falls back to the
+      shared CRC pass (one ciphertext read total); the caller's stream is fresh and
+      CRC-checked; CRC-match ties resolve by candidate order; the probe never rejects.
 - [ ] 3.7 Verify a candidate accepted by prefix confirmation whose data is corrupt beyond
       the prefix fails the caller's read as `CorruptionError` (parity with the
       single-candidate path).
