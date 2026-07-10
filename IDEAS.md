@@ -23,6 +23,12 @@
   each *(disk-number, offset)* against a concatenation stream over the ordered segments
   — the analogue of the 7z volume-join, but with ZIP's per-disk addressing rather than a
   dumb byte-split. (For v1 we just detect these and raise `UnsupportedFeatureError`.)
+  Also the home for **graceful UTF-8-flag-lie handling**: stdlib `zipfile` strictly
+  decodes a name whose general-purpose bit 11 claims UTF-8, so one hostile/broken name
+  makes the *whole archive* unlistable (`UnicodeDecodeError` → `CorruptionError`; the
+  adversarial string corpus pins that behavior). A native parser can decode such names
+  with the same cp437/`surrogateescape` fallback used for unflagged names and keep the
+  archive readable — likely with a diagnostic once warnings-as-data lands.
 
 - **libarchive backend** — `python-libarchive-c` as an **alternative / additional**
   backend for several formats (zip/tar/7z/iso/cpio/…), in the `[all]`/alternative tier
@@ -52,6 +58,16 @@
   single-file compressors.
 
 ## API & ergonomics
+
+- **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
+  policy already sketched in `safe-extraction` (re-root/collapse unsafe paths instead of
+  rejecting) is also the right home for **renaming members the destination cannot
+  represent**: undecodable-byte (`surrogateescape`) names that UTF-8-enforcing
+  filesystems (APFS, some network mounts) refuse with `EILSEQ`/`EINVAL`, and other
+  representability failures. One policy knob covering all "make it extractable by
+  rewriting the name" behavior — not a bespoke argument per case. Default behavior
+  stays reject-with-typed-error (see the adversarial-string-corpus-contract
+  safe-extraction delta).
 
 - **Pathlib-like navigation** — an `ArchivePath` supporting `/` joining, `iterdir()`,
   `glob()`, `read_bytes()`, `is_dir()`, … over the member tree (precedent: `zipfile.Path`).

@@ -7,8 +7,15 @@
 ## 2. Runtime behavior
 
 - [x] 2.1 Emit one bidi-control warning from central member registration for every backend.
-- [x] 2.2 Reject NUL-bearing link targets with `SymlinkEscapeError` before filesystem resolution.
+- [x] 2.2 Reject NUL-bearing link targets with `SymlinkEscapeError` before filesystem
+      resolution. (Landed on main via `hypothesis-property-tests`; this branch merged
+      main and dropped its narrower duplicate guard.)
 - [x] 2.3 Cover central warning behavior through ZIP/TAR, directory, and single-file readers.
+- [ ] 2.4 Translate a filesystem's write-time refusal of a representable member name
+      (`EILSEQ`/`EINVAL` from UTF-8-enforcing filesystems) into a typed
+      `ExtractionError` per the safe-extraction delta; the corpus's
+      `filesystem_name_refusal` branch then tightens from tolerating raw `OSError` to
+      requiring the typed error.
 
 ## 3. Documentation and verification
 
