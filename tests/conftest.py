@@ -95,6 +95,35 @@ def pytest_exception_interact(node, call, report) -> None:
         tr.write_line(msg, red=True, bold=True)
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the shared Hypothesis settings profile used by property-safety tests.
+
+    Default: ``max_examples=100``, ``deadline=None``, ``derandomize=True`` (reproducible
+    CI budget). ``ARCHIVEY_FUZZ_EXAMPLES`` selects a deeper local/nightly sweep — mirrors
+    the mutation harness's ``ARCHIVEY_FUZZ_MUTATIONS`` pattern. Hypothesis is a ``dev``
+    dependency; under ``[core-only]`` the import is absent and this is a no-op (the
+    property module itself skips collection).
+    """
+    try:
+        from hypothesis import settings
+    except ImportError:
+        return
+    raw = os.environ.get("ARCHIVEY_FUZZ_EXAMPLES", "100")
+    try:
+        max_examples = int(raw)
+    except ValueError as exc:
+        raise pytest.UsageError(
+            f"ARCHIVEY_FUZZ_EXAMPLES must be an integer, got {raw!r}"
+        ) from exc
+    settings.register_profile(
+        "archivey",
+        max_examples=max_examples,
+        deadline=None,
+        derandomize=True,
+    )
+    settings.load_profile("archivey")
+
+
 @pytest.fixture
 def test_dir(tmp_path: Path) -> Path:
     """Create a test directory with some files and subdirectories."""
