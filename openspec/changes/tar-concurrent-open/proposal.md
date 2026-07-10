@@ -1,36 +1,32 @@
 ## Why
 
-The random-access TAR reader (TAR-RA) was carved out of the concurrent-open /
-`_open_member` reentrancy contracts as a "single shared decoder." That carve-out is
-too blunt: compressed TAR already decompresses to an uncompressed stream that
-`tarfile` opens in `r:` mode, and member payloads live at fixed `TarInfo.offset_data`
-offsets in that stream. Plain TAR already re-seeks via stdlib `_FileInFile`. With
-`SharedSource` wrapping the uncompressed stream tarfile sees, TAR-RA can honor
-interleaved concurrent member opens like other byte-range backends — without opening
-a fresh view on every member (which would hurt sequential reads).
+The random-access TAR reader (TAR-RA) was carved out as a "single shared decoder," and ISO
+was left as library-owned outside SharedSource. Both are the same shape: **seek-before-read
+on a shared handle, no lock** (`tarfile._FileInFile`, `pycdlib.PyCdlibIO`). Bypassing
+`extractfile` with `SharedSource.view(offset_data, …)` would force archivey to reimplement
+GNU sparse and other tarfile edge cases. A thin **locked member-stream wrapper** (one
+per-archive lock, held for the duration of each library `read()`) keeps tarfile/pycdlib
+logic and makes opted-in interleaved opens correct for TAR-RA and ISO.
 
 > **Depends on `concurrent-open-opt-in`.** That change owns the `archive-reading` rewrite:
 > multiple simultaneously-open member streams are an opt-in, format-uniform capability
 > (`allow_multiple_open_streams`), and it drops the blanket TAR-RA concurrent-open exemption.
-> This change is the **TAR mechanism** that runs *under* that opt-in; it no longer edits
+> This change is the **TAR + ISO mechanism** that runs *under* that opt-in; it does not edit
 > `archive-reading` itself.
 
 ## What Changes
 
-- **Bring TAR-RA under the concurrent-open capability** for random-access
-  (`streaming=False`) opens: when the caller has opted in (`allow_multiple_open_streams`),
-  interleaved reads of multiple open member streams MUST stay correct.
-- **Wrap the uncompressed stream** that `tarfile` consumes in `SharedSource` (plain
-  TAR path/stream and post-codec compressed TAR). Member data is served via
-  byte-range views at `offset_data`, not by relying on two concurrent
-  `extractfile`s on one shared handle/view.
-- **Forward-cursor view policy:** reuse one view for forward seeks; mint another
-  only when an earlier offset is needed while a view is still busy — do not open a
-  new view per member unconditionally. (This is the solid-stream *optimization* under
-  the opt-in; it does not make interleaving cheap on a compressed TAR — see cost model.)
-- **Document TAR-RA behavior in `format-tar`** (SharedSource + forward-cursor); the
-  concurrent-open contract/gating lives in `concurrent-open-opt-in`.
-- **Streaming TAR** (`streaming=True` / `r|`) stays single-pass and out of scope.
+- **Add a streamtools wrapper** that delegates to an inner member stream and holds a
+  caller-supplied lock across each data-path `read` / `readinto` (so the library's
+  seek+read stays atomic).
+- **TAR-RA:** keep `extractfile`; wrap the returned stream with that helper and a
+  per-`TarReader` lock before `_wrap_member_stream` (when the caller has opted in, or
+  always — uncontended lock is cheap; gate enforcement still lives in the opt-in change).
+- **ISO:** wrap pycdlib member streams the same way with a per-`IsoReader` lock.
+- **Document** the mechanism in `format-tar` and `format-iso`; concurrent-open contract /
+  gating stays in `concurrent-open-opt-in`.
+- **Streaming TAR** stays single-pass / out of scope.
+- Native TAR reader / SharedSource-at-`offset_data` remains a lower-priority future option.
 - No public API break. **Not BREAKING.**
 
 ## Capabilities
@@ -41,25 +37,23 @@ _(none)_
 
 ### Modified Capabilities
 
-- `format-tar`: Add requirements for random-access concurrent member open (SharedSource
-  on the uncompressed stream, forward-cursor view reuse, streaming still exempt). These
-  apply only when the caller has opted in per `concurrent-open-opt-in`.
+- `format-tar`: Random-access concurrent member open via locked `extractfile` streams
+  (under `allow_multiple_open_streams`).
+- `format-iso`: Concurrent member open via the same locked-wrapper pattern around pycdlib
+  streams (under the same opt-in).
 
 > The `archive-reading` concurrent-open + reentrancy rewrites (dropping the TAR-RA
-> exemption, adding the opt-in gate) are owned by `concurrent-open-opt-in`, not this change.
+> exemption, adding the opt-in gate, clarifying library-owned lock-wrap compliance) are
+> owned by `concurrent-open-opt-in`, not this change.
 
 ## Impact
 
-- Code: `src/archivey/internal/backends/tar_reader.py` (open path + `_open_member`);
-  possibly small helpers around SharedSource view pooling / forward-cursor policy.
-- Specs: `openspec/specs/format-tar/spec.md` (via this change's delta). The
-  `archive-reading` edits + ABC docstring changes are owned by `concurrent-open-opt-in`.
-- Depends on: `concurrent-open-opt-in` (the `allow_multiple_open_streams` gate + the
-  reentrancy/exemption rewrite this mechanism relies on).
-- Docs: `docs/parallel-reader.md` audit row for TAR-RA; design notes in
-  `shared-source-streams` / exploration that called TAR exempt.
-- Tests: interleaved concurrent opens on plain and compressed TAR-RA fixtures;
-  sequential-read regression (forward-cursor must not regress single-pass extract).
-- Dependencies: none new (`SharedSource` already landed).
-- Out of scope: multi-decoder / indexed codecs for compressed TAR (→ `IDEAS.md`);
-  parallel extraction feature; streaming TAR.
+- Code: new streamtools helper; `tar_reader.py` and `iso_reader.py` `_open_member` paths.
+- Specs: `format-tar`, `format-iso` deltas. `archive-reading` / ABC docstring owned by
+  `concurrent-open-opt-in`.
+- Depends on: `concurrent-open-opt-in`.
+- Docs: `docs/parallel-reader.md` TAR-RA and ISO audit rows.
+- Tests: interleaved opens (opted-in) for plain/compressed TAR-RA and ISO; sparse TAR
+  still correct; sequential extract regression.
+- Out of scope: reimplementing TAR sparse; native TAR reader; parallel extraction;
+  changing single-file/ZIP SharedSource dispositions.

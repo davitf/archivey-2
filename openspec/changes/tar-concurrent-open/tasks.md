@@ -1,32 +1,33 @@
-## 1. Spike and fixtures
+## 1. Locked member-stream primitive
 
-- [ ] 1.1 Confirm seekability of the uncompressed stream for plain TAR and compressed TAR-RA (gz/bz2/xz at minimum) under `TarReader(streaming=False)`; document any non-seekable codec in the PR / `IDEAS.md`
-- [ ] 1.2 Inventory sparse / GNU sparse TAR fixtures (or add a minimal one) and record whether `offset_data`+`size` matches `extractfile` output today
+- [ ] 1.1 Add a `streamtools` wrapper that delegates to an inner `BinaryIO` and holds a caller-supplied lock across each data-path `read` / `readinto` (and related methods that would otherwise call the unlocked inner stream)
+- [ ] 1.2 Unit-test the wrapper: two fake seek-before-read streams sharing one underlying handle + one lock; single-thread interleave and threaded interleave both return correct bytes
+- [ ] 1.3 Re-export from `streamtools` as appropriate
 
-## 2. SharedSource wrap in TarReader
+## 2. Wire TAR-RA and ISO
 
-- [ ] 2.1 Open plain and compressed TAR-RA so the uncompressed seekable stream is owned by a `SharedSource`; feed `tarfile` a catalog/cursor view (not the raw SharedSource)
-- [ ] 2.2 Implement `_open_member` via `SharedSource.view(offset_data, size)` + existing `_wrap_member_stream` for normal FILE members
-- [ ] 2.3 Preserve correct sparse behavior (keep `extractfile` for sparse if needed; do not regress)
-- [ ] 2.4 Implement forward-cursor view reuse: reuse when seeking forward and the cursor is free; mint a new view when an earlier offset is needed while busy
-- [ ] 2.5 Close lifecycle: tarfile close, then SharedSource / owned codec stream; member views non-owning; read-after-close still fails loudly
+- [ ] 2.1 Give `TarReader` a per-instance lock; wrap `extractfile` results with the helper before `_wrap_member_stream` (random-access path)
+- [ ] 2.2 Give `IsoReader` a per-instance lock; wrap pycdlib member streams the same way
+- [ ] 2.3 Confirm wrapper placement so buffered `_wrap_member_stream` layers do not bypass the lock
+- [ ] 2.4 Leave streaming TAR unchanged
 
-## 3. Specs, ABC, docs
+## 3. Specs and docs
 
-- [ ] 3.1 Land after `concurrent-open-opt-in` (it owns the `archive-reading` rewrite + the opt-in gate); apply this change's `format-tar` delta
-- [ ] 3.2 Ensure TAR-RA honors the `allow_multiple_open_streams` gate (no TAR special-casing); the `_open_member` docstring exemption drop lives in `concurrent-open-opt-in`
-- [ ] 3.3 Update `docs/parallel-reader.md` TAR-RA audit row and any "single decoder / exempt" language that these changes supersede
+- [ ] 3.1 Land after / with `concurrent-open-opt-in` (it owns the `archive-reading` rewrite + opt-in gate); apply this change's `format-tar` and `format-iso` deltas
+- [ ] 3.2 Ensure TAR-RA and ISO honor `allow_multiple_open_streams` with no special-case exemption; ABC docstring updates live in `concurrent-open-opt-in`
+- [ ] 3.3 Update `docs/parallel-reader.md` TAR-RA and ISO audit rows (seek-before-read + lock wrapper)
 
 ## 4. Tests
 
-- [ ] 4.1 Interleaved concurrent open+read for plain TAR-RA (two members, partial reads alternating)
-- [ ] 4.2 Same interleave test for compressed TAR-RA (at least `.tar.gz`) when uncompressed stream is seekable
-- [ ] 4.3 Sequential archive-order open/read regression (forward-cursor path; bytes correct)
-- [ ] 4.4 Streaming TAR unchanged (no concurrent-open requirement; existing streaming tests still pass)
-- [ ] 4.5 Guard: if a codec path is non-seekable, assert documented limitation rather than silent corruption
+- [ ] 4.1 Opted-in interleaved open+read for plain TAR-RA
+- [ ] 4.2 Opted-in interleaved open+read for compressed TAR-RA (at least `.tar.gz`)
+- [ ] 4.3 Sparse TAR member still expands correctly (fixture or skip if none)
+- [ ] 4.4 Opted-in interleaved open+read for ISO
+- [ ] 4.5 Sequential extract regression for TAR and ISO (uncontended lock path)
+- [ ] 4.6 Streaming TAR existing tests still pass
 
 ## 5. Verification
 
 - [ ] 5.1 `uv run --no-sync ruff check` on touched paths
 - [ ] 5.2 `uv run --no-sync pyrefly check` and `uv run --no-sync ty check` clean
-- [ ] 5.3 `uv run --no-sync pytest` for TAR / concurrent-open related tests (and full suite before push per CONTRIBUTING three-config gate)
+- [ ] 5.3 `uv run --no-sync pytest` for TAR / ISO / streamtools tests (full three-config gate before push per CONTRIBUTING)

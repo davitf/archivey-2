@@ -10,8 +10,10 @@
 
 - **TAR-RA** — the **random-access TAR** reader (`TarReader` with `streaming=False`),
   backed by one shared `tarfile.TarFile` (and, for compressed tar, one decompressor).
-  Distinct from streaming TAR (`streaming=True` / `r|` mode). TAR-RA is the hard
-  single-decoder carve-out for concurrent-open and for this invariant.
+  Distinct from streaming TAR (`streaming=True` / `r|` mode). Same seek-before-read
+  shape as ISO/`pycdlib` (no library lock); concurrent-open via a locked member-stream
+  wrapper is proposed in `tar-concurrent-open` (not SharedSource-at-`offset_data`, which
+  would reimplement sparse).
 - **SharedSource** — `streamtools` primitive: locked, per-view-position byte-range
   views over one seekable source (`shared-source-streams`).
 
@@ -28,14 +30,15 @@ Invariant (random-access, independent-open backends): `_open_member` is a functi
 | **directory** | RA, independent | **Yes** | Opens `self._root / member.name` — independent FD per open; no reader scratch. Outside SharedSource (filesystem paths, not a shared byte source). |
 | **ZIP** | RA, independent | **Yes** | `_open_zip_entry` → `ZipFile.open(info)`; stdlib `_SharedFile` coordinates the handle (path *and* stream sources). No per-open scratch on `ZipReader`. Outside archivey SharedSource retrofit (library-owned addressing). |
 | **single-file** | RA when seekable | **Yes** (post-`shared-source-streams`) | Seekable stream: `SharedSource.view(0)` + fresh codec per open. Path: independent codec FD per open. `_first_stream` scratch **removed**. Non-seekable: one-shot `_pending_stream` (streaming / single-pass — out of invariant scope). |
-| **TAR-RA** | RA, **single decoder** | **Exempt** | One `self._tar` (`tarfile.TarFile`); `extractfile` is not safe for interleaved concurrent opens. Carved out by the concurrent-open SHALL and by this invariant. |
-| **ISO** | RA, library-owned | **Yes** (archivey state) | `pycdlib.open_file_from_iso` owns seeking on the shared ISO handle. No per-open scratch on `IsoReader`. Outside SharedSource retrofit (same shape as ZIP / stdlib); not listed as non-compliant. |
+| **TAR-RA** | RA, library seek-before-read | **Gap → `tar-concurrent-open`** | `tarfile._FileInFile` re-seeks on each `read()`, **no lock** (same shape as pycdlib). Keep `extractfile` (sparse); wrap member streams with a per-archive lock across each library `read`. Exploration carved this out; follow-up drops the carve-out. |
+| **ISO** | RA, library seek-before-read | **Gap → `tar-concurrent-open`** | `pycdlib.PyCdlibIO` re-seeks on each `read()`, **no lock**. Not "like ZIP" (ZIP has `_SharedFile` lock). Same locked member-stream wrapper as TAR-RA. No per-open scratch on `IsoReader` today. |
 
-**Fix ownership (no overlap with this change):**
+**Fix ownership (no overlap with the exploration itself):**
 
 - `single_file._first_stream` → fixed by **`shared-source-streams`** (landed).
-- ISO leave-alone + design note → also **`shared-source-streams`**.
-- This change only **records** the audit; it does not re-fix those items.
+- TAR-RA + ISO lock wrapper → **`tar-concurrent-open`** (proposed; supersedes the
+  exploration's TAR carve-out and the "ISO leave-alone" note).
+- This exploration only **recorded** the audit; it did not ship those fixes.
 
 ---
 
@@ -119,8 +122,8 @@ invariant and leave the feature deferred.
 | Single-file | **N/A** (one member) | Re-open is fine; no fan-out. |
 | 7z | **Per folder** (coders chain) | Members *within* one folder share decompressor state — sequential. Separate folders are independent; each `open()` may re-decode from folder start (already allowed by solid-open scenarios). |
 | RAR | **Per solid block** | Same shape as 7z folders; `unrar` for data. |
-| TAR-RA | **None** (single `tarfile`) | Exempt; serialize or one stream at a time. |
-| ISO | **Per extent** (pycdlib) | Library-owned; treat like ZIP path-source unless archivey wraps later. |
+| TAR-RA | **Per member** (after lock wrap) | Seek-before-read on one fileobj; serialize via per-archive member-stream lock (`tar-concurrent-open`). |
+| ISO | **Per extent** (pycdlib) | Same lock-wrap as TAR-RA; not ZIP-equivalent until locked. |
 | Directory | **Per file** | Independent paths. |
 
 A future `ExtractionCoordinator` fan-out must schedule at this granularity — not
@@ -172,7 +175,13 @@ Phase 6 native 7z/RAR should:
 - Member-cache init-under-lock.
 - Engaging SharedSource `independent_handles`.
 - Free-threading public API changes.
+- Native TAR reader / SharedSource-at-`offset_data` (lower priority than the lock
+  wrapper in `tar-concurrent-open`).
+
+**Follow-up (does not block Phase 6 ABC):** `tar-concurrent-open` — locked
+member-stream wrapper for TAR-RA and ISO (same seek-before-read gap; keep
+`extractfile` / pycdlib rather than reimplementing sparse).
 
 If a Phase 6 design review discovers a backend that cannot honor the invariant
-without an ABC hook (e.g. a mandatory shared decoder), carve it out like TAR-RA
-rather than weakening the contract.
+without an ABC hook, prefer a narrow carve-out or the lock-wrapper pattern rather
+than weakening the SharedSource contract for archivey-owned ranges.
