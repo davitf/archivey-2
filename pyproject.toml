@@ -102,6 +102,9 @@ dev = [
     # objects are ubiquitous in data pipelines (local/S3/GCS/HTTP behind one interface).
     "urllib3>=2.0.0",
     "fsspec>=2024.0.0",
+    # Property-based tests for the safety logic (tests/test_property_safety.py); mirrors
+    # the mutation harness as the second pre-Phase-6 fuzzing-scaffold gate.
+    "hypothesis>=6.100.0",
 ]
 # Documentation toolchain. Kept out of `dev` so the common lint/test loop stays light;
 # build the site with `uv run --group docs mkdocs build --strict`.

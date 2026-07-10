@@ -222,7 +222,9 @@ class ExtractionCoordinator:
 
     # --- entry point ---------------------------------------------------------------
 
-    def run(self, reader: "BaseArchiveReader", dest: str | Path) -> list[ExtractionResult]:
+    def run(
+        self, reader: "BaseArchiveReader", dest: str | Path
+    ) -> list[ExtractionResult]:
         dest = Path(dest)
         self._ensure_dest_root(dest)
         dest_root = dest.resolve()
@@ -258,8 +260,10 @@ class ExtractionCoordinator:
         # per yield; a stateful predicate still sees each member a single time. Without
         # a free list the predicate itself is passed through.
         stream_selector = (
-            None if selector is None
-            else all_members if all_members is not None
+            None
+            if selector is None
+            else all_members
+            if all_members is not None
             else selector
         )
 
@@ -303,20 +307,35 @@ class ExtractionCoordinator:
             except _AlwaysStopExtractionError:
                 raise
             except (ArchiveyError, OSError) as exc:
+                # A name the universal filter accepted (it is fsencodable) but that the
+                # *destination filesystem* refuses at write time — non-UTF-8 bytes on a
+                # UTF-8-enforcing FS such as APFS/macOS raise OSError EILSEQ ("Illegal
+                # byte sequence") — is not a generic I/O failure. Surface it as a typed
+                # extraction error so callers get "this name is not representable here"
+                # instead of a bare OSError. (Rewriting such names to an always-portable
+                # spelling so the write succeeds is the separate, policy-gated
+                # threat-model O7 follow-up.)
+                error: ArchiveyError | OSError = exc
+                if isinstance(exc, OSError) and exc.errno == errno.EILSEQ:
+                    error = ExtractionError(
+                        "Member name cannot be represented on the destination "
+                        f"filesystem: {original.name!r}"
+                    )
+                    error.__cause__ = exc
                 status = (
                     ExtractionStatus.REJECTED
-                    if isinstance(exc, FilterRejectionError)
+                    if isinstance(error, FilterRejectionError)
                     else ExtractionStatus.FAILED
                 )
-                result = ExtractionResult(original, None, status, exc)
+                result = ExtractionResult(original, None, status, error)
                 if results and results[-1].member is original:
                     results[-1] = result
                 else:
                     results.append(result)
                 if self._on_error is OnError.STOP:
-                    raise
+                    raise error
                 logger.warning(
-                    "Skipping %s %r: %s", original.type.value, original.name, exc
+                    "Skipping %s %r: %s", original.type.value, original.name, error
                 )
             finally:
                 self._close(stream)
@@ -374,15 +393,22 @@ class ExtractionCoordinator:
                 return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
             os.makedirs(dest_path, exist_ok=True)
             self._apply_metadata(dest_path, transformed)
-            return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
+            return ExtractionResult(
+                original, dest_path, ExtractionStatus.EXTRACTED, None
+            )
 
         if transformed.type == MemberType.SYMLINK:
             return self._write_symlink(original, transformed, dest_root, dest_path)
 
         if transformed.type == MemberType.HARDLINK:
             return self._write_hardlink(
-                original, transformed, dest_path, source_paths, orphans,
-                forward_only, result_index,
+                original,
+                transformed,
+                dest_path,
+                source_paths,
+                orphans,
+                forward_only,
+                result_index,
             )
 
         if transformed.type == MemberType.FILE:
@@ -497,7 +523,9 @@ class ExtractionCoordinator:
                 return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
             os.makedirs(dest_path.parent, exist_ok=True)
             self._place_link(source_paths, source.member_id, dest_path, transformed)
-            return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
+            return ExtractionResult(
+                original, dest_path, ExtractionStatus.EXTRACTED, None
+            )
 
         # Source not on disk yet: either it was excluded by the selector/filter, or (in a
         # crafted/non-TAR-ordered archive) it simply appears later in archive order. The
@@ -575,9 +603,7 @@ class ExtractionCoordinator:
         # Any orphan whose source never reappeared (should not happen for a re-readable
         # source) is a per-member failure.
         for source_id in needed:
-            err = ExtractionError(
-                "Hardlink source was not found on the second pass"
-            )
+            err = ExtractionError("Hardlink source was not found on the second pass")
             for orphan in orphans_by_source[source_id]:
                 results[orphan.result_index] = ExtractionResult(
                     orphan.original, None, ExtractionStatus.FAILED, err
@@ -625,7 +651,9 @@ class ExtractionCoordinator:
         results[writer.result_index] = ExtractionResult(
             writer.original, writer.dest_path, ExtractionStatus.EXTRACTED, None
         )
-        self._link_orphan_group(remaining, source_paths, source_member.member_id, results)
+        self._link_orphan_group(
+            remaining, source_paths, source_member.member_id, results
+        )
 
     def _link_orphan_group(
         self,
@@ -654,9 +682,7 @@ class ExtractionCoordinator:
                 )
                 if self._on_error is OnError.STOP:
                     raise
-                logger.warning(
-                    "Skipping hardlink %r: %s", orphan.original.name, exc
-                )
+                logger.warning("Skipping hardlink %r: %s", orphan.original.name, exc)
                 continue
             results[orphan.result_index] = ExtractionResult(
                 orphan.original, orphan.dest_path, ExtractionStatus.EXTRACTED, None
