@@ -1,55 +1,80 @@
 # Tasks — multi-candidate password disambiguation
 
-This change contains the focused ZipCrypto fix. Diagnostics-dependent and future-format
-work stays separate and unchecked. Run tools through `uv` (`uv run pytest`,
-`uv run pyrefly check`, `uv run ty check`, `uv run ruff`).
+This change contains the full ZipCrypto disambiguation ladder. The currently-pushed code
+implements an interim spooling approach that the bounded-confirmation tasks below
+replace; diagnostics-dependent and future-format work stays separate and unchecked. Run
+tools through `uv` (`uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
+`uv run ruff`).
 
-## 1. Focused ZIP implementation
+## 1. Codec gibberish-rejection investigation
 
-- [x] 1.1 Require confirmation for multiple distinct static candidates and provider
+- [ ] 1.1 Measure how quickly stdlib DEFLATE, BZIP2, and LZMA reject wrong-key ZipCrypto
+      output (bytes consumed until failure, distribution over many wrong keys); record
+      the findings in `design.md`.
+- [ ] 1.2 Pin the findings with regression tests: for each codec, wrong-key confirmation
+      fails within the confirmation bound with a wide margin (deterministic via the
+      collision finder in `tests/zipcrypto.py`).
+
+## 2. Bounded confirmation implementation
+
+- [x] 2.1 Require confirmation for multiple distinct static candidates and provider
       answers while preserving the one-distinct-static-candidate lazy path.
-- [x] 1.2 Validate ZipCrypto candidates through decompressor completion and CRC, retaining
-      the winning plaintext in bounded-memory/disk-spilling stdlib storage.
-- [x] 1.3 Return the rewound validated spool without reopening/decrypting the winning
-      member, attempt source closure, and always close owned spools during failure cleanup.
-- [x] 1.4 Treat BZIP2's exact `OSError("Invalid data stream")`, DEFLATE/LZMA failures, and
-      CRC failures as candidate-validation failures while propagating unrelated
+- [ ] 2.2 Replace the interim full-read/spool validation with a bounded decompressed
+      prefix (internal constant, ~1 MiB) for DEFLATE/BZIP2/LZMA members; members within
+      the bound get exact full validation. Remove `SpooledTemporaryFile` usage.
+- [ ] 2.3 Implement the STORED single-pass disambiguation: raw ciphertext byte-range read
+      via the local header, a minimal internal ZipCrypto keystream (do not import
+      `zipfile._ZipDecrypter`), per-candidate parallel CRC-32 accumulation, winner by
+      central-directory CRC match, ties by candidate order.
+- [ ] 2.4 Re-open the confirmed candidate fresh through `zipfile` for the caller's
+      stream; record it known-good only after confirmation; retain no confirmation
+      plaintext.
+- [x] 2.5 Treat BZIP2's exact `OSError("Invalid data stream")`, DEFLATE/LZMA failures,
+      and CRC failures as candidate-confirmation failures while propagating unrelated
       `OSError` unchanged.
-- [x] 1.5 On exhausted ambiguous validation, raise `EncryptionError` stating both possible
-      causes (wrong passwords or corrupt encrypted data); never select an unvalidated guess.
-- [x] 1.6 Restrict candidate-dependent `BadZipFile` handling to CRC mismatch; preserve
+- [x] 2.6 On exhausted ambiguous confirmation, raise `EncryptionError` stating both
+      possible causes (wrong passwords or corrupt encrypted data); never select an
+      unvalidated guess.
+- [x] 2.7 Restrict candidate-dependent `BadZipFile` handling to CRC mismatch; preserve
       structural/local-header failures as `CorruptionError`.
-- [x] 1.7 Distinguish candidate exhaustion from provider-raised `EncryptionError`, and make
-      spool cleanup run even when source closure raises.
+- [x] 2.8 Distinguish candidate exhaustion from provider-raised `EncryptionError`; close
+      rejected-candidate streams before trying the next candidate.
 
-## 2. Tests
+## 3. Tests
 
-- [x] 2.1 Cover colliding wrong-before-right candidates for STORED, DEFLATE, BZIP2, and
+- [x] 3.1 Cover colliding wrong-before-right candidates for STORED, DEFLATE, BZIP2, and
       LZMA members.
-- [x] 2.2 Cover all-wrong collisions and corrupt encrypted data under the explicit
+- [x] 3.2 Cover all-wrong collisions and corrupt encrypted data under the explicit
       wrong-password-or-corruption exhaustion contract.
-- [x] 2.3 Cover static candidates, provider retries, duplicate values, known-good reuse,
+- [x] 3.3 Cover static candidates, provider retries, duplicate values, known-good reuse,
       and one-distinct-candidate no-eager-read behavior.
-- [x] 2.4 Verify the winner is opened/decompressed once and unrelated `OSError` propagates
-      after the failed stream is closed.
-- [x] 2.5 Cover structural `BadZipFile`, provider callback failure, disk rollover with
-      partial caller reads, and spool cleanup after source-close failure.
+- [x] 3.4 Verify unrelated `OSError` propagates after the failed stream is closed; cover
+      structural `BadZipFile` and provider callback failure.
+- [ ] 3.5 Verify confirmation of a member larger than the bound is bounded: no temporary
+      file is created and at most the bounded prefix is decompressed per candidate.
+- [ ] 3.6 Verify the STORED single-pass: all candidates disambiguated in one ciphertext
+      read; the caller's stream is fresh and CRC-checked; CRC-match ties resolve by
+      candidate order.
+- [ ] 3.7 Verify a candidate accepted by prefix confirmation whose data is corrupt beyond
+      the prefix fails the caller's read as `CorruptionError` (parity with the
+      single-candidate path).
 
-## 3. Specs and design
+## 4. Specs and design
 
-- [x] 3.1 Document bounded-RAM spooling, proportional temporary-disk/time cost, provider
-      laziness, specific exception mapping, and the irreducible classification ambiguity.
-- [x] 3.2 Remove lone-survivor, heuristic guessing, finite-provider enumeration, and
-      unsupported 7z/RAR authentication claims from this change.
+- [x] 4.1 Specify bounded prefix confirmation, the STORED single-pass, fresh re-open for
+      the caller, provider laziness, exception mapping, and the irreducible
+      classification ambiguity.
+- [x] 4.2 Add the general `archive-reading` "Bounded implicit temporary storage"
+      requirement with the documented-per-format-strategy carve-out.
 
-## 4. Verification
+## 5. Verification
 
-- [ ] 4.1 Run focused tests, full tests in all three dependency configurations, Ruff,
+- [ ] 5.1 Run focused tests, full tests in all three dependency configurations, Ruff,
       Pyrefly, ty, and strict OpenSpec validation.
 
-## 5. Deferred changes (not part of this implementation)
+## 6. Deferred changes (not part of this implementation)
 
-- [ ] 5.1 Design structured password-disambiguation diagnostics only after a concrete
+- [ ] 6.1 Design structured password-disambiguation diagnostics only after the
       warnings-as-data API exists; diagnostics must not authorize guesses.
-- [ ] 5.2 Revisit cross-format candidate confirmation when native 7z/RAR readers exist and
+- [ ] 6.2 Revisit cross-format candidate confirmation when native 7z/RAR readers exist and
       their actual password/integrity signals can be tested.
