@@ -54,6 +54,10 @@ from archivey.types import (
 # which maps every byte and therefore never fails — no further fallbacks are reachable).
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
+# Read chunk used when confirming a candidate password by reading a member to completion
+# (forcing the decompressor + CRC), for the multi-password disambiguation in _open_zip_entry.
+_VALIDATION_CHUNK = 256 * 1024
+
 # A ".z01"/".z42"/… segment name — the obvious signal of a split (multi-volume) ZIP set.
 _SPLIT_SEGMENT_RE = re.compile(r"\.z\d{2}$", re.IGNORECASE)
 
@@ -132,7 +136,9 @@ def _zip_timestamps(
         try:
             modified = datetime(*info.date_time)
         except ValueError:
-            logger.warning("Invalid ZIP date_time for %r: %r", info.filename, info.date_time)
+            logger.warning(
+                "Invalid ZIP date_time for %r: %r", info.filename, info.date_time
+            )
             modified = None
     accessed: datetime | None = None
     created: datetime | None = None
@@ -159,7 +165,11 @@ def _zip_timestamps(
         while cursor + 4 <= len(ntfs_field):
             attr_tag, attr_size = struct.unpack_from("<HH", ntfs_field, cursor)
             cursor += 4
-            if attr_tag == 0x0001 and attr_size >= 24 and cursor + 24 <= len(ntfs_field):
+            if (
+                attr_tag == 0x0001
+                and attr_size >= 24
+                and cursor + 24 <= len(ntfs_field)
+            ):
                 mtime, atime, ctime = struct.unpack_from("<QQQ", ntfs_field, cursor)
                 modified = _filetime_to_datetime(mtime, info.filename) or modified
                 accessed = _filetime_to_datetime(atime, info.filename) or accessed
@@ -172,7 +182,9 @@ def _zip_timestamps(
         cursor = 1
         for bit in (0x01, 0x02, 0x04):  # mtime, atime, ctime, in order
             if flags & bit and cursor + 4 <= len(ut_field):
-                ts = int.from_bytes(ut_field[cursor : cursor + 4], "little", signed=True)
+                ts = int.from_bytes(
+                    ut_field[cursor : cursor + 4], "little", signed=True
+                )
                 when = datetime.fromtimestamp(ts, tz=timezone.utc)
                 if bit == 0x01:
                     modified = when
@@ -312,7 +324,9 @@ class ZipReader(BaseArchiveReader):
         full_mode = info.external_attr >> 16
         is_unix = info.create_system == 3
         # Permission bits only; None when no usable Unix mode was stored.
-        mode = stat.S_IMODE(full_mode) if (info.external_attr != 0 and is_unix) else None
+        mode = (
+            stat.S_IMODE(full_mode) if (info.external_attr != 0 and is_unix) else None
+        )
 
         if info.is_dir():
             member_type = MemberType.DIRECTORY
@@ -346,7 +360,9 @@ class ZipReader(BaseArchiveReader):
             errors="surrogateescape",
         )
 
-        algo = _ZIP_COMPRESSION_ALGOS.get(info.compress_type, CompressionAlgorithm.UNKNOWN)
+        algo = _ZIP_COMPRESSION_ALGOS.get(
+            info.compress_type, CompressionAlgorithm.UNKNOWN
+        )
 
         modified, accessed, created = _zip_timestamps(info)
         return ArchiveMember(
@@ -375,13 +391,34 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
     ) -> BinaryIO:
         encrypted = bool(info.flag_bits & 0x1)
+        # Traditional ZipCrypto validates only a single verification byte at open() time
+        # (~1/256 of wrong passwords slip through); the authoritative check is the CRC,
+        # which zipfile defers to read time. So when we must disambiguate among several
+        # candidate passwords, accepting a candidate on open() alone lets a false-accept
+        # win and the real password is never tried — the CRC mismatch then surfaces later
+        # as a spurious CorruptionError. In that case, confirm the candidate by reading
+        # the member to completion (forcing the decompressor and the CRC) before accepting
+        # it. (A read-time failure under a candidate password therefore means "wrong
+        # password", not corruption.) Perf note: this reads the member during trial; a
+        # size-gated / first-block variant and richer disambiguation heuristics are a
+        # separate follow-up — see the multi-password-disambiguation change.
+        validate = encrypted and self._passwords.is_ambiguous()
 
         def decrypt(password: bytes) -> BinaryIO:
             try:
-                return cast(
+                stream = cast(
                     "BinaryIO",
                     self._archive.open(info, pwd=password if encrypted else None),
                 )
+                if validate:
+                    try:
+                        while stream.read(_VALIDATION_CHUNK):
+                            pass
+                    finally:
+                        stream.close()
+                    # Confirmed: hand back a fresh, unread stream for the caller.
+                    stream = cast("BinaryIO", self._archive.open(info, pwd=password))
+                return stream
             except (
                 zipfile.BadZipFile,
                 RuntimeError,
@@ -392,6 +429,16 @@ class ZipReader(BaseArchiveReader):
                 UnicodeDecodeError,
                 ValueError,
             ) as exc:
+                # While disambiguating, a decompress/CRC failure means the candidate
+                # password was wrong (its verification byte happened to match): report it
+                # as an encryption error so the trial moves on to the next candidate,
+                # rather than as corruption.
+                if validate and isinstance(
+                    exc, (zipfile.BadZipFile, zlib.error, lzma.LZMAError)
+                ):
+                    raise EncryptionError(
+                        f"Wrong password for ZIP member {member_name!r}"
+                    ) from exc
                 translated = self._translate_exception(exc)
                 if translated is not None:
                     if isinstance(translated, EncryptionError):
@@ -412,7 +459,9 @@ class ZipReader(BaseArchiveReader):
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
         info = member._raw
-        assert isinstance(info, zipfile.ZipInfo), "ZIP member is missing its ZipInfo handle"
+        assert isinstance(info, zipfile.ZipInfo), (
+            "ZIP member is missing its ZipInfo handle"
+        )
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
         # usable without a password, so a missing/wrong password leaves link_target
         # unset (following the link later fails with LinkTargetNotFoundError); other
@@ -449,7 +498,9 @@ class ZipReader(BaseArchiveReader):
         # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map
         # — and a duplicate member name can't resolve to the wrong entry.
         info = member._raw
-        assert isinstance(info, zipfile.ZipInfo), "ZIP member is missing its ZipInfo handle"
+        assert isinstance(info, zipfile.ZipInfo), (
+            "ZIP member is missing its ZipInfo handle"
+        )
         raw = self._open_zip_entry(info, member, member_name=member.name)
         return self._wrap_member_stream(raw, member.name, size=member.size)
 
@@ -487,8 +538,12 @@ class ZipReadBackend(ReadBackend):
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.ZIP,)
     EXTENSIONS: Mapping[str, ArchiveFormat] = {".zip": ArchiveFormat.ZIP}
     MAGIC: tuple[MagicSignature, ...] = (
-        MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),  # standard local header
-        MagicSignature(0, b"\x50\x4b\x05\x06", ArchiveFormat.ZIP),  # empty archive (EOCD)
+        MagicSignature(
+            0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP
+        ),  # standard local header
+        MagicSignature(
+            0, b"\x50\x4b\x05\x06", ArchiveFormat.ZIP
+        ),  # empty archive (EOCD)
         MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
     )
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
