@@ -260,11 +260,11 @@ level) and the *codec backends* a format can use (the `compressed-streams` layer
   unavailable.
 - A multi-codec container (7z, RAR) whose format backend is available is **FULL**
   when every optional codec/tool it can use is present, otherwise **PARTIAL**.
-- **ZIP is an exception until Phase 7** (see `format-zip`): member *data* decompression
+- **ZIP is an exception until Phase 6** (see `format-zip`): member *data* decompression
   still goes through stdlib `zipfile`, which cannot use deflate64/PPMd (or zstd before
   Python 3.14) even when the corresponding codec packages are installed. Therefore
   `format_availability(ArchiveFormat.ZIP)` SHALL report **PARTIAL** regardless of
-  optional codec installation until Phase 7 wires the shared codec layer into ZIP
+  optional codec installation until Phase 6 wires the shared codec layer into ZIP
   member reads. When optional ZIP member-codec packages are absent, `missing` lists
   them as for any other multi-codec container; when every package is present, `missing`
   is empty — support remains `PARTIAL` because the read-time gap is implementation
@@ -323,7 +323,7 @@ def list_known_formats() -> list[ArchiveFormat]:  # every format the registry kn
 
 - **WHEN** `format_availability(ArchiveFormat.ZIP)` is queried on a system with every optional ZIP member codec installed (deflate64, PPMd, zstd)
 - **THEN** `support` is `FormatSupport.PARTIAL` and `missing` is empty
-- **AND** reading a deflate64/PPMd/zstd member still raises `UnsupportedFeatureError` until Phase 7 wires the codec layer into ZIP member reads
+- **AND** reading a deflate64/PPMd/zstd member still raises `UnsupportedFeatureError` until Phase 6 wires the codec layer into ZIP member reads
 
 #### Scenario: ZIP partial when optional member codecs are missing
 

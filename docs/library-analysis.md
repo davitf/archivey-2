@@ -306,7 +306,7 @@ Python implementation (same author as `pyppmd`/`py7zr`); no real alternative. `[
 ### PPMd (var.H) — `pyppmd`
 
 PPMd variant H (7z) via `pyppmd`. The only maintained Python PPMd binding. `[7z]` bundle.
-(Concrete construction lands with the native 7z reader in Phase 7; the backend selection and
+(Concrete construction lands with the native 7z reader in Phase 6; the backend selection and
 missing-dependency gating are already wired.)
 
 ---

@@ -49,18 +49,18 @@ The system SHALL map each `ZipInfo` entry to a `ArchiveMember` dataclass using t
 > **Phase 3 → 7 gap (member decode via stdlib zipfile).** Member *data* decompression
 > currently goes through stdlib `zipfile`, which cannot decode deflate64/PPMd (or zstd
 > before Python 3.14) even when the corresponding codec packages are installed —
-> reading such a member raises `UnsupportedFeatureError`. Until Phase 7 wires the shared
+> reading such a member raises `UnsupportedFeatureError`. Until Phase 6 wires the shared
 > `compressed-streams` codec layer into ZIP member reads (see `openspec/project.md`),
 > `format_availability(ZIP)` SHALL report **PARTIAL** regardless of optional codec
 > installation (`backend-registry`); listing is unaffected. Installing `[7z]` / `[zstd]`
-> alone does not unlock those member reads before Phase 7.
+> alone does not unlock those member reads before Phase 6.
 >
-> The intended fix (Phase 7, alongside the 7z container codecs) keeps `zipfile` for the
+> The intended fix (Phase 6, alongside the 7z container codecs) keeps `zipfile` for the
 > central directory but bypasses its decompressor for member data: locate the member's
 > raw compressed bytes (local-header offset + a `SlicingStream` view) and decode them
 > through the shared `compressed-streams` codec layer. `zipfile` exposes no decompressor
 > plug-in point, so this raw-slice route — a first step toward the full native ZIP
-> reader in `IDEAS.md` — is the mechanism; the Phase 7 change proposal specifies it.
+> reader in `IDEAS.md` — is the mechanism; the Phase 6 change proposal specifies it.
 
 #### Scenario: Unix mode from external_attr
 

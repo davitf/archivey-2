@@ -1,76 +1,98 @@
-# Diagnostics: warnings as queryable data
+# Diagnostics: warnings as lifecycle-aware data
 
 ## Why
 
-Archivey's headline promise is **no surprises**. Today that promise quietly degrades to
-"no surprises — but logged", because every advisory the library produces is a
-`logging.warning` and nothing else. There are ~17 such sites: a member name was
-normalized (its meaning changed vs `raw_name`), format detection's magic disagreed with
-the extension, a backward seek forced an O(n) rewind, an extracted member was skipped, an
-NTFS/DOS timestamp was invalid, an expected digest could not be checked, a directory
-vanished mid-scan — and, incoming, "the password for this member was **guessed**"
-(`zip-multipassword-disambiguation`). Most applications never configure the `archivey`
-logger, so all of this is invisible: the data that would let a caller *act* (re-name the
-file, reject the archive, warn the user, record provenance) is thrown away after
-formatting a log string.
+Archivey's "no surprises" contract requires recoverable degradation and advisory events to
+be queryable, not only formatted through Python logging. The current implementation has 17
+`logger.warning` call sites covering changed names, detection conflicts, degraded seek
+indexes, expensive rewinds, unverifiable digests, invalid metadata, directory-scan races,
+TAR EOF problems, unavailable encrypted symlink targets, and continued extraction
+failures. Logging alone discards the structure callers need for indexing, auditing, user
+messages, and strict automation.
 
-The threat model records this as gap **C2 ("warnings that should be data")** and
-`IDEAS.md` sketches the sweep: each `logger.warning` should *also* be queryable as data
-on the natural result object (`ArchiveMember`, `FormatInfo`/`ArchiveInfo`, `CostReceipt`,
-`ExtractionResult`). But a field-per-surface sweep alone is fragmented and under-answers
-the real question the maintainer raised: **how should these be exposed — and does the
-right exposure depend on the context?** It does. A CLI wants to print them at the end; a
-long streaming pass wants them as they happen; a batch indexer wants them recorded beside
-each member and never wants a crash; a reproducible-build tool wants *some* of them to be
-hard **errors**. One delivery shape cannot serve all four.
+The first proposal attached diagnostics to static objects without accounting for when an
+event can occur. That would put runtime rewind and EOF events on frozen open-time
+`CostReceipt` / `ArchiveInfo` values, return extraction diagnostics "alongside" a list
+without defining an API, and bound only one aggregate while per-member attachments could
+still retain unbounded references. Pre-1.0 compatibility is not a constraint, so this
+revision chooses one coherent long-term contract instead of preserving those shapes.
 
-This change designs a single **diagnostic** primitive with **context-appropriate
-exposure**: attached to the most specific natural surface, aggregated into a queryable
-per-operation collection, delivered eagerly via an optional callback, and escalable to a
-typed error by policy — with `logging` unchanged as the zero-config default so nothing
-breaks. **Specs only — no code lands here.**
+This remains a **specifications-only proposal**. Its implementation tasks are not part of
+this change.
 
 ## What Changes
 
-- **New capability `diagnostics`.** A stable `Diagnostic` record — a machine-stable
-  `code`, a `severity`, a human `message`, and typed `context` (references to the member /
-  archive / offset it concerns, and the before/after values where relevant, e.g.
-  `raw_name` → `name`). Codes are enumerated and stable so callers can branch on them.
-
-- **Context-appropriate exposure (the crux).** Every diagnostic is delivered through as
-  many of these as fit its context, driven by config, not hard-coded:
-  1. **Attached to its natural surface** — normalization → a field on `ArchiveMember`;
-     detection conflict → `FormatInfo`/`ArchiveInfo`; rewind → `CostReceipt`;
-     skip/guessed-password → `ExtractionResult`.
-  2. **Aggregated** into a per-operation collection queryable from the reader
-     (`reader.diagnostics`) and the operation result (`extract()`), so diagnostics with no
-     natural per-object home (a directory vanished mid-scan) are still reachable, and so a
-     caller can ask "did anything happen?" once.
-  3. **Pushed eagerly** via an optional `ArchiveyConfig.on_diagnostic` callback, for
-     streaming/long operations where waiting for a result object is wrong.
-  4. **Escalated to a typed error** for a caller-selected set of codes/severities
-     (`WarningPolicy`), so strict consumers can make "a name was normalized" fatal.
-  5. **Logged** exactly as today — the existing `logging` behaviour is retained as the
-     default channel, so this change is **additive and non-breaking**.
-
-- **`logging` delta.** Clarify that each logged advisory is the log projection of a
-  `Diagnostic`; the logger hierarchy and "no handlers by default" rule are unchanged.
+- Add a `diagnostics` capability with:
+  - immutable `Diagnostic` values, stable `DiagnosticCode` string-enum values, severity,
+    an opaque occurrence id, a human message, and a code-specific immutable, JSON-safe
+    typed context;
+  - immutable `DiagnosticSummary` snapshots with exact total/per-code counts and bounded
+    retained occurrences;
+  - `DiagnosticPolicy` dispositions `IGNORE`, `COLLECT`, and `RAISE`, resolved per code;
+  - a single typed `DiagnosticRaisedError` escalation path; and
+  - a fully ordered emission contract covering logging, callbacks, callback failures,
+    reentrancy, and lock boundaries.
+- Make diagnostics lifecycle-aware:
+  - standalone detection diagnostics are final data on `FormatInfo`;
+  - an `ArchiveReader` owns a cumulative lifetime collector, and `reader.diagnostics`
+    returns an immutable snapshot each time;
+  - reader-owned streams expose operation-filtered snapshots over the same collector;
+  - `open_archive()` creates that collector before detection and transfers it intact to
+    the reader, while top-level `extract()` shares one collector and initial watermark
+    through detection, open, read, and extraction—no seeding, merging, or duplicated
+    retention;
+  - runtime rewind, seek-index degradation, scan-race, and trailing-EOF events remain in
+    reader/stream operation aggregates, never in frozen `CostReceipt` or `ArchiveInfo`;
+  - natural member-metadata occurrences may attach to `ArchiveMember`, but extraction
+    occurrences remain in the report/reader aggregate because `ExtractionResult.status`
+    and `.error` are already the complete per-result outcome; and
+  - every library-retained aggregate entry and member attachment shares one
+    collector-wide reference budget.
+- Replace extraction's list return with a first-class `ExtractionReport` containing
+  an immutable result tuple and the extraction operation's bounded diagnostic summary.
+  `EXTRACTED`, `SKIPPED`, `REJECTED`, and `FAILED` are defined by outcome rather than by
+  logging: intentional filter/overwrite skips are `SKIPPED`; safety-filter blocks are
+  `REJECTED`; operational failures are `FAILED`; selector-excluded members have no result.
+- Add `ArchiveyConfig.diagnostic_policy`,
+  `ArchiveyConfig.max_retained_diagnostic_references`, and an optional
+  `ArchiveyConfig.on_diagnostic` callback. The public policy is deliberately per-code
+  only: severity rules, logger-specific rules, mutable global configuration, callback
+  return values, and a second warnings framework are not added.
+- Specify that `RAISE` always halts, including under extraction
+  `OnError.CONTINUE`. For a missing archive EOF marker,
+  `strict_archive_eof=True` takes precedence and raises `TruncatedError`; diagnostic
+  policy still controls the event's counting/delivery before that specific error.
+- Audit all 17 current warning calls into the initial stable taxonomy. No unused
+  `PASSWORD_GUESSED` code is pre-reserved; the password-disambiguation change adds that
+  code and context when it defines the event. The initial code-to-context mapping is a
+  closed discriminated union. Extraction failure/rejection codes count results: a failed
+  hardlink source affecting `N` continued results emits `N` correlated occurrences.
+- Update the affected capabilities: `archive-reading`, `archive-data-model`,
+  `format-detection`, `safe-extraction`, `error-handling`, `logging`,
+  `access-mode-and-cost`, `compressed-streams`, `seekable-decompressor-streams`,
+  `format-directory`, `format-tar`, and `format-zip`.
+- Schedule implementation as the Phase 5 public-API follow-on that must land before the
+  Phase 6 native 7z/RAR readers add more warning-producing paths.
 
 ## Impact
 
-- New spec: `diagnostics`. Touched specs (light deltas, when scheduled): `logging`
-  (relationship), and the surfaces that grow a diagnostics accessor — `archive-reading`
-  (`reader.diagnostics`, `on_diagnostic`), `archive-data-model` (`ArchiveMember`
-  normalization/diagnostic field), `format-detection` (`FormatInfo`/`ArchiveInfo`),
-  `access-mode-and-cost` (`CostReceipt`), `safe-extraction` (`ExtractionResult`,
-  `extract()` collection). To keep this proposal reviewable those attachment points are
-  enumerated in the `diagnostics` spec and realized as tasks, not rewritten across five
-  specs here.
-- Consumers: the `zip-multipassword-disambiguation` residual ("guessed password") and the
-  extraction collision work (O2) both want this surface; this is the shared dependency
-  called out in that proposal.
-- Backwards compatible: default behaviour still just logs; the data/callback/escalation
-  channels are opt-in.
-- Open decisions for maintainer review are collected in `design.md` (naming, whether
-  escalation lives here or in `error-handling`, dedup/aggregation shape, `logging` vs the
-  stdlib `warnings` module).
+- **Public API:** new diagnostic values/policy/error, `reader.diagnostics`,
+  `ArchiveStream.diagnostics`, `FormatInfo.diagnostics`,
+  `ArchiveMember.diagnostics`, and `ExtractionReport`; `ArchiveReader.open()` and
+  `stream_members()` expose `ArchiveStream`, while `extract()` / `extract_all()` return
+  `ExtractionReport`. `ExtractionResult` has no diagnostics field.
+- **Control flow:** default `COLLECT` remains non-fatal and logs warning-severity
+  diagnostics. `IGNORE` suppresses retention/logging/callback delivery but not exact
+  counts. `RAISE` delivers then raises `DiagnosticRaisedError` and is always-stop.
+- **Memory:** one configured collector-wide budget covers every diagnostic reference the
+  library retains in aggregate and object attachments. Exact counts remain unbounded
+  integers; caller-held snapshots/copies are caller-owned and each snapshot is itself
+  bounded.
+- **Immutability:** reports, result outcome structure, and diagnostic summaries are
+  immutable points in time; result members remain the archive model's documented live
+  mutable, caller-read-only objects, so this is not falsely presented as a deep freeze.
+- **Security/privacy:** diagnostic messages and typed contexts must never contain
+  passwords, password candidates, provider return values, encryption keys, key material,
+  or decrypted secret bytes.
+- **Sequencing:** specs land now; the 11 implementation tasks remain unchecked and are
+  scheduled before native-reader implementation.
