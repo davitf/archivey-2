@@ -37,9 +37,12 @@ Phase 4 `strict_eof` keyword is removed — end-of-archive strictness lives at
 
 `allow_multiple_open_streams` (default `False`) declares that the caller intends to hold
 **more than one member stream open at the same time** and read them interleaved. It is
-meaningful only in random-access mode (`streaming=False`). When left `False`, the reader
-permits at most one live member stream at a time (see *Multiple concurrently-open member
-streams*); it is a per-call operational keyword and MUST NOT move into the config object.
+valid only with random-access mode (`streaming=False`). Combining
+`streaming=True` with `allow_multiple_open_streams=True` SHALL raise at `open_archive()`
+(a typed argument / usage error — not deferred to a later `open()`). When left `False`, the
+reader permits at most one live member stream at a time (see *Multiple concurrently-open
+member streams*); it is a per-call operational keyword and MUST NOT move into the config
+object.
 
 #### Scenario: open with auto-detected format
 
@@ -60,6 +63,11 @@ streams*); it is a per-call operational keyword and MUST NOT move into the confi
 
 - **WHEN** `archivey.open_archive(source, allow_multiple_open_streams=True)` is called
 - **THEN** the returned reader permits holding several member streams open at once and reading them interleaved (see *Multiple concurrently-open member streams*)
+
+#### Scenario: streaming plus multiple-open-streams is rejected at open
+
+- **WHEN** `archivey.open_archive(source, streaming=True, allow_multiple_open_streams=True)` is called
+- **THEN** a typed error is raised immediately and no reader is returned
 
 ### Requirement: Multiple concurrently-open member streams
 
@@ -111,18 +119,32 @@ over the shared source, re-decoding or re-seeking as the *random open on a solid
 scenario already permits — which is where the interleaving expense lives, and why the
 capability is opt-in.
 
-**Streaming carve-out.** Forward-only streaming readers (`streaming=True`) are a single forward
-pass and are out of scope (the flag is meaningful only in random-access mode; the "previous
-(member, stream) is invalid after the iterator advances" rule of `stream_members` is a separate
-contract).
+**Streaming carve-out and relation to `stream_members`.** Forward-only streaming readers
+(`streaming=True`) are a single forward pass and are out of scope for this opt-in (the
+invalid combination with `allow_multiple_open_streams=True` is rejected at `open_archive()`).
+The existing `stream_members()` rule — the previous yielded stream becomes invalid when the
+iterator advances — is a **separate** contract and MUST NOT be changed to match the
+raise-never-auto-close policy of random-access `open()`. Rationale: `stream_members` is a
+sequential one-pass API; auto-releasing the previous stream on advance is what makes
+`for member, stream in reader.stream_members(): …` safe when the caller ignores `stream`.
+Applying raise-on-overlap there would make that loop depend on GC reclaiming the unused
+stream before the next yield — non-deterministic and hostile to the common pattern.
+Random-access `open()` has the opposite mental model (independent handles the caller
+controls), so it raises instead of silently invalidating.
 
-**Single-reader guarantee only.** The reader object itself remains **not thread-safe**: it MUST
-NOT be driven (concurrent `open()`, iteration, or `close()`) from multiple threads. That misuse
-is **unsupported and undefined** — the reader holds no lock for those operations. The
-interleaving guarantee above is for already-opened member streams (one thread for reader
-lifecycle; the member-stream lock also covers multi-threaded *stream* reads where the wrapper
-is used).
+**Thread-safe member open/read when opted in.** When `allow_multiple_open_streams=True` and
+the member list has been materialized (see *Materialize-before-fan-out* on the reentrancy
+requirement), concurrent calls from multiple threads to `open()`, member-stream `read` /
+`close`, and the live-stream gate bookkeeping SHALL be safe (synchronized). Concurrent
+`ArchiveReader.close()`, `__iter__` / `stream_members` / progressive listing, or any use
+under `streaming=True` remains **unsupported** (single owner thread for those operations).
+This is the contract that lets a caller hand one opted-in reader to several workers that
+open members at will after an upfront `members()` (or equivalent) pass.
 
+**Single-reader lifecycle still owned by one thread.** The unsupported cases above are not
+a blanket "reader is never thread-safe"; they are the operations that still mutate
+forward-pass / close state. Member open/read under the opt-in is the supported parallel
+seam.
 **Failing loudly on detectable misuse.** Where a shared-source view *can* detect misuse — a read
 after the source is closed — the reader surface SHALL raise a typed error (translated from the
 primitive's stdlib-shaped error at the reader boundary). A view whose requested bounds extend
@@ -188,13 +210,20 @@ archive still yields a short readable view rather than failing at construction.
 
 The system SHALL require that, for a **random-access backend that advertises independent member
 open** (`streaming=False` — e.g. the native 7z/RAR readers, ZIP, single-file, random-access TAR,
-ISO), the member-open implementation (`_open_member`) is a function of the member and the
-archive's shared source / library handle only: it MUST NOT mutate shared reader state, and it
-MUST NOT keep per-open scratch on the reader that a second concurrent open would overwrite.
-Backends MAY hold immutable, already-materialized state (the member list and name index)
-read-only. Reader-level lifecycle bookkeeping that tracks *which* member streams are currently
-open (to enforce the `allow_multiple_open_streams` gate) is permitted and is not per-open
-scratch, because it does not feed the bytes a concurrent open returns.
+ISO), the member-open implementation (`_open_member`) derives the member's bytes from the
+member and the archive's shared source / library handle without **unsafe** shared-state
+mutation: it MUST NOT keep per-open scratch on the reader that a second concurrent open would
+overwrite, and any mutation of shared reader state that another concurrent open depends on
+MUST be properly synchronized (e.g. under a lock). Backends MAY hold immutable,
+already-materialized state (the member list and name index) read-only. Reader-level lifecycle
+bookkeeping that tracks *which* member streams are currently open (to enforce the
+`allow_multiple_open_streams` gate) is permitted when synchronized; it is not per-open scratch,
+because it does not feed the bytes a concurrent open returns.
+
+**What this prevents.** The classic failure is a field like "the one pending stream" or "the
+current decompressor" on `self` that `open()` replaces — a second open silently corrupts the
+first. Synchronized bookkeeping and SharedSource / locked library streams are the allowed
+shape; unprotected read-modify-write of open-critical state is not.
 
 **Archivey-owned byte ranges.** Any byte-range access archivey performs MUST go through a
 shared-source view (per the *Multiple concurrently-open member streams* requirement) rather
@@ -207,22 +236,23 @@ per-open scratch on archivey-owned reader state and MUST apply the per-archive l
 member-stream wrap (or rely on a library-provided equivalent, as ZIP does).
 
 **Scope.** This invariant does **not** apply to forward-only/streaming reads (`streaming=True`),
-which are inherently single-pass. It is a forward-compatibility contract that keeps the reader
-ABC ready for a future parallel-extraction consumer without an interface retrofit; it does not
-by itself make the reader object thread-safe, and it imposes no ordering or performance
-guarantee.
+which are inherently single-pass. Together with the opted-in thread-safe open/read contract
+above, it is what makes handing one reader to multiple workers viable after an upfront member
+list materialization.
 
-**Materialize-before-fan-out.** A future concurrent consumer MUST materialize the member list
-(a completed random-access pass) before opening members concurrently; the one-time member-cache
-build is not itself concurrency-safe. This precondition is documented on the ABC now so Phase 6
-backends and any future consumer honor it.
+**Materialize-before-fan-out.** A concurrent consumer (including multi-threaded workers) MUST
+materialize the member list (a completed random-access pass) before opening members
+concurrently from multiple threads; the one-time member-cache build MUST be concurrency-safe
+when the opt-in is enabled (init-under-lock or equivalent), so a race on first `members()`
+cannot corrupt the cache. Single-threaded opted-in interleaving MAY rely on an already-built
+cache without an extra lock if the caller materialized first.
 
 #### Scenario: opening one member does not disturb another open
 
 - **WHEN** a random-access backend that advertises independent member open serves two members
   opened concurrently (opted-in) from the same reader
-- **THEN** neither open call has mutated reader state the other depends on, and each returned
-  stream reads its own member's bytes correctly under interleaving
+- **THEN** neither open call has performed an unsafe mutation of reader state the other depends
+  on, and each returned stream reads its own member's bytes correctly under interleaving
 
 #### Scenario: archivey-owned member-open derives access from the shared source
 
@@ -234,7 +264,13 @@ backends and any future consumer honor it.
 
 - **WHEN** the backend is random-access TAR or ISO
 - **THEN** `_open_member` returns a library member stream wrapped so data-path reads hold the
-  per-archive lock, and archivey-owned reader state holds no per-open scratch
+  per-archive lock, and archivey-owned reader state holds no unprotected per-open scratch
 - **WHEN** the reader is a forward-only streaming pass
 - **THEN** this invariant does not apply and the backend is not required to support concurrent
   member opens
+
+#### Scenario: opted-in workers can open members concurrently after materialize
+
+- **WHEN** a reader is opened with `allow_multiple_open_streams=True`, `members()` (or
+  equivalent) has completed, and two threads each call `open()` for different members and read
+- **THEN** both streams return correct bytes and no data race corrupts reader state
