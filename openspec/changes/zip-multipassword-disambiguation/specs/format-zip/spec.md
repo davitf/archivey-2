@@ -23,13 +23,24 @@ If the member's decompressed size is within the bound, the prefix read reaches E
 
 **STORED members.** No decompressor exists to reject garbage and only the full-stream
 CRC-32 discriminates, so per-candidate full reads would cost one pass per candidate.
-Instead the reader SHALL disambiguate all surviving candidates (those passing the
-verification byte) in a **single pass** over the member's ciphertext: decrypt the stream
-once per candidate in parallel while streaming, accumulate each candidate's plaintext
-CRC-32 in constant memory, and at EOF accept the candidate whose CRC matches the central
-directory value. At most one extra full read of the member is performed in total,
-regardless of the number of candidates. If more than one candidate's CRC matches (a CRC
-collision across keystreams), the earliest match in candidate order is accepted.
+The reader SHALL first apply a **compressibility probe** to the first bounded chunk of
+each surviving candidate's plaintext (those passing the verification byte): a wrong
+ZipCrypto key yields effectively random bytes, which a fast compressor cannot shrink, so
+if exactly one candidate's chunk compresses by at least a conservative margin, that
+candidate MAY be accepted without reading the rest of the member. The probe SHALL only
+ever accept — an incompressible chunk SHALL NOT reject a candidate, because STORED
+plaintext is itself frequently incompressible (already-compressed media, nested
+archives).
+
+When the probe is inconclusive (no candidate compresses, more than one does, or the
+member is too small for the probe to be meaningful), the reader SHALL disambiguate the
+remaining candidates in a **single shared pass** over the member's ciphertext,
+continuing from the already-read chunk: decrypt the stream once per candidate in
+parallel, accumulate each candidate's plaintext CRC-32 in constant memory, and at EOF
+accept the candidate whose CRC matches the central directory value. At most one extra
+full read of the member is performed in total, regardless of the number of candidates.
+If more than one candidate's CRC matches (a CRC collision across keystreams), the
+earliest match in candidate order is accepted.
 
 **Returning the winner.** After confirmation the reader SHALL open a fresh stream with the
 accepted password for the caller (ZIP requires a seekable source, so re-open is always
@@ -50,8 +61,11 @@ candidate is tried.
 If one or more candidates reach confirmation but no candidate succeeds, the reader SHALL
 raise `EncryptionError` explaining that the passwords may be wrong or the encrypted member
 may be corrupt. This is intentionally not a promise to distinguish those equivalent
-failure observations. The reader SHALL never return a candidate selected by order,
-neighbour/content heuristics, or guess-with-warning.
+failure observations. The reader SHALL never accept a candidate through a path that
+bypasses the caller stream's ordinary read-time integrity check: candidate order alone,
+neighbour-member affinity, or guess-with-warning are not acceptance signals. (The
+compressibility probe and bounded prefix are acceptance accelerators whose residual
+error is still caught by the caller's EOF CRC check, so they do not bypass it.)
 
 With one distinct static candidate, including duplicate copies of it, the reader SHALL
 retain its normal lazy stream with no eager confirmation read. A read-time integrity
@@ -72,10 +86,15 @@ failure on that path SHALL be translated as corruption in the ordinary way.
 - **WHEN** a compressed ZipCrypto member much larger than the confirmation bound is opened with multiple candidates
 - **THEN** confirmation decompresses at most the bounded prefix per candidate, retains no plaintext in memory or temporary storage, and the caller receives a fresh stream whose CRC is still verified at EOF by the ordinary read path
 
-#### Scenario: stored members are disambiguated in one extra pass
+#### Scenario: compressible stored plaintext is accepted from the first chunk
 
-- **WHEN** a STORED ZipCrypto member is opened with several candidates that pass the verification byte
-- **THEN** one pass over the ciphertext computes every candidate's plaintext CRC-32 concurrently, the matching candidate is accepted and re-opened fresh for the caller, and no candidate's plaintext is buffered
+- **WHEN** a large STORED ZipCrypto member containing compressible plaintext (e.g. text) is opened with several candidates that pass the verification byte
+- **THEN** the compressibility probe on the first chunk identifies the single compressible candidate, that candidate is accepted and re-opened fresh for the caller without reading the rest of the member, and the caller's EOF CRC check remains in force
+
+#### Scenario: incompressible stored plaintext falls back to the CRC pass
+
+- **WHEN** a STORED ZipCrypto member containing incompressible plaintext (already-compressed data) is opened with several candidates, so no candidate's first chunk compresses
+- **THEN** no candidate is rejected by the probe; one shared pass over the ciphertext computes every candidate's plaintext CRC-32 concurrently, the matching candidate is accepted and re-opened fresh for the caller, and no candidate's plaintext is buffered
 
 #### Scenario: multiple stored CRC matches resolve by candidate order
 

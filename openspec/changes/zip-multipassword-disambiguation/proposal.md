@@ -25,9 +25,13 @@ decompressor/CRC failure. The reader must not claim it can always distinguish th
     (~1 MiB, internal constant) and discard it — a wrong ZipCrypto key produces garbage
     the codec rejects far within that bound. Members smaller than the bound get exact
     full validation (EOF forces `zipfile`'s CRC check).
-  - **STORED members**: one shared pass over the ciphertext computes every surviving
-    candidate's plaintext CRC-32 in parallel (constant memory); the candidate matching
-    the central-directory CRC wins. One extra full read total, not one per candidate.
+  - **STORED members**: a compressibility probe on the first chunk accepts early when
+    exactly one candidate's plaintext compresses (wrong keys yield incompressible
+    random bytes; the probe only ever accepts, never rejects, since stored plaintext is
+    often legitimately incompressible). Otherwise one shared pass over the ciphertext
+    computes every surviving candidate's plaintext CRC-32 in parallel (constant
+    memory); the candidate matching the central-directory CRC wins. At most one extra
+    full read total, not one per candidate.
 - The confirmed candidate's member is **re-opened fresh** for the caller; no plaintext is
   retained from confirmation. The caller's stream keeps `zipfile`'s ordinary EOF CRC
   check, so bounded confirmation never weakens the read-time contract relative to the

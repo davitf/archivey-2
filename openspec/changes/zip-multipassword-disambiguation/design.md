@@ -51,16 +51,35 @@ Per ZipCrypto member needing disambiguation:
    reaches EOF and `zipfile` checks the CRC — confirmation is then exact, and the
    ambiguity message below is fully accurate.
 4. **STORED member:** there is no decompressor to reject garbage; only the full-stream
-   CRC discriminates. Reading the member once per candidate would cost up to N full
-   passes. Instead, one shared pass over the raw ciphertext decrypts with every surviving
-   candidate in parallel — ZipCrypto keystreams are byte-cheap — accumulating each
-   candidate's plaintext CRC-32 in constant memory. At EOF, the candidate matching the
-   central-directory CRC wins (ties — astronomically unlikely cross-keystream CRC
-   collisions — resolve to the earliest candidate in order). Total cost: one extra full
-   read, regardless of candidate count. This needs raw ciphertext access (a byte-range
-   read of the member's data area via the local header) and a ZipCrypto keystream; the
-   keystream is ~20 lines (see `tests/zipcrypto.py`) and is implemented in archivey
-   rather than reaching into `zipfile`'s private `_ZipDecrypter`.
+   CRC discriminates. Two rungs keep this cheap:
+
+   a. **Compressibility probe (accept-early).** Decrypt the first bounded chunk with
+      each surviving candidate and run a fast compressor (e.g. zlib level 1) over each
+      plaintext. A wrong ZipCrypto key yields effectively random bytes, which never
+      compress meaningfully; so if exactly one candidate's chunk shrinks by a
+      conservative margin, that candidate is accepted immediately — no further read.
+      The probe is asymmetric by design: it only ever *accepts*. It must never reject,
+      because STORED plaintext is itself frequently incompressible (files are commonly
+      stored *because* the archiver found them incompressible: media, nested archives).
+      An incompressible chunk is simply "no signal". A heuristically-accepted candidate
+      is still subject to the caller's EOF CRC check, so a (theoretical) wrong
+      compressible candidate fails the caller's read exactly like the residual prefix
+      cases — parity with rung 3. Tiny members skip the probe: compression headers
+      dominate small chunks, and the full pass below is trivially cheap there.
+
+   b. **Single shared CRC pass (exact fallback).** When the probe is inconclusive, one
+      shared pass over the raw ciphertext — continuing from the chunk the probe already
+      read — decrypts with every surviving candidate in parallel (ZipCrypto keystreams
+      are byte-cheap), accumulating each candidate's plaintext CRC-32 in constant
+      memory. At EOF, the candidate matching the central-directory CRC wins (ties —
+      astronomically unlikely cross-keystream CRC collisions — resolve to the earliest
+      candidate in order). Total cost: at most one extra full read, regardless of
+      candidate count.
+
+   Both rungs need raw ciphertext access (a byte-range read of the member's data area
+   via the local header) and a ZipCrypto keystream; the keystream is ~20 lines (see
+   `tests/zipcrypto.py`) and is implemented in archivey rather than reaching into
+   `zipfile`'s private `_ZipDecrypter`.
 5. **Acceptance:** re-open the member fresh through `zipfile` with the winning password
    (ZIP sources are always seekable) and return that stream; record the password as
    known-good. No plaintext is retained from confirmation. The winner costs at most one
@@ -116,8 +135,12 @@ contract for candidate-search exhaustion; adding a subtype that claims either ca
 be false precision. If no candidate passes the weak check, the normal wrong-password
 `EncryptionError` remains unchanged.
 
-The reader never resolves ambiguity through candidate order, neighbouring members,
-content plausibility, or a warning-backed guess. (The order tie-break in the STORED
+The reader never accepts a candidate through a path that bypasses the caller stream's
+read-time integrity check. Candidate order alone, neighbour-member affinity, and
+warning-backed guessing are not acceptance signals. The compressibility probe and the
+bounded prefix are acceptance *accelerators*: their residual error is still caught by
+the caller's EOF CRC check, so nothing is ever silently wrong that would not also have
+been silently wrong on the single-candidate path. (The order tie-break in the STORED
 single-pass applies only among candidates whose full-stream CRC *matched* — those are
 confirmations, not guesses.)
 
