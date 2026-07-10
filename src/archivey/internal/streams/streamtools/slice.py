@@ -40,6 +40,9 @@ class SlicingStream(ReadOnlyIOStream):
         seek+read pair is atomic across interleaved views.
       - ``seek`` only updates this view's ``_pos`` (the next ``read`` re-seeks); without
         a lock, ``seek`` also repositions the underlying (single-consumer behaviour).
+      - Internally split into ``_io_guard`` (the lock or a shared ``nullcontext``) and
+        ``_seek_before_read`` so the re-seek policy is explicit and can later be
+        engaged independently of locking.
 
     Optional ``check_open``: called at the start of I/O; raise to signal a closed source
     (SharedSource uses this so a closed factory poisons its views).
@@ -67,17 +70,22 @@ class SlicingStream(ReadOnlyIOStream):
         super().__init__()
         self._stream = stream
         self._seekable = is_seekable(stream)
-        self._lock = lock
+        # Split lock into the I/O guard and the re-seek policy so the latter can later
+        # be engaged without a lock (e.g. a single-consumer view that still re-seeks).
+        self._io_guard: ContextManager[object] = (
+            lock if lock is not None else nullcontext()
+        )
+        self._seek_before_read = lock is not None
         self._check_open_fn = check_open
 
         if self._seekable:
             initial_pos = stream.tell()
             if start is None:
                 start = initial_pos
-            # Locked mode: do not move the shared handle at construction — another view
-            # may be mid-read. The first read re-seeks under the lock. Unlocked mode keeps
+            # Re-seek mode: do not move the shared handle at construction — another view
+            # may be mid-read. The first read re-seeks under the guard. Otherwise keep
             # the historical eager seek so a single-consumer slice starts at ``start``.
-            if lock is None and initial_pos != start:
+            if not self._seek_before_read and initial_pos != start:
                 stream.seek(start)
         elif start is not None:
             raise ValueError("Cannot slice a non-seekable stream with a start position")
@@ -92,9 +100,6 @@ class SlicingStream(ReadOnlyIOStream):
         if self._check_open_fn is not None:
             self._check_open_fn()
 
-    def _io_guard(self) -> ContextManager[object]:
-        return self._lock if self._lock is not None else nullcontext()
-
     def _compute_bytes_to_read(self, n: int) -> int:
         if self._length is not None:
             remaining = self._length - self._pos
@@ -108,13 +113,13 @@ class SlicingStream(ReadOnlyIOStream):
         n = self._compute_bytes_to_read(n)
         if n == 0:
             return b""
-        with self._io_guard():
+        with self._io_guard:
             self._check_open()
-            # Locked (SharedSource) mode: re-seek to this view's absolute position so
-            # interleaved views never clobber each other. Unlocked mode reads from
-            # wherever the handle currently sits (single-consumer contract).
-            if self._lock is not None:
-                assert self._start is not None  # locked views are always seekable
+            # Re-seek mode: reposition to this view's absolute offset so interleaved
+            # views never clobber each other. Otherwise read from wherever the handle
+            # currently sits (single-consumer contract).
+            if self._seek_before_read:
+                assert self._start is not None  # re-seek views are always seekable
                 self._stream.seek(self._start + self._pos)
             data = self._stream.read(n)
             self._pos += len(data)
@@ -140,7 +145,7 @@ class SlicingStream(ReadOnlyIOStream):
             if self._length is None:
                 # No declared length: the slice ends where the underlying stream does,
                 # so probe that end on demand.
-                with self._io_guard():
+                with self._io_guard:
                     self._check_open()
                     end_relative = self._stream.seek(0, io.SEEK_END) - start_abs
             else:
@@ -159,10 +164,10 @@ class SlicingStream(ReadOnlyIOStream):
             new_relative = 0
 
         # Seeking past a defined end is allowed (reads clamp to empty), matching BytesIO.
-        if self._lock is None:
+        if not self._seek_before_read:
             # Single-consumer: keep the underlying handle in sync with the view.
             self._stream.seek(start_abs + new_relative)
-        # Locked mode: only update _pos — the next read re-seeks under the lock.
+        # Re-seek mode: only update _pos — the next read re-seeks under the guard.
         self._pos = new_relative
         return self._pos
 
