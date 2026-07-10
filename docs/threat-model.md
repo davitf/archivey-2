@@ -197,4 +197,10 @@ post-1.0). Decision recorded in `IDEAS.md`; revisit at writing-spec time.
 
 `3.13t+` makes parallel extraction and parallel pure-Python decode realistic; the
 "one reader per thread" rule and the C++-thread accelerators need a position statement
-before users ask. Backlog.
+before users ask. **Draft stance** (from `openspec/changes/parallel-reader-exploration`,
+durable notes in [`parallel-reader.md`](parallel-reader.md) §4): keep the public
+"one `ArchiveReader` per thread" contract for v1; any future parallel work is across
+independent units (members / folders / solid blocks), not concurrent use of one reader
+object; accelerator close-before-finalize (`known-issues.md`) still applies under
+free-threading. Promote this into a firm C4 decision when a `parallel-extraction`
+change is proposed; until then it remains exploratory.
