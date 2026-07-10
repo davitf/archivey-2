@@ -13,6 +13,21 @@ from archivey.types import ArchiveMember
 _T = TypeVar("_T")
 
 
+class _PasswordCandidatesExhausted(EncryptionError):
+    """Internal marker: candidate decrypts failed or no candidate was supplied.
+
+    An ``EncryptionError`` raised by the provider itself is deliberately not wrapped in
+    this marker, so a backend can customize true candidate exhaustion without rewriting a
+    provider-side failure.
+    """
+
+    def __init__(
+        self, message: str, *, last_error: EncryptionError | None = None
+    ) -> None:
+        super().__init__(message)
+        self.last_error = last_error
+
+
 def _to_bytes(password: str | bytes) -> bytes:
     return password.encode() if isinstance(password, str) else password
 
@@ -54,12 +69,11 @@ class _PasswordCandidates:
         return bool(self._known_good or self._candidates or self._provider is not None)
 
     def is_ambiguous(self) -> bool:
-        """Whether more than one distinct password might be tried for one unit.
+        """Whether a weak password check needs confirmation before accepting a result.
 
-        When true, a backend whose cipher has a weak open()-time password check (ZIP's
-        traditional ZipCrypto validates only a single byte) must confirm a candidate by
-        actually reading/CRC-checking the member, not accept it on the open() alone —
-        otherwise a wrong candidate can false-accept and the right one is never tried.
+        Duplicate static values count once. A provider is always potentially ambiguous:
+        it is intentionally lazy and may return another value after a failed candidate,
+        so a backend cannot soundly assume that its first answer is the only one.
         """
         distinct = set(self._known_good) | set(self._candidates)
         return len(distinct) > 1 or self._provider is not None
@@ -130,6 +144,12 @@ class _PasswordCandidates:
                 return result
             attempt += 1
 
+        message = (
+            last_error.message
+            if last_error is not None
+            else "Password required to read this encrypted member"
+        )
+        exhausted = _PasswordCandidatesExhausted(message, last_error=last_error)
         if last_error is not None:
-            raise last_error
-        raise EncryptionError("Password required to read this encrypted member")
+            raise exhausted from last_error
+        raise exhausted

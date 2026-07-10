@@ -16,63 +16,80 @@ Accepting a candidate on the per-open check alone therefore lets a wrong candida
 ~1/256 of the time; the correct candidate is never tried and the CRC failure resurfaces
 later as a spurious `CorruptionError`.
 
-## The ladder (resolves the maintainer's proposed algorithm)
+## Decision: validate sequentially and spool the winner
 
-For one encrypted unit with candidate set `C` (known-good ∪ sequence ∪ provider):
+For one ZipCrypto member:
 
-1. **Per-open filter.** Keep only candidates that pass the cheap per-open check (ZipCrypto's
-   verification byte, via `open()`). This is already how a wrong password is rejected
-   today, so **the expensive steps below run only for candidates that survive it** — in the
-   common case (one right password among wrong ones) all but one wrong candidate are
-   dropped here for free. **If exactly one survives, accept it without decoding.** *(The
-   minimal fix in PR #53 does not yet short-circuit on a lone survivor — it validates every
-   surviving candidate by reading; adding the "lone survivor ⇒ accept" fast path is the
-   first optimization this change adds, and it removes the extra full read in the ordinary
-   two-password case.)*
-2. **Cheap decode probe (compressed members).** For a DEFLATE/BZIP2/LZMA member, decode a
-   first block under each surviving candidate; a decompressor error eliminates it. This
-   catches essentially all wrong ZipCrypto survivors at negligible cost (no full read).
-3. **Full decode + CRC, size-gated.** For a member whose uncompressed size is within a
-   budget (proposed **≤ 16 MiB**, config-overridable), decode fully and check the CRC under
-   each still-surviving candidate; eliminate CRC failures. Above the budget, do **not**
-   full-read every candidate — rely on step 2 plus the heuristics below, and prefer
-   fail-fast over an unbounded read.
-4. **Heuristics for the residual** (multiple candidates still survive — only possible for
-   STORED small members, or the astronomically unlikely CRC collision):
-   - **Neighbour affinity.** Prefer the password that decrypted the previous/next member of
-     the same archive: members added in one pass share a password, so adjacency is a strong
-     signal. (Cheap; uses state the known-good list already tracks.)
-   - **Content plausibility.** Optionally, prefer the candidate whose plaintext is not
-     gibberish (e.g. a decodable magic/MIME sniff). Lowest priority; opt-in.
-5. **Unresolved residual.** If still ambiguous, either (a) pick the highest-priority
-   candidate (known-good/neighbour order) and **record that the choice was a guess**, or
-   (b) raise `EncryptionError("cannot determine the correct password")`. Proposed default:
-   **fail-fast** when two candidates pass a *full CRC* (a real collision is not something to
-   paper over); **guess-with-warning** only when the ambiguity is merely that a large member
-   exceeded the decode budget (step 3) and could not be fully confirmed.
+1. `_PasswordCandidates` supplies distinct values in its existing order: known-good,
+   remaining static candidates, then provider answers.
+2. A candidate failing `ZipFile.open()`'s verification byte is rejected cheaply.
+3. When confirmation is required, a candidate passing that byte is read to EOF. Each
+   plaintext chunk is written to `SpooledTemporaryFile(max_size=8 MiB)`. EOF forces both
+   decompressor completion and `zipfile`'s CRC check.
+4. On validation failure, source closure is attempted and spool closure runs in a nested
+   `finally`, including when source closure itself raises. On success, the source stream
+   is closed, the spool rewinds, and that same spool is returned to the caller. If source
+   closure raises, the spool remains owned by cleanup and is closed. The winning candidate
+   is decrypted exactly once.
+5. `_PasswordCandidates.attempt()` records only the password whose callback returned the
+   validated spool, so known-good reuse preserves its existing semantics.
 
-## Cross-format placement
+The spool bounds memory, not total work or storage. A large member can consume temporary
+disk proportional to its uncompressed size, and each colliding wrong candidate may do the
+same until its failure is observed. This cost is explicit because CRC-32 is available only
+at EOF: a first-block probe or size cap cannot prove a candidate correct, and exposing
+bytes before validation would reintroduce silent wrong-password output.
 
-The "confirm before accept" rule belongs in `archive-reading` (the candidate model), not
-only in ZIP: any cipher with a weak per-open check inherits it. `_PasswordCandidates.attempt`
-today records success the instant `decrypt()` returns non-`None`; the contract becomes
-"record success only once the unit's authoritative check has confirmed the password."
-Backends whose key derivation already authenticates strongly (7z AES with its check, RAR5)
-satisfy step 1 as their authoritative check and never reach the ladder — they are unchanged.
+## When confirmation is required
 
-## Warnings-as-data (C2) coupling
+- Two or more distinct values across known-good and static candidates require
+  confirmation.
+- Duplicate static values count once, so `[password, password]` retains the
+  single-candidate lazy path.
+- A provider requires confirmation even before it has returned two values. Providers are
+  lazy and potentially unbounded; the reader cannot enumerate one to prove that no retry
+  exists. If an answer fails validation, the provider receives the next attempt.
+- `_PasswordCandidates.attempt()` marks only normal candidate exhaustion with an internal
+  `EncryptionError` subtype. An `EncryptionError` raised by the provider callback itself
+  bypasses that marker and propagates unchanged, even after an earlier candidate failed
+  validation.
+- A single distinct static candidate retains normal streaming. Any decompressor/CRC
+  failure then follows the ordinary ZIP translator and surfaces as `CorruptionError`.
 
-Steps 4–5 produce information the caller should be able to act on: "member X was decrypted
-with a *guessed* password" / "candidates A and B both matched member X". A log line is
-invisible to most applications (threat-model C2: *warnings that should be data*). This
-change specifies the behavior and consumes a first-class occurrence/warning mechanism when
-it lands; that mechanism is its own change (it also serves name-normalization and
-detection-conflict warnings). Until then, `logging` via the `archivey.*` loggers.
+## Specific validation failures
 
-## Why not always full-read (the minimal fix's shortcut)
+DEFLATE raises `zlib.error`, LZMA raises `lzma.LZMAError`, CRC mismatch raises
+`zipfile.BadZipFile("Bad CRC-32 for file ...")`, and stdlib BZIP2 raises the unusual
+`OSError("Invalid data stream")`. Only that CRC message is candidate-dependent:
+local-header mismatch, bad local-header magic, overlap, and other structural
+`BadZipFile` failures are independent of decrypted bytes and remain `CorruptionError`.
+Only the exact BZIP2 message is decoder-owned. Arbitrary `OSError` remains an I/O/runtime
+failure and propagates unchanged. Unsupported methods and unexpected exceptions also
+retain their existing specific translation.
 
-The PR #53 fix full-reads every surviving candidate with no size cap. That is correct but
-pays a full decode (twice, for the winner) even in the ordinary case and reads unboundedly
-for large members. Steps 1–3 above make the common case free (lone survivor after the
-per-open filter) or cheap (first-block probe), and cap the worst case. The size budget and
-the fail-fast-vs-guess default are the two decisions this proposal pins down.
+## Honest exhaustion semantics
+
+After the weak byte check, these two inputs are observationally equivalent:
+
+- a wrong colliding password decrypting valid encrypted bytes; and
+- the correct password decrypting corrupt encrypted bytes.
+
+Both can fail in the decompressor or at CRC. If at least one candidate reached this
+ambiguous validation failure and no candidate succeeds, the reader raises
+`EncryptionError` whose message says that the passwords may be wrong **or** the encrypted
+member may be corrupt. `EncryptionError` is the smallest coherent existing public
+contract for candidate-search exhaustion; adding a subtype that claims either cause would
+be false precision. If no candidate passes the weak check, the normal wrong-password
+`EncryptionError` remains unchanged.
+
+The reader never resolves ambiguity through candidate order, neighbouring members,
+content plausibility, or a warning-backed guess.
+
+## Deferred diagnostics-dependent work
+
+This change is ZIP-specific. It makes no authentication claim about future native 7z or
+RAR implementations; their proposals already describe different format signals and must
+be evaluated when code exists. A future structured diagnostic could expose that
+disambiguation occurred, but no warning API is invented here and it would not make
+unvalidated guessing safe. Future performance work must preserve full confirmation or
+introduce an explicit caller policy with an equally explicit inability-to-confirm result.

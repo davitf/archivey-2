@@ -1,66 +1,57 @@
-# Multi-candidate password disambiguation (ZipCrypto and beyond)
+# ZipCrypto multi-password collision disambiguation
 
 ## Why
 
 The candidate-password model (`archive-reading` → "Password candidates and provider")
-says the reader tries candidates in order and adds "every password that **succeeds**" to
-the known-good list. It does not define what *succeeds* means when the format's
-per-open password check is **weak**.
+says the reader tries candidates in order and remembers successful passwords. Traditional
+ZIP encryption makes success unusually hard to identify: `zipfile.open()` checks only one
+verification byte, so roughly 1/256 wrong passwords pass the check.
 
-Traditional ZIP encryption (ZipCrypto / PKWARE) validates only a **single verification
-byte** when a member is opened; the authoritative integrity check is the CRC (and, for a
-compressed member, the decompressor), which stdlib `zipfile` performs only as the data is
-*read*. So ~1/256 of wrong passwords pass `open()`. When several candidate passwords are
-supplied, accepting the first candidate whose `open()` succeeds lets a wrong candidate
-**false-accept**: the correct password is never tried, and the CRC mismatch surfaces later
-as a spurious `CorruptionError`. This is an intermittent, ~1/256 failure — it is exactly
-what made the `encrypted-multi` corpus entry flaky in CI (`very_secret.txt`, whose
-password differs from the other members).
+The decompressor and CRC-32 check run only while the member is read. Accepting the first
+candidate whose weak check succeeds can therefore shadow a later correct password and
+surface a spurious `CorruptionError`. This was the intermittent failure in the
+`encrypted-multi` corpus entry.
 
-A **minimal correctness fix already landed on this branch** (PR #53): when disambiguating
-among multiple candidates, the ZIP reader confirms a candidate by reading the member to
-completion before accepting it. That closes the bug but is deliberately unoptimized — it
-reads the whole member during the trial, with no size cap and no cheap pre-filter. This
-change specifies the **full disambiguation ladder** the fix should grow into, and lifts
-the "confirm before accept" idea to a **cross-format** contract so future weak-check
-ciphers (and 7z/RAR paths) inherit it. **Specs only — no code lands here.**
+There is also an irreducible classification limit. A wrong password that passes the byte
+check and a correct password applied to corrupt encrypted data can produce the same
+decompressor/CRC failure. The reader must not claim it can always distinguish them.
 
 ## What Changes
 
-- **`archive-reading`** — one added requirement: *a candidate password is confirmed by
-  the format's authoritative integrity check before it is accepted or added to the
-  known-good list.* Where the per-open check is weak, the reader MUST disambiguate among
-  the candidates that pass it, MUST NOT accept a candidate on a weak check alone when it
-  is disambiguating, and has a defined behavior for the genuinely-ambiguous residual
-  (multiple candidates satisfy every available check): pick deterministically **and
-  surface that it guessed**, or fail with `EncryptionError` — never silently return data
-  decrypted with an unconfirmed password.
-
-- **`format-zip`** — one added requirement: the ZipCrypto instantiation of the ladder —
-  (1) the 1-byte verification filter (`open()`); (2) for a compressed member, a
-  first-block decode; (3) for a member within a size budget, a full decode + CRC;
-  (4) content-affinity and neighbour-member heuristics for the residual; (5) the default
-  choice + warning, or fail-fast. The single-candidate fast path is unchanged (no eager
-  full read), and a genuinely corrupt archive is still reported as corruption, not as a
-  password problem.
-
-- **Dependency, not built here — the warnings-as-data mechanism (threat-model C2).** The
-  "we guessed the password" and "we had to disambiguate" outcomes want to be *structured
-  data* on the result, not just a log line — the same primitive name normalization and
-  detection conflicts need. This change **specifies the behavior** (warn / record an
-  occurrence, or fail) and **consumes** that mechanism when it exists; the mechanism
-  itself is a separate C2 change. In the interim the reader logs via the `logging`
-  capability.
+- When multiple distinct static candidates exist, or a provider may supply retries, the
+  ZIP reader fully decodes each candidate that passes the weak byte check and accepts it
+  only after EOF/CRC validation.
+- The winning plaintext is retained in a stdlib `SpooledTemporaryFile` and returned from
+  the same validation pass. RAM use is bounded; large plaintext spills to disk. Validation
+  still consumes time and temporary storage proportional to the member size.
+- Candidate source closure is attempted and the spool is closed even if source closure
+  raises. BZIP2's decoder-specific `OSError("Invalid data stream")`, plus
+  DEFLATE/LZMA/CRC failures, reject a candidate; unrelated `OSError` instances propagate
+  unchanged. Structural/local-header `BadZipFile` remains `CorruptionError`.
+- One distinct static password (including duplicate copies of the same value) keeps the
+  existing lazy streaming behavior.
+- If candidate validation fails and no candidate succeeds, `EncryptionError` states both
+  possible causes: wrong password(s) or corrupt encrypted data. There is no new public
+  error category. With one distinct static candidate, ordinary read-time corruption
+  remains `CorruptionError`.
+- Tests cover STORED, DEFLATE, BZIP2, and LZMA collisions; corrupt encrypted data;
+  all-wrong collisions; structural `BadZipFile`; provider callback failure; duplicate
+  values; known-good reuse; single-candidate laziness; disk rollover with partial reads;
+  source/spool cleanup when closure raises; and one-pass handling of the winner.
 
 Not changing detection, the public `password=` API, or the `PasswordProvider` contract.
+
+## Deferred Work
+
+This focused change does not define a generic “disambiguation ladder,” heuristics,
+guess-with-warning behavior, or authentication properties for unimplemented 7z/RAR
+readers. Cross-format policy must wait for those readers' actual integrity signals and
+for a concrete structured-diagnostics API. Any future optimization must still avoid
+returning unvalidated guesses.
 
 ## Impact
 
 - Affected specs: `archive-reading` (added requirement), `format-zip` (added requirement).
-- Affected code (when scheduled): `internal/password.py` (`_PasswordCandidates`:
-  confirm-before-accept, ambiguity resolution), `internal/backends/zip_reader.py` (the
-  ladder: cheap pre-filters, size budget, heuristics), and — when C2 lands — the result
-  surface that carries the "disambiguated / guessed" occurrence.
-- Builds on the minimal fix in PR #53; the ladder supersedes its unbounded full-read.
-- Sequencing: land C2 (warnings-as-data) first or concurrently, so the residual outcome is
-  reported as data rather than only logged.
+- Affected code: `internal/password.py`, `internal/backends/zip_reader.py`,
+  `tests/zipcrypto.py`, `tests/test_password.py`, and `tests/test_zip_multipassword.py`.
+- Runtime dependencies: none; spooling uses only the standard library.
