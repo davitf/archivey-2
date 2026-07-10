@@ -6,10 +6,12 @@
 
 The system SHALL support interleaved concurrent member data streams from one
 **random-access** TAR reader (`streaming=False`) when the uncompressed tar byte stream is
-seekable. The reader MUST wrap that uncompressed stream in a shared-source primitive and
-serve file-member payloads through per-open byte-range views at `TarInfo.offset_data`
-(with the member size), rather than relying on two concurrent `tarfile.extractfile`
-streams over one shared file position.
+seekable **and the caller has opted in to multiple open streams** (`allow_multiple_open_streams`,
+per `concurrent-open-opt-in`). Without the opt-in, a second overlapping open raises uniformly
+(the default single-live-stream gate) — TAR is not special-cased here. The reader MUST wrap the
+uncompressed stream in a shared-source primitive and serve file-member payloads through per-open
+byte-range views at `TarInfo.offset_data` (with the member size), rather than relying on two
+concurrent `tarfile.extractfile` streams over one shared file position.
 
 The implementation MUST apply a **forward-cursor** view policy: reuse one view for opens
 that seek at or past the cursor when that view is not busy; mint another view when an
