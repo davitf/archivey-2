@@ -13,7 +13,7 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO, Callable, NoReturn
 
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, UnsupportedOperationError
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
 
@@ -125,6 +125,22 @@ class ArchiveStream(ReadOnlyIOStream):
         if isinstance(e, ArchiveyError):
             self._stamp(e)
             raise e
+        if isinstance(e, ValueError) and "closed file" in str(e):
+            # The *inner* stream hit a closed handle underneath it — a member stream
+            # being read after its reader (or the caller's own source stream) was
+            # closed. Library-agnostic and mapped here, before the per-library
+            # translator, so a backend's generic ValueError mapping (e.g. ZIP's
+            # corrupt-offset rule) cannot claim it. The wrapper's own read-after-close
+            # never reaches _fail (it raises plain ValueError from _ensure_open,
+            # standard file semantics). See archive-reading: "fail loudly" on
+            # concurrent-open misuse.
+            translated_closed = UnsupportedOperationError(
+                "Cannot read this member stream: its underlying source has been "
+                "closed (e.g. the archive reader that produced it was closed)."
+            )
+            self._stamp(translated_closed)
+            logger.debug("Translated exception: %r -> %r", e, translated_closed)
+            raise translated_closed from e
         translated = self._translate(e)
         if translated is not None:
             self._stamp(translated)
@@ -133,8 +149,12 @@ class ArchiveStream(ReadOnlyIOStream):
         raise e
 
     def read(self, n: int = -1, /) -> bytes:
+        # _ensure_open is outside the try: its read-after-close ValueError is the
+        # wrapper's own (plain file semantics, not translated), and a lazy open failure
+        # is already routed through _fail inside it.
+        inner = self._ensure_open()
         try:
-            return self._ensure_open().read(n)
+            return inner.read(n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail(e)
 
@@ -152,8 +172,8 @@ class ArchiveStream(ReadOnlyIOStream):
             self._fail(e)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        inner = self._ensure_open()  # outside the try, same as read()
         try:
-            inner = self._ensure_open()
             before = inner.tell()
             result = inner.seek(offset, whence)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator

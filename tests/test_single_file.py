@@ -9,15 +9,23 @@ seekable-decompressor refinements remain for Phase 8.
 from __future__ import annotations
 
 import bz2
+import contextlib
 import gzip
 import io
 import lzma
+import random
 import zlib
 from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, MemberType, open_archive
+from archivey import (
+    AcceleratorMode,
+    ArchiveFormat,
+    ArchiveyConfig,
+    MemberType,
+    open_archive,
+)
 from archivey.cost import AccessCost, ListingCost
 from archivey.exceptions import (
     CorruptionError,
@@ -352,3 +360,63 @@ def test_open_from_mid_positioned_stream() -> None:
         (member,) = ar.members()
         assert ar.read(member) == payload
         assert ar.read(member) == payload  # re-open rewinds to the embedded origin
+
+
+def test_concurrent_open_same_member_interleaved() -> None:
+    # Single-file routes through SharedSource: two opens of the one member stay correct
+    # when read in interleaved partial chunks (and open is reentrant — no _first_stream).
+    payload = b"abcdefghijklmnopqrstuvwxyz" * 40
+    with open_archive(io.BytesIO(gzip.compress(payload))) as ar:
+        (member,) = ar.members()
+        s1 = ar.open(member)
+        s2 = ar.open(member)
+        assert s1.read(10) == payload[:10]
+        assert s2.read(7) == payload[:7]
+        assert s1.read(5) == payload[10:15]
+        assert s2.read() == payload[7:]
+        assert s1.read() == payload[15:]
+        s1.close()
+        s2.close()
+
+
+def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
+    # Path source: open, read partially, open again, both complete independently.
+    path = tmp_path / "data.txt.gz"
+    payload = b"reentrant payload " * 50
+    path.write_bytes(gzip.compress(payload))
+    with open_archive(path) as ar:
+        (member,) = ar.members()
+        first = ar.open(member)
+        assert first.read(8) == payload[:8]
+        second = ar.open(member)
+        assert second.read() == payload
+        assert first.read() == payload[8:]
+        first.close()
+        second.close()
+
+
+def test_read_after_reader_and_source_close_raises_typed_error() -> None:
+    # archive-reading "fail loudly" scenario: with the reader AND the caller's source
+    # stream closed, reading a still-open member stream surfaces a typed error at the
+    # reader boundary — never a raw ValueError. (Reader close alone does NOT invalidate
+    # member streams: the SharedSource is non-owning and deliberately left open, matching
+    # ZIP/path-source behavior — and killing the source under a live rapidgzip stream
+    # would abort the process; see docs/known-issues.md.) Pinned to the stdlib gzip path
+    # with an incompressible payload larger than its read-ahead, so the post-close read
+    # deterministically touches the closed source (the accelerator may buffer a small
+    # member whole on its first read — and terminates on a dead source, per above).
+    payload = random.Random(0).randbytes(256 * 1024)  # incompressible: stays ~256 KiB
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
+    source = io.BytesIO(gzip.compress(payload))
+    ar = open_archive(source, config=config)
+    (member,) = ar.members()
+    stream = ar.open(member)
+    assert stream.read(16) == payload[:16]
+    ar.close()
+    assert stream.read(16) == payload[16:32]  # reader close alone: still readable
+    source.close()
+    with pytest.raises(UnsupportedOperationError):
+        while stream.read(65536):
+            pass
+    with contextlib.suppress(Exception):
+        stream.close()

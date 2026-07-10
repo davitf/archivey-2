@@ -10,74 +10,77 @@
 
 ## 0. Decisions locked (see design.md)
 
-- [ ] 0.1 **Parallel-*ready* primitive, single-reader *contract*** — per-view positions + a
+- [x] 0.1 **Parallel-*ready* primitive, single-reader *contract*** — per-view positions + a
       lock (thread-correct) + a path-source independent-handle seam.
-- [ ] 0.2 **Path-source independent handles are DORMANT** (default off; one shared handle +
+- [x] 0.2 **Path-source independent handles are DORMANT** (default off; one shared handle +
       lock). Live per-view handles ship with parallel extraction, not here. (design §B)
-- [ ] 0.3 **Primitive raises stdlib-shaped errors** (`ValueError`/`OSError`/
+- [x] 0.3 **Primitive raises stdlib-shaped errors** (`ValueError`/`OSError`/
       `io.UnsupportedOperation`); the reader boundary translates to `ArchiveyError`. (design §A)
-- [ ] 0.4 **Retrofit = single-file + ZIP(stream-source wrap)**; **TAR-RA is carved out**
-      (single shared decoder, documented exempt). **ISO is out of scope** — pycdlib owns
-      addressing (like ZIP path-source / stdlib); leave a design note, no retrofit, not
-      listed as non-compliant. (design §D–E)
-- [ ] 0.5 **No `packaging-and-extras` delta** — public contract stays flat "not thread-safe";
+- [x] 0.4 **Retrofit = single-file**; ZIP needs **no wrap for either source kind**
+      (revised at implementation review: stdlib `_SharedFile` coordinates a passed-in
+      stream exactly like a path handle — design §C) but gets concurrent-open tests for
+      both legs. **TAR-RA is carved out** (single shared decoder, documented exempt).
+      **ISO is out of scope** — pycdlib owns addressing (like ZIP / stdlib); leave a
+      design note, no retrofit, not listed as non-compliant. (design §C–E)
+- [x] 0.5 **No `packaging-and-extras` delta** — public contract stays flat "not thread-safe";
       supported contract lives in `archive-reading`. (design §G)
-- [ ] 0.6 **Reader stays one-per-thread** — this change does NOT make `BaseArchiveReader`
+- [x] 0.6 **Reader stays one-per-thread** — this change does NOT make `BaseArchiveReader`
       parallel-safe (that is `parallel-reader-exploration`).
 
 ## 1. The `SharedSource` primitive
 
-- [ ] 1.1 Add `SharedSource` to `streamtools` (e.g. `streamtools/shared.py`), constructed from
+- [x] 1.1 Add `SharedSource` to `streamtools` (e.g. `streamtools/shared.py`), constructed from
       either a `Path` or an already-open seekable `BinaryIO`. Holds the source handle, a
       `threading.Lock`, and closed-state. Imports only stdlib + `streamtools`.
-- [ ] 1.2 `SharedSource.view(start, length) -> BinaryIO` — a non-owning, seekable view with its
-      own `_pos`. **Compose the `SlicingStream` bound/tell logic, but re-seek the underlying to
-      the view's own absolute position under the lock before every read** (`SlicingStream`
-      today does NOT re-seek — that is the clobber bug). `read`:
-      `with lock: underlying.seek(start + _pos); data = underlying.read(n)`; `_pos +=
-      len(data)`. Views MUST NOT close the source. Existing `SlicingStream` callers unchanged.
-      (design §H)
-- [ ] 1.3 Path-source seam (dormant): design `view()` so a fresh `open(path,'rb')` backing can
+- [x] 1.2 `SharedSource.view(start, length) -> BinaryIO` — a non-owning, seekable view with its
+      own `_pos`, implemented as `SlicingStream(..., lock=source.lock)` so the bound/tell
+      logic is shared (design §H). With the lock, every read re-seeks the underlying to the
+      view's absolute position under the lock (`SlicingStream` without a lock does NOT
+      re-seek — that is the single-consumer path, unchanged for existing callers). Views
+      MUST NOT close the source.
+- [x] 1.3 Path-source seam (dormant): design `view()` so a fresh `open(path,'rb')` backing can
       be swapped in later behind a flag; do not engage it now. Document it as the parallel-I/O
       entry point. (design §B)
-- [ ] 1.4 Misuse detection (stdlib-shaped): read/seek after `close()` raises
-      `ValueError`/`OSError`; a view whose bounds exceed the source raises `ValueError` at
-      construction. No silent short/garbage reads.
-- [ ] 1.5 Re-export `SharedSource` from `streamtools/__init__.py`.
+- [x] 1.4 Misuse detection (stdlib-shaped): read/seek after `close()` raises
+      `ValueError`/`OSError`. A view whose bounds extend past the source is **clamped** to
+      the available bytes (like a real stream / `SlicingStream`) — truncated archives still
+      get a short readable view; negative `start`/`length` remain hard errors.
+- [x] 1.5 Re-export `SharedSource` from `streamtools/__init__.py`.
 
 ## 2. Primitive tests (unit + property)
 
-- [ ] 2.1 Interleaved-read test: open two overlapping/adjacent views, read them in a shuffled
+- [x] 2.1 Interleaved-read test: open two overlapping/adjacent views, read them in a shuffled
       partial-read interleaving, assert each returns exactly its region's bytes.
-- [ ] 2.2 Thread-correctness test: two threads each read a distinct view to completion; assert
+- [x] 2.2 Thread-correctness test: two threads each read a distinct view to completion; assert
       byte-exact output (data-correct under the lock). Keep it deterministic/non-flaky.
-- [ ] 2.3 Misuse tests: read-after-close raises `ValueError`/`OSError`; out-of-bounds view
-      raises `ValueError` at construction.
-- [ ] 2.4 (Optional, non-blocking) a Hypothesis property: random non-overlapping regions ×
+- [x] 2.3 Misuse tests: read-after-close raises `ValueError`/`OSError`; out-of-bounds view
+      clamps to available bytes (short/empty reads, not a construction error).
+- [x] 2.4 (Optional, non-blocking) a Hypothesis property: random non-overlapping regions ×
       random interleavings → every view's concatenated reads equal its region. Use it **only if
       `hypothesis-property-tests` has landed**; otherwise a plain parametrized test. Do not
       block this change on Hypothesis.
 
 ## 3. Backend retrofit (single-file + ZIP)
 
-- [ ] 3.1 **single-file**: route the member open through `SharedSource.view(...)`; **remove the
+- [x] 3.1 **single-file**: route the member open through `SharedSource.view(...)`; **remove the
       `_first_stream` eager-stream scratch** so `_open_member` is reentrant (coordinates with
       the `parallel-reader-exploration` invariant). Confirm the single-member path and
       non-seekable behavior are unchanged.
-- [ ] 3.2 **ZIP path source**: no wrap (stdlib `zipfile` already correct); add a concurrent-open
+- [x] 3.2 **ZIP path source**: no wrap (stdlib `zipfile` already correct); add a concurrent-open
       test (two members interleaved) to lock the behavior in.
-- [ ] 3.3 **ZIP stream source**: wrap the archivey-owned handle passed to `zipfile.ZipFile` so a
-      second archivey-level `open()` is coordinated by the contract; verify no regression vs.
-      stdlib `_SharedFile` (existing ZIP tests stay green) + a concurrent-open test.
-- [ ] 3.4 Confirm cost/stream-capability reporting for the touched backends is unchanged.
-- [ ] 3.5 **TAR-RA**: no code change; confirm the `archive-reading` carve-out names it as a
+- [x] 3.3 **ZIP stream source**: no wrap (revised — stdlib `_SharedFile` coordinates a
+      passed-in stream exactly like a path handle, so a SharedSource layer would duplicate
+      the lock+re-seek per read; design §C); a concurrent-open test locks the behavior in,
+      and a read-after-source-close test pins the typed-error boundary.
+- [x] 3.4 Confirm cost/stream-capability reporting for the touched backends is unchanged.
+- [x] 3.5 **TAR-RA**: no code change; confirm the `archive-reading` carve-out names it as a
       single-decoder exempt. **ISO**: no code change; confirm it is *not* listed as
       non-compliant (pycdlib-owned addressing — design §D).
 
 ## 4. Spec + gate
 
-- [ ] 4.1 `archive-reading` delta (concurrent-open member streams + solid/single-decoder
+- [x] 4.1 `archive-reading` delta (concurrent-open member streams + solid/single-decoder
       carve-out) covered by tests in §2–§3.
-- [ ] 4.2 `openspec validate --strict shared-source-streams` passes.
-- [ ] 4.3 Full suite green in all three dependency configs (`[all]`, `[all-lowest]`,
+- [x] 4.2 `openspec validate --strict shared-source-streams` passes.
+- [x] 4.3 Full suite green in all three dependency configs (`[all]`, `[all-lowest]`,
       `[core-only]`); Pyrefly + ty + ruff clean.

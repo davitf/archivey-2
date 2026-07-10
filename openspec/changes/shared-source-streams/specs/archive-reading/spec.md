@@ -12,7 +12,7 @@ view that keeps a **per-view position** and performs each seek+read as an atomic
 the source lock, so that reading one open stream never disturbs another open stream's position.
 
 **Scope / carve-out.** This requirement applies to backends that serve members via independent
-byte-range views over the source (e.g. the native 7z/RAR readers, ZIP, single-file). A backend
+byte-range views over the source (e.g. the native 7z/RAR readers, single-file). A backend
 that serves members through a **single shared decoder or parser object** — notably the
 stdlib-`tarfile`-backed random-access TAR reader — is **exempt**: it MAY require that only one
 member stream be open at a time (or serialize opens), and MUST NOT be expected to support
@@ -20,7 +20,8 @@ interleaved concurrent opens. A **solid** format (7z folder, RAR block) satisfie
 requirement by giving each `open()` its own decompressor over its own shared-source view,
 re-decoding from the block start as the *random open on a solid member* scenario already
 permits. Backends whose member addressing is owned by an external library that already
-coordinates the shared handle (ISO via `pycdlib`, ZIP path-source via stdlib `zipfile`) are
+coordinates the shared handle (ISO via `pycdlib`, ZIP via stdlib `zipfile` — path and
+stream sources alike, through its `_SharedFile`) are
 outside this SharedSource retrofit; they are not listed as non-compliant under this
 requirement.
 
@@ -30,11 +31,13 @@ is **unsupported and undefined** — the reader holds no lock and does not detec
 guarantee here is confined to interleaved use of already-opened member streams from one thread.
 
 **Failing loudly on detectable misuse.** Where the shared-source view *can* detect misuse — a
-read after the source is closed, or a view whose bounds fall outside the source — the reader
-surface SHALL raise a typed error (translated from the primitive's stdlib-shaped error at the
-reader boundary; the `streamtools` primitive itself raises `ValueError`/`OSError` and defines
-no archivey exception). This "fail loudly" clause covers only detectable primitive misuse, not
-the undefined multi-thread-reader case above.
+read after the source is closed — the reader surface SHALL raise a typed error (translated
+from the primitive's stdlib-shaped error at the reader boundary; the `streamtools` primitive
+itself raises `ValueError`/`OSError` and defines no archivey exception). A view whose
+requested bounds extend past the source is **clamped** to the available bytes (like a real
+stream), so a truncated archive still yields a short readable view rather than failing at
+construction. This "fail loudly" clause covers only detectable primitive misuse (closed
+handle), not the undefined multi-thread-reader case above.
 
 #### Scenario: interleaved reads of two open members stay correct
 

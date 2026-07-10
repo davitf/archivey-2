@@ -3,6 +3,7 @@ fail-fast, multi-volume rejection) and the ZIP slice of access-mode-and-cost."""
 
 from __future__ import annotations
 
+import contextlib
 import io
 import struct
 import zipfile
@@ -22,6 +23,7 @@ from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
+    UnsupportedOperationError,
 )
 from tests.streams_util import NonSeekableBytesIO
 
@@ -378,6 +380,56 @@ def test_read_roundtrip_from_stream_source(simple_zip: Path) -> None:
     data = simple_zip.read_bytes()
     with open_archive(io.BytesIO(data)) as ar:
         assert ar.read("hello.txt") == b"hello world"
+
+
+def test_concurrent_open_members_interleaved_path_source(simple_zip: Path) -> None:
+    # Path source: stdlib zipfile's _SharedFile already coordinates; lock the contract in.
+    with open_archive(simple_zip) as ar:
+        s1 = ar.open("hello.txt")
+        s2 = ar.open("dir/nested.txt")
+        assert s1.read(5) == b"hello"
+        assert s2.read(6) == b"nested"
+        assert s1.read() == b" world"
+        assert s2.read() == b" content"
+        s1.close()
+        s2.close()
+
+
+def test_concurrent_open_members_interleaved_stream_source(simple_zip: Path) -> None:
+    # Stream source: stdlib zipfile coordinates a passed-in handle exactly like a path
+    # source (_SharedFile keeps a per-open position under ZipFile's lock), so archivey
+    # adds no wrap; this test locks the concurrent-open contract in for that leg too.
+    data = simple_zip.read_bytes()
+    with open_archive(io.BytesIO(data)) as ar:
+        s1 = ar.open("hello.txt")
+        s2 = ar.open("dir/nested.txt")
+        assert s1.read(5) == b"hello"
+        assert s2.read(6) == b"nested"
+        assert s1.read() == b" world"
+        assert s2.read() == b" content"
+        s1.close()
+        s2.close()
+
+
+def test_read_after_source_close_raises_typed_error() -> None:
+    # archive-reading "fail loudly" scenario: once the caller's source stream is closed,
+    # reading a still-open member stream surfaces a typed error at the reader boundary —
+    # not a raw ValueError, and not a misleading CorruptionError. The member must exceed
+    # ZipExtFile's read-ahead so the second read actually touches the closed source.
+    payload = bytes(range(256)) * 1024  # 256 KiB, incompressible-ish and > read-ahead
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", payload)
+    source = io.BytesIO(buf.getvalue())
+    with open_archive(source) as ar:
+        stream = ar.open("big.bin")
+        assert stream.read(16) == payload[:16]
+        source.close()
+        with pytest.raises(UnsupportedOperationError):
+            while stream.read(65536):
+                pass
+        with contextlib.suppress(Exception):
+            stream.close()
 
 
 # ---------------------------------------------------------------------------

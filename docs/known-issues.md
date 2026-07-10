@@ -83,6 +83,28 @@ performance parity) and `rapidgzip.RapidgzipFile` opening a `.bz2` directly (a *
 algorithm that, per the author, "has more memory overhead and might be slightly slower"). archivey
 uses `IndexedBzip2File` for parity with the standalone package.
 
+### Bug 3 — rapidgzip terminates the process when its Python source raises (open)
+
+**Status: open upstream defect** (present in rapidgzip 0.16.0, the current and floor version).
+When a rapidgzip object decodes from a **Python file object** and any callback into that object
+raises — e.g. the stream was closed underneath it — the C++ layer throws
+`std::invalid_argument` ("Cannot convert nullptr Python object to the requested result type")
+through a `terminate()` boundary and **aborts the process** (SIGABRT). This fires on `read()`,
+on `close()`, and on the GC-time finalize guard alike, so no Python-level `try/except` — not
+even the Bug 1 guard's — can contain it, and archivey's reader-boundary error translation never
+gets a chance to run.
+
+**Mitigation in archivey:** never kill the source underneath a live accelerator stream. The
+single-file reader's `_close_archive` deliberately does **not** close the (non-owning)
+`SharedSource` behind stream-source member streams, so `reader.close()` with a member stream
+still open cannot trigger the abort (and member streams stay readable after reader close, as
+with every other backend). The remaining exposure — the **caller** closes their own source
+stream while an accelerator-backed member stream is still in use — predates the SharedSource
+retrofit (the accelerator used to sit directly on the caller's stream) and can only be fixed
+upstream. Path sources are unaffected (rapidgzip owns an independent handle). The stdlib codec
+fallbacks raise a normal `ValueError`, which the reader boundary translates to
+`UnsupportedOperationError`.
+
 ### The canary
 
 `tests/test_accelerator_shutdown.py` asserts the contract for Bug 1: the **closed** case and the
