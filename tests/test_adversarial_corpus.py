@@ -83,14 +83,24 @@ def test_adversarial_extract_is_safe(
         assert not path.is_symlink(), f"{entry.id}: symlink escaped to {resolved}"
 
 
-def test_base_fixtures_are_committed_and_current() -> None:
-    # The committed base archives must match what create_adversarial builds now, so the
-    # spliced corpus is reproducible (regenerate with `python -m tests.create_adversarial`).
+def test_base_fixtures_carry_the_splice_placeholders() -> None:
+    # The committed base archives are the source of truth the splices operate on; each must
+    # still carry the placeholder tokens (or a splice would silently no-op) and open
+    # cleanly. This guards structural drift (a changed member set / token) without
+    # requiring byte-for-byte reproducibility across platforms and Python versions —
+    # zipfile/tarfile output varies by both. Regenerate with
+    # `python -m tests.create_adversarial` after changing the generator.
     from tests import create_adversarial as gen
 
-    base_dir = gen.FIXTURE_DIR
-    assert (base_dir / "base.zip").read_bytes() == gen.build_base_zip()
-    assert (base_dir / "base.tar").read_bytes() == gen.build_base_tar()
+    for name, tokens in (
+        ("base.zip", (gen._NAME, gen._LINK, gen._COMMENT)),
+        ("base.tar", (gen._NAME, gen._LINK)),
+    ):
+        blob = (gen.FIXTURE_DIR / name).read_bytes()
+        for token in tokens:
+            assert token in blob, f"{name} is missing placeholder {token!r}"
+        with open_archive(io.BytesIO(blob)) as ar:
+            assert [m.name for m in ar.members()]  # opens and lists without error
 
 
 def test_nul_name_is_rejected_on_every_platform(tmp_path: Path) -> None:
