@@ -15,6 +15,25 @@ import posixpath
 from archivey.internal.logs import normalization as logger
 from archivey.types import MemberType
 
+# Unicode bidi formatting controls can make the displayed order of a filename differ
+# materially from its stored order (for example, disguising an executable suffix).
+_BIDI_CONTROLS = frozenset(
+    "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+)
+
+
+def _warn_for_bidirectional_controls(name: str) -> None:
+    """Warn once when a presented member name contains a bidi formatting control.
+
+    Called by ``BaseArchiveReader`` while assigning member identity, not by individual
+    decoders, so directory and inferred single-file names receive the same warning and a
+    backend that uses :func:`normalize_member_name` cannot emit a duplicate.
+    """
+    if any(char in _BIDI_CONTROLS for char in name):
+        logger.warning(
+            "Member name contains a bidirectional control character: %r", name
+        )
+
 
 def normalize_member_name(
     decoded: str, member_type: MemberType, *, backslash_is_separator: bool

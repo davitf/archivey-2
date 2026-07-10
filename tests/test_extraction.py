@@ -162,6 +162,12 @@ def test_check_universal_rejects_symlink_escape(tmp_path: Path) -> None:
         check_universal(m, tmp_path)
 
 
+def test_check_universal_rejects_null_byte_in_symlink_target(tmp_path: Path) -> None:
+    m = _member("link", type=MemberType.SYMLINK, link_target="target\x00hidden")
+    with pytest.raises(SymlinkEscapeError, match="Null byte in link target"):
+        check_universal(m, tmp_path)
+
+
 def test_check_universal_allows_internal_symlink(tmp_path: Path) -> None:
     m = _member("sub/link", type=MemberType.SYMLINK, link_target="../file.txt")
     check_universal(m, tmp_path)  # resolves to <dest>/file.txt, inside root

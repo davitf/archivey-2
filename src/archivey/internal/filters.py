@@ -103,6 +103,12 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     # directory; a hardlink target is archive-root relative. An absolute target makes the
     # join absolute, so it resolves outside dest and is caught here too.
     if member.link_target is not None:
+        if "\x00" in member.link_target:
+            raise SymlinkEscapeError(
+                f"Null byte in link target: "
+                f"{name!r} -> {member.link_target!r}",
+                member_name=name,
+            )
         if member.type == MemberType.SYMLINK:
             link_parent = (dest_root / name).parent
             resolved_target = (link_parent / member.link_target).resolve()

@@ -12,6 +12,7 @@ import bz2
 import contextlib
 import gzip
 import io
+import logging
 import lzma
 import random
 import zlib
@@ -101,6 +102,23 @@ def test_name_appends_uncompressed_for_unknown_extension(tmp_path: Path) -> None
 def test_name_defaults_to_data_for_anonymous_stream() -> None:
     with open_archive(io.BytesIO(gzip.compress(b"x"))) as ar:
         assert ar.members()[0].name == "data"
+
+
+def test_inferred_bidi_control_name_warns_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    name = "invoice\u202ecod.exe"
+    path = tmp_path / f"{name}.gz"
+    path.write_bytes(gzip.compress(b"x"))
+    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
+        with open_archive(path) as archive:
+            assert archive.members()[0].name == name
+    warnings = [
+        record
+        for record in caplog.records
+        if "bidirectional control" in record.message
+    ]
+    assert len(warnings) == 1
 
 
 # ---------------------------------------------------------------------------

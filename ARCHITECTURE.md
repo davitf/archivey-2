@@ -41,11 +41,11 @@ src/archivey/
 │       # streamtools/ imports nothing from archivey; everything else speaks ArchiveyError.
 │
 tests/
-├── fixtures/              # Committed binary archives — only what can't be generated
-│   ├── adversarial/       # Hand-crafted: path traversal, zip bombs, corrupt headers
+├── fixtures/              # Exceptional binaries that cannot be generated in tests
+│   ├── adversarial/       # Non-generable hostile inputs only; sidecar + rationale required
 │   ├── external/          # Archives requiring specific tools/OS (Windows junctions, etc.)
 │   └── *.json             # Sidecar per committed archive (expected member list)
-├── create_adversarial.py  # Script that (re)generates adversarial fixtures
+├── create_adversarial.py  # Deterministic clean bases + hostile variants, built in memory
 ├── sample_archives.py     # Declarative specs: ArchiveContents, FileInfo, ArchiveCreationInfo
 ├── create_archives.py     # Generates archives from specs into tmp_path / cache dir
 ├── conftest.py            # pytest_generate_tests, sample_archive_path fixture
@@ -366,6 +366,11 @@ Tests are split into two tiers:
 
 **Tier 1 — generated-on-demand** (the vast majority): archive content is declared as Python `ArchiveContents` / `FileInfo` specs, generated at test time into a per-session cache directory (keyed by a hash of the spec + creation parameters), and never committed to the repo. The `conftest.py` fixture handles generation and caching transparently.
 
+Adversarial archives that stdlib writers cannot emit directly follow the same no-binary
+rule when a clean base can be generated: `tests/create_adversarial.py` builds the base in
+memory, performs field-targeted byte mutations, and returns the hostile bytes directly to
+the tests.
+
 ```python
 @pytest.mark.sample_archives(container=ContainerFormat.ZIP, configs=["default", "altlibs"])
 def test_read_basic(sample_archive: SampleArchive, archivey_config):
@@ -378,7 +383,8 @@ The `sample_archive.contents` object is both the generation spec and the ground 
 **Tier 2 — committed fixtures with JSON sidecars** (a small set, committed to `tests/fixtures/`):
 
 - Archives that require a specific OS or unavailable tool to generate (Windows junctions, RAR created with exact version flags, malformed-but-valid-in-the-wild archives).
-- Adversarial archives: hand-crafted zip bombs, path traversal attempts, corrupt headers. These are small binary files; committing them is cheap and they rarely change.
+- An adversarial binary is committed only when the test environment genuinely cannot
+  generate it; its sidecar records both expected contents and that rationale.
 - For every committed archive `foo.rar`, a sidecar `foo.json` documents the expected member list. A single parametrized test `test_fixtures.py::test_committed_fixture` runs all of them.
 
 ```json
