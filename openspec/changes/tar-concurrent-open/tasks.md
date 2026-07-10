@@ -40,8 +40,9 @@
 
 - [ ] 3.1 Land after / with `concurrent-member-streams` (it owns the cross-format worker/
       lifecycle contract); apply this change's `format-tar` and `format-iso` deltas
-- [ ] 3.2 Ensure TAR-RA and ISO unconditionally support simultaneous random-access streams;
-      no flag, default gate, or special-case exemption remains
+- [ ] 3.2 Ensure TAR-RA and ISO support simultaneous random-access streams under declared
+      `MemberStreams.CONCURRENT`, with no TAR/ISO-specific exemption; the lock mechanism is
+      not instantiated for undeclared (default single-stream) readers
 - [ ] 3.3 Update `docs/parallel-reader.md` TAR-RA/ISO rows with comprehensive shared-handle
       lock coverage (`getmembers`/EOF and pycdlib catalog audit included), callback boundary,
       capability-conditional positioning, and correctness-vs-parallelism trade-off

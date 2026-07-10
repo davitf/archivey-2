@@ -1,21 +1,99 @@
 # Archive Reading — delta (concurrent-member-streams)
 
+## ADDED Requirements
+
+### Requirement: Declared member-stream capabilities
+
+`open_archive()` SHALL accept `member_streams: MemberStreams`, a flags enum with two
+capabilities, defaulting to none:
+
+- `MemberStreams.CONCURRENT` — any number of member streams may be open simultaneously.
+- `MemberStreams.SEEKABLE` — member streams are seekable where the backend can provide
+  it.
+
+**Default contract (no capability declared), uniform across every format including the
+directory reader:** at most one member data stream may be live per reader, and member
+streams are forward-only. "Live" spans `open()` to the stream's `close()`/context exit —
+not EOF and not garbage collection. Opening a second overlapping stream SHALL raise
+`ConcurrentAccessError` at the later `open()` and SHALL leave the first stream untouched
+and readable; the library never silently closes or invalidates a stream the caller still
+holds. Every member stream (random `open()` and `stream_members()` yields alike) SHALL
+report `seekable() is False`; `seek()` SHALL raise `io.UnsupportedOperation`; `tell()`
+SHALL work. The ordinary `open → read → close → open next` loop is unaffected.
+
+`open_archive()` SHALL record its caller's location (`file:line`, cheaply captured) and
+`ConcurrentAccessError` SHALL include it, so the error points at where the capability
+should have been declared. A configuration/debug switch MAY retain the full stack; the
+default cost is one frame walk.
+
+The capability declaration is per-archive intent: there SHALL be no `ArchiveyConfig`
+equivalent and no per-`open()` capability argument. Access cost never determines
+legality: declared capabilities are honored on every format, and the cost receipt
+describes what they cost on this archive.
+
+**Internal operations are exempt from the gate.** `extract_all()` (including hardlink
+recovery), symlink-target reads, password candidate confirmation, and other
+library-internal member opens run under internal scopes and SHALL NOT require any
+declared capability. No caller flag is ever needed to extract.
+
+**Out of the gate's scope.** The cost of a caller's member *open order* on a solid
+archive (random opens each re-decoding from the block start, with no overlapping
+lifetimes) is not gated: it remains governed by `AccessCost`/`solid_block_count` and the
+`stream_members()` steer. Documentation for `member_streams` SHALL state this
+explicitly.
+
+#### Scenario: second overlapping open without CONCURRENT fails uniformly
+
+- **WHEN** a reader opened without `MemberStreams.CONCURRENT` — on ZIP, TAR, ISO,
+  single-file, or a directory alike — has one member stream open and `open()` is called
+  for another member
+- **THEN** `ConcurrentAccessError` is raised at the second `open()`, its message includes
+  the `file:line` where `open_archive()` was called, and the first stream remains
+  readable
+
+#### Scenario: sequential open-read-close needs no declaration
+
+- **WHEN** a caller opens a member, reads it, closes it, and opens the next member, with
+  no declared capabilities
+- **THEN** every open succeeds; non-overlapping lifetimes never trigger the gate
+
+#### Scenario: undeclared streams are forward-only on every format
+
+- **WHEN** a member stream is obtained from a reader opened without
+  `MemberStreams.SEEKABLE` — including a directory member that is a real file
+- **THEN** `seekable()` is `False` and `seek()` raises `io.UnsupportedOperation`, while
+  `tell()` and forward reads work normally
+
+#### Scenario: declared SEEKABLE restores seekability where the backend provides it
+
+- **WHEN** the same member is opened from a reader declared with `MemberStreams.SEEKABLE`
+- **THEN** the stream is seekable where the backend can provide positioning, and the
+  seekable-decompressor-streams loud-slow-rewind rule governs the non-accelerated path
+
+#### Scenario: extraction requires no declared capability
+
+- **WHEN** `extract_all()` runs (including its hardlink recovery pass and symlink-target
+  reads) on a reader with no declared capabilities
+- **THEN** it completes normally; internal member opens are not gated
+
 ## MODIFIED Requirements
 
 ### Requirement: Multiple concurrently-open member streams
 
-Every **random-access** reader (`streaming=False`) SHALL support any number of member
-streams opened from that single reader being held open simultaneously and read in
-interleaved order without corrupting one another. This is an unconditional correctness
-property; `open_archive()` has no concurrent-stream opt-in and access cost does not determine
-legality.
+Every **random-access** reader (`streaming=False`) opened with
+`MemberStreams.CONCURRENT` SHALL support any number of member streams opened from that
+single reader being held open simultaneously and read in interleaved order without
+corrupting one another. Without that declared capability the single-live-stream default
+contract applies ("Declared member-stream capabilities"); with it, access cost still
+does not determine legality.
 
 **Post-materialization worker seam.** After one owner has completed `members()` or
 `scan_members()` and the reader has published its member list/name index, concurrent calls
 from multiple threads to `open(member_or_name)` SHALL be supported. Streams returned by
 different opens SHALL have independent logical positions/state: workers MAY concurrently call
-`read`, `readinto`, and `close` on **different stream objects**, plus `seek`/`tell` where that
-stream supports positioning. Non-seekable streams retain normal `BinaryIO` behavior:
+`read`, `readinto`, and `close` on **different stream objects**, plus `seek`/`tell` under
+`MemberStreams.SEEKABLE` where that stream supports positioning. Non-seekable streams
+retain normal `BinaryIO` behavior:
 `seekable()` is false and unsupported positioning raises `io.UnsupportedOperation`.
 Simultaneous operations on the same stream object require caller synchronization, matching
 ordinary Python file objects. The supported behavior SHALL NOT rely on the GIL.
@@ -26,7 +104,7 @@ internal containers. A public API whose existing return type is `list` SHALL ret
 copy that cannot structurally mutate those cache containers. `ArchiveMember` objects
 retain their existing backend-populated late-bound fields. Materialization/iteration itself
 is a single-owner operation and MUST NOT overlap worker opens. A second operation detected
-while materialization is in progress SHALL raise `UnsupportedOperationError` without
+while materialization is in progress SHALL raise `ArchiveyUsageError` without
 observing a partial cache or disturbing the first operation. Late-bound random-open updates
 to a member MUST be idempotent and synchronized; conflicting last-writer-wins updates are
 forbidden. Materialization state is exactly `UNMATERIALIZED` / `MATERIALIZING` /
@@ -51,7 +129,7 @@ perform link-data reads; a random worker `open()` may do name lookup/link follow
 link-data reads; `extract_all` may inspect available members/source counters and drive one or
 more `stream_members` passes; and a pass may advance and perform I/O/close on its yielded
 stream. An unrelated/reentrant public call has no token even on the owner thread and is
-rejected. The later conflicting operation SHALL raise `UnsupportedOperationError` before
+rejected. The later conflicting operation SHALL raise `ArchiveyUsageError` before
 changing state; the earlier root and children remain usable.
 
 Random `open()` and each operation on a random-open stream SHALL hold a short-lived worker
@@ -102,17 +180,18 @@ operations, or lifecycle lease release.
 - **THEN** each stream returns exactly its member's bytes and keeps its own position, with no
   cache, reader-state, or source-position race
 
-#### Scenario: simultaneous streams need no opt-in
+#### Scenario: declared concurrency is honored regardless of cost
 
-- **WHEN** a caller opens two random-access member streams and reads them interleaved
-- **THEN** both are correct without any `allow_multiple_open_streams` argument or cost-based
-  gate
+- **WHEN** a reader opened with `MemberStreams.CONCURRENT` opens two member streams and
+  reads them interleaved
+- **THEN** both are correct on every format; `AccessCost` describes the expense but never
+  denies the declared capability
 
 #### Scenario: materialization overlap is rejected without partial publication
 
 - **WHEN** one thread is materializing a reader and another operation attempts to
   materialize or open from the not-yet-published cache
-- **THEN** the later operation raises `UnsupportedOperationError`, and no caller observes a
+- **THEN** the later operation raises `ArchiveyUsageError`, and no caller observes a
   partial member list/name index
 
 #### Scenario: materialization failure does not close or poison the cache
@@ -125,7 +204,7 @@ operations, or lifecycle lease release.
 
 - **WHEN** worker member-stream operations are active and iteration, `stream_members`,
   `extract_all`, or reader `close()` is attempted concurrently
-- **THEN** the detected later operation raises `UnsupportedOperationError` without closing
+- **THEN** the detected later operation raises `ArchiveyUsageError` without closing
   or corrupting the active member streams
 
 #### Scenario: solid concurrent streams are correct but may repeat work
@@ -211,7 +290,7 @@ A `stream_members()` invocation is an exclusive one-pass/data-path operation in 
 modes. It SHALL NOT overlap random `open()`, materialization, another iteration/data pass,
 an unrelated extraction, or reader close. An `extract_all()` owner MAY invoke it as a child
 pass and MAY read/close the yielded child stream. Detected unrelated overlap SHALL raise
-`UnsupportedOperationError` at the later operation and leave the active pass/stream valid.
+`ArchiveyUsageError` at the later operation and leave the active pass/stream valid.
 This differs deliberately from random `open()`, whose independently owned streams may
 coexist.
 
@@ -223,7 +302,7 @@ coexist.
 #### Scenario: random open cannot overlap a streaming pass
 
 - **WHEN** a `stream_members()` pass is active and a random `open()` is attempted
-- **THEN** `UnsupportedOperationError` is raised and the active pass remains usable
+- **THEN** `ArchiveyUsageError` is raised and the active pass remains usable
 
 #### Scenario: abandoned streaming generator releases ownership
 
@@ -264,8 +343,8 @@ normal Python exception chaining.
 
 Archivey SHALL close path handles and wrappers it owns only after the final lease. It SHALL
 never close a caller-supplied `BinaryIO`; the caller must keep it open through all reader and
-escaped-stream use. If the caller closes it early, a later operation raises a typed
-`UnsupportedOperationError` for the closed source; concurrent external close with I/O is
+escaped-stream use. If the caller closes it early, a later operation raises
+`ArchiveyUsageError` for the closed source; concurrent external close with I/O is
 unsupported.
 
 Consequently, exiting `with open_archive(...) as reader` closes the reader but an escaped
@@ -277,14 +356,14 @@ promised.
 After reader close, repeated `close()` / `__exit__` are no-ops and already-open streams
 continue according to their capabilities. Every new reader operation or property—including
 `__enter__`, iteration/listing/lookup, metadata/cost/source counters, `open`/`read`,
-`stream_members`, and extraction—SHALL raise `UnsupportedOperationError`. Escaped streams
+`stream_members`, and extraction—SHALL raise `ArchiveyUsageError`. Escaped streams
 use context captured before close for error translation and MUST NOT call those properties.
 Their lease-bound short-lived worker tokens prevent final teardown from racing each call.
 
 #### Scenario: escaped member stream survives reader close
 
 - **WHEN** a member stream is opened, then the reader is closed without concurrent I/O
-- **THEN** new reader operations raise `UnsupportedOperationError`, while the existing
+- **THEN** new reader operations raise `ArchiveyUsageError`, while the existing
   stream remains usable until it is closed
 - **AND** backend teardown occurs exactly once after that final stream close
 
@@ -358,7 +437,7 @@ until success or `None`. A waiter SHALL recheck known-good passwords before clai
 turn, avoiding a duplicate prompt because a successful result is promoted before wake-up.
 Provider callbacks are therefore serialized and always lock-free. Reentrant provider code
 that starts another password-requiring operation on the same reader SHALL raise
-`UnsupportedOperationError` rather than deadlocking. Attempt counts remain per encrypted
+`ArchiveyUsageError` rather than deadlocking. Attempt counts remain per encrypted
 unit.
 
 #### Scenario: concurrent encrypted opens share known-good state safely
@@ -382,4 +461,4 @@ unit.
 #### Scenario: password-provider same-reader reentry fails instead of deadlocking
 
 - **WHEN** a provider callback starts another password-requiring operation on the same reader
-- **THEN** that nested operation raises `UnsupportedOperationError`
+- **THEN** that nested operation raises `ArchiveyUsageError`

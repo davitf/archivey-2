@@ -2,9 +2,43 @@
 
 ## ADDED Requirements
 
+### Requirement: Capability-gate behavior is tested on every format
+
+The test suite SHALL cover the declared-capabilities gate uniformly:
+
+- For every implemented format — directory included — a reader opened without
+  `MemberStreams.CONCURRENT` raises `ConcurrentAccessError` on a second overlapping
+  `open()` while the first stream stays readable, and the sequential
+  `open → read → close → open next` loop succeeds without any declaration.
+- The `ConcurrentAccessError` message includes the recorded `open_archive()` call site.
+- Without `MemberStreams.SEEKABLE`, member streams (random `open()` and
+  `stream_members()` yields) report `seekable() is False` and `seek()` raises
+  `io.UnsupportedOperation` on every format, including directory members backed by real
+  files; with it, positioning works where the backend provides it.
+- `extract_all()` — including hardlink recovery and symlink-target reads — succeeds on
+  readers with no declared capabilities.
+- `ArchiveyUsageError`s (and `ConcurrentAccessError`) are NOT `ArchiveyError` subclasses:
+  a test asserts a blanket `except ArchiveyError` does not catch them.
+- Accelerator/index activation is demand-driven: an undeclared reader over an
+  accelerator-eligible source instantiates no seek index; a declared-`SEEKABLE` one
+  resolves `AUTO` accelerators as specified in `seekable-decompressor-streams`.
+
+#### Scenario: gate fires uniformly across formats
+
+- **WHEN** the gate matrix runs a second overlapping `open()` for each implemented format
+  without declared `CONCURRENT`
+- **THEN** every format raises `ConcurrentAccessError` naming the open site, and the
+  first stream remains readable
+
+#### Scenario: usage errors escape ArchiveyError handlers
+
+- **WHEN** a `ConcurrentAccessError` is raised inside a `try/except ArchiveyError` block
+- **THEN** the exception propagates out of that block
+
 ### Requirement: Concurrent member-stream correctness and free-threaded stress
 
-The test suite SHALL exercise the supported post-materialization concurrency seam across
+The test suite SHALL exercise the supported post-materialization concurrency seam
+(readers declared with `MemberStreams.CONCURRENT`) across
 representative backend shapes: independent file handles (directory), library-coordinated
 handles (ZIP), archivey SharedSource views (single-file and native 7z/RAR as available),
 and archivey-locked library handles (random-access TAR and ISO).

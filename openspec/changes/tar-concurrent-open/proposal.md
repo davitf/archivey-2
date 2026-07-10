@@ -41,7 +41,9 @@ inside the atomic handle call.
 - The comprehensive lock prioritizes correctness, not parallel throughput. Record a
   proportionate baseline (wall/lock timing and practical seek/byte counters) without a
   pass/fail threshold; later performance claims use targeted before/after measurements.
-- No public API parameter is added. This replaces the earlier TAR carve-out before 1.0.
+- No public API parameter is added *here*: the `member_streams` declaration is owned by
+  `concurrent-member-streams`; this change is the TAR/ISO mechanism behind its
+  `CONCURRENT` capability. This replaces the earlier TAR carve-out before 1.0.
 
 ## Capabilities
 

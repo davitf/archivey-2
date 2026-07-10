@@ -1,13 +1,19 @@
 # Parallel-safe reader — exploration notes
 
-> **Current proposal status (2026-07-10):** `concurrent-member-streams` supersedes the
-> archived exploration's one-reader-per-thread/deferred-cache conclusion. The target is a
-> narrow supported seam: after random-access member materialization, concurrent `open()`
-> and independent member-stream read/readinto/close (plus supported positioning) are safe by
-> construction.
-> Reader-wide iteration/materialization/extraction/close remain single-owner.
-> `tar-concurrent-open` supplies comprehensive TAR/ISO shared-handle locking. Parallel
-> extraction scheduling remains future; speed claims require proportionate measurements.
+> **Current proposal status (2026-07-10, rev. 2):** `concurrent-member-streams` supersedes
+> the archived exploration's one-reader-per-thread/deferred-cache conclusion — and, after
+> maintainer review, both earlier public-contract drafts. Member-stream capabilities are
+> **declared** at `open_archive(member_streams=MemberStreams.CONCURRENT | SEEKABLE)`; the
+> uniform default on every format (directory included) is forward-only, one live stream,
+> no locks, no seek machinery. Once `CONCURRENT` is declared: after random-access member
+> materialization, concurrent `open()` and independent member-stream read/readinto/close
+> (plus positioning under `SEEKABLE`) are safe by construction. An undeclared second
+> overlapping open raises `ConcurrentAccessError` (an `ArchiveyUsageError`, outside the
+> `ArchiveyError` hierarchy). Reader-wide iteration/materialization/extraction/close remain
+> single-owner. `tar-concurrent-open` supplies comprehensive TAR/ISO shared-handle locking
+> for declared readers. The gate covers stream capabilities only — solid open-*order* cost
+> stays with `AccessCost`/`stream_members()`. Parallel extraction scheduling remains
+> future; speed claims require proportionate measurements.
 
 ## Glossary
 
