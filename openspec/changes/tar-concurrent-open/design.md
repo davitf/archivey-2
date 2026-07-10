@@ -1,9 +1,11 @@
 ## Context
 
 > **Depends on `concurrent-member-streams`.** Simultaneous random-access member streams are
-> unconditionally safe, and concurrent `open()` is supported after materialization. That
-> change owns the cross-format worker/lifecycle contract. Everything below is the TAR + ISO
-> mechanism that satisfies it.
+> a declared capability (`MemberStreams.CONCURRENT`); once declared, they are safe by
+> construction and concurrent `open()` is supported after materialization. That change owns
+> the cross-format capability/lifecycle contract. Everything below is the TAR + ISO
+> mechanism that satisfies it, instantiated only for `CONCURRENT` readers — the undeclared
+> default path takes no shared-handle lock.
 
 | Layer | Shared-handle behavior | Existing lock? |
 |---|---|---|
@@ -25,7 +27,7 @@ not be mislabeled as handle I/O. Routing TAR through
 
 **Goals:**
 
-- TAR-RA and ISO satisfy the unconditional random-access concurrent-member contract.
+- TAR-RA and ISO satisfy the declared-`CONCURRENT` random-access member contract.
 - Preserve tarfile sparse / pycdlib extent logic unchanged.
 - One small streamtools primitive plus backend helpers reusable by both backends.
 - Make lock coverage and callback boundaries auditable.
@@ -78,7 +80,7 @@ required. It MUST NOT use reentrancy to permit archivey callbacks under the lock
 
 **Alternative rejected:** SharedSource views at `offset_data` / ISO extents.
 
-### D4. Compliance path under the unconditional contract
+### D4. Compliance path under the declared-capability contract
 
 Archivey-owned byte-range backends still use SharedSource views. Library-owned
 seek-before-read backends (TAR, ISO) use this lock wrapper. ZIP already has `_SharedFile`.

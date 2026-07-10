@@ -196,13 +196,17 @@ post-1.0). Decision recorded in `IDEAS.md`; revisit at writing-spec time.
 ### C4. Free-threaded Python
 
 `3.13t+` makes data races visible and parallel pure-Python decode realistic.
-`concurrent-member-streams` proposes the narrow supported position: after random-access
-member materialization, concurrent `open()` plus independent operations on different
-member streams are data-race-free on ordinary builds and on backend/runtime combinations
-covered by the required Linux CPython `3.13t` `free-threaded-concurrency` job; optional
-backends are not claimed covered until a dedicated free-threaded job can run them. Iteration, materialization,
-extraction, `stream_members()`, and reader close remain single-owner, with explicit private
-child scopes allowing extraction to drive its pass and yielded-stream I/O. Implementation
+`concurrent-member-streams` proposes the narrow supported position: on readers that
+declare `MemberStreams.CONCURRENT`, after random-access member materialization,
+concurrent `open()` plus independent operations on different member streams are
+data-race-free on ordinary builds and on backend/runtime combinations covered by the
+required Linux CPython `3.13t` `free-threaded-concurrency` job; optional backends are not
+claimed covered until a dedicated free-threaded job can run them. The undeclared default
+is one live member stream (a second overlapping open raises `ConcurrentAccessError`), so
+accidental cross-thread stream sharing fails fast instead of racing. Iteration,
+materialization, extraction, `stream_members()`, and reader close remain single-owner,
+with explicit private child scopes allowing extraction to drive its pass and
+yielded-stream I/O. Implementation
 must use real synchronization rather than relying on the GIL. Parallel extraction scheduling
 remains future, and speed claims require measurements proportionate to the mechanism changed.
 Accelerator close-before-finalize
