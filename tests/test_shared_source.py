@@ -138,12 +138,20 @@ class TestSharedSourceMisuse:
         with pytest.raises(ValueError, match="closed"):
             view.seek(0)
 
-    def test_out_of_bounds_view_raises_at_construction(self) -> None:
+    def test_out_of_bounds_view_clamps_to_available(self) -> None:
+        # Like a real stream / SlicingStream: a view past EOF is readable but short,
+        # so a backend opening a member from a truncated archive still gets data.
         shared = SharedSource(io.BytesIO(DATA))
-        with pytest.raises(ValueError, match="exceeds source size"):
-            shared.view(0, len(DATA) + 1)
-        with pytest.raises(ValueError, match="past the end"):
-            shared.view(len(DATA) + 5, 1)
+        oversized = shared.view(0, len(DATA) + 10)
+        assert oversized.size == len(DATA)
+        assert oversized.read() == DATA
+        past_eof = shared.view(len(DATA) + 5, 1)
+        assert past_eof.size == 0
+        assert past_eof.read() == b""
+        # Start inside, length past EOF: clamp length.
+        partial = shared.view(len(DATA) - 3, 100)
+        assert partial.size == 3
+        assert partial.read() == DATA[-3:]
 
     def test_view_does_not_close_source(self) -> None:
         buf = io.BytesIO(DATA)

@@ -87,6 +87,13 @@ class TestSlicingStream:
         with pytest.raises(ValueError, match="Negative seek position"):
             sliced.seek(-5)
 
+    def test_seek_cur_underflow_clamps_like_bytesio(self) -> None:
+        # BytesIO clamps SEEK_CUR/SEEK_END underflow to the origin; only SEEK_SET raises.
+        sliced = SlicingStream(io.BytesIO(DATA), start=10, length=10)
+        assert sliced.seek(-100, io.SEEK_CUR) == 0
+        assert sliced.tell() == 0
+        assert sliced.seek(-100, io.SEEK_END) == 0
+
     def test_seek_end_no_length_zero_offset(self) -> None:
         sliced = SlicingStream(io.BytesIO(DATA), start=10)
         assert sliced.seek(0, io.SEEK_END) == len(DATA) - 10

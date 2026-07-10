@@ -33,18 +33,18 @@
       either a `Path` or an already-open seekable `BinaryIO`. Holds the source handle, a
       `threading.Lock`, and closed-state. Imports only stdlib + `streamtools`.
 - [x] 1.2 `SharedSource.view(start, length) -> BinaryIO` — a non-owning, seekable view with its
-      own `_pos`. **Compose the `SlicingStream` bound/tell logic, but re-seek the underlying to
-      the view's own absolute position under the lock before every read** (`SlicingStream`
-      today does NOT re-seek — that is the clobber bug). `read`:
-      `with lock: underlying.seek(start + _pos); data = underlying.read(n)`; `_pos +=
-      len(data)`. Views MUST NOT close the source. Existing `SlicingStream` callers unchanged.
-      (design §H)
+      own `_pos`, implemented as `SlicingStream(..., lock=source.lock)` so the bound/tell
+      logic is shared (design §H). With the lock, every read re-seeks the underlying to the
+      view's absolute position under the lock (`SlicingStream` without a lock does NOT
+      re-seek — that is the single-consumer path, unchanged for existing callers). Views
+      MUST NOT close the source.
 - [x] 1.3 Path-source seam (dormant): design `view()` so a fresh `open(path,'rb')` backing can
       be swapped in later behind a flag; do not engage it now. Document it as the parallel-I/O
       entry point. (design §B)
 - [x] 1.4 Misuse detection (stdlib-shaped): read/seek after `close()` raises
-      `ValueError`/`OSError`; a view whose bounds exceed the source raises `ValueError` at
-      construction. No silent short/garbage reads.
+      `ValueError`/`OSError`. A view whose bounds extend past the source is **clamped** to
+      the available bytes (like a real stream / `SlicingStream`) — truncated archives still
+      get a short readable view; negative `start`/`length` remain hard errors.
 - [x] 1.5 Re-export `SharedSource` from `streamtools/__init__.py`.
 
 ## 2. Primitive tests (unit + property)
@@ -54,7 +54,7 @@
 - [x] 2.2 Thread-correctness test: two threads each read a distinct view to completion; assert
       byte-exact output (data-correct under the lock). Keep it deterministic/non-flaky.
 - [x] 2.3 Misuse tests: read-after-close raises `ValueError`/`OSError`; out-of-bounds view
-      raises `ValueError` at construction.
+      clamps to available bytes (short/empty reads, not a construction error).
 - [x] 2.4 (Optional, non-blocking) a Hypothesis property: random non-overlapping regions ×
       random interleavings → every view's concatenated reads equal its region. Use it **only if
       `hypothesis-property-tests` has landed**; otherwise a plain parametrized test. Do not

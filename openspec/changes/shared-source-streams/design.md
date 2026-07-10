@@ -94,8 +94,10 @@ ZIP relying on stdlib.
 
 Two different things, not to be conflated in the spec:
 
-- **Detectable primitive misuse → raises**: read/seek after `close()`, or a view whose bounds
-  fall outside the source. The primitive *can* see these and raises.
+- **Detectable primitive misuse → raises**: read/seek after `close()`. (A view whose
+  requested bounds extend past the source is **clamped** to the available bytes — like a
+  real stream / `SlicingStream` — so a truncated archive still yields a short readable
+  view rather than failing at construction; negative `start`/`length` remain hard errors.)
 - **Reader-object multi-thread misuse → unsupported, undefined**: driving one
   `BaseArchiveReader` (concurrent `open()` / iteration / `close()`) from several threads is
   **not** detected — the reader has no lock — so the spec says *unsupported*, not *rejected*.
@@ -115,15 +117,15 @@ cross-thread stream reading in v1 — which we do not want to commit to. Instead
   its flat "not thread-safe (one per thread)". (This is why this change ships **no**
   `packaging-and-extras` delta.)
 
-## H. Relationship to `SlicingStream` — compose, don't replace
+## H. Relationship to `SlicingStream` — one class, optional lock
 
-`SlicingStream` already tracks a per-view `_pos`, but its `read()` does **not** re-seek the
-underlying to `_pos` before reading — it reads from wherever the shared handle currently sits,
-which is exactly the clobber bug when two slices share a handle. `SharedSource.view` is
-therefore *"a `SlicingStream` that, under the source lock, re-seeks the underlying to its own
-absolute position before every read"*. Implement it by composing/subclassing the slice logic
-plus lock+reseek; **existing `SlicingStream` callers are unchanged** (single-stream use never
-had the bug).
+`SlicingStream` already tracks a per-view `_pos`, but historically its `read()` did **not**
+re-seek the underlying to `_pos` before reading — it read from wherever the shared handle
+currently sat, which is exactly the clobber bug when two slices share a handle.
+`SharedSource.view` is therefore the same class with an optional `lock`: every `read` does
+`seek(start + _pos); read(n)` under the lock. Without a lock (the historical default)
+behaviour is unchanged for existing single-consumer callers. A `check_open` hook lets the
+factory poison its views when closed.
 
 ## Validation scope (what this change actually retrofits)
 

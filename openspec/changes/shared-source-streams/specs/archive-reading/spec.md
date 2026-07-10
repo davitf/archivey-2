@@ -31,11 +31,13 @@ is **unsupported and undefined** — the reader holds no lock and does not detec
 guarantee here is confined to interleaved use of already-opened member streams from one thread.
 
 **Failing loudly on detectable misuse.** Where the shared-source view *can* detect misuse — a
-read after the source is closed, or a view whose bounds fall outside the source — the reader
-surface SHALL raise a typed error (translated from the primitive's stdlib-shaped error at the
-reader boundary; the `streamtools` primitive itself raises `ValueError`/`OSError` and defines
-no archivey exception). This "fail loudly" clause covers only detectable primitive misuse, not
-the undefined multi-thread-reader case above.
+read after the source is closed — the reader surface SHALL raise a typed error (translated
+from the primitive's stdlib-shaped error at the reader boundary; the `streamtools` primitive
+itself raises `ValueError`/`OSError` and defines no archivey exception). A view whose
+requested bounds extend past the source is **clamped** to the available bytes (like a real
+stream), so a truncated archive still yields a short readable view rather than failing at
+construction. This "fail loudly" clause covers only detectable primitive misuse (closed
+handle), not the undefined multi-thread-reader case above.
 
 #### Scenario: interleaved reads of two open members stay correct
 

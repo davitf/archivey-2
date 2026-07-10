@@ -56,9 +56,10 @@ Add a `SharedSource` factory to `streamtools` (which stays archivey-dependency-f
 - **Supported (public, in `archive-reading`):** any number of concurrently-open member streams
   from **one reader**, read in interleaved order on one thread, all correct — for backends that
   serve members via independent byte-range views (see the delta carve-out).
-- **Detectable primitive misuse → fail loudly:** read/seek after `close()`, or a view whose
-  bounds fall outside the source, raises at the reader surface (translated from the primitive's
-  stdlib-shaped error).
+- **Detectable primitive misuse → fail loudly:** read/seek after `close()` raises at the
+  reader surface (translated from the primitive's stdlib-shaped error). A view whose
+  requested bounds extend past the source is **clamped** to the available bytes (like a
+  real stream), so a truncated archive still yields a short readable view.
 - **Unsupported / undefined (not "rejected loudly"):** driving the *reader object itself*
   from multiple threads (concurrent `open()` / iteration / `close()`). The reader holds no lock
   and does not detect this. `ArchiveReader` remains one-per-thread.
