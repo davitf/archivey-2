@@ -53,6 +53,17 @@ class _PasswordCandidates:
     def has_passwords(self) -> bool:
         return bool(self._known_good or self._candidates or self._provider is not None)
 
+    def is_ambiguous(self) -> bool:
+        """Whether more than one distinct password might be tried for one unit.
+
+        When true, a backend whose cipher has a weak open()-time password check (ZIP's
+        traditional ZipCrypto validates only a single byte) must confirm a candidate by
+        actually reading/CRC-checking the member, not accept it on the open() alone —
+        otherwise a wrong candidate can false-accept and the right one is never tried.
+        """
+        distinct = set(self._known_good) | set(self._candidates)
+        return len(distinct) > 1 or self._provider is not None
+
     def record_success(self, password: bytes) -> None:
         if password in self._known_good:
             self._known_good.remove(password)
