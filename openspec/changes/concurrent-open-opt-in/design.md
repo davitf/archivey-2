@@ -110,13 +110,17 @@ So: default = raise on the second overlap; opt-in = allow many; **never** auto-c
 
 ### D5. Opt-in behaviour and the correctness contract
 
-With `allow_multiple_open_streams=True`, the existing concurrent-open correctness contract
-applies unchanged: byte-range backends (7z/RAR/single-file/ZIP/seekable random-access TAR)
-serve each open via a `SharedSource` view with a per-view position and locked seek+read, so
-interleaving never corrupts bytes. Solid formats give each open its own decompressor over its
-view (re-decoding from block start as the *random open on a solid member* scenario already
-permits). The flag changes *whether* you may hold several open at once, not *how* the bytes are
-served.
+With `allow_multiple_open_streams=True`, interleaved member streams MUST stay correct:
+
+- **Archivey-owned byte ranges** (7z/RAR/single-file): each open via a `SharedSource` view
+  with per-view position and locked seek+read.
+- **Library-owned seek-before-read** (TAR-RA, ISO): keep `extractfile` / pycdlib; wrap each
+  member stream so data-path reads hold a per-archive lock for the library's seek+read
+  (`tar-concurrent-open`). Avoids reimplementing sparse / extents.
+- **ZIP:** stdlib `_SharedFile` already locks; no archivey wrap.
+
+Solid formats still give each open its own logical stream (re-decode / re-seek as already
+permitted). The flag changes *whether* you may hold several open at once, not the cost model.
 
 ### D6. Error type
 
@@ -155,7 +159,8 @@ iterator advances" rule (`stream_members`) is a separate, existing contract and 
 3. Update specs (`archive-reading`, `access-mode-and-cost`) and the ABC docstrings.
 4. Tests: uniform raise (ZIP/plain-TAR/solid), sequential loop allowed, opt-in interleave, first
    stream survives the raise, `with`/close paths.
-5. Rescope `tar-concurrent-open` to run its SharedSource + forward-cursor work under the opt-in.
+5. Rescope `tar-concurrent-open` to the locked member-stream wrapper for TAR + ISO under the
+   opt-in (not SharedSource-at-`offset_data`).
 
 ## Open Questions
 
