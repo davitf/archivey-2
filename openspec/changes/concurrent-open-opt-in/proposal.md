@@ -47,6 +47,14 @@ expensive; it does not silently change what is *allowed*.
 - **Drop the blanket TAR-RA concurrent-open exemption** (folded here so there is one
   authoritative rewrite): random-access TAR and ISO join the concurrent-open backends via the
   locked member-stream path; only **streaming** stays out of scope for this capability.
+- **Reject invalid combos at open:** `streaming=True` + `allow_multiple_open_streams=True`
+  raises immediately.
+- **Opted-in thread-safe member open/read:** after the member list is materialized, workers
+  may call `open()` / read / close member streams concurrently; reader `close()` / iteration
+  stay owner-thread. Reentrancy wording is "no *unsafe* mutations" (synchronized bookkeeping
+  allowed).
+- Keep `stream_members()` auto-invalidate-on-advance (do not mirror raise-never-auto-close);
+  document why.
 - No public API break beyond the new default. **Not BREAKING** in the sense of data/behaviour
   for the common `open → read → close` path; it *does* tighten the concurrent-open guarantee
   landed in #51 from always-on to opt-in (see Impact).

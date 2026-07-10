@@ -34,11 +34,11 @@ development regardless of the test corpus.
   receipt tells the caller whether it is cheap or expensive.
 
 **Non-Goals**
-- The forward-cursor / pooled-view optimization for solid streams (lives in
-  `tar-concurrent-open` and future 7z/RAR).
-- Parallel / multi-thread extraction; the reader stays one-per-thread.
-- Making concurrency cheap on solid archives — it cannot be, and that is what the cost receipt
-  and the flag's docs are for.
+- Making concurrency *cheap* on solid archives — it cannot be, and that is what the cost
+  receipt and the flag's docs are for.
+- Making `ArchiveReader.close()` / forward-pass iteration safe to call from multiple threads
+  concurrently with each other (owner-thread lifecycle). Member `open`/`read` under the
+  opt-in *is* in scope (see D8).
 
 ## Decisions
 
@@ -130,11 +130,43 @@ this is "valid, but you must opt in," and a distinct type keeps the fix obvious 
 Its message states that a member stream is already open, that the caller should close it (use
 `with`) or pass `allow_multiple_open_streams=True`, and points at the solid-cost note.
 
-### D7. Streaming mode is unaffected
+### D7. Streaming mode: reject the flag at open; keep `stream_members` auto-release
 
-`streaming=True` is a single forward pass; the "previous (member, stream) is invalid after the
-iterator advances" rule (`stream_members`) is a separate, existing contract and is not touched.
-`allow_multiple_open_streams` is meaningful only in random-access mode.
+`streaming=True` is a single forward pass. `allow_multiple_open_streams=True` with
+`streaming=True` SHALL raise at `open_archive()` (invalid combination).
+
+Do **not** change `stream_members()` to raise-on-overlap like random-access `open()`.
+`stream_members` deliberately invalidates the previous stream on advance so
+`for member, stream in reader.stream_members():` stays safe when `stream` is ignored.
+Raise-on-overlap there would couple the loop to GC timing. Document that rationale next to
+the streaming carve-out; the two APIs have different mental models.
+
+### D8. Opted-in thread-safe member open/read (worker-pool seam)
+
+The blanket "reader is not thread-safe / undefined" stance is too weak for the use case
+"hand one reader to N workers after listing members." With the pieces this change and
+`tar-concurrent-open` already need, the hard part is small:
+
+| Piece | Already needed? | For threads |
+|---|---|---|
+| Live-stream gate bookkeeping | Yes (opt-in gate) | Hold a lock around register / check / deregister |
+| Member-stream I/O | Yes (SharedSource / lock wrap) | Already locked per read |
+| Member cache first build | Materialize-before-fan-out | Init-under-lock when opt-in (cheap) |
+| `_open_member` | Reentrancy invariant | No unprotected per-open scratch |
+| `ArchiveReader.close()` / `__iter__` | — | Still owner-thread only |
+
+**Contract:** when `allow_multiple_open_streams=True` and the member list is materialized,
+concurrent `open()` + member-stream `read`/`close` from multiple threads are supported.
+Concurrent reader `close()` / iteration / streaming remain unsupported.
+
+That is enough for a worker pool; full "every method is thread-safe" is not required.
+
+### D9. Reentrancy = no *unsafe* mutations (not "no mutations")
+
+The `_open_member` invariant exists to ban per-open scratch on `self` (e.g. a single
+`_pending_stream` replaced by the next open). Synchronized mutations (live-stream set under
+a lock) are fine and required for D8. Spec wording: no unprotected mutations of open-critical
+shared state; synchronized bookkeeping allowed.
 
 ## Risks / Trade-offs
 
@@ -143,24 +175,30 @@ iterator advances" rule (`stream_members`) is a separate, existing contract and 
   point. Fails fast in development, never in production.
 - **[Risk] Bookkeeping correctness** — miscounting live streams (e.g. a close hook that does not
   fire) could spuriously raise or spuriously allow. **Mitigation:** register on `open()`,
-  deregister in the handle's `close()` (idempotent), and test open/close/re-open and
-  context-manager paths.
+  deregister in the handle's `close()` (idempotent), lock the bookkeeping, and test
+  open/close/re-open, context-manager, and multi-thread open paths.
 - **[Trade-off] Narrows the #51 guarantee.** Concurrent open changes from always-on to opt-in.
   This is a deliberate contract change; it is called out in the proposal for the maintainer.
 - **[Note] Internal consumers** (e.g. a future `ExtractionCoordinator` fan-out) opt in
   explicitly / use the internal path; the public default stays safe.
+- **[Trade-off] Thread-safe open/read, not full reader thread-safety.** Workers can open
+  members; they must not call `reader.close()` or iterate the forward pass concurrently.
+  Documented; cheaper than locking every reader method.
 
 ## Migration Plan
 
 1. Add `ConcurrentAccessError`; add `allow_multiple_open_streams` to `open_archive()` (default
-   `False`), carried on the reader.
-2. Track live member streams in `BaseArchiveReader.open()`; raise on the second overlap unless
-   opted in; deregister on stream close.
-3. Update specs (`archive-reading`, `access-mode-and-cost`) and the ABC docstrings.
-4. Tests: uniform raise (ZIP/plain-TAR/solid), sequential loop allowed, opt-in interleave, first
-   stream survives the raise, `with`/close paths.
-5. Rescope `tar-concurrent-open` to the locked member-stream wrapper for TAR + ISO under the
-   opt-in (not SharedSource-at-`offset_data`).
+   `False`), carried on the reader; reject `streaming=True` + flag at open.
+2. Track live member streams in `BaseArchiveReader.open()` under a lock; raise on the second
+   overlap unless opted in; deregister on stream close.
+3. When opt-in: member-cache init-under-lock (or equivalent); document thread-safe open/read
+   after materialize.
+4. Update specs (`archive-reading`, `access-mode-and-cost`) and the ABC docstrings; document
+   `stream_members` vs `open()` rationale.
+5. Tests: uniform raise (ZIP/plain-TAR/solid), sequential loop allowed, opt-in interleave,
+   first stream survives the raise, `with`/close paths, invalid streaming+flag combo,
+   two-thread opted-in open after `members()`.
+6. `tar-concurrent-open` supplies the TAR/ISO lock-wrapper mechanism under the opt-in.
 
 ## Open Questions
 
@@ -169,3 +207,5 @@ iterator advances" rule (`stream_members`) is a separate, existing contract and 
   flattened mode axis; final naming is the maintainer's call.
 - Whether `ConcurrentAccessError` subclasses the member/usage error base or sits beside
   `UnsupportedOperationError` — resolve against the `error-handling` hierarchy at implementation.
+- Exact exception type for the invalid `streaming=True` + flag combination (`ValueError` vs
+  archivey typed error) — resolve at implementation against `error-handling`.
