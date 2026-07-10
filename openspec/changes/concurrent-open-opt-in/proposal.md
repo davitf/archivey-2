@@ -2,7 +2,8 @@
 
 `shared-source-streams` (#51) landed a guarantee that any number of member streams may
 be held open from one reader and read interleaved, correctly. `tar-concurrent-open`
-extends the byte-range machinery to random-access TAR. But holding multiple member
+brings random-access TAR and ISO under that capability via a locked member-stream
+wrapper (keeping `extractfile` / pycdlib). But holding multiple member
 streams open on a **solid / expensive-seek** archive (compressed TAR, one solid 7z
 folder, a RAR solid block) can silently cost O(n) re-decompression per rewind — a
 "re-reads a solid block" pattern that `VISION.md` explicitly calls a failure "even if a
@@ -38,13 +39,14 @@ expensive; it does not silently change what is *allowed*.
   cause — the harder-to-debug failure).
 - **Opt-in flag** on `open_archive()` (`allow_multiple_open_streams: bool = False`) lifts the
   gate. When enabled, any number of member streams may be held open and interleaved,
-  correctly, via the existing byte-range / `SharedSource` machinery. Its docstring documents
-  the solid-archive re-decompression danger and points at `cost`.
+  correctly, via SharedSource views (archivey-owned ranges) or locked library member streams
+  (TAR / ISO; mechanism in `tar-concurrent-open`). Its docstring documents the solid-archive
+  re-decompression danger and points at `cost`.
 - **Cost is informational, not gating.** `AccessCost` / `solid_block_count` describe whether
   opted-in interleaving is cheap (DIRECT) or expensive (SOLID); they never determine legality.
 - **Drop the blanket TAR-RA concurrent-open exemption** (folded here so there is one
-  authoritative rewrite): random-access TAR joins the byte-range backends when its
-  uncompressed stream is seekable; only **streaming** and **non-seekable** stay out of scope.
+  authoritative rewrite): random-access TAR and ISO join the concurrent-open backends via the
+  locked member-stream path; only **streaming** stays out of scope for this capability.
 - No public API break beyond the new default. **Not BREAKING** in the sense of data/behaviour
   for the common `open → read → close` path; it *does* tighten the concurrent-open guarantee
   landed in #51 from always-on to opt-in (see Impact).
@@ -59,9 +61,10 @@ _(none)_
 
 - `archive-reading`: rewrite *Multiple concurrently-open member streams* so multiple
   simultaneously-open streams are an opt-in, format-uniform capability (default raises on the
-  second overlapping open; TAR-RA in scope when seekable). Rewrite *Random-access member-open
-  is reentrant and reader-state-free* to drop the TAR blanket exemption (streaming /
-  non-seekable only). Add the `allow_multiple_open_streams` keyword to *Opening an archive for
+  second overlapping open; TAR-RA and ISO in scope via locked library streams). Rewrite
+  *Random-access member-open is reentrant and reader-state-free* to drop the TAR blanket
+  exemption (streaming only) and to distinguish SharedSource vs locked library-stream
+  compliance. Add the `allow_multiple_open_streams` keyword to *Opening an archive for
   reading*.
 - `access-mode-and-cost`: note that `allow_multiple_open_streams` composes with `streaming`
   (only meaningful in random-access mode), and that `AccessCost` is **informational** about
@@ -81,8 +84,7 @@ _(none)_
 - **Relationship to #51 / `tar-concurrent-open`:** this narrows the just-landed concurrent-open
   guarantee from "always available" to "opt-in, correct-and-cost-flagged when enabled." It is
   the authoritative owner of the `archive-reading` concurrent-open rewrite; `tar-concurrent-open`
-  is rescoped to its `format-tar` mechanism (SharedSource + forward-cursor), which now runs
-  **under** this opt-in.
-- Out of scope: the forward-cursor / pooled-view *optimization* for solid streams (that lives in
-  `tar-concurrent-open` and future 7z/RAR work); parallel/multi-thread extraction; changing the
-  one-reader-per-thread rule.
+  is the TAR + ISO **mechanism** (locked member-stream wrapper around `extractfile` / pycdlib,
+  keeping sparse logic) that runs **under** this opt-in.
+- Out of scope: the lock-wrapper implementation itself (that lives in `tar-concurrent-open`);
+  parallel/multi-thread extraction; changing the one-reader-per-thread rule.
