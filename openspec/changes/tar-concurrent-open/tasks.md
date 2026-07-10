@@ -13,9 +13,9 @@
 
 ## 3. Specs, ABC, docs
 
-- [ ] 3.1 Apply this change's `archive-reading` and `format-tar` deltas to main specs (or land them when applying/archiving)
-- [ ] 3.2 Update `BaseArchiveReader._open_member` docstring: drop TAR-RA blanket exemption; note streaming / non-seekable carve-out only
-- [ ] 3.3 Update `docs/parallel-reader.md` TAR-RA audit row and any "single decoder / exempt" language that this change supersedes
+- [ ] 3.1 Land after `concurrent-open-opt-in` (it owns the `archive-reading` rewrite + the opt-in gate); apply this change's `format-tar` delta
+- [ ] 3.2 Ensure TAR-RA honors the `allow_multiple_open_streams` gate (no TAR special-casing); the `_open_member` docstring exemption drop lives in `concurrent-open-opt-in`
+- [ ] 3.3 Update `docs/parallel-reader.md` TAR-RA audit row and any "single decoder / exempt" language that these changes supersede
 
 ## 4. Tests
 

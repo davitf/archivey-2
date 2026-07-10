@@ -1,5 +1,11 @@
 ## Context
 
+> **Depends on `concurrent-open-opt-in`.** Interleaving multiple open member streams is an
+> opt-in, format-uniform capability (`allow_multiple_open_streams`); the default still permits
+> one live stream at a time and raises on a second overlapping open. That change owns the
+> `archive-reading` rewrite (opt-in gate + dropping the TAR-RA exemption). Everything below is
+> the **TAR mechanism** that runs when the caller has opted in.
+
 `shared-source-streams` landed `SharedSource` and a concurrent-open contract that **exempts**
 random-access TAR (TAR-RA) as a "single shared decoder." `parallel-reader-exploration`
 repeated that carve-out in the `_open_member` reentrancy invariant.
@@ -95,9 +101,11 @@ risk). One SharedSource over one FD is the source of truth.
 
 ### D5. Spec updates
 
-**Choice:** Modify `archive-reading` concurrent-open and reentrancy requirements to drop the
-TAR-RA exemption (streaming remains out of scope). Add a `format-tar` requirement describing
-uncompressed-stream SharedSource + forward-cursor policy.
+**Choice:** The `archive-reading` concurrent-open + reentrancy rewrites (drop the TAR-RA
+exemption, add the opt-in gate; streaming/non-seekable remain out of scope) are owned by
+`concurrent-open-opt-in`. This change only adds a `format-tar` requirement describing the
+uncompressed-stream SharedSource + forward-cursor policy, applicable when the caller has opted
+in via `allow_multiple_open_streams`.
 
 ### D6. Lifecycle
 
