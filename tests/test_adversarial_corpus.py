@@ -16,6 +16,7 @@ import pytest
 from archivey import ExtractionPolicy, ExtractionStatus, open_archive
 from archivey.exceptions import (
     CorruptionError,
+    ExtractionError,
     PathTraversalError,
     SymlinkEscapeError,
 )
@@ -130,13 +131,13 @@ def test_adversarial_open_list_read_semantics(
             if entry.field == "link_target":
                 assert target.link_target == entry.expected_link_target
             if target.is_file:
-                assert archive.read(target) == b"payload for the adversarial name member\n"
+                assert (
+                    archive.read(target) == b"payload for the adversarial name member\n"
+                )
 
     if entry.warning_text is not None:
         warnings = [
-            record
-            for record in caplog.records
-            if entry.warning_text in record.message
+            record for record in caplog.records if entry.warning_text in record.message
         ]
         assert len(warnings) == 1
 
@@ -170,9 +171,7 @@ def test_escape_check_detects_regular_file_outside_destination(tmp_path: Path) -
     escaped = sandbox / "escaped.txt"
     escaped.write_text("escaped")
     with pytest.raises(AssertionError, match="explicit sandbox escape"):
-        _assert_extraction_stayed_in_tested_scope(
-            dest, [], (escaped,), "self-check"
-        )
+        _assert_extraction_stayed_in_tested_scope(dest, [], (escaped,), "self-check")
 
 
 @pytest.mark.parametrize(
@@ -205,10 +204,18 @@ def test_adversarial_extract_has_exact_outcome(
                     dest, members=[target], policy=ExtractionPolicy.TRUSTED
                 )
         elif entry.extract_outcome == "filesystem_name_refusal":
+            # A UTF-8-enforcing filesystem (e.g. APFS) refuses the surrogateescape
+            # name; byte-preserving filesystems extract it. Raw OSError is tolerated
+            # until task 2.4 translates the refusal into a typed ExtractionError,
+            # after which the OSError arm tightens to the typed error only.
             try:
                 results = archive.extract_all(
                     dest, members=[target], policy=ExtractionPolicy.TRUSTED
                 )
+            except ExtractionError as exc:
+                cause = exc.__cause__
+                assert isinstance(cause, OSError)
+                assert cause.errno in {errno.EILSEQ, errno.EINVAL}
             except OSError as exc:
                 assert exc.errno in {errno.EILSEQ, errno.EINVAL}
             else:
