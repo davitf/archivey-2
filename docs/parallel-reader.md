@@ -1,10 +1,13 @@
 # Parallel-safe reader — exploration notes
 
-> Seed for a future `parallel-extraction` change. The **committed** outcome of
-> `openspec/changes/parallel-reader-exploration` is the `_open_member` reentrancy
-> invariant (spec delta + ABC docstring). Everything below is analysis: no feature
-> code. See also `shared-source-streams` (the concurrent-open source primitive this
-> builds on) and `docs/threat-model.md` C4 (free-threading).
+> **Current proposal status (2026-07-10):** `concurrent-member-streams` supersedes the
+> archived exploration's one-reader-per-thread/deferred-cache conclusion. The target is a
+> narrow supported seam: after random-access member materialization, concurrent `open()`
+> and independent member-stream read/readinto/close (plus supported positioning) are safe by
+> construction.
+> Reader-wide iteration/materialization/extraction/close remain single-owner.
+> `tar-concurrent-open` supplies comprehensive TAR/ISO shared-handle locking. Parallel
+> extraction scheduling remains future; speed claims require proportionate measurements.
 
 ## Glossary
 
@@ -21,17 +24,19 @@
 
 ## 1. Backend audit (`_open_member` vs. the reentrancy invariant)
 
-Invariant (random-access, independent-open backends): `_open_member` is a function of
-`(member, shared source)` — no shared-reader-state mutation, no per-open scratch on
-`self`; archivey-owned byte ranges go through `SharedSource.view`.
+The archived exploration stated the invariant as "`_open_member` is a function of
+`(member, shared source)`." The active proposal refines that wording: `_open_member` must
+perform no **unsynchronized** open-critical mutation and keep no per-open scratch on `self`
+that another call can overwrite. Coordinated lifecycle/password/cache bookkeeping is allowed;
+archivey-owned byte ranges still go through `SharedSource.view`.
 
 | Backend | Regime | Compliant? | Notes |
 |---|---|---|---|
 | **directory** | RA, independent | **Yes** | Opens `self._root / member.name` — independent FD per open; no reader scratch. Outside SharedSource (filesystem paths, not a shared byte source). |
 | **ZIP** | RA, independent | **Yes** | `_open_zip_entry` → `ZipFile.open(info)`; stdlib `_SharedFile` coordinates the handle (path *and* stream sources). No per-open scratch on `ZipReader`. Outside archivey SharedSource retrofit (library-owned addressing). |
 | **single-file** | RA when seekable | **Yes** (post-`shared-source-streams`) | Seekable stream: `SharedSource.view(0)` + fresh codec per open. Path: independent codec FD per open. `_first_stream` scratch **removed**. Non-seekable: one-shot `_pending_stream` (streaming / single-pass — out of invariant scope). |
-| **TAR-RA** | RA, library seek-before-read | **Gap → `tar-concurrent-open`** | `tarfile._FileInFile` re-seeks on each `read()`, **no lock** (same shape as pycdlib). Keep `extractfile` (sparse); wrap member streams with a per-archive lock across each library `read`. Exploration carved this out; follow-up drops the carve-out. |
-| **ISO** | RA, library seek-before-read | **Gap → `tar-concurrent-open`** | `pycdlib.PyCdlibIO` re-seeks on each `read()`, **no lock**. Not "like ZIP" (ZIP has `_SharedFile` lock). Same locked member-stream wrapper as TAR-RA. No per-open scratch on `IsoReader` today. |
+| **TAR-RA** | RA, library seek-before-read | **Gap → `tar-concurrent-open`** | `tarfile._FileInFile` re-seeks on each `read()`, **no lock** (same shape as pycdlib). Keep `extractfile` (sparse); one per-reader lock covers `tarfile.open`, `getmembers()` scan I/O, strict EOF reads, member creation, read/readinto/supported positioning/close, and archive close. |
+| **ISO** | RA, library seek-before-read | **Gap → `tar-concurrent-open`** | `pycdlib.PyCdlibIO` re-seeks on each `read()`, **no lock**. One per-reader lock covers `PyCdlib.open` / `open_fp`, member creation/context entry, read/readinto/supported positioning/close, and archive close. Pinned `walk()` / `get_record()` are verified in-memory catalog paths and remain version-regression audit items. |
 
 **Fix ownership (no overlap with the exploration itself):**
 
@@ -48,23 +53,17 @@ Invariant (random-access, independent-open backends): `_open_member` is a functi
 `_members_cache` / `_members_by_name_lists`. After population the caches are
 read-mostly; the race is only the first build.
 
-**Options:**
-
-1. **Materialize-before-fan-out precondition** (recommended for v1) — a concurrent
-   consumer MUST finish a random-access member pass before opening members
-   concurrently. Documented on the ABC now; zero runtime cost; matches how
-   `ExtractionCoordinator` already prefers an indexed list when available.
-2. **Init-under-lock** — wrap the cache build in a `threading.Lock` (or
-   `call_once`-style guard). Small, correct if someone ignores the precondition;
-   still does not make the *rest* of the reader thread-safe.
-
-**Recommendation:** keep (1) as the public contract for any future parallel
-consumer; consider (2) only if/when a parallel-extraction feature lands and wants
-defense-in-depth. Do **not** pretend the whole reader is thread-safe.
+**Active design:** materialize-before-fan-out is the public phase boundary **and**
+publication is synchronized. One owner builds members/name indexes locally, completes link
+resolution, then publishes both atomically. A conflicting operation during the build raises
+`UnsupportedOperationError`; no caller sees partial cache state. After publication the
+internal containers are immutable (list-returning APIs do not expose them for structural
+mutation); existing backend-populated late-bound `ArchiveMember` fields remain synchronized.
+This supports the worker seam without pretending arbitrary reader methods are thread-safe.
 
 ---
 
-## 3. Benchmark design (decide the feature with numbers)
+## 3. Measurement design (substantiate performance decisions)
 
 Per `VISION.md`: no perf claim without a benchmark. Home: `benchmarks/` (not built
 here).
@@ -77,40 +76,47 @@ here).
 | `zip-stored-many` | Many stored members | I/O-bound baseline (little decode). |
 | `7z-nonsolid` | Multi-folder / non-solid 7z | Folder-granularity parallelism. |
 | `7z-solid-one-folder` | One solid folder, many members | Negative control — should *not* speed up under per-member fan-out. |
-| `tar.gz-ra` | Compressed TAR, random-access open | Exempt / single-decoder — expect no win (or serialization). |
+| `tar.gz-ra` | Compressed TAR, random-access open | Correct but shared-handle-serialized — expect no win. |
+| `iso-direct-many` | Many ISO extents through one pycdlib image handle | Correctness-lock serialization baseline. |
 | `single-file-large` | One large `.gz` / `.xz` | Sanity: one member, no fan-out opportunity. |
 
-**Metrics:** wall time; bytes decompressed (avoid "faster" that re-decodes more);
-seek counts / lock hold time on SharedSource; peak RSS; CPU utilization.
+**Metrics:** use the subset relevant to the mechanism: wall and lock wait/hold time for the
+TAR/ISO correctness baseline; bytes decompressed/read and seek counts where practical; peak
+RSS only for changes that alter buffering/materialization; CPU utilization for decode
+scheduling claims.
 
 **Runtimes:** CPython GIL build (3.11/3.12) **and** `3.13t` free-threaded. Same
 corpus, same scripts.
 
-**Decision rule:** ship a parallel-extraction consumer only if at least one
-realistic DIRECT / multi-folder workload shows a clear wall-time win on GIL *or*
-3.13t without inflating bytes-decompressed on solid archives. Otherwise keep the
-invariant and leave the feature deferred.
+**Decision rule:** correctness changes have no speed threshold. A future
+parallel-extraction consumer or handle/decode optimization must supply targeted before/after
+measurements for its claimed benefit and relevant costs. Otherwise keep the invariant and
+make no throughput claim.
 
 ---
 
-## 4. Free-threading position (`threat-model.md` C4) — draft
+## 4. Free-threading position (`threat-model.md` C4)
 
-**Stance (draft for C4):**
+**Target stance (`concurrent-member-streams`):**
 
-- Archivey's public contract stays **"one `ArchiveReader` per thread"** for v1.
-  Concurrent `open()` / iteration / `close()` on one reader remains unsupported /
-  undefined (`packaging-and-extras`).
-- What *can* become useful under `3.13t` is parallel **decode/extract across
-  independent work units** (members / folders / blocks), either via N readers over
-  one path or one reader + SharedSource — decided by the benchmark (§3) and §5.
+- After materialization, one reader supports concurrent `open()` and independent operations
+  on different returned streams. Iteration, materialization, `stream_members`, extraction,
+  and reader close remain single-owner.
+- Single-owner APIs use explicit root tokens and private child scopes, so `extract_all()` may
+  drive `stream_members()` and yielded-stream I/O without admitting unrelated reentry.
+- This correctness seam must use real synchronization. A required Linux CPython `3.13t`
+  `free-threaded-concurrency` job covers the zero-dependency core; optional backends are not
+  claimed free-threaded-safe until a dedicated job can execute them.
+- Parallel **decode/extract scheduling** across independent work units (members / folders /
+  blocks) remains a separate future feature whose speed claims need the targeted measurements
+  in §3 and §5.
 - **C++ accelerator caveat:** `rapidgzip` (and similar) spawn `std::thread`s
   invisible to Python's threading. Free-threading does not remove the
   close-before-finalize requirement (`docs/known-issues.md` Bugs 1–3). A parallel
   consumer must still never kill a source under a live accelerator stream, and
   must not assume more accelerator objects ⇒ linear speedup (FD / memory / thread
-  pressure).
-- Update C4 from "Backlog" to this stance when the parallel-extraction change is
-  proposed; until then this doc is the draft.
+  pressure). Lifecycle leases therefore keep backend resources alive until all member
+  streams close.
 
 ---
 
@@ -120,10 +126,10 @@ invariant and leave the feature deferred.
 |---|---|---|
 | ZIP / stored / deflate | **Per member** | Independent local headers; stdlib `_SharedFile` or path FDs. |
 | Single-file | **N/A** (one member) | Re-open is fine; no fan-out. |
-| 7z | **Per folder** (coders chain) | Members *within* one folder share decompressor state — sequential. Separate folders are independent; each `open()` may re-decode from folder start (already allowed by solid-open scenarios). |
+| 7z | **Per folder** (coders chain) | Returned streams need independent logical position/state. They may use per-open decode or synchronized bounded/spooled shared materialization; no guarantee eliminates re-decoding. |
 | RAR | **Per solid block** | Same shape as 7z folders; `unrar` for data. |
-| TAR-RA | **Per member** (after lock wrap) | Seek-before-read on one fileobj; serialize via per-archive member-stream lock (`tar-concurrent-open`). |
-| ISO | **Per extent** (pycdlib) | Same lock-wrap as TAR-RA; not ZIP-equivalent until locked. |
+| TAR-RA | **Per member logically** | One comprehensive per-reader lock covers archive initialization, `getmembers()`/EOF handle reads, member-open initialization, read/readinto/supported positioning, member close, and archive close; correctness is guaranteed but handle operations serialize. |
+| ISO | **Per extent logically** | The same lock covers pycdlib archive open, member open/context entry, stream operations, and close. `walk()`/`get_record()` are currently in-memory catalog operations under the materialization owner. |
 | Directory | **Per file** | Independent paths. |
 
 A future `ExtractionCoordinator` fan-out must schedule at this granularity — not
@@ -135,16 +141,13 @@ blindly "one task per member" on solid archives.
 
 | Model | Pros | Cons |
 |---|---|---|
-| **N readers / one path** | Each reader has isolated state (caches, lifecycle); true parallel I/O via independent FDs; matches today's "one reader per thread" public rule. | N× header parse / member-list cost; N× FD; passwords/config must be duplicated; harder to share extraction progress / limits in one coordinator. |
-| **One reader + SharedSource** | Single member list; one config/password context; SharedSource already serializes seek+read safely; fits ExtractionCoordinator as one pull sink with worker threads on open streams. | Reader object itself still not thread-safe (open/iter/close); needs materialize-before-fan-out; path-source independent handles still dormant; solid formats need per-unit decompressors. |
+| **N readers / one path** | Isolated caches/lifecycle and independent FDs. | N× header parse/list cost and FD pressure; password/config duplication; harder coordinator accounting. |
+| **One reader + coordinated sources** | Single published member list/config/password context; the supported post-materialization worker seam. | Reader-wide mutation/close stays single-owner; shared handles may serialize; solid formats need independent logical stream state. |
 
-**Recommendation for a future feature:** prefer **one reader + SharedSource** for
-path and stream sources once the member list is materialized, with worker threads
-only driving already-opened (or about-to-open) **member streams** — never
-concurrent `reader.open` registration without a lock. For path sources under heavy
-I/O, optionally engage SharedSource's dormant `independent_handles` seam (benchmark
-gate). Keep **N readers** as an escape hatch for callers who already multiprocess
-and want isolation, not as the library's primary parallel API.
+**Recommendation:** use one materialized reader + coordinated sources for the public worker
+seam. `open()` registration/lifecycle/password state is synchronized; workers operate on
+distinct streams. Keep N readers as an isolation/multiprocess escape hatch. Engaging
+SharedSource independent handles remains a measurement-informed future optimization.
 
 Interaction with `safe-extraction`: archive-wide limits (`max_entries`,
 `max_extracted_bytes`, ratio guard) must stay on a single coordinator thread (or a
@@ -152,36 +155,38 @@ locked counter); workers only produce bytes / paths.
 
 ---
 
-## 7. Recommendation — does the ABC need more before Phase 6?
+## 7. Active recommendation before Phase 6
 
-**No further ABC change is required for Phase 6** beyond what this exploration
-commits:
+The archived exploration's "no further ABC change" conclusion is superseded. Before Phase 6:
 
-1. The `_open_member` reentrancy invariant (spec + docstring) — **done**.
-2. The materialize-before-fan-out precondition — **documented** on the ABC.
-3. SharedSource for archivey-owned byte ranges — **landed** in
-   `shared-source-streams`.
+1. Keep the `_open_member` no-unsynchronized-per-open-scratch invariant.
+2. Keep `UNMATERIALIZED` / `MATERIALIZING` / `MATERIALIZED` cache state separate from
+   lifecycle and publish atomically.
+3. Add explicit operation-owner tokens/private child scopes and release them on generator
+   exhaustion, error, close, or abandonment.
+4. Add lifecycle leases/failure/finalizer/source-ownership semantics so live streams survive
+   reader close and teardown is attempted once.
+5. Refactor `ArchiveStream` lazy open/close to claim/call/publish so stream state is not held
+   across backend/source or lifecycle acquisition.
+6. Synchronize password known-good/provider state: callbacks are lock-free; validation may
+   use a required backend/source lock but no lifecycle/cache/password lock.
+7. Use SharedSource for archivey-owned ranges and comprehensive one-lock coordination for
+   TAR/ISO.
 
 Phase 6 native 7z/RAR should:
 
-- Give each `open()` its own decompressor over its own `SharedSource` view
-  (re-decode from folder/block start when solid).
+- Give each returned stream independent logical position/state using either a per-open
+  decoder or synchronized bounded/spooled shared materialization.
 - Hold no per-open scratch on the reader.
+- Use the synchronized password/key and lifecycle mechanisms.
 - Treat folder/block as the parallel unit in any later coordinator.
 
-**Explicitly deferred (do not block Phase 6):**
+**Still deferred:**
 
 - Parallel extraction feature / ExtractionCoordinator fan-out.
-- Member-cache init-under-lock.
 - Engaging SharedSource `independent_handles`.
-- Free-threading public API changes.
 - Native TAR reader / SharedSource-at-`offset_data` (lower priority than the lock
   wrapper in `tar-concurrent-open`).
 
-**Follow-up (does not block Phase 6 ABC):** `tar-concurrent-open` — locked
-member-stream wrapper for TAR-RA and ISO (same seek-before-read gap; keep
-`extractfile` / pycdlib rather than reimplementing sparse).
-
-If a Phase 6 design review discovers a backend that cannot honor the invariant
-without an ABC hook, prefer a narrow carve-out or the lock-wrapper pattern rather
-than weakening the SharedSource contract for archivey-owned ranges.
+If a Phase 6 design review discovers a backend that cannot honor the worker seam, add the
+narrow coordination hook before implementation rather than adding a format carve-out.

@@ -1,5 +1,13 @@
 # Exploration: parallel-safe reader — lock the `_open_member` interface now, defer the feature
 
+> **Historical record — partly superseded (2026-07-10).**
+> `concurrent-member-streams` replaces this exploration's "one reader per thread,"
+> unsynchronized-cache, TAR carve-out, and ISO leave-alone conclusions with a narrow
+> supported contract: after materialization, concurrent `open()` and independent member
+> stream operations are safe by construction. `tar-concurrent-open` supplies comprehensive
+> TAR/ISO shared-handle locking. The audit/reentrancy/benchmark analysis below records what
+> was concluded at archive time; it is not the current target contract.
+
 ## Why
 
 The `shared-source-streams` change makes the *underlying source* safe for multiple open
