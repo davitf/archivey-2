@@ -176,6 +176,43 @@ def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
     assert POLICY_TRANSFORMS[ExtractionPolicy.TRUSTED](m).mode == 0o777
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="surrogateescape filename bytes are a POSIX concept"
+)
+@pytest.mark.parametrize(
+    "name_bytes",
+    [
+        b"caf\xe9.txt",  # Latin-1 'é' — undecodable as UTF-8, kept via surrogateescape
+        b"\xff\xfe.bin",  # arbitrary high bytes
+        b"dir\xe9/file\xff.txt",  # hostile bytes in a subdir component too
+    ],
+    ids=["latin1", "highbytes", "subdir"],
+)
+def test_surrogateescape_name_round_trips_through_extraction(
+    tmp_path: Path, name_bytes: bytes
+) -> None:
+    # The accept side of the encoding contract (companion to the check_universal
+    # totality/materializability property tests): a member name carrying non-UTF-8
+    # filename bytes is decoded with surrogateescape on read, PASSES the universal
+    # filter (the bytes are representable on disk), and extracts back to the *exact*
+    # original bytes — never a crash, never a mojibake filename.
+    stored = name_bytes.decode("utf-8", errors="surrogateescape")
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", encoding="utf-8", errors="surrogateescape"
+    ) as tf:
+        info = tarfile.TarInfo(stored)
+        info.size = 3
+        tf.addfile(info, io.BytesIO(b"abc"))
+
+    dest = tmp_path / "out"
+    extract(io.BytesIO(buf.getvalue()), dest, policy=ExtractionPolicy.TRUSTED)
+
+    # Compare on the raw bytes: the file exists under the original filename bytes.
+    on_disk = {os.fsencode(p.name) for p in dest.rglob("*") if p.is_file()}
+    assert os.path.basename(name_bytes) in on_disk
+
+
 # ---------------------------------------------------------------------------
 # Policy transforms (task 1.4)
 # ---------------------------------------------------------------------------

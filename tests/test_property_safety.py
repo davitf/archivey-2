@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import re
 import tempfile
 from collections.abc import Iterator
@@ -160,6 +161,36 @@ _safe_file_name = st.from_regex(
     fullmatch=True,
 ).filter(lambda s: ".." not in s.split("/") and s not in ("", "."))
 
+# The reject-side strategies below are built *constructively* rather than as
+# ``_pathish.filter(...)``: the guaranteed-property fraction of _pathish is small (and
+# shifts as _pathish grows — e.g. the hostile-encoding branch), which trips Hypothesis's
+# ``filter_too_much`` health check on the floor version. Breadth of hostile characters in
+# these classes is the totality test's job; here we only need the rule to fire reliably.
+_plain_component = st.sampled_from([".", "a", "b", "foo", "bar", "x", "dir"])
+
+# Guaranteed to contain a ``..`` path component (on either separator).
+_dotdot_names = st.builds(
+    lambda pre, post, sep: sep.join([*pre, "..", *post]),
+    st.lists(_plain_component, max_size=3),
+    st.lists(_plain_component, max_size=3),
+    st.sampled_from(["/", "\\"]),
+)
+
+# Guaranteed absolute: POSIX root, UNC/rooted backslash, or a drive letter.
+_relative_tail = st.lists(_plain_component, min_size=0, max_size=3).map("/".join)
+_absolute_names = st.one_of(
+    _relative_tail.map(lambda tail: "/" + tail),
+    _relative_tail.map(lambda tail: "\\" + tail),
+    st.builds(
+        lambda drive, tail: f"{drive}:{tail}",
+        st.sampled_from(["C", "D", "Z"]),
+        _relative_tail,
+    ),
+)
+
+# Guaranteed absolute *symlink target* (starts with ``/`` → resolves to ``None``).
+_absolute_targets = _pathish.map(lambda t: "/" + t)
+
 
 def _components_after_sep(name: str, *, backslash_is_separator: bool) -> list[str]:
     """Path components after optional ``\\``→``/`` conversion (empty/``.`` dropped)."""
@@ -297,14 +328,16 @@ def test_normalize_pinned_examples_still_hold(
 # ---------------------------------------------------------------------------
 
 
-@given(name=_pathish.filter(_has_dotdot_component))
+@given(name=_dotdot_names)
 def test_check_universal_rejects_dotdot(dest_root: Path, name: str) -> None:
+    assert _has_dotdot_component(name)  # strategy guarantees the class under test
     with pytest.raises(FilterRejectionError):
         check_universal(_member(name), dest_root)
 
 
-@given(name=_pathish.filter(_is_absolute_name))
+@given(name=_absolute_names)
 def test_check_universal_rejects_absolute(dest_root: Path, name: str) -> None:
+    assert _is_absolute_name(name)  # strategy guarantees the class under test
     with pytest.raises(FilterRejectionError):
         check_universal(_member(name), dest_root)
 
@@ -365,6 +398,39 @@ def test_check_universal_total(
         pytest.fail(f"raw exception from check_universal: {type(exc).__name__}: {exc}")
 
 
+@given(
+    name=_pathish,
+    member_type=_member_types,
+    link_target=st.one_of(st.none(), _pathish),
+)
+def test_check_universal_accepts_only_materializable(
+    dest_root: Path,
+    name: str,
+    member_type: MemberType,
+    link_target: str | None,
+) -> None:
+    # Accept-side invariant (brackets the surrogate counterexample from the other
+    # direction): whatever check_universal *accepts* must be materializable on the
+    # filesystem — its name, and a link target it will os.symlink/link, must both
+    # os.fsencode. A name the platform cannot encode has to be rejected, not passed
+    # through to crash the extractor's mkdir/symlink. On POSIX only the surrogateescape
+    # range encodes; Windows' surrogatepass encodes every lone surrogate, so this stays
+    # a tautology there rather than a false failure.
+    try:
+        check_universal(
+            _member(name, type=member_type, link_target=link_target), dest_root
+        )
+    except ArchiveyError:
+        return  # rejected — nothing to materialize
+    # Accepted: the name (and any link target the extractor would create) must encode.
+    os.fsencode(name)
+    if link_target is not None and member_type in (
+        MemberType.SYMLINK,
+        MemberType.HARDLINK,
+    ):
+        os.fsencode(link_target)
+
+
 # ---------------------------------------------------------------------------
 # 4. resolve_link_target_name
 # ---------------------------------------------------------------------------
@@ -383,8 +449,9 @@ def test_resolve_link_total(
     assert result is None or isinstance(result, str)
 
 
-@given(link_name=_pathish, target=_pathish.filter(lambda t: t.startswith("/")))
+@given(link_name=_pathish, target=_absolute_targets)
 def test_resolve_symlink_absolute_is_none(link_name: str, target: str) -> None:
+    assert target.startswith("/")  # strategy guarantees the class under test
     assert resolve_link_target_name(link_name, target, MemberType.SYMLINK) is None
 
 
