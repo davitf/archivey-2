@@ -13,6 +13,7 @@ import contextlib
 import gzip
 import io
 import lzma
+import random
 import zlib
 from pathlib import Path
 
@@ -394,20 +395,26 @@ def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
         second.close()
 
 
-def test_read_after_reader_close_raises_typed_error() -> None:
-    # archive-reading "fail loudly" scenario: closing the reader closes the SharedSource
-    # behind a stream-source member stream, so a later read surfaces a typed error at
-    # the reader boundary — never the primitive's raw ValueError. Pinned to the stdlib
-    # gzip path with an incompressible payload larger than its read-ahead, so the
-    # post-close read deterministically touches the closed source on every rapidgzip
-    # version (the accelerator may buffer a small member whole on its first read).
-    payload = bytes(range(256)) * 1024  # 256 KiB, ~incompressible
+def test_read_after_reader_and_source_close_raises_typed_error() -> None:
+    # archive-reading "fail loudly" scenario: with the reader AND the caller's source
+    # stream closed, reading a still-open member stream surfaces a typed error at the
+    # reader boundary — never a raw ValueError. (Reader close alone does NOT invalidate
+    # member streams: the SharedSource is non-owning and deliberately left open, matching
+    # ZIP/path-source behavior — and killing the source under a live rapidgzip stream
+    # would abort the process; see docs/known-issues.md.) Pinned to the stdlib gzip path
+    # with an incompressible payload larger than its read-ahead, so the post-close read
+    # deterministically touches the closed source (the accelerator may buffer a small
+    # member whole on its first read — and terminates on a dead source, per above).
+    payload = random.Random(0).randbytes(256 * 1024)  # incompressible: stays ~256 KiB
     config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
-    ar = open_archive(io.BytesIO(gzip.compress(payload)), config=config)
+    source = io.BytesIO(gzip.compress(payload))
+    ar = open_archive(source, config=config)
     (member,) = ar.members()
     stream = ar.open(member)
     assert stream.read(16) == payload[:16]
     ar.close()
+    assert stream.read(16) == payload[16:32]  # reader close alone: still readable
+    source.close()
     with pytest.raises(UnsupportedOperationError):
         while stream.read(65536):
             pass

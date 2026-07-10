@@ -28,6 +28,15 @@ backend's generic `ValueError` mapping (ZIP's corrupt-offset rule) must not clai
 corruption. The wrapper's own read-after-close keeps plain file semantics (raw
 `ValueError`), exactly like any closed Python file object.
 
+Reader `close()` does **not** invalidate outstanding member streams: the single-file
+reader leaves its (non-owning) `SharedSource` open, so streams keep reading after the
+reader closes, exactly like ZIP and path sources. This is also load-bearing crash
+avoidance: rapidgzip 0.16 **aborts the process** (C++ `std::invalid_argument` through
+`terminate()`) whenever a callback into its Python source raises — on read, close, and
+the GC-time finalize guard alike — so archivey must never kill the source underneath a
+live accelerator stream (known-issues Bug 3). The typed-error scenario is the delta's
+own wording: reader **and** underlying source closed.
+
 ## B. Path-source independent handles — dormant
 
 The `SharedSource` API carries the seam for minting a *fresh* `open(path, 'rb')` handle per
@@ -121,7 +130,9 @@ had the bug).
 - **single-file** — routes its member open through the primitive (whole-source view + a fresh
   codec stream per open — there is no per-member byte range); also removes the
   `_first_stream` eager-stream scratch as part of making open reentrant (coordinated with
-  `parallel-reader-exploration`, which owns the invariant).
+  `parallel-reader-exploration`, which owns the invariant). `_close_archive` leaves the
+  non-owning `SharedSource` open (see §A: reader close does not invalidate member
+  streams; killing the source under a live rapidgzip stream aborts the process).
 - **ZIP** — no code change (stdlib `_SharedFile` coordinates both path and stream sources —
   design §C); concurrent-open tests for both legs lock the contract in.
 - **TAR-RA** — carved out (single shared decoder; documented exempt in the delta).

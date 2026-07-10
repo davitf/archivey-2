@@ -289,15 +289,19 @@ class SingleFileReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        # Close an unserved non-seekable pending stream; close the SharedSource (which
-        # closes an owned path handle, but never a caller-owned stream). Opened member
-        # streams are the caller's to close.
+        # Close an unserved non-seekable pending stream. The SharedSource is deliberately
+        # NOT closed: it owns nothing (only stream sources are wrapped, and the caller
+        # owns those), and marking it closed would poison still-open member streams —
+        # which are the caller's to close, keep working after reader close everywhere
+        # else (ZIP, path sources), and, over the rapidgzip accelerator, ABORT the
+        # process if their source dies underneath them (rapidgzip 0.16 raises C++
+        # std::invalid_argument through terminate() when a Python-file callback raises —
+        # on read, close, and the GC-time guard alike; see docs/known-issues.md). Reads
+        # after the *caller* closes their source surface as a typed error via the
+        # ArchiveStream closed-handle mapping (stdlib codec paths).
         if self._pending_stream is not None:
             self._pending_stream.close()
             self._pending_stream = None
-        if self._shared is not None:
-            self._shared.close()
-            self._shared = None
 
 
 class SingleFileBackend(ReadBackend):
