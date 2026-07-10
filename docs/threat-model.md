@@ -161,6 +161,30 @@ caller loops. Still worth an explicit documented stance + a recipe for bounded
 recursive processing, since "index my backups" — the founding use case — does exactly
 this.
 
+### O7. Names representable as bytes but not by the target filesystem
+
+`check_universal` rejects names that cannot be `os.fsencode`d at all (a lone surrogate
+outside the surrogateescape range — see `internal/filters.py`). It does **not** reject a
+name that *is* fsencodable but that the destination filesystem refuses at `write()`: a
+non-UTF-8 byte sequence carried via surrogateescape (`caf\udce9.txt`) is transparent on
+ext4/most Linux but raises `OSError` (`EILSEQ`, "Illegal byte sequence") on APFS/macOS
+and other UTF-8-enforcing filesystems. Today that surfaces as an ordinary per-member
+write failure (a `FAILED` `ExtractionResult`, or a re-raised `OSError` under
+`OnError.STOP`) — safe (no traversal, no abort) but **platform-dependent** and *not* a
+faithful round-trip. On Windows the mirror hazard is the O3 one: a name the OS silently
+mangles or that becomes hard to delete/rename. Covered by
+`test_surrogateescape_name_extracts_safely_or_is_cleanly_refused` (asserts the
+safety-or-clean-refusal invariant, not round-trip).
+
+*Direction:* fold into the O3/O4 policy work as the "cross-platform portable name"
+dimension. Recommendation: `STRICT` normalizes to an always-representable, portable
+form on **every** platform — decode-lossy names sanitized to a deterministic safe
+spelling (a reversible/percent-style escape, collision-tracked like O2), rejecting only
+when even that cannot be formed; `TRUSTED` attempts the faithful bytes and lets the
+local OS decide (today's behavior). Until then the write-time `OSError` should at least
+be translated to a typed archivey error so callers get "this name isn't representable
+here" rather than a bare `OSError`. Needs a `safe-extraction` delta (shared with O3/O4).
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing)

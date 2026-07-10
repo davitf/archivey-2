@@ -188,14 +188,22 @@ def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
     ],
     ids=["latin1", "highbytes", "subdir"],
 )
-def test_surrogateescape_name_round_trips_through_extraction(
+def test_surrogateescape_name_extracts_safely_or_is_cleanly_refused(
     tmp_path: Path, name_bytes: bytes
 ) -> None:
     # The accept side of the encoding contract (companion to the check_universal
-    # totality/materializability property tests): a member name carrying non-UTF-8
-    # filename bytes is decoded with surrogateescape on read, PASSES the universal
-    # filter (the bytes are representable on disk), and extracts back to the *exact*
-    # original bytes — never a crash, never a mojibake filename.
+    # totality/materializability property tests). A member name carrying non-UTF-8
+    # filename bytes is decoded with surrogateescape on read and PASSES the universal
+    # filter (the bytes are fsencodable, so representable *as bytes*). What happens at
+    # the write() syscall is then the *target filesystem's* call, and we only promise
+    # safety, not faithful round-trip:
+    #   * On a bytes-transparent FS (ext4/most Linux) the file lands under the exact
+    #     original filename bytes — no crash, no mojibake.
+    #   * On a UTF-8-enforcing FS (APFS/macOS raises OSError EILSEQ "Illegal byte
+    #     sequence") the OS refuses the name; extraction surfaces that as a normal
+    #     write failure — no traversal, nothing created outside dest, no process abort.
+    # Sanitizing such names into an always-writable "safe" form is a deliberate,
+    # policy-gated feature (threat-model O3/O7), intentionally NOT done here.
     stored = name_bytes.decode("utf-8", errors="surrogateescape")
     buf = io.BytesIO()
     with tarfile.open(
@@ -206,9 +214,19 @@ def test_surrogateescape_name_round_trips_through_extraction(
         tf.addfile(info, io.BytesIO(b"abc"))
 
     dest = tmp_path / "out"
-    extract(io.BytesIO(buf.getvalue()), dest, policy=ExtractionPolicy.TRUSTED)
+    try:
+        extract(io.BytesIO(buf.getvalue()), dest, policy=ExtractionPolicy.TRUSTED)
+    except OSError:
+        # The filesystem rejected the byte sequence at write time (e.g. APFS/macOS).
+        # That is the honest "the OS won't represent this name" outcome — safe. The
+        # only guarantee is that nothing escaped: whatever exists is under dest.
+        for p in dest.rglob("*"):
+            assert (
+                dest.resolve() in p.resolve().parents or p.resolve() == dest.resolve()
+            )
+        return
 
-    # Compare on the raw bytes: the file exists under the original filename bytes.
+    # The FS accepted the bytes: the file exists under the exact original filename bytes.
     on_disk = {os.fsencode(p.name) for p in dest.rglob("*") if p.is_file()}
     assert os.path.basename(name_bytes) in on_disk
 
@@ -280,7 +298,9 @@ def test_archive_wide_ratio() -> None:
         max_bytes=10**12,
         max_ratio=2.0,
         ratio_activation_threshold=10,
-        source=SimpleNamespace(compressed_source_size=10, compressed_bytes_consumed=None),
+        source=SimpleNamespace(
+            compressed_source_size=10, compressed_bytes_consumed=None
+        ),
     )
     t.start_member(_member("f"))  # no per-member compressed_size
     with pytest.raises(_AlwaysStopExtractionError):
@@ -294,7 +314,9 @@ def test_archive_wide_ratio_live_denominator() -> None:
         max_bytes=10**12,
         max_ratio=2.0,
         ratio_activation_threshold=10,
-        source=SimpleNamespace(compressed_source_size=None, compressed_bytes_consumed=10),
+        source=SimpleNamespace(
+            compressed_source_size=None, compressed_bytes_consumed=10
+        ),
     )
     t.start_member(_member("f"))
     with pytest.raises(_AlwaysStopExtractionError):
@@ -546,7 +568,10 @@ def test_replace_failure_preserves_existing_file(tmp_path: Path) -> None:
     (dest / "a.txt").write_bytes(b"OLD DATA")
     with pytest.raises(ExtractionError):
         extract(
-            src, dest, overwrite=OverwritePolicy.REPLACE, limits=ExtractionLimits(max_extracted_bytes=1000)
+            src,
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            limits=ExtractionLimits(max_extracted_bytes=1000),
         )
     assert (dest / "a.txt").read_bytes() == b"OLD DATA"  # untouched
     assert not list(dest.glob(".archivey-tmp-*"))  # temp cleaned up
@@ -597,7 +622,12 @@ def test_cumulative_bomb_halts_even_under_continue(tmp_path: Path) -> None:
     _write_zip(src, {"a.txt": b"x" * 5000, "b.txt": b"y" * 5000})
     dest = tmp_path / "out"
     with pytest.raises(ExtractionError):
-        extract(src, dest, limits=ExtractionLimits(max_extracted_bytes=6000), on_error=OnError.CONTINUE)
+        extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_extracted_bytes=6000),
+            on_error=OnError.CONTINUE,
+        )
 
 
 def test_zip_bomb_per_member_ratio(tmp_path: Path) -> None:
@@ -607,7 +637,11 @@ def test_zip_bomb_per_member_ratio(tmp_path: Path) -> None:
     _write_zip(src, {"bomb.bin": payload})
     dest = tmp_path / "out"
     with pytest.raises(ExtractionError):
-        extract(src, dest, limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024))
+        extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
+        )
 
 
 def test_entry_count_bomb(tmp_path: Path) -> None:
@@ -615,7 +649,12 @@ def test_entry_count_bomb(tmp_path: Path) -> None:
     _write_zip(src, {f"f{i}.txt": b"" for i in range(50)})
     dest = tmp_path / "out"
     with pytest.raises(ExtractionError):
-        extract(src, dest, limits=ExtractionLimits(max_entries=10), on_error=OnError.CONTINUE)
+        extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_entries=10),
+            on_error=OnError.CONTINUE,
+        )
 
 
 def test_selector_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
@@ -726,7 +765,9 @@ def test_extract_one_shot_from_non_seekable_pipe(tmp_path: Path) -> None:
     # extraction is a single forward pass, so it needs no random access.
     from tests.streams_util import NonSeekableBytesIO
 
-    raw = _tar_bytes([("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz")
+    raw = _tar_bytes(
+        [("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz"
+    )
     dest = tmp_path / "out"
     results = extract(NonSeekableBytesIO(raw), dest)
     assert (dest / "a.txt").read_bytes() == b"hello"
@@ -741,7 +782,9 @@ def test_extract_one_shot_from_non_seekable_pipe(tmp_path: Path) -> None:
 
 def test_tar_symlink_created(tmp_path: Path) -> None:
     src = tmp_path / "a.tar"
-    src.write_bytes(_tar_bytes([("file", "file.txt", b"data"), ("sym", "link", "file.txt")]))
+    src.write_bytes(
+        _tar_bytes([("file", "file.txt", b"data"), ("sym", "link", "file.txt")])
+    )
     dest = tmp_path / "out"
     extract(src, dest)
     link = dest / "link"
@@ -754,7 +797,9 @@ def test_tar_symlink_dangling_to_filtered_target(tmp_path: Path) -> None:
     # A symlink is target-independent: it is created even when its target is excluded,
     # and may dangle. No copy, no error.
     src = tmp_path / "a.tar"
-    src.write_bytes(_tar_bytes([("file", "file.txt", b"data"), ("sym", "link", "file.txt")]))
+    src.write_bytes(
+        _tar_bytes([("file", "file.txt", b"data"), ("sym", "link", "file.txt")])
+    )
     dest = tmp_path / "out"
     with open_archive(src) as r:
         r.extract_all(dest, members=["link"])  # exclude file.txt
@@ -841,7 +886,8 @@ def test_chained_symlink_attack_file_payload_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(
-    os.name != "posix", reason="directory symlinks / os.symlink semantics are POSIX here"
+    os.name != "posix",
+    reason="directory symlinks / os.symlink semantics are POSIX here",
 )
 def test_file_payload_through_preexisting_parent_symlink_rejected(
     tmp_path: Path,
@@ -862,7 +908,8 @@ def test_file_payload_through_preexisting_parent_symlink_rejected(
 
 
 @pytest.mark.skipif(
-    os.name != "posix", reason="directory symlinks / os.symlink semantics are POSIX here"
+    os.name != "posix",
+    reason="directory symlinks / os.symlink semantics are POSIX here",
 )
 def test_symlink_payload_through_preexisting_parent_symlink_rejected(
     tmp_path: Path,
@@ -945,7 +992,9 @@ def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
 
 def test_seekable_targz_extract(tmp_path: Path) -> None:
     src = tmp_path / "a.tar.gz"
-    src.write_bytes(_tar_bytes([("file", "a.txt", b"hello"), ("dir", "d", None)], mode="w:gz"))
+    src.write_bytes(
+        _tar_bytes([("file", "a.txt", b"hello"), ("dir", "d", None)], mode="w:gz")
+    )
     dest = tmp_path / "out"
     extract(src, dest)
     assert (dest / "a.txt").read_bytes() == b"hello"
@@ -960,13 +1009,19 @@ def test_seekable_targz_archive_wide_ratio(tmp_path: Path) -> None:
     src.write_bytes(_tar_bytes([("file", "z.bin", payload)], mode="w:gz"))
     dest = tmp_path / "out"
     with pytest.raises(ExtractionError):
-        extract(src, dest, limits=ExtractionLimits(max_ratio=5.0, ratio_activation_threshold=1024))
+        extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_ratio=5.0, ratio_activation_threshold=1024),
+        )
 
 
 def test_non_seekable_targz_extract(tmp_path: Path) -> None:
     from tests.streams_util import NonSeekableBytesIO
 
-    raw = _tar_bytes([("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz")
+    raw = _tar_bytes(
+        [("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz"
+    )
     dest = tmp_path / "out"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
         r.extract_all(dest)
@@ -1050,7 +1105,8 @@ def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                 limits=ExtractionLimits(
                     max_ratio=10.0,
                     ratio_activation_threshold=1024,
-                    max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+                    max_extracted_bytes=100
+                    * 2**20,  # high, so the cap is not what trips
                 ),
             )
 
@@ -1108,7 +1164,9 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
         assert r.compressed_source_size is None
-        assert r.compressed_bytes_consumed is not None  # counter wired for single-file too
+        assert (
+            r.compressed_bytes_consumed is not None
+        )  # counter wired for single-file too
         with pytest.raises(ExtractionError):
             r.extract_all(
                 dest,
@@ -1132,7 +1190,8 @@ def _orphan_tar(tmp_path: Path, links: list[str]) -> Path:
     src = tmp_path / "a.tar"
     src.write_bytes(
         _tar_bytes(
-            [("file", "A.txt", b"hello world")] + [("hard", ln, "A.txt") for ln in links]
+            [("file", "A.txt", b"hello world")]
+            + [("hard", ln, "A.txt") for ln in links]
         )
     )
     return src
@@ -1160,7 +1219,9 @@ def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
     assert statuses["L1.txt"] is ExtractionStatus.SKIPPED
     assert statuses["L2.txt"] is ExtractionStatus.EXTRACTED
     assert (dest / "L1.txt").read_bytes() == b"pre-existing"  # untouched under SKIP
-    assert (dest / "L2.txt").read_bytes() == b"hello world"  # content moved to next link
+    assert (
+        dest / "L2.txt"
+    ).read_bytes() == b"hello world"  # content moved to next link
     assert not (dest / "A.txt").exists()  # excluded source never materialized by name
 
 
@@ -1200,7 +1261,9 @@ def test_orphan_materialized_source_carries_link_metadata(tmp_path: Path) -> Non
         info = tarfile.TarInfo("A.txt")
         info.size = 11
         info.mode = 0o644
-        info.mtime = 1_500_000_000  # source's own mtime differs, proving we use the link's
+        info.mtime = (
+            1_500_000_000  # source's own mtime differs, proving we use the link's
+        )
         t.addfile(info, io.BytesIO(b"hello world"))
         info = tarfile.TarInfo("L1.txt")
         info.type = tarfile.LNKTYPE
@@ -1306,13 +1369,16 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
     dest = tmp_path / "out"
     with open_archive(CountingBytesIO(raw)) as r:
         assert r.compressed_source_size is None  # opaque: no static denominator...
-        assert r.compressed_bytes_consumed is not None  # ...so the live counter is wired
+        assert (
+            r.compressed_bytes_consumed is not None
+        )  # ...so the live counter is wired
         with pytest.raises(ExtractionError):
             r.extract_all(
                 dest,
                 limits=ExtractionLimits(
                     max_ratio=10.0,
                     ratio_activation_threshold=1024,
-                    max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+                    max_extracted_bytes=100
+                    * 2**20,  # high, so the cap is not what trips
                 ),
             )
