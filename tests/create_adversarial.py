@@ -1,26 +1,22 @@
-"""Adversarial *string* corpus: hostile bytes in member names, link targets, comments.
+"""Build hostile string archives deterministically and entirely in memory.
 
-Real writer libraries (`zipfile`, `tarfile`) refuse to emit the worst inputs — a lone
-surrogate name raises `UnicodeEncodeError` at write time — so this corpus cannot be built
-declaratively like ``tests/sample_archives.py``. Instead it follows the byte-splice model
-the maintainer approved (and that the ISO directory-cycle test already uses): commit a
-clean **base** archive for reproducibility, then splice an equal-length hostile token into
-a specific field. Equal length keeps every offset (and, for ZIP, the CRC — the name is not
-covered by it) valid; TAR's header checksum is recomputed after the splice.
+Writer libraries correctly reject several byte sequences this corpus needs, so each case
+starts from a clean stdlib-generated ZIP or TAR and performs a length-preserving,
+field-targeted mutation.  No generated archive is committed or written into the source
+tree.
 
-The base archives embed distinctive ASCII **placeholder tokens** (`NAME_ZZZZ…`, etc.) so a
-splice locates its field by searching for the token rather than a hard-coded offset — if a
-base is regenerated and offsets move, the splices still land (the maintainer's ISO
-concern). ``python -m tests.create_adversarial`` (re)writes the committed base fixtures.
+The case names describe what the format actually says:
 
-The committed fixtures are the *clean* base archives; the hostile variants are produced in
-memory at test time (``adversarial_archives()``) and never written to disk, so no file on
-the repo tree carries a hostile name.
+* invalid/WTF-8/overlong ZIP names have general-purpose bit 11 set in *both* headers and
+  therefore genuinely claim UTF-8;
+* an unflagged high-byte ZIP name and comment are explicitly CP437 fallback cases, not
+  mislabeled "invalid UTF-8";
+* TAR invalid bytes exercise tarfile's documented UTF-8+surrogateescape path;
+* no regular TAR name-field NUL case is claimed, because a NUL there is the field
+  terminator rather than a character in the path.
 
-Attack categories exercised (see ``testing-contract`` "Unicode bombs" row): NUL bytes,
-lone surrogates (WTF-8), invalid UTF-8, RTL override, overlong UTF-8 — in the member name,
-the symlink target, and the member/file comment; plus a UTF-8-flag-lie (ZIP name flagged
-UTF-8 but not valid UTF-8).
+ZIP entries are deliberately STORED.  That makes a symlink target a directly addressable
+payload; mutating it also updates the CRC-32 in the local and central headers.
 """
 
 from __future__ import annotations
@@ -30,11 +26,10 @@ import stat
 import struct
 import tarfile
 import zipfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-
-FIXTURE_DIR = Path(__file__).parent / "fixtures" / "adversarial"
+from typing import Literal
 
 # Distinctive, equal-per-field-length ASCII placeholders spliced over at test time.
 _NAME = b"NAME_ZZZZZZZZ.txt"  # 17 bytes
@@ -61,22 +56,21 @@ def _padded(token: bytes, length: int) -> bytes:
     return body
 
 
-# --- base archives (committed) ----------------------------------------------------
+# --- clean bases (generated on demand) --------------------------------------------
 
 
 def build_base_zip() -> bytes:
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
         info = zipfile.ZipInfo(_NAME.decode())
-        # Pin create_system to Unix on every entry: zipfile otherwise stamps the host OS
-        # into "version made by" (0 on Windows, 3 elsewhere), which would make the base
-        # bytes — and thus the committed fixture — platform-dependent.
         info.create_system = 3
+        info.compress_type = zipfile.ZIP_STORED
         info.external_attr = (stat.S_IFREG | 0o644) << 16
         info.comment = _COMMENT
         zf.writestr(info, b"payload for the adversarial name member\n")
         link = zipfile.ZipInfo("link")
         link.create_system = 3
+        link.compress_type = zipfile.ZIP_STORED
         link.external_attr = (stat.S_IFLNK | 0o777) << 16
         zf.writestr(link, _LINK)
     return buf.getvalue()
@@ -84,7 +78,7 @@ def build_base_zip() -> bytes:
 
 def build_base_tar() -> bytes:
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
         info = tarfile.TarInfo(_NAME.decode())
         payload = b"payload for the adversarial name member\n"
         info.size = len(payload)
@@ -96,18 +90,102 @@ def build_base_tar() -> bytes:
     return buf.getvalue()
 
 
-# --- splicing ---------------------------------------------------------------------
+# --- ZIP field mutation -----------------------------------------------------------
 
 
-def _zip_splice(base: bytes, token: bytes, replacement: bytes) -> bytes:
-    """Replace every occurrence of ``token`` (local + central copies) in a ZIP.
+def _find_zip_header(base: bytes, signature: bytes, fixed_size: int, name: bytes) -> int:
+    """Find the unique ZIP header with ``name`` and return its start offset."""
+    matches: list[int] = []
+    start = base.find(signature)
+    while start >= 0:
+        name_length_offset = start + (26 if fixed_size == 30 else 28)
+        if name_length_offset + 2 <= len(base):
+            name_length = struct.unpack_from("<H", base, name_length_offset)[0]
+            name_start = start + fixed_size
+            if base[name_start : name_start + name_length] == name:
+                matches.append(start)
+        start = base.find(signature, start + 1)
+    assert len(matches) == 1, (
+        f"expected one {signature!r} header for {name!r}, found {len(matches)}"
+    )
+    return matches[0]
 
-    Length-preserving: names are not covered by the CRC and the length fields are
-    unchanged, so no header repair is needed.
+
+def _zip_headers_for_name(base: bytes, name: bytes) -> tuple[int, int]:
+    return (
+        _find_zip_header(base, b"PK\x03\x04", 30, name),
+        _find_zip_header(base, b"PK\x01\x02", 46, name),
+    )
+
+
+def _zip_name_splice(base: bytes, replacement: bytes, *, utf8: bool) -> bytes:
+    """Replace the name in both headers, optionally first setting both UTF-8 flags.
+
+    Header offsets are found while the placeholder is still present.  In particular,
+    bit 11 is set *before* either name copy is replaced; looking for ``_NAME`` after the
+    splice would silently mutate neither header.
     """
+    assert len(replacement) == len(_NAME)
+    local, central = _zip_headers_for_name(base, _NAME)
+    data = bytearray(base)
+    if utf8:
+        for flag_offset in (local + 6, central + 8):
+            flags = struct.unpack_from("<H", data, flag_offset)[0] | 0x0800
+            struct.pack_into("<H", data, flag_offset, flags)
+    data[local + 30 : local + 30 + len(_NAME)] = replacement
+    data[central + 46 : central + 46 + len(_NAME)] = replacement
+    return bytes(data)
+
+
+def _zip_stored_data_splice(
+    base: bytes, name: bytes, token: bytes, replacement: bytes
+) -> bytes:
+    """Mutate one STORED member payload and repair both CRC fields."""
     assert len(token) == len(replacement)
-    assert token in base
-    return base.replace(token, replacement)
+    local, central = _zip_headers_for_name(base, name)
+    local_flags, local_method = struct.unpack_from("<HH", base, local + 6)
+    central_method = struct.unpack_from("<H", base, central + 10)[0]
+    assert not local_flags & 0x0008, "test base must not use a data descriptor"
+    assert local_method == central_method == zipfile.ZIP_STORED
+
+    local_crc, compressed_size, uncompressed_size = struct.unpack_from(
+        "<III", base, local + 14
+    )
+    central_crc, central_compressed, central_uncompressed = struct.unpack_from(
+        "<III", base, central + 16
+    )
+    assert compressed_size == uncompressed_size == len(token)
+    assert central_compressed == central_uncompressed == len(token)
+    assert local_crc == central_crc == zlib.crc32(token)
+
+    name_length, extra_length = struct.unpack_from("<HH", base, local + 26)
+    payload_start = local + 30 + name_length + extra_length
+    assert base[payload_start : payload_start + len(token)] == token
+
+    data = bytearray(base)
+    data[payload_start : payload_start + len(token)] = replacement
+    replacement_crc = zlib.crc32(replacement)
+    struct.pack_into("<I", data, local + 14, replacement_crc)
+    struct.pack_into("<I", data, central + 16, replacement_crc)
+    return bytes(data)
+
+
+def _zip_comment_splice(base: bytes, token: bytes, replacement: bytes) -> bytes:
+    """Mutate the first member's central-directory comment."""
+    assert len(token) == len(replacement)
+    _, central = _zip_headers_for_name(base, _NAME)
+    name_length, extra_length, comment_length = struct.unpack_from(
+        "<HHH", base, central + 28
+    )
+    comment_start = central + 46 + name_length + extra_length
+    assert comment_length == len(token)
+    assert base[comment_start : comment_start + comment_length] == token
+    data = bytearray(base)
+    data[comment_start : comment_start + comment_length] = replacement
+    return bytes(data)
+
+
+# --- TAR field mutation -----------------------------------------------------------
 
 
 def _tar_recompute_checksum(data: bytearray, block_start: int) -> None:
@@ -118,35 +196,28 @@ def _tar_recompute_checksum(data: bytearray, block_start: int) -> None:
 
 
 def _tar_splice(base: bytes, token: bytes, replacement: bytes) -> bytes:
-    """Replace ``token`` in a TAR field and repair the containing header's checksum."""
+    """Replace one fixed TAR header field and repair that header's checksum."""
     assert len(token) == len(replacement)
+    assert base.count(token) == 1
     idx = base.index(token)
+    assert idx % 512 + len(token) <= 512, "token is not wholly inside a TAR header"
     data = bytearray(base)
     data[idx : idx + len(token)] = replacement
     _tar_recompute_checksum(data, (idx // 512) * 512)
     return bytes(data)
 
 
-def _flag_utf8(base: bytes, name_token: bytes) -> bytes:
-    """Set the UTF-8 name flag (general-purpose bit 11) on the ZIP entry named by token.
-
-    Patches the two-byte flags field in both the local file header (token at +30) and the
-    central directory header (token at +46) that precede ``name_token``.
-    """
-    data = bytearray(base)
-    for header_len, sig in ((30, b"PK\x03\x04"), (46, b"PK\x01\x02")):
-        pos = data.find(name_token)
-        while pos != -1:
-            start = pos - header_len
-            if start >= 0 and bytes(data[start : start + 4]) == sig:
-                flag_off = start + (6 if header_len == 30 else 8)
-                flags = struct.unpack_from("<H", data, flag_off)[0] | (1 << 11)
-                struct.pack_into("<H", data, flag_off, flags)
-            pos = data.find(name_token, pos + 1)
-    return bytes(data)
-
-
 # --- corpus manifest --------------------------------------------------------------
+
+
+OpenOutcome = Literal["success", "corruption"]
+ExtractOutcome = Literal[
+    "success",
+    "path_traversal",
+    "symlink_escape",
+    "filesystem_name_refusal",
+    "not_reached",
+]
 
 
 @dataclass(frozen=True)
@@ -154,88 +225,153 @@ class Adversarial:
     id: str
     fmt: str  # "zip" | "tar"
     build: Callable[[bytes], bytes]  # (base_bytes) -> spliced_bytes
-    # Expected outcome category for the sweep:
-    #   "reject"  -> extraction must raise a FilterRejectionError (typed rejection)
-    #   "safe"    -> open/list/read/extract complete or raise some other ArchiveyError,
-    #                never a raw exception, never a file outside dest
-    outcome: str
+    field: Literal["name", "link_target", "comment"]
+    stored_name: bytes
+    expected_name: str | None
+    expected_raw_name: bytes | None
+    expected_link_target: str | None = None
+    expected_comment: str | None = None
+    utf8_flag: bool = False
+    open_outcome: OpenOutcome = "success"
+    extract_outcome: ExtractOutcome = "success"
+    warning_text: str | None = None
 
 
-def _name_variant(fmt: str, key: str, outcome: str) -> Adversarial:
-    splice = _zip_splice if fmt == "zip" else _tar_splice
-    repl = _padded(_HOSTILE[key], len(_NAME))
+def _zip_name_case(
+    case_id: str,
+    key: str,
+    *,
+    utf8: bool,
+    open_outcome: OpenOutcome = "success",
+    extract_outcome: ExtractOutcome = "success",
+    warning_text: str | None = None,
+) -> Adversarial:
+    raw = _padded(_HOSTILE[key], len(_NAME))
+    decoded = (
+        raw.decode("utf-8" if utf8 else "cp437")
+        if open_outcome == "success"
+        else None
+    )
     return Adversarial(
-        f"{fmt}-name-{key}", fmt, lambda b, r=repl: splice(b, _NAME, r), outcome
+        id=case_id,
+        fmt="zip",
+        build=lambda base, replacement=raw, flagged=utf8: _zip_name_splice(
+            base, replacement, utf8=flagged
+        ),
+        field="name",
+        stored_name=raw,
+        expected_name=decoded,
+        expected_raw_name=raw if decoded is not None else None,
+        utf8_flag=utf8,
+        open_outcome=open_outcome,
+        extract_outcome=extract_outcome,
+        warning_text=warning_text,
+    )
+
+
+def _tar_name_case(
+    case_id: str,
+    key: str,
+    *,
+    extract_outcome: ExtractOutcome,
+    warning_text: str | None = None,
+) -> Adversarial:
+    raw = _padded(_HOSTILE[key], len(_NAME))
+    return Adversarial(
+        id=case_id,
+        fmt="tar",
+        build=lambda base, replacement=raw: _tar_splice(base, _NAME, replacement),
+        field="name",
+        stored_name=raw,
+        expected_name=raw.decode("utf-8", errors="surrogateescape"),
+        expected_raw_name=raw,
+        extract_outcome=extract_outcome,
+        warning_text=warning_text,
     )
 
 
 CORPUS: tuple[Adversarial, ...] = (
-    # NUL in a member name is a hard rejection on every platform.
-    _name_variant("zip", "nul", "reject"),
-    _name_variant("tar", "nul", "reject"),
-    # The rest must be handled safely (decoded via fallback, or a typed error) — never a
-    # raw crash. High bytes decode via cp437 for un-flagged ZIP names.
-    _name_variant("zip", "lone_surrogate", "safe"),
-    _name_variant("zip", "invalid_utf8", "safe"),
-    _name_variant("zip", "rtl_override", "safe"),
-    _name_variant("zip", "overlong", "safe"),
-    _name_variant("tar", "invalid_utf8", "safe"),
-    _name_variant("tar", "rtl_override", "safe"),
-    # UTF-8-flag-lie: the ZIP name is flagged UTF-8 but is not valid UTF-8.
+    _zip_name_case(
+        "zip-name-nul",
+        "nul",
+        utf8=False,
+        extract_outcome="path_traversal",
+    ),
+    _zip_name_case("zip-name-cp437-high-bytes", "invalid_utf8", utf8=False),
+    _zip_name_case(
+        "zip-name-wtf8-flagged",
+        "lone_surrogate",
+        utf8=True,
+        open_outcome="corruption",
+        extract_outcome="not_reached",
+    ),
+    _zip_name_case(
+        "zip-name-invalid-utf8-flagged",
+        "invalid_utf8",
+        utf8=True,
+        open_outcome="corruption",
+        extract_outcome="not_reached",
+    ),
+    _zip_name_case(
+        "zip-name-overlong-utf8-flagged",
+        "overlong",
+        utf8=True,
+        open_outcome="corruption",
+        extract_outcome="not_reached",
+    ),
+    _zip_name_case(
+        "zip-name-rtl-override",
+        "rtl_override",
+        utf8=True,
+        warning_text="bidirectional control",
+    ),
+    _tar_name_case(
+        "tar-name-invalid-utf8-surrogateescape",
+        "invalid_utf8",
+        extract_outcome="filesystem_name_refusal",
+    ),
+    _tar_name_case(
+        "tar-name-rtl-override",
+        "rtl_override",
+        extract_outcome="success",
+        warning_text="bidirectional control",
+    ),
     Adversarial(
-        "zip-name-utf8-flag-lie",
-        "zip",
-        lambda b: _flag_utf8(
-            _zip_splice(b, _NAME, _padded(_HOSTILE["invalid_utf8"], len(_NAME))), _NAME
+        id="zip-link-nul",
+        fmt="zip",
+        build=lambda base: _zip_stored_data_splice(
+            base, b"link", _LINK, _padded(_HOSTILE["nul"], len(_LINK))
         ),
-        "safe",
-    ),
-    # Hostile symlink target: NUL, and a traversal-via-invalid-bytes attempt.
-    Adversarial(
-        "zip-link-nul",
-        "zip",
-        lambda b: _zip_splice(b, _LINK, _padded(_HOSTILE["nul"], len(_LINK))),
-        "safe",  # NUL target: rejected at link creation or left unresolved — never a crash
+        field="link_target",
+        stored_name=b"link",
+        expected_name="link",
+        expected_raw_name=b"link",
+        expected_link_target=_padded(_HOSTILE["nul"], len(_LINK)).decode("utf-8"),
+        extract_outcome="symlink_escape",
     ),
     Adversarial(
-        "tar-link-invalid_utf8",
-        "tar",
-        lambda b: _tar_splice(b, _LINK, _padded(_HOSTILE["invalid_utf8"], len(_LINK))),
-        "safe",
-    ),
-    # Hostile comment (ZIP): comment decoding must be lossy-but-safe.
-    Adversarial(
-        "zip-comment-invalid_utf8",
-        "zip",
-        lambda b: _zip_splice(
-            b, _COMMENT, _padded(_HOSTILE["invalid_utf8"], len(_COMMENT))
+        id="zip-comment-cp437-high-bytes",
+        fmt="zip",
+        build=lambda base: _zip_comment_splice(
+            base, _COMMENT, _padded(_HOSTILE["invalid_utf8"], len(_COMMENT))
         ),
-        "safe",
+        field="comment",
+        stored_name=_NAME,
+        expected_name=_NAME.decode(),
+        expected_raw_name=_NAME,
+        expected_comment=_padded(_HOSTILE["invalid_utf8"], len(_COMMENT)).decode(
+            "cp437"
+        ),
     ),
 )
 
 
-def adversarial_archives() -> "list[tuple[Adversarial, bytes]]":
+def clean_base_archives() -> dict[str, bytes]:
+    """Fresh deterministic bases; generated on demand, never persisted."""
+    return {"zip": build_base_zip(), "tar": build_base_tar()}
+
+
+def adversarial_archives() -> list[tuple[Adversarial, bytes]]:
     """Every corpus entry as ``(entry, spliced_archive_bytes)``, built in memory."""
-    bases = {"zip": _read_base("base.zip"), "tar": _read_base("base.tar")}
+    bases = clean_base_archives()
     return [(entry, entry.build(bases[entry.fmt])) for entry in CORPUS]
-
-
-def _read_base(name: str) -> bytes:
-    path = FIXTURE_DIR / name
-    if not path.exists():
-        raise FileNotFoundError(
-            f"missing base fixture {path}; run `python -m tests.create_adversarial`"
-        )
-    return path.read_bytes()
-
-
-def main() -> None:
-    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
-    (FIXTURE_DIR / "base.zip").write_bytes(build_base_zip())
-    (FIXTURE_DIR / "base.tar").write_bytes(build_base_tar())
-    print(f"wrote base.zip and base.tar to {FIXTURE_DIR}")
-
-
-if __name__ == "__main__":
-    main()
