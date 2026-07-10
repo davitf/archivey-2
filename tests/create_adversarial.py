@@ -26,6 +26,7 @@ UTF-8 but not valid UTF-8).
 from __future__ import annotations
 
 import io
+import stat
 import struct
 import tarfile
 import zipfile
@@ -67,10 +68,16 @@ def build_base_zip() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         info = zipfile.ZipInfo(_NAME.decode())
+        # Pin create_system to Unix on every entry: zipfile otherwise stamps the host OS
+        # into "version made by" (0 on Windows, 3 elsewhere), which would make the base
+        # bytes — and thus the committed fixture — platform-dependent.
+        info.create_system = 3
+        info.external_attr = (stat.S_IFREG | 0o644) << 16
         info.comment = _COMMENT
         zf.writestr(info, b"payload for the adversarial name member\n")
         link = zipfile.ZipInfo("link")
-        link.external_attr = (0xA000 | 0o777) << 16  # S_IFLNK
+        link.create_system = 3
+        link.external_attr = (stat.S_IFLNK | 0o777) << 16
         zf.writestr(link, _LINK)
     return buf.getvalue()
 
