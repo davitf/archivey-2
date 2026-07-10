@@ -1,5 +1,12 @@
 # Design — Parallel-safe reader exploration
 
+> **Historical record — partly superseded (2026-07-10).**
+> The active `concurrent-member-streams` proposal now commits the post-materialization
+> worker seam and cache/lifecycle/password synchronization; `tar-concurrent-open` removes
+> the TAR exemption and ISO leave-alone disposition. Statements below describing one reader
+> per thread, deferred cache locking, or no further ABC/runtime work are preserved as the
+> exploration's original conclusion, not current guidance.
+
 This change has **one committed outcome** (the scoped `_open_member` reentrancy invariant + an
 ABC docstring) and an **analysis** that seeds a future `parallel-extraction` change. The
 durable analysis lives in `docs/parallel-reader.md` (audit table + §§2–7 below summarized).

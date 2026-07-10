@@ -1,5 +1,11 @@
 # Tasks — Exploration: parallel-safe reader
 
+> **Historical completion record — partly superseded.**
+> `concurrent-member-streams` replaces the resulting one-reader-per-thread/deferred-cache
+> stance and `tar-concurrent-open` replaces the TAR/ISO dispositions. Checked boxes below
+> describe what this archived exploration completed; they are not current implementation
+> tasks.
+
 > This is an **exploration** with one committed spec outcome (the `_open_member` reentrancy
 > invariant) plus a written analysis feeding a future parallel-extraction change. Run tools
 > through uv. Reference: `src/archivey/internal/base_reader.py` (reader state),
