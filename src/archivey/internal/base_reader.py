@@ -291,7 +291,39 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     @abstractmethod
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream: ...
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        """Return a data stream for ``member`` (no link following).
+
+        Backends wrap the raw handle via ``_wrap_member_stream`` so every member
+        stream the library hands out is an ``ArchiveStream``.
+
+        **Reentrancy invariant (random-access backends).** For a backend that advertises
+        independent member open (``streaming=False``, byte-range / independent access —
+        ZIP, single-file, and the future native 7z/RAR readers), this method MUST be a
+        function of ``(member, shared source)`` only:
+
+        - it MUST NOT mutate shared reader state that another concurrent open depends on;
+        - it MUST NOT keep per-open scratch on ``self`` that a second open would overwrite;
+        - any archivey-owned byte-range access MUST go through a
+          :class:`~archivey.internal.streams.streamtools.SharedSource` view (see
+          *Multiple concurrently-open member streams* in ``archive-reading``).
+
+        Immutable, already-materialized state (the member list / name index) MAY be read
+        read-only. Backends whose member addressing is owned by an external library that
+        already coordinates the shared handle (ISO via ``pycdlib``, ZIP via stdlib
+        ``zipfile``) are not required to route through an archivey ``SharedSource`` view,
+        but archivey-owned reader state still MUST NOT hold per-open scratch.
+
+        **Out of scope.** Forward-only / streaming passes (``streaming=True``) and
+        single-shared-decoder backends (the random-access TAR reader / TAR-RA) are exempt
+        from this invariant — they MAY require one member stream at a time.
+
+        **Materialize-before-fan-out.** A future concurrent consumer MUST finish a
+        random-access member pass (materialize ``_members_cache``) before opening members
+        concurrently; the one-time cache build is not itself concurrency-safe. See
+        ``docs/parallel-reader.md``.
+        """
+        ...
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         """Map a raw exception (from a codec/library while reading a member) to an

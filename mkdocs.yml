@@ -7,6 +7,7 @@ nav:
   - API reference: api.md
   - Compression-library analysis: library-analysis.md
   - Known issues: known-issues.md
+  - Parallel-reader exploration: parallel-reader.md
 
 plugins:
   - search
