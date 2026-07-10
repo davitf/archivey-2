@@ -233,7 +233,7 @@ repeated access to members of the same folder is served without re-decoding — 
 such retention MUST honor `archive-reading`'s bounded-memory rule (no growing cache of
 decompressed block data held in RAM until `close()`): a decoded-folder cache is spilled
 to a temporary file on disk and/or explicitly bounded, with the exact mechanism decided
-in the Phase 7 change proposal.
+in the Phase 6 change proposal.
 
 #### Scenario: streaming a solid 7z archive
 

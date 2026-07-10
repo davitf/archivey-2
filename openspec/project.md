@@ -41,6 +41,7 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | `format-detection` | `detect_format()`, magic table, non-seekable peek/replay |
 | `backend-registry` | Backend registration, selection, the `Backend` ABC, optional deps |
 | `error-handling` | The `ArchiveyError` hierarchy and error-translation contract |
+| `diagnostics` | Lifecycle-aware advisory data: stable codes, exact bounded summaries, reader/stream/format/member/extraction aggregates, policy/callback delivery, and typed escalation |
 | `logging` | The `archivey` logger hierarchy (cross-cutting; library never configures handlers) |
 | `format-zip` / `format-tar` / `format-single-file-compressors` / `format-7z` / `format-rar` / `format-iso` / `format-directory` | Per-format behavioral contracts |
 | `compressed-streams` | Uniform pull-based codec decompressor layer (single-file + 7z/ZIP container codecs + AES stage); format parsers compose it instead of calling codec libs |
@@ -75,10 +76,10 @@ once. Specs themselves remain order-free; this table is the association.
 | Phase | Theme | Primary capabilities advanced |
 |-------|-------|-------------------------------|
 | 1 | Scaffold + spine + new test harness + directory backend | `packaging-and-extras` (pyproject, extras, env matrix, `__version__`); `backend-registry`, `archive-data-model`, `error-handling`, `access-mode-and-cost` (types/contracts written fresh); `format-directory` (the spine's first backend — no codec/detection layer needed); `logging`; `testing-contract` (framework foundations: declarative corpus, on-demand generation + cache, no committed binaries). DEV cloned as a frozen oracle. |
-| 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams`. (7z/ZIP container codecs `pyppmd`/`inflate64`/AES stage land with Phase 7.) |
+| 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams`. (7z/ZIP container codecs `pyppmd`/`inflate64`/AES stage land with Phase 6.) |
 | 3 | Indexed leaf formats | `format-zip`, `format-tar` (random-access **read** + compressed-tar), `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry` (selection/degradation + tri-state availability), `access-mode-and-cost` (CostReceipt values). (`format-directory` already landed in Phase 1.) |
 | 4 | TAR streaming & safe extraction | `format-tar` (forward-only `stream_members`), `safe-extraction` (incl. bomb limits + progress/result), `archive-reading` (sequential + `stream_members`) |
-| 5 | Public API finalization & cost surface | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` |
+| 5 | Public API finalization, cost surface & diagnostics | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling`; then the `diagnostics-warnings-as-data` follow-on advances `diagnostics`, `logging`, `format-detection`, `safe-extraction`, `compressed-streams`, `seekable-decompressor-streams`, `format-directory`, `format-tar`, and `format-zip` before Phase 6 |
 | 6 | Native 7z reader + native RAR metadata parser (resequenced 2026-07 ahead of writing — see `VISION.md`; fuzzing is an entry gate) | `format-7z`, `format-rar` (native-first: read path imports no third-party lib; `unrar` binary stays for RAR data; `py7zr` for 7z write only); `testing-contract` oracle cross-validation |
 | 7 | CLI (pulled forward: dev tool + safe-extraction demo) | `cli` |
 | 8 | Seekable zstd + blocked gzip (rescoped — the original zst/lz4 *read* goals landed with Phases 2–3; `w:zst` writing moved to the writing phase) | `seekable-decompressor-streams`, `format-single-file-compressors` |
@@ -86,9 +87,11 @@ once. Specs themselves remain order-free; this table is the association.
 | 10 | Polish, packaging & oracle retirement | `cli`, `packaging-and-extras` (finalize), full `testing-contract` (corpus complete, frozen DEV oracle deleted) (+ cross-cutting: README, final CI tuning — the matrix is stood up in Phase 1; coverage is reported, **not** gated) |
 
 `logging` is cross-cutting and not owned by a single phase — the named-logger
-hierarchy is established in Phase 1 and used by every phase thereafter. The new
-test suite is built incrementally from Phase 1 and becomes the sole suite in
-Phase 10, when the frozen DEV oracle is deleted.
+hierarchy is established in Phase 1 and used by every phase thereafter. Structured
+`diagnostics` is sequenced as a Phase 5 public-API follow-on, before the Phase 6 native
+readers add further advisory paths; logging becomes a policy-controlled projection of
+those values. The new test suite is built incrementally from Phase 1 and becomes the sole
+suite in Phase 10, when the frozen DEV oracle is deleted.
 
 > **Note:** decompression-bomb limits and extraction progress/result reporting
 > were previously separate `bomb-protection` and `progress-and-logging` specs.
@@ -98,9 +101,9 @@ Phase 10, when the frozen DEV oracle is deleted.
 
 > **7z/RAR sequencing (resolved):** under the clean-slate approach we do **not**
 > port DEV's `py7zr`/`rarfile` read backends (they would only be thrown away). 7z
-> and RAR reads are marked `xfail`/`skip` until the native readers land in Phase 7;
+> and RAR reads are marked `xfail`/`skip` until the native readers land in Phase 6;
 > `py7zr`/`rarfile` enter earlier only as `dev`-group test oracles. Those formats
-> are absent from the equivalence matrix until Phase 7.
+> are absent from the equivalence matrix until Phase 6.
 
 ## Deferred / out of scope (v1)
 

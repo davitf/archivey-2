@@ -1,148 +1,375 @@
-# Design — diagnostics: warnings as queryable data
+# Design — lifecycle-aware diagnostics
 
-This proposal is as much about *how to expose* advisories as *what to record*. The
-maintainer's steer — "how they can be exposed, maybe it will depend on the context" — is
-the organizing principle: there is no single right delivery, so the mechanism offers a few
-and lets the caller's context choose.
+## 1. Goals and constraints
 
-## 1. The `Diagnostic` record
+Diagnostics are structured records for events where Archivey continues or deliberately
+degrades. They are not replacements for genuine failures. The design must:
+
+1. make every current warning machine-queryable;
+2. put each event on a surface whose lifetime can actually contain it;
+3. preserve exact counts without allowing retained details or attachments to become a
+   memory-amplification vector;
+4. support tolerant, streaming, logging-only, and strict callers with one deterministic
+   policy;
+5. remain JSON-safe and avoid secret leakage; and
+6. keep the public surface small enough to support for the long term.
+
+Pre-1.0 compatibility does not constrain the result. In particular, extraction changes
+return type instead of adding a parallel helper or tuple mode.
+
+## 2. Public values
+
+The exact module layout is an implementation detail; these are the public shapes:
 
 ```python
+class DiagnosticCode(str, Enum): ...
+class DiagnosticSeverity(str, Enum):
+    WARNING = "warning"
+
+class DiagnosticDisposition(str, Enum):
+    IGNORE = "ignore"
+    COLLECT = "collect"
+    RAISE = "raise"
+
 @dataclass(frozen=True)
 class Diagnostic:
-    code: DiagnosticCode        # stable, machine-branchable (enum or str-enum)
-    severity: DiagnosticSeverity  # INFO | WARNING (errors stay exceptions)
-    message: str                # human-readable, formatted once
-    # Typed, optional context — populated per code:
-    member_name: str | None = None       # the member it concerns
-    raw_name: bytes | None = None         # before/after for normalization
-    normalized_name: str | None = None
-    offset: int | None = None             # byte offset, for structural advisories
-    detail: Mapping[str, object] = field(default_factory=dict)  # code-specific extras
+    occurrence_id: str
+    code: DiagnosticCode
+    severity: DiagnosticSeverity
+    message: str
+    context: DiagnosticContext
+
+@dataclass(frozen=True)
+class DiagnosticSummary:
+    total_count: int
+    counts: Mapping[DiagnosticCode, int]
+    retained: tuple[Diagnostic, ...]
+    dropped_count: int
+
+@dataclass(frozen=True)
+class DiagnosticPolicy:
+    default: DiagnosticDisposition = DiagnosticDisposition.COLLECT
+    overrides: Mapping[DiagnosticCode, DiagnosticDisposition] = immutable_mapping()
+
+@dataclass(frozen=True)
+class ExtractionReport:
+    results: tuple[ExtractionResult, ...]
+    diagnostics: DiagnosticSummary
 ```
 
-The load-bearing field is **`code`**: a small, stable, enumerated set
-(`NAME_NORMALIZED`, `DETECTION_CONFLICT`, `REWIND_COST`, `MEMBER_SKIPPED`,
-`PASSWORD_GUESSED`, `INVALID_TIMESTAMP`, `DIGEST_UNVERIFIABLE`, `SCAN_ENTRY_VANISHED`, …).
-Callers branch on `code`; `message` is for humans only. Stability of `code` is the API
-contract, so codes get the same care as exception classes.
+`DiagnosticCode`, `severity`, and every context discriminator are string enums so the
+diagnostic serializes without a custom enum encoder. `DiagnosticSummary.counts` and policy
+overrides are immutable mappings. Their constructors defensively copy caller mappings;
+freezing only an outer dataclass while retaining a mutable dict is not sufficient.
 
-Naming is open: `Diagnostic` (compiler idiom) vs the maintainer's `Occurrence` vs
-`ArchiveWarning`. "Diagnostic" reads well with a severity axis and avoids clashing with
-Python's `warnings`. Flagged as an open question below.
+Only `WARNING` is needed initially. The severity axis remains in the record so a later
+informational taxonomy does not require changing the value shape, but policy matching is
+per code only in this proposal.
 
-## 2. Exposure is context-dependent — four channels
+### Typed, JSON-safe context
 
-The same diagnostic can reach the caller four ways. Which one(s) fire is the crux, and it
-depends on *where* the diagnostic arises and *who* is consuming.
+`Diagnostic.context` is a closed union of code-specific frozen context dataclasses, not a
+`Mapping[str, object]`. Every variant has a literal string `kind` discriminator. This is
+the complete initial code-to-context mapping:
 
-### (a) Attached to the most specific natural surface
-Where a diagnostic is *about* one object the caller already holds, it belongs on that
-object — no lookup, no correlation. This is the C2/IDEAS sweep:
+| `DiagnosticCode` | Required context variant and fields |
+|---|---|
+| `MEMBER_NAME_NORMALIZED` | `NameNormalizationContext(kind="name_normalization", archive_name: str \| None, member_name: str, member_id: int \| None, raw_name_base64: str \| None, presented_name: str, normalized_name: str)` |
+| `FORMAT_EXTENSION_CONFLICT` | `FormatConflictContext(kind="format_conflict", source_name: str \| None, extension: str \| None, extension_format: str, detected_format: str)` |
+| `SCAN_DIRECTORY_VANISHED` | `ScanRaceContext(kind="scan_race", archive_name: str \| None, relative_path: str, entry_kind="directory")` |
+| `SCAN_ENTRY_VANISHED` | `ScanRaceContext(kind="scan_race", archive_name: str \| None, relative_path: str, entry_kind="entry")` |
+| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext(kind="archive_eof", archive_name: str \| None, format: str, expected_marker: str, expected_bytes: int, observed_bytes: int, observed_kind: str)` |
+| `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext(kind="member_timestamp", archive_name: str \| None, member_name: str, member_id: int \| None, field: str, source: str, value_repr: str)` |
+| `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext(kind="symlink_target", archive_name: str \| None, member_name: str, member_id: int \| None, reason: str)` |
+| `DIGEST_UNVERIFIABLE` | `DigestContext(kind="digest", archive_name: str \| None, member_name: str, member_id: int \| None, algorithm: str, reason: str)` |
+| `SEEK_INDEX_DEGRADED` | `SeekIndexContext(kind="seek_index", archive_name: str \| None, member_name: str \| None, member_id: int \| None, codec: str, scan: str, error_type: str)` |
+| `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext(kind="stream_rewind", archive_name: str \| None, member_name: str \| None, member_id: int \| None, codec: str, from_offset: int, to_offset: int, accelerator: str \| None)` |
+| `EXTRACTION_MEMBER_REJECTED` | `ExtractionOutcomeContext(kind="extraction_outcome", archive_name: str \| None, member_name: str, member_id: int \| None, status="rejected", error_type: str, failure_group_id: str \| None, failure_group_size: int \| None)` |
+| `EXTRACTION_MEMBER_FAILED` | `ExtractionOutcomeContext(kind="extraction_outcome", archive_name: str \| None, member_name: str, member_id: int \| None, status="failed", error_type: str, failure_group_id: str \| None, failure_group_size: int \| None)` |
 
-| Current `logger.warning` | Diagnostic code | Natural surface |
-|---|---|---|
-| name normalized (`naming.py`) | `NAME_NORMALIZED` | `ArchiveMember` |
-| detection magic vs extension (`detection.py`) | `DETECTION_CONFLICT` | `FormatInfo` / `ArchiveInfo` |
-| backward-seek rewind (`decompressor_stream.py`) | `REWIND_COST` | `CostReceipt` |
-| member/hardlink skipped (`extraction.py`) | `MEMBER_SKIPPED` | `ExtractionResult` |
-| invalid NTFS/DOS timestamp (`zip_reader.py`) | `INVALID_TIMESTAMP` | `ArchiveMember` |
-| digest not checkable (`verify.py`) | `DIGEST_UNVERIFIABLE` | `ArchiveMember` / read result |
-| guessed password (incoming) | `PASSWORD_GUESSED` | `ExtractionResult` / member |
+Accordingly, the closed alias is
+`DiagnosticContext = NameNormalizationContext | FormatConflictContext |
+ScanRaceContext | ArchiveEofContext | MemberTimestampContext |
+SymlinkTargetContext | DigestContext | SeekIndexContext | StreamRewindContext |
+ExtractionOutcomeContext`; backends cannot supply ad-hoc mapping variants.
 
-### (b) Aggregated into a per-operation collection
-A field-per-surface alone is not enough: some diagnostics have **no** per-object home
-("a directory vanished during scan", "trailing bytes after EOF"), and callers often want
-one question — *did anything noteworthy happen?* — answered without walking every member.
-So the reader exposes `reader.diagnostics` (everything emitted during this open/read), and
-`extract()` returns its diagnostics alongside the per-member `ExtractionResult`s. The
-per-surface field and the collection are the **same** `Diagnostic` objects, referenced
-twice, not duplicated data.
+`observed_kind` is a documented string enum with initial values `"absent"`,
+`"short"`, and `"nonzero"`; `expected_marker` is a non-secret symbolic description
+such as `"two_zero_blocks"`, never raw archive bytes. `source`, `scan`, `reason`, and
+`error_type` similarly use documented non-secret string-enum/public-class-name values.
+`member_id` is `None` only when emission necessarily precedes member registration.
+`failure_group_id` and `failure_group_size` are both non-`None` only for results that
+failed from one shared hardlink-source incident.
 
-### (c) Pushed eagerly via a callback
-For a long streaming pass or a large extraction, waiting until the end to inspect a
-collection is wrong — the caller may want to react (or print progress) as diagnostics
-occur. `ArchiveyConfig.on_diagnostic: Callable[[Diagnostic], None] | None` delivers each
-one as it happens. This is also the natural bridge to a caller's own logging/telemetry.
+Every field is composed recursively only of `None`, `bool`, `int`, finite `float`, `str`,
+and tuples of those values. Raw bytes use an explicitly named base64 string field when
+lossless bytes are necessary. Exception objects, paths, arbitrary mappings, archive/member
+objects, callbacks, and backend handles are prohibited. Each context and the containing
+diagnostic provide a deterministic `to_dict()` whose result can be passed directly to
+`json.dumps()`.
 
-### (d) Escalated to a typed error by policy
-Some contexts want a diagnostic to be **fatal**. A reproducible-build tool wants "a name
-was normalized" or "detection conflicted" to stop the build; a security-sensitive caller
-may want `PASSWORD_GUESSED` to raise rather than proceed on an unconfirmed password. A
-`WarningPolicy` maps codes/severities to a disposition — `IGNORE | COLLECT | RAISE` —
-default `COLLECT` (+ log). `RAISE` turns the diagnostic into a typed exception at the
-point it arises (see §5 for which exception).
+Messages and contexts MUST NOT include passwords, password candidates, values returned by
+a `PasswordProvider`, encryption/decryption keys, key derivation material, or decrypted
+header/payload bytes. A reason such as `"password_required"` and non-secret facts such as
+an encrypted member's name are allowed. The same prohibition applies to the log projection
+and `DiagnosticRaisedError`.
 
-### (e) …and logging stays
-Every diagnostic is still logged on its existing `archivey.*` logger, so applications that
-do nothing keep exactly today's behaviour. Logging is the projection, not the source of
-truth.
+### Occurrence correlation, not identity
 
-## 3. Consumer archetypes (why one shape can't win)
+`occurrence_id` is opaque and unique for an emitted occurrence within the process. Copies
+of a diagnostic retained in a summary and on an object compare by value and carry the same
+id. The API promises neither `is` identity nor a stable id across runs. Ordering comes from
+the tuple order in each summary, not from parsing occurrence ids.
 
-- **CLI / interactive** — wants a human summary at the end (channel b), or streaming
-  notices (c); verbosity is the user's.
-- **Batch indexer** (the founding "index my backups" use case) — wants diagnostics
-  recorded *beside each member* as data (a), tolerant, never a crash (policy `COLLECT`).
-- **Reproducible-build / verifier** — wants selected codes to be hard errors (d), so a
-  normalized name or a detection conflict fails CI (policy `RAISE` for a chosen set).
-- **Library embedder / telemetry** — wants the eager callback (c) to forward into its own
-  metrics/log pipeline.
+## 3. Lifecycles and surfaces
 
-The policy + callback + collection triple lets each pick without the others paying.
+### Detection
 
-## 4. Configuration
+A standalone `detect_format()` call has one finite operation scope.
+`FormatInfo.diagnostics` is its final `DiagnosticSummary`. A magic/extension conflict
+attaches there; `ArchiveInfo` does not duplicate it.
 
-```python
-class ArchiveyConfig:
-    on_diagnostic: Callable[[Diagnostic], None] | None = None
-    warning_policy: WarningPolicy = WarningPolicy()   # per-code / per-severity disposition
-```
+`open_archive()` creates the prospective reader collector and its retention budget
+**before** automatic detection, records a detection watermark, and passes that collector
+into the internal detection routine. Successful backend construction transfers ownership
+of the same collector to the reader. It does not seed, copy, merge, or replay diagnostics
+into a second collector: detection and reader views address the same exact counters and
+retained occurrence slots, and each occurrence consumes the budget once. The internal
+`FormatInfo` has the point-in-time detection summary needed for backend selection; because
+`open_archive()` does not return it, the library does not retain that snapshot after
+handoff. If detection or open raises, the temporary collector is discarded after the
+exception propagates.
 
-`WarningPolicy` needs: a default disposition, and per-`code` overrides (e.g.
-`{NAME_NORMALIZED: RAISE}`). Whether it also keys on `severity` or on logger name is an
-open question. Default keeps today's behaviour (COLLECT + log; nothing raises that did not
-already raise).
+An explicit `format=` override still creates the prospective reader collector before
+backend open, but performs no detection and therefore creates no detection diagnostics.
 
-## 5. Relationship to errors — and the honesty rule
+### Reader and reader-owned streams
 
-Diagnostics are **non-fatal advisories**; genuine failures remain exceptions (the
-`error-handling` contract is untouched). Escalation (§2d) is the one bridge: a `RAISE`
-disposition converts a diagnostic into an exception *at emission*. Open question: does it
-raise the existing typed exception family (e.g. a normalization escalation → a
-`FilterRejectionError`-like type) or a single new `DiagnosticRaisedError(code=…)`? A single
-wrapper is simpler and keeps the code queryable; per-family raises integrate better with
-existing `except` blocks. Leaning: a single `DiagnosticRaisedError` carrying the
-`Diagnostic`, because the set of escalable codes is open-ended.
+Each `ArchiveReader` owns one collector from successful creation until close.
+`reader.diagnostics` returns a fresh immutable cumulative snapshot on every access:
 
-This also cleanly answers the `zip-multipassword-disambiguation` residual: "guessed
-password" is a `PASSWORD_GUESSED` diagnostic (default COLLECT + log), and a
-security-sensitive caller sets it to `RAISE` — no bespoke flag needed.
+- counts include every diagnostic emitted by detection/open/list/read/stream/extract work
+  owned by that reader, including events no longer retained;
+- retained occurrences are in emission order; and
+- a previously returned snapshot never changes.
 
-## 6. Aggregation, dedup, volume
+A reader-owned `ArchiveStream` exposes `stream.diagnostics`, an operation-filtered
+snapshot over that same collector. The collector stores one aggregate occurrence; the two
+views do not create separately retained copies. A standalone codec stream owns an
+equivalent stream-lifetime collector.
 
-"Occurrences" implies counting. A crafted or merely large archive can emit thousands of
-`NAME_NORMALIZED` diagnostics — the collection must not become its own memory bomb (cf.
-threat-model O1). Options: (i) cap the retained collection and expose per-code **counts**
-beyond the cap; (ii) always keep full detail but document the cost; (iii) rely on the
-callback for the unbounded case and keep the collection bounded. Leaning: a bounded
-collection with exact per-code counts (so "127 names normalized, first N retained"), the
-callback being the unbounded firehose. This interacts with the O1 listing-guard work and
-should share its bound.
+Runtime events belong here. A slow rewind, failed optional seek-index scan, directory scan
+race, and missing/trailing archive EOF event may happen long after open, so none is added
+to frozen `CostReceipt` or `ArchiveInfo`. Those values continue to describe static
+open-time properties only.
 
-## 7. Open questions (for maintainer review)
+### Member and extraction attachment
 
-1. **Naming**: `Diagnostic` vs `Occurrence` vs `ArchiveWarning`; `diagnostics` capability
-   name.
-2. **Escalation home**: a single `DiagnosticRaisedError` (leaning) vs per-family raises;
-   and whether escalation belongs in this spec or `error-handling`.
-3. **Aggregation bound**: retained-count cap + per-code counts (leaning) vs unbounded;
-   shared bound with O1.
-4. **`logging` vs stdlib `warnings`**: keep `logging` as the projection (leaning) or also
-   emit `warnings.warn` for a subset? (`warnings` gives `-W error` interop but is noisy.)
-5. **Scope of the first cut**: land the primitive + collection + callback + the
-   normalization/detection/skip/guessed-password codes, and migrate the rest of the ~17
-   sites incrementally — vs sweep all sites at once.
-6. **Per-member field shape**: a list of `Diagnostic` on `ArchiveMember`, or a couple of
-   promoted booleans/fields (`name_normalized: bool`) *plus* the list? Promoted fields are
-   ergonomic for the common check; the list is complete.
+Only an occurrence that is natural metadata about one concrete member is eligible for
+object attachment:
+
+- normalization, invalid timestamp, unavailable symlink target, or unverifiable digest
+  may attach to `ArchiveMember.diagnostics`;
+- format conflict attaches to `FormatInfo.diagnostics`.
+
+Extraction rejection/failure already has structured `ExtractionResult.status` and
+`.error`; duplicating it on a result diagnostics tuple would make that per-result API
+budget-dependent without adding information, so `ExtractionResult` has no diagnostics
+field. Extraction occurrences are retained only in the report/reader aggregate. Scan,
+seek-index, rewind, and archive EOF occurrences are also aggregate-only. Member
+attachments are read-only tuples on the otherwise live mutable member. A member's
+`.replace()` copies its currently attached tuple by value; copies made by callers are
+caller-owned and do not consume more library retention budget.
+
+### Extraction scopes
+
+`ArchiveReader.extract_all()` records a collector watermark before extraction and returns
+an `ExtractionReport` whose summary is the exact count/retained delta for that call. It
+does not include older reader occurrences; those remain visible through
+`reader.diagnostics`.
+
+Top-level `archivey.extract()` creates one operation collector and one report watermark
+before detection. It passes that collector through internal detection, backend open, and
+extraction; the temporary reader assumes ownership during the call, and extraction uses
+the original top-level watermark rather than creating a separate report collector.
+Consequently its report includes detection, open, read, and extraction diagnostics caused
+by the call with one counter set, one occurrence order, and one retention budget. No
+phase copies or re-retains an occurrence.
+
+At successful return, the report receives a bounded point-in-time summary and the
+temporary reader is closed; the returned values are caller-owned. If extraction halts by
+exception, no report is returned. On a caller-owned reader, the cumulative reader snapshot
+still exposes occurrences emitted before the halt; `DiagnosticRaisedError` also carries
+the escalated diagnostic.
+
+`ExtractionReport` is frozen and contains an immutable result tuple and immutable
+diagnostic snapshot. Each `ExtractionResult` is also frozen, so its `path`, `status`, and
+`error` reference cannot be replaced after return. This is **not** a deep-frozen archive
+snapshot: `ExtractionResult.member` refers to the original mutable, caller-read-only
+`ArchiveMember`, whose documented late-bound metadata and member diagnostics may still be
+filled in place. The report promises a point-in-time diagnostic summary and fixed outcome
+structure, not frozen member metadata or exception internals.
+
+## 4. One shared retention budget
+
+`ArchiveyConfig.max_retained_diagnostic_references` is a non-negative integer (default
+256). A standalone detection, reader lifetime, top-level extraction operation, or
+standalone stream owns one budget. The budget limits **all diagnostic references retained
+by the library for that collector**:
+
+1. each occurrence stored in the aggregate retained tuple consumes one slot; and
+2. each eligible `ArchiveMember` attachment consumes one additional slot.
+
+On emission, the collector allocates in a fixed order: aggregate slot first, then the one
+most-specific eligible attachment. An attachment is made only when the aggregate
+occurrence was retained. If insufficient slots remain, detail/attachment is omitted.
+Thus a member-specific occurrence normally uses two slots, while an aggregate-only event
+uses one. No extraction occurrence attaches to a result.
+
+Exact `total_count` and per-code counts increment for every event even after the budget is
+exhausted and even under `IGNORE`. They are integer counters, not retained references.
+`dropped_count == total_count - len(retained)` counts aggregate details not retained; it
+does not count omitted attachment slots.
+
+Snapshots contain at most the configured number of aggregate details and are not cached.
+A caller may retain snapshots or make member copies; that memory is caller-owned and
+outside the library's retention guarantee.
+
+Collector watermarks are opaque internal sequence/counter positions. Creating a watermark
+does not copy diagnostics or consume retention slots. A summary for a watermark range
+computes exact count deltas and filters the collector's already-retained tuple by
+occurrence sequence; the snapshot does not cause the library to re-retain occurrences.
+
+## 5. Policy and emission order
+
+The default disposition is `COLLECT`. Per-code overrides are the only matching dimension.
+The complete matrix is:
+
+| Disposition | Exact counts | Aggregate detail | Eligible attachment | WARNING log | Callback | Exception |
+|---|---:|---:|---:|---:|---:|---|
+| `IGNORE` | yes | no | no | no | no | none |
+| `COLLECT` | yes | budget permitting | budget permitting | yes | yes, if configured | none |
+| `RAISE` | yes | budget permitting | budget permitting | yes | yes, if configured | `DiagnosticRaisedError` |
+
+For each event the emitter performs these steps:
+
+1. validate the code, severity, message, and typed secret-free context payload;
+2. resolve disposition;
+3. under the collector's internal lock, allocate the occurrence id, construct the
+   immutable diagnostic, increment the one collector's exact counters, and reserve
+   aggregate/attachment slots in emission order;
+4. release the lock;
+5. for `COLLECT`/`RAISE`, emit the WARNING log projection;
+6. for `COLLECT`/`RAISE`, invoke `on_diagnostic(diagnostic)` on the calling thread; and
+7. for `RAISE`, if the callback returned normally, raise
+   `DiagnosticRaisedError(diagnostic)`.
+
+Logging handlers and callbacks are application code. Neither is invoked while an internal
+collector, reader, stream, backend, or registry lock is held. State is updated before
+either, so a callback may read `reader.diagnostics` and observe the current occurrence.
+Callbacks are synchronous and receive events in emission order.
+
+If logging itself raises because an application installed a failing handler, normal
+Python logging semantics apply: that exception propagates and the callback/escalation
+steps do not run. If `on_diagnostic` raises, its exception propagates unchanged; it is not
+wrapped, not converted into an extraction result, and is not governed by
+`OnError.CONTINUE`. The occurrence has already been counted/retained/logged. Under
+`RAISE`, the callback exception takes precedence over `DiagnosticRaisedError`, but the
+operation still halts.
+
+The callback may inspect immutable arguments and read snapshot properties. It MUST NOT
+drive another operation on the same reader/stream while that operation is emitting.
+Archivey detects same-emitter operational reentrancy and raises
+`UnsupportedOperationError` rather than deadlocking or recursively corrupting ordering.
+Using another reader is allowed. Snapshot access itself is explicitly non-reentrant and
+allowed.
+
+## 6. Escalation and specialized strictness
+
+`DiagnosticRaisedError` is a direct `ArchiveyError` subtype carrying a required
+`diagnostic: Diagnostic`. Standard format/archive/member context stamping still applies.
+It wraps no underlying exception merely because a diagnostic was escalated.
+
+It is an always-stop control exception. Extraction MUST NOT catch it as a per-member
+failure under `OnError.CONTINUE`, and it never becomes `FAILED` or `REJECTED`.
+
+`ArchiveyConfig.strict_archive_eof` remains the specialized contract for a missing archive
+EOF marker. The event is counted and processed under the matrix first. If
+`strict_archive_eof=True`, `TruncatedError` takes precedence over a `RAISE` disposition:
+
+- `IGNORE` counts then raises `TruncatedError`;
+- `COLLECT` counts/retains/logs/calls back then raises `TruncatedError`; and
+- `RAISE` does the same delivery but raises `TruncatedError`, not
+  `DiagnosticRaisedError`.
+
+A logging/callback exception still propagates at its ordered step before either terminal
+error. With `strict_archive_eof=False`, the ordinary policy applies, so `RAISE` yields
+`DiagnosticRaisedError`.
+
+## 7. Extraction result semantics
+
+`ExtractionReport.results` contains one result for every selected member processed by a
+successfully completed extraction operation. This includes a member rejected by
+universal/policy safety checks before the user filter runs:
+
+| Status | Meaning | `path` | `error` |
+|---|---|---|---|
+| `EXTRACTED` | destination entry successfully created | created path | `None` |
+| `SKIPPED` | intentionally not written: user filter returned `None` or `OverwritePolicy.SKIP` found an existing destination | `None` | `None` |
+| `REJECTED` | a `FilterRejectionError` blocked the member under `OnError.CONTINUE` | `None` | that error |
+| `FAILED` | another per-member `ArchiveyError` or allowed filesystem `OSError` failed under `OnError.CONTINUE` | `None` | that error |
+
+Selector-excluded members are outside the operation and have no result. `SKIPPED` is not a
+failure and does not itself create a diagnostic. Under `OnError.STOP`, a rejection or
+failure raises immediately, so no report is returned. Under `CONTINUE`, rejection/failure
+occurrences follow diagnostic policy: default `COLLECT` logs and records them; `IGNORE`
+still produces the correct result and count but no detail/log/callback; `RAISE` halts
+instead of returning that result as recoverable.
+
+The count unit for `EXTRACTION_MEMBER_REJECTED` and `EXTRACTION_MEMBER_FAILED` is one
+continued `ExtractionResult` with the corresponding status, not one root-cause incident
+or one warning call site. Therefore exact per-code counts equal the number of returned
+`REJECTED`/`FAILED` results under `IGNORE` or `COLLECT`. If one failed hardlink source
+causes `N` hardlink results to fail and disposition permits continuation (`IGNORE` or
+`COLLECT`), the coordinator emits `N` ordered `EXTRACTION_MEMBER_FAILED` occurrences.
+Their contexts carry the same opaque `failure_group_id` and `failure_group_size=N`, while
+each occurrence names its own failed result member. Under `RAISE`, the first occurrence in
+result order is counted/delivered and escalates immediately, so no completed report or
+promise of `N` emitted occurrences exists. This preserves per-result counting without
+retaining exception objects.
+
+## 8. Initial taxonomy: all 17 current warning calls
+
+Multiple call sites may intentionally share a code when their machine meaning is the same;
+typed context supplies the variant.
+
+| # | Current site | Stable code | Context / attachment |
+|---:|---|---|---|
+| 1 | `internal/streams/xz.py`: per-stream backward index scan failed | `SEEK_INDEX_DEGRADED` | codec=`xz`, scan=`per_stream`; stream/reader aggregate |
+| 2 | `internal/streams/verify.py`: digest algorithm unavailable | `DIGEST_UNVERIFIABLE` | algorithm + member; member eligible |
+| 3 | `internal/naming.py`: presented name normalized | `MEMBER_NAME_NORMALIZED` | stored/decoded + normalized name; member eligible |
+| 4 | `internal/streams/decompressor_stream.py`: backward index/trailer scan failed | `SEEK_INDEX_DEGRADED` | codec + scan kind + public error type; stream/reader aggregate |
+| 5 | `internal/streams/archive_stream.py`: rewind without available accelerator | `STREAM_REWIND_REDECOMPRESSES` | codec + offsets + accelerator; stream/reader aggregate |
+| 6 | `internal/streams/archive_stream.py`: rewind for codec with no index | `STREAM_REWIND_REDECOMPRESSES` | codec + offsets, accelerator=`None`; stream/reader aggregate |
+| 7 | `internal/extraction.py`: continued member rejection/failure | `EXTRACTION_MEMBER_REJECTED` or `EXTRACTION_MEMBER_FAILED` | one aggregate occurrence per corresponding result |
+| 8 | `internal/extraction.py`: orphaned hardlink source failed | `EXTRACTION_MEMBER_FAILED` | one occurrence per failed hardlink result; shared failure-group fields correlate them |
+| 9 | `internal/extraction.py`: individual hardlink failed | `EXTRACTION_MEMBER_FAILED` | one aggregate occurrence for that failed result |
+| 10 | `internal/backends/directory_reader.py`: directory vanished during scan | `SCAN_DIRECTORY_VANISHED` | relative directory; reader aggregate |
+| 11 | `internal/backends/directory_reader.py`: entry vanished during scan | `SCAN_ENTRY_VANISHED` | relative entry; reader aggregate |
+| 12 | `internal/backends/tar_reader.py`: missing/invalid TAR EOF marker | `ARCHIVE_EOF_MARKER_MISSING` | expected marker + observed length/type; reader aggregate |
+| 13 | `internal/backends/tar_reader.py`: invalid TAR mtime | `MEMBER_TIMESTAMP_INVALID` | member + field/source/value representation; member eligible |
+| 14 | `internal/backends/zip_reader.py`: invalid NTFS FILETIME | `MEMBER_TIMESTAMP_INVALID` | member + NTFS field + value; member eligible |
+| 15 | `internal/backends/zip_reader.py`: invalid ZIP DOS `date_time` | `MEMBER_TIMESTAMP_INVALID` | member + DOS field + value; member eligible |
+| 16 | `internal/backends/zip_reader.py`: encrypted symlink target unavailable | `SYMLINK_TARGET_UNAVAILABLE` | member + reason=`password_required`; member eligible |
+| 17 | `internal/detection.py`: extension conflicts with content | `FORMAT_EXTENSION_CONFLICT` | source + suggested/detected format; `FormatInfo` |
+
+The migration preserves the logger hierarchy and severity, but logging strings are the
+human projection of these records rather than a separate compatibility contract.
+
+## 9. Sequencing
+
+This capability changes the public reader, member, stream, extraction, config, and error
+surfaces. It is therefore a Phase 5 public-API follow-on and must land before Phase 6
+native 7z/RAR readers, whose parsers would otherwise introduce new raw warning paths that
+immediately need migration. The specs in this proposal land first; implementation follows
+only when the 11 tasks are explicitly started.
