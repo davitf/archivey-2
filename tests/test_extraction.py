@@ -216,10 +216,12 @@ def test_surrogateescape_name_extracts_safely_or_is_cleanly_refused(
     dest = tmp_path / "out"
     try:
         extract(io.BytesIO(buf.getvalue()), dest, policy=ExtractionPolicy.TRUSTED)
-    except OSError:
-        # The filesystem rejected the byte sequence at write time (e.g. APFS/macOS).
-        # That is the honest "the OS won't represent this name" outcome — safe. The
-        # only guarantee is that nothing escaped: whatever exists is under dest.
+    except ExtractionError:
+        # The filesystem rejected the byte sequence at write time (e.g. APFS/macOS
+        # raises OSError EILSEQ); the coordinator translates that to a typed
+        # ExtractionError. That is the honest "the OS won't represent this name"
+        # outcome — safe. The only guarantee is that nothing escaped: whatever
+        # exists is under dest.
         for p in dest.rglob("*"):
             assert (
                 dest.resolve() in p.resolve().parents or p.resolve() == dest.resolve()
@@ -229,6 +231,26 @@ def test_surrogateescape_name_extracts_safely_or_is_cleanly_refused(
     # The FS accepted the bytes: the file exists under the exact original filename bytes.
     on_disk = {os.fsencode(p.name) for p in dest.rglob("*") if p.is_file()}
     assert os.path.basename(name_bytes) in on_disk
+
+
+def test_unrepresentable_name_oserror_is_translated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A destination filesystem that refuses a filter-accepted name at write time
+    # (OSError EILSEQ, e.g. non-UTF-8 bytes on APFS/macOS) must surface as a typed
+    # ExtractionError naming the member, not a bare OSError. Simulated here (ext4
+    # accepts any bytes) by making the atomic file write raise EILSEQ.
+    import archivey.internal.extraction as extraction_mod
+
+    def fake_replace(src: object, dst: object, /) -> None:
+        raise OSError(errno.EILSEQ, "Illegal byte sequence")
+
+    monkeypatch.setattr(extraction_mod.os, "replace", fake_replace)
+
+    archive = _tar_bytes([("file", "member.txt", b"hi")])
+    dest = tmp_path / "out"
+    with pytest.raises(ExtractionError, match="member.txt"):
+        extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.TRUSTED)
 
 
 # ---------------------------------------------------------------------------

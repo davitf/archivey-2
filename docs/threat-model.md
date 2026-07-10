@@ -176,14 +176,20 @@ mangles or that becomes hard to delete/rename. Covered by
 `test_surrogateescape_name_extracts_safely_or_is_cleanly_refused` (asserts the
 safety-or-clean-refusal invariant, not round-trip).
 
-*Direction:* fold into the O3/O4 policy work as the "cross-platform portable name"
-dimension. Recommendation: `STRICT` normalizes to an always-representable, portable
-form on **every** platform — decode-lossy names sanitized to a deterministic safe
-spelling (a reversible/percent-style escape, collision-tracked like O2), rejecting only
-when even that cannot be formed; `TRUSTED` attempts the faithful bytes and lets the
-local OS decide (today's behavior). Until then the write-time `OSError` should at least
-be translated to a typed archivey error so callers get "this name isn't representable
-here" rather than a bare `OSError`. Needs a `safe-extraction` delta (shared with O3/O4).
+**Landed (error honesty):** the write-time `OSError` (`EILSEQ`) for a filter-accepted
+but unrepresentable name is now translated by the extraction coordinator to a typed
+`ExtractionError` naming the member ("Member name cannot be represented on the
+destination filesystem"), so callers get a typed signal instead of a bare `OSError`
+(`internal/extraction.py`; `test_unrepresentable_name_oserror_is_translated`).
+
+**Open follow-up (portable-name normalization):** fold into the O3/O4 policy work as the
+"cross-platform portable name" dimension. Recommendation: `STRICT` normalizes to an
+always-representable, portable form on **every** platform — decode-lossy names sanitized
+to a deterministic safe spelling (a reversible/percent-style escape, collision-tracked
+like O2), rejecting only when even that cannot be formed; `TRUSTED` attempts the faithful
+bytes and lets the local OS decide (today's behavior). This sanitization is **deferred**
+(deliberately not built with the error-translation above) and needs a `safe-extraction`
+delta shared with O3/O4.
 
 ## OPEN gaps — compatibility
 
