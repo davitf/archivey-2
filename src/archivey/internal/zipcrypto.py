@@ -11,7 +11,8 @@ payload bytes, each XORed with a keystream byte derived from the evolving state.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
+from typing import BinaryIO
 
 
 def _make_crc_table() -> list[int]:
@@ -73,10 +74,14 @@ def password_matches_check_byte(
 def parallel_plaintext_crc32(
     passwords: Sequence[bytes],
     header_ciphertext: bytes,
-    body_chunks: Iterable[bytes],
+    body: BinaryIO,
+    *,
+    chunk_size: int = 64 * 1024,
 ) -> list[tuple[bytes, int]]:
-    """Decrypt ``body_chunks`` with each password in parallel; return ``(password, crc32)``.
+    """Decrypt ``body`` with each password in parallel; return ``(password, crc32)``.
 
+    ``body`` is the ZipCrypto ciphertext *after* the 12-byte encryption header (e.g. a
+    :class:`~archivey.internal.streams.streamtools.slice.SlicingStream` over that range).
     Constant memory beyond the current chunk: one ZipCrypto state and running CRC per
     candidate. Candidate order is preserved (ties resolved by the caller via first match).
     """
@@ -90,7 +95,10 @@ def parallel_plaintext_crc32(
             keys.update(plain)
         states.append(keys)
     crcs = [0] * len(states)
-    for chunk in body_chunks:
+    while True:
+        chunk = body.read(chunk_size)
+        if not chunk:
+            break
         for i, keys in enumerate(states):
             plain = bytearray(len(chunk))
             for j, cipher in enumerate(chunk):

@@ -142,7 +142,7 @@ storage": it SHALL NOT buffer plaintext proportional to the member size to memor
 temporary disk.
 
 **Compressed members (DEFLATE / BZIP2 / LZMA).** A candidate is confirmed by decompressing
-a bounded plaintext prefix (an internal constant on the order of 1 MiB of decompressed
+a bounded plaintext prefix (an internal constant on the order of 64 KiB of decompressed
 output), discarding the output. A wrong ZipCrypto key feeds the decompressor
 high-entropy garbage, which each stdlib codec rejects far within that bound (the
 gibberish-rejection investigation in this change's tasks records the measured margins).

@@ -16,7 +16,6 @@ import struct
 import zipfile
 import zlib
 from collections.abc import Callable
-from collections.abc import Iterator as IterType
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,10 +45,14 @@ from archivey.internal.password import (
 from archivey.internal.password_confirm import (
     CONFIRM_PREFIX_BYTES,
     first_crc_match,
-    read_and_discard,
 )
 from archivey.internal.registry import register_reader
-from archivey.internal.streams.streamtools import is_seekable, is_stream
+from archivey.internal.streams.streamtools import (
+    SlicingStream,
+    is_seekable,
+    is_stream,
+    read_exact,
+)
 from archivey.internal.zipcrypto import (
     parallel_plaintext_crc32,
     password_matches_check_byte,
@@ -426,28 +429,19 @@ class ZipReader(BaseArchiveReader):
         return getattr(self._archive, "_lock")
 
     @contextmanager
-    def _ciphertext_chunks(
+    def _ciphertext_body_stream(
         self,
         info: zipfile.ZipInfo,
-        *,
-        body_start: int = 0,
-        body_limit: int | None = None,
-    ) -> IterType[IterType[bytes]]:
-        """Yield ciphertext body chunks (after the 12-byte ZipCrypto header).
+    ) -> Iterator[BinaryIO]:
+        """Yield a :class:`SlicingStream` over the ZipCrypto ciphertext body.
 
-        ``body_start`` / ``body_limit`` are offsets into the encrypted *body*
-        (excluding the header). Streams from the archive file under ``ZipFile``'s
-        lock so position is restored; never buffers the whole member.
+        The view starts after the 12-byte encryption header and covers the rest of the
+        member's compressed payload. Held under ``ZipFile``'s lock with the archive
+        position restored on exit; never buffers the whole member.
         """
         zf = self._archive
         header_len = 12
-        body_total = max(0, info.compress_size - header_len)
-        start = min(max(0, body_start), body_total)
-        if body_limit is None:
-            end = body_total
-        else:
-            end = min(body_total, start + max(0, body_limit))
-        chunk_size = 64 * 1024
+        body_len = max(0, info.compress_size - header_len)
 
         with self._zipfile_lock():
             fp = zf.fp
@@ -460,20 +454,10 @@ class ZipReader(BaseArchiveReader):
                 if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":
                     raise zipfile.BadZipFile("Bad magic number for file header")
                 name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
-                fp.read(name_len + extra_len)
-                # Skip encryption header + body_start.
-                fp.read(header_len + start)
-
-                def iterator() -> IterType[bytes]:
-                    remaining = end - start
-                    while remaining > 0:
-                        piece = fp.read(min(chunk_size, remaining))
-                        if not piece:
-                            break
-                        remaining -= len(piece)
-                        yield piece
-
-                yield iterator()
+                body_start = info.header_offset + 30 + name_len + extra_len + header_len
+                yield SlicingStream(
+                    cast("BinaryIO", fp), start=body_start, length=body_len
+                )
             finally:
                 fp.seek(saved)
 
@@ -578,7 +562,7 @@ class ZipReader(BaseArchiveReader):
             stream: BinaryIO | None = None
             try:
                 stream = cast("BinaryIO", self._archive.open(info, pwd=password))
-                read_and_discard(stream, CONFIRM_PREFIX_BYTES)
+                read_exact(stream, CONFIRM_PREFIX_BYTES)
                 stream.close()
                 stream = None
                 # Fresh stream for the caller; zipfile re-checks CRC at EOF.
@@ -652,8 +636,8 @@ class ZipReader(BaseArchiveReader):
                 return None
             # No decompressor to reject garbage: one shared ciphertext pass computes
             # every survivor's plaintext CRC-32 in constant memory.
-            with self._ciphertext_chunks(info) as chunks:
-                crcs = parallel_plaintext_crc32(survivors, header, chunks)
+            with self._ciphertext_body_stream(info) as body:
+                crcs = parallel_plaintext_crc32(survivors, header, body)
             winner = first_crc_match(expected_crc, crcs)
             if winner is None:
                 failure = EncryptionError(

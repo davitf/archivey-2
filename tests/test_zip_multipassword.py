@@ -249,7 +249,7 @@ def test_source_close_failure_after_prefix_confirm_propagates(
 def test_wrong_key_rejected_within_tight_prefix_bound(
     compression: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Even a 4 KiB confirmation bound rejects colliding wrong keys (≪ 1 MiB)."""
+    """Even a 4 KiB confirmation bound rejects colliding wrong keys (≪ 64 KiB)."""
     monkeypatch.setattr(password_confirm, "CONFIRM_PREFIX_BYTES", 4 * 1024)
     monkeypatch.setattr(zip_reader, "CONFIRM_PREFIX_BYTES", 4 * 1024)
     blob = build_zipcrypto_zip(
@@ -267,17 +267,13 @@ def test_wrong_key_rejected_within_tight_prefix_bound(
 def test_large_compressed_confirmation_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plaintext = (b"bounded-confirm-payload\n" * 8000)  # well over 1 MiB when repeated
+    plaintext = (b"bounded-confirm-payload\n" * 8000)  # well over 64 KiB when repeated
     plaintext = plaintext * 8  # ~1.5 MiB+
     assert len(plaintext) > CONFIRM_PREFIX_BYTES
     blob = build_zipcrypto_zip(
         RIGHT, NAME.encode(), plaintext, compression=zipfile.ZIP_DEFLATED
     )
     collider = find_check_byte_collision(blob, NAME, RIGHT)
-
-    bound = 64 * 1024
-    monkeypatch.setattr(password_confirm, "CONFIRM_PREFIX_BYTES", bound)
-    monkeypatch.setattr(zip_reader, "CONFIRM_PREFIX_BYTES", bound)
 
     created_temps: list[str] = []
     real_named = tempfile.NamedTemporaryFile
@@ -291,19 +287,18 @@ def test_large_compressed_confirmation_is_bounded(
     monkeypatch.setattr(tempfile, "SpooledTemporaryFile", tracking_temp)
 
     bytes_read = {"n": 0}
-    original_discard = password_confirm.read_and_discard
+    original_exact = zip_reader.read_exact
 
-    def counting_discard(stream: Any, limit: int, **kwargs: Any) -> int:
-        n = original_discard(stream, limit, **kwargs)
-        bytes_read["n"] = max(bytes_read["n"], n)
-        return n
+    def counting_exact(stream: Any, n: int) -> bytes:
+        data = original_exact(stream, n)
+        bytes_read["n"] = max(bytes_read["n"], len(data))
+        return data
 
-    monkeypatch.setattr(password_confirm, "read_and_discard", counting_discard)
-    monkeypatch.setattr(zip_reader, "read_and_discard", counting_discard)
+    monkeypatch.setattr(zip_reader, "read_exact", counting_exact)
 
     assert _read_member(blob, [collider, RIGHT]) == plaintext
     assert created_temps == []
-    assert bytes_read["n"] <= bound
+    assert bytes_read["n"] <= CONFIRM_PREFIX_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -343,9 +338,9 @@ def test_stored_crc_match_ties_resolve_by_candidate_order(
     expected = zlib.crc32(plaintext) & 0xFFFFFFFF
 
     def fake_crc(
-        passwords: list[bytes], header: bytes, chunks: Any
+        passwords: list[bytes], header: bytes, body: Any, **kwargs: Any
     ) -> list[tuple[bytes, int]]:
-        for _ in chunks:
+        while body.read(65536):
             pass
         return [(p, expected) for p in passwords]
 
