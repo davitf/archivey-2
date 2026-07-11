@@ -52,6 +52,6 @@
 
 ## 5. Verify
 
-- [ ] 5.1 `openspec validate --strict reader-concurrency-coordination`.
-- [ ] 5.2 Full suite in all three dependency configurations (`all`, `all-lowest`,
+- [x] 5.1 `openspec validate --strict reader-concurrency-coordination`.
+- [x] 5.2 Full suite in all three dependency configurations (`all`, `all-lowest`,
       `core-only`) plus the `3.13t` marked run; `ruff` / `pyrefly` / `ty` clean.
