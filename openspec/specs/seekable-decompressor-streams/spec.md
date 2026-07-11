@@ -6,6 +6,51 @@ Archivey (DEV) provides a subsystem that gives random access inside single-file 
 
 ## Requirements
 
+### Requirement: Seek machinery is demand-driven
+
+Seek support SHALL be constructed only for streams whose seekability was declared —
+`MemberStreams.SEEKABLE` on `open_archive()`, or `seekable=True` on the single-stream
+API. For undeclared streams the system SHALL NOT parse XZ footers or lzip trailers for
+random access, SHALL NOT instantiate `rapidgzip` / indexed-bzip2 accelerators, and SHALL
+NOT retain rewind buffers or seek-point tables; the stream is forward-only
+(`seekable() is False`, `seek()` raises `io.UnsupportedOperation`).
+
+The `use_rapidgzip` / `use_indexed_bzip2` tri-state (`AUTO`/`ON`/`OFF`) configuration
+resolves `AUTO` against **declared seek demand** rather than the access-mode proxy:
+`AUTO` + declared seekability + library available → accelerator used; `AUTO` without
+declared seekability → accelerator not instantiated. `ON`/`OFF` retain their explicit
+meanings for declared-seekable streams; `ON` with an undeclared stream has nothing to
+accelerate and creates no accelerator.
+
+For **declared-seekable** streams the existing contract is unchanged: native-index
+formats (XZ, lzip) seek by decompressing only the needed blocks; accelerator-backed
+gzip/bzip2 seek via their indexes; and the stdlib fallback's O(n)-per-rewind seek is
+permitted but MUST NOT be silent (the warning naming the `[seekable]` accelerator
+remains).
+
+#### Scenario: undeclared stream builds no seek machinery
+
+- **WHEN** a gzip/xz/bzip2/lzip stream is opened without declared seekability under
+  `AUTO` accelerator configuration
+- **THEN** no index is parsed, no accelerator is instantiated, and the stream is
+  forward-only
+
+#### Scenario: declared stream resolves AUTO to the accelerator
+
+- **WHEN** the same stream is opened with declared seekability, `AUTO` configuration,
+  and the accelerator library installed
+- **THEN** the accelerator (or native index) provides random access without full
+  re-decompression
+
+#### Scenario: declared stream without accelerator still warns on slow rewinds
+
+- **WHEN** a declared-seekable gzip stream has no accelerator available and the caller
+  seeks backward
+- **THEN** the seek succeeds by re-decompressing from the start and a warning names the
+  `[seekable]` accelerator
+
+---
+
 ### Requirement: Seekable random access via format-native indexes
 
 The system SHALL support seekable random access within XZ and lzip compressed streams by reading the index structures embedded in those formats. For XZ, this is done by parsing the XZ stream footer and block index, which records the uncompressed offset of each block without requiring full decompression. For lzip, this is done by scanning the lzip trailer at the end of the stream. These index-based approaches make it possible to seek to an arbitrary uncompressed offset by decompressing only the block(s) that contain it.
@@ -24,7 +69,7 @@ The system SHALL support seekable random access within XZ and lzip compressed st
 
 ### Requirement: Optional accelerator backends for gzip and bzip2 random access
 
-The system SHALL support optional accelerator backends for formats that have no native block index, using the `rapidgzip` library as the **single** accelerator backend for both codecs: gzip via `rapidgzip.RapidgzipFile` and bzip2 via rapidgzip's bundled `rapidgzip.IndexedBzip2File`. The system SHALL NOT use the standalone `indexed_bzip2` package — loading both `rapidgzip` and `indexed_bzip2` into one process corrupts the heap and aborts on macOS (their statically-linked C++ cores share symbols that collide under dyld), and the library author's own guidance is to "depend on rapidgzip" when both gzip and bzip2 are needed. These backends are opt-in (controlled by `use_rapidgzip` and `use_indexed_bzip2` configuration flags, tri-state `AUTO`/`ON`/`OFF` resolved against the caller's access mode — the `streaming` flag; `use_indexed_bzip2` now selects rapidgzip's bundled bzip2 decoder). When the accelerator is not available or not enabled, gzip and bzip2 streams stay backed by the stdlib decoders, which still support seeking but service it by re-decompressing from the start (O(n) per rewind). The slow path is permitted — not every format can offer fast random access, and a slow seek beats failing — but it MUST NOT be silent: a seek that rewinds the stream SHALL log a warning naming the `[seekable]` accelerator (`rapidgzip`).
+The system SHALL support optional accelerator backends for formats that have no native block index, using the `rapidgzip` library as the **single** accelerator backend for both codecs: gzip via `rapidgzip.RapidgzipFile` and bzip2 via rapidgzip's bundled `rapidgzip.IndexedBzip2File`. The system SHALL NOT use the standalone `indexed_bzip2` package — loading both `rapidgzip` and `indexed_bzip2` into one process corrupts the heap and aborts on macOS (their statically-linked C++ cores share symbols that collide under dyld), and the library author's own guidance is to "depend on rapidgzip" when both gzip and bzip2 are needed. These backends are opt-in (controlled by `use_rapidgzip` and `use_indexed_bzip2` configuration flags, tri-state `AUTO`/`ON`/`OFF` resolved against **declared seek demand** — `MemberStreams.SEEKABLE` / `seekable=True` — rather than the access-mode `streaming` flag; `use_indexed_bzip2` now selects rapidgzip's bundled bzip2 decoder). When the accelerator is not available or not enabled, gzip and bzip2 streams stay backed by the stdlib decoders, which still support seeking but service it by re-decompressing from the start (O(n) per rewind). The slow path is permitted — not every format can offer fast random access, and a slow seek beats failing — but it MUST NOT be silent: a seek that rewinds the stream SHALL log a warning naming the `[seekable]` accelerator (`rapidgzip`).
 
 #### Scenario: gzip random access with rapidgzip enabled
 

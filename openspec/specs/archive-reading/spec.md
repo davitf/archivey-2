@@ -50,6 +50,80 @@ after the exception propagates.
 - **WHEN** `archivey.open_archive(source, password="secret")` is called
 - **THEN** the returned `ArchiveReader` uses the provided password for encrypted members
 
+### Requirement: Declared member-stream capabilities
+
+`open_archive()` SHALL accept `member_streams: MemberStreams`, a flags enum with two
+capabilities, defaulting to none:
+
+- `MemberStreams.CONCURRENT` — any number of member streams may be open simultaneously.
+- `MemberStreams.SEEKABLE` — member streams are seekable where the backend can provide
+  it.
+
+**Default contract (no capability declared), uniform across every format including the
+directory reader:** at most one member data stream may be live per reader, and member
+streams are forward-only. "Live" spans `open()` to the stream's `close()`/context exit —
+not EOF and not garbage collection. Opening a second overlapping stream SHALL raise
+`ConcurrentAccessError` at the later `open()` and SHALL leave the first stream untouched
+and readable; the library never silently closes or invalidates a stream the caller still
+holds. Every member stream (random `open()` and `stream_members()` yields alike) SHALL
+report `seekable() is False`; `seek()` SHALL raise `io.UnsupportedOperation`; `tell()`
+SHALL work. The ordinary `open → read → close → open next` loop is unaffected.
+
+`open_archive()` SHALL record its caller's stack (captured once at open) and
+`ConcurrentAccessError` SHALL include the caller's `file:line`, so the error points at
+where the capability should have been declared. The full captured stack is retained on
+the reader for diagnostics; there is no separate config knob.
+
+The capability declaration is per-archive intent: there SHALL be no `ArchiveyConfig`
+equivalent and no per-`open()` capability argument. Access cost never determines
+legality: declared capabilities are honored on every format, and the cost receipt
+describes what they cost on this archive.
+
+**Internal operations are exempt from the gate.** `extract_all()` (including hardlink
+recovery), symlink-target reads, password candidate confirmation, and other
+library-internal member opens run under internal scopes and SHALL NOT require any
+declared capability. No caller flag is ever needed to extract.
+
+**Out of the gate's scope.** The cost of a caller's member *open order* on a solid
+archive (random opens each re-decoding from the block start, with no overlapping
+lifetimes) is not gated: it remains governed by `AccessCost`/`solid_block_count` and the
+`stream_members()` steer. Documentation for `member_streams` SHALL state this
+explicitly.
+
+#### Scenario: second overlapping open without CONCURRENT fails uniformly
+
+- **WHEN** a reader opened without `MemberStreams.CONCURRENT` — on ZIP, TAR, ISO,
+  single-file, or a directory alike — has one member stream open and `open()` is called
+  for another member
+- **THEN** `ConcurrentAccessError` is raised at the second `open()`, its message includes
+  the `file:line` where `open_archive()` was called, and the first stream remains
+  readable
+
+#### Scenario: sequential open-read-close needs no declaration
+
+- **WHEN** a caller opens a member, reads it, closes it, and opens the next member, with
+  no declared capabilities
+- **THEN** every open succeeds; non-overlapping lifetimes never trigger the gate
+
+#### Scenario: undeclared streams are forward-only on every format
+
+- **WHEN** a member stream is obtained from a reader opened without
+  `MemberStreams.SEEKABLE` — including a directory member that is a real file
+- **THEN** `seekable()` is `False` and `seek()` raises `io.UnsupportedOperation`, while
+  `tell()` and forward reads work normally
+
+#### Scenario: declared SEEKABLE restores seekability where the backend provides it
+
+- **WHEN** the same member is opened from a reader declared with `MemberStreams.SEEKABLE`
+- **THEN** the stream is seekable where the backend can provide positioning, and the
+  seekable-decompressor-streams loud-slow-rewind rule governs the non-accelerated path
+
+#### Scenario: extraction requires no declared capability
+
+- **WHEN** `extract_all()` runs (including its hardlink recovery pass and symlink-target
+  reads) on a reader with no declared capabilities
+- **THEN** it completes normally; internal member opens are not gated
+
 ### Requirement: Multi-volume and multi-source input
 
 `open_archive()` SHALL accept a multi-volume archive through either of two paths, and
@@ -333,13 +407,28 @@ def stream_members(
 ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]: ...
 ```
 
-It yields original caller-read-only members in archive order and an `ArchiveStream` for
-file data (`None` for non-files), with peak memory bounded by decompressor state and one
-in-flight chunk rather than a whole solid block. A yielded stream is valid only until the
-iterator advances. Streams open lazily; selector-excluded and unread members are not
-opened. `members` keeps the existing name/member collection or predicate semantics.
-There is no transform `MemberFilter` on this pure generator because late-bound member
-metadata must continue to update the original member in place.
+It yields `(member, stream)` pairs in archive order with bounded memory. A solid block is
+decompressed progressively and never buffered whole in memory; peak memory is the decoder
+working set plus one in-flight chunk. Non-file members yield `None`.
+
+`members` is a selector (a collection of names/member identities or a predicate), not a
+transform. Streams are lazy: unselected or unread members are not opened/decompressed and
+do not request passwords. The generator yields the original mutable `ArchiveMember` so
+late-bound fields remain visible; transformation stays at extraction/writing sinks.
+
+The yielded stream is owned by the iterator and valid only until advance: before obtaining
+the next item, the iterator SHALL close/invalidate the previous stream. The implementation
+MUST NOT retain a growing decompressed-block cache until reader close. On a solid archive,
+random `open()` may re-decode from the block start and warn callers to prefer
+`stream_members()` for a sequential pass.
+
+A `stream_members()` invocation is an exclusive one-pass/data-path operation in both access
+modes. It SHALL NOT overlap random `open()`, materialization, another iteration/data pass,
+an unrelated extraction, or reader close. An `extract_all()` owner MAY invoke it as a child
+pass and MAY read/close the yielded child stream. Detected unrelated overlap SHALL raise
+`ArchiveyUsageError` at the later operation and leave the active pass/stream valid.
+This differs deliberately from random `open()`, whose independently owned streams may
+coexist.
 
 Each yielded stream is an operation-filtered view over the reader's single collector and
 budget; advancing the iterator does not create a new diagnostic collector or aggregate
@@ -371,10 +460,22 @@ copy.
 - **WHEN** a caller iterates `ar.stream_members()`, fully reads a member's stream, then inspects that same member object
 - **THEN** any field the backend completed while reading (e.g. `size`/CRC) is now visible on it, because `stream_members()` yields the original object rather than a pre-read copy
 
-#### Scenario: stream is invalid after advance
+#### Scenario: advance releases the previous iterator-owned stream
 
-- **WHEN** the iterator advances to the next `(member, stream)` pair
-- **THEN** the previously yielded stream MUST NOT be used; it is no longer guaranteed to be valid
+- **WHEN** a caller advances `stream_members()` after receiving one member stream
+- **THEN** the prior stream is closed/invalidated before the next pair is yielded
+
+#### Scenario: random open cannot overlap a streaming pass
+
+- **WHEN** a `stream_members()` pass is active and a random `open()` is attempted
+- **THEN** `ArchiveyUsageError` is raised and the active pass remains usable
+
+#### Scenario: abandoned streaming generator releases ownership
+
+- **WHEN** a caller explicitly closes or abandons a partially consumed `stream_members()`
+  generator
+- **THEN** its current yielded stream is closed and its child/root operation scopes are
+  released exactly once
 
 #### Scenario: random open on a solid member re-decompresses with a warning
 
@@ -512,20 +613,100 @@ resolves, and only an actual cycle (or a missing target) fails.
 
 ### Requirement: Context-manager and close lifecycle
 
-The system SHALL implement the context-manager protocol on `ArchiveReader` so that resources are released when the `with` block exits. A `close()` method SHALL also be available for explicit resource release.
+The reader SHALL implement `__enter__`, `__exit__`, and explicit `close()`. Lifecycle state
+(`OPEN`, `READER_CLOSED`, `TEARDOWN_RUNNING`, `TEARDOWN_COMPLETE`) and lease count SHALL be
+guarded independently from materialization. `ArchiveReader.close()` SHALL be idempotent.
+Called without unsupported concurrent operations, it atomically marks `READER_CLOSED`.
 
-```python
-def __enter__(self) -> ArchiveReader: ...
-def __exit__(self, *_) -> None: ...
-def close(self) -> None: ...
-```
+Each random-open member stream SHALL own a backend-resource lease. Already-open member
+streams remain usable according to their individual capabilities after reader close and keep
+the required backend resources alive. Backend/source teardown SHALL occur exactly once after
+both the reader is closed and the final member-stream lease is released. A failed open releases its reserved
+lease; this includes lazy initialization failure and closing a lazy stream before first use.
+The final releaser claims teardown under the lifecycle lock, performs it after releasing that
+lock, and records completion without retry. Backend teardown and inner stream close execute
+outside lifecycle locks. A lazy-open failure raises its translated error from the triggering
+operation, permanently releases/closes that handle, makes later I/O raise normal closed-stream
+`ValueError`, and leaves repeated stream `close()` a no-op.
 
-After `close()` is called, the reader's behavior is undefined; callers MUST NOT use a closed reader.
+If explicit reader/member close triggers final teardown and teardown fails, the closer SHALL
+be irrevocably closed and the translated error SHALL propagate once; repeated closes SHALL
+not retry or re-raise it. A safety-net finalizer SHALL use the same once guards, never raise,
+and MAY report through `sys.unraisablehook` only outside all Archivey locks. Native
+accelerator finalizers retain their close-before-free guarantee.
 
-#### Scenario: context manager releases resources
+Member close SHALL release its lease in `finally` even when inner close fails. If inner close
+and the resulting final backend teardown both fail, both translated errors SHALL be preserved
+in an `ExceptionGroup`. `__exit__` SHALL always call `close()`; a close failure propagates on
+normal exit, and during body-exception unwinding the body exception remains available through
+normal Python exception chaining.
 
-- **WHEN** `with archivey.open_archive("archive.zip") as ar:` exits (normally or via exception)
-- **THEN** all backend resources (file handles, temp directories, caches) are released
+Archivey SHALL close path handles and wrappers it owns only after the final lease. It SHALL
+never close a caller-supplied `BinaryIO`; the caller must keep it open through all reader and
+escaped-stream use. If the caller closes it early, a later operation raises
+`ArchiveyUsageError` for the closed source; concurrent external close with I/O is
+unsupported.
+
+Consequently, exiting `with open_archive(...) as reader` closes the reader but an escaped
+member stream intentionally extends backend resource lifetime until that stream closes.
+Callers SHOULD close member streams promptly. Concurrent reader close with `open()` or
+member-stream operations is unsupported and is rejected; no close-vs-I/O linearization is
+promised.
+
+After reader close, repeated `close()` / `__exit__` are no-ops and already-open streams
+continue according to their capabilities. Every new reader operation or property—including
+`__enter__`, iteration/listing/lookup, metadata/cost/source counters, `open`/`read`,
+`stream_members`, and extraction—SHALL raise `ArchiveyUsageError`. Escaped streams
+use context captured before close for error translation and MUST NOT call those properties.
+Their lease-bound short-lived worker tokens prevent final teardown from racing each call.
+
+#### Scenario: escaped member stream survives reader close
+
+- **WHEN** a member stream is opened, then the reader is closed without concurrent I/O
+- **THEN** new reader operations raise `ArchiveyUsageError`, while the existing
+  stream remains usable until it is closed
+- **AND** backend teardown occurs exactly once after that final stream close
+
+#### Scenario: idle lease is not active overlap
+
+- **WHEN** a random-open stream is idle and `reader.close()` runs
+- **THEN** close succeeds and releases the reader lease
+- **AND** later operations on that stream use its lease-bound worker entry until stream close
+
+#### Scenario: failed eager member open leaks no lifecycle lease
+
+- **WHEN** `_open_member` raises after reserving a resource lease
+- **THEN** the reservation is released and a later reader close can complete teardown
+
+#### Scenario: failed lazy member open closes its handle
+
+- **WHEN** first I/O on a lazy member handle makes `_open_member` raise
+- **THEN** the translated error is surfaced, its lease is released, later I/O gets normal
+  closed-stream `ValueError`, and repeated close is a no-op
+
+#### Scenario: final teardown failure is attempted once
+
+- **WHEN** explicit reader or final-stream close claims teardown and backend close raises
+- **THEN** that closer is still irrevocably closed, the translated error propagates once,
+  lifecycle reaches `TEARDOWN_COMPLETE`, and repeated close does not retry
+
+#### Scenario: member and teardown close failures are both preserved
+
+- **WHEN** final member close encounters both an inner-close error and backend teardown error
+- **THEN** its lease/state are still released exactly once and an `ExceptionGroup` preserves
+  both translated failures
+
+#### Scenario: caller-owned source is never closed by Archivey
+
+- **WHEN** a reader and all escaped streams over a caller-supplied `BinaryIO` are closed
+- **THEN** Archivey releases its wrappers but does not call `close()` on that source
+
+#### Scenario: context exit closes the reader
+
+- **WHEN** an `open_archive()` context exits normally or through an exception
+- **THEN** the reader is marked closed and its lease is released
+- **AND** backend resources are released immediately unless an escaped member stream still
+  owns a lease
 
 ---
 
@@ -563,6 +744,25 @@ exhausted (or the provider returns `None`) for a unit that needs one, the reader
 raise `EncryptionError`. There is no per-call password parameter on `open()`/`read()` —
 the candidate model subsumes it.
 
+This existing order SHALL be safe for concurrent post-materialization opens. Static
+candidates are immutable and ordered. Known-good snapshots/promotions and per-unit
+tried/attempt state are synchronized; expensive key derivation/decryption is performed
+without lifecycle/operation, materialization, or password-state locks, but MAY use a required
+backend/source lock around an atomic decode/handle operation.
+
+At most one provider-driven resolution turn may be active per reader. Provider invocation
+SHALL use a claim/call/validate/publish protocol: claim the turn under a condition, release
+all Archivey locks, call the provider, then test returned candidates for that encrypted unit
+without lifecycle/materialization/password locks (using a required backend/source lock only
+for atomic validation work). It then publishes the validated outcome, releases the turn, and
+wakes waiters in a `finally` path. The turn remains claimed through repeated provider attempts
+until success or `None`. A waiter SHALL recheck known-good passwords before claiming the next
+turn, avoiding a duplicate prompt because a successful result is promoted before wake-up.
+Provider callbacks are therefore serialized and always lock-free. Reentrant provider code
+that starts another password-requiring operation on the same reader SHALL raise
+`ArchiveyUsageError` rather than deadlocking. Attempt counts remain per encrypted
+unit.
+
 #### Scenario: sequence of candidates across differently-encrypted members
 
 - **WHEN** an archive whose members are encrypted with two different passwords is opened with `password=[pw_a, pw_b]` and iterated in one streaming pass
@@ -587,6 +787,24 @@ the candidate model subsumes it.
 
 - **WHEN** a header-encrypted archive is opened with only a provider and the header must be decrypted to list members
 - **THEN** the provider is called with a `PasswordRequest` whose `member` is `None` (no member exists yet)
+
+#### Scenario: concurrent encrypted opens share known-good state safely
+
+- **WHEN** workers concurrently open differently encrypted units after materialization
+- **THEN** each follows candidate order independently, successful passwords are promoted
+  without races/duplicates, and no unit overwrites another's attempt state
+
+#### Scenario: provider callbacks are serialized without internal locks
+
+- **WHEN** two workers need the password provider at once
+- **THEN** only one provider callback runs at a time with no Archivey lock held; validation
+  holds no lifecycle/materialization/password lock but may use its required backend/source
+  lock, and the waiter resumes after the validated outcome is published
+
+#### Scenario: password-provider same-reader reentry fails instead of deadlocking
+
+- **WHEN** a provider callback starts another password-requiring operation on the same reader
+- **THEN** that nested operation raises `ArchiveyUsageError`
 
 ---
 
@@ -804,110 +1022,191 @@ normalized to a predicate at the API boundary:
 
 ### Requirement: Multiple concurrently-open member streams
 
-The system SHALL support any number of member streams opened from a **single reader** being
-held open and read in **interleaved** order without corrupting one another, when they are
-served from one underlying source with a single file position. A backend that serves members
-by **byte-range access into a shared source** MUST route member reads through a shared-source
-view that keeps a **per-view position** and performs each seek+read as an atomic pair under
-the source lock, so that reading one open stream never disturbs another open stream's position.
+Every **random-access** reader (`streaming=False`) opened with
+`MemberStreams.CONCURRENT` SHALL support any number of member streams opened from that
+single reader being held open simultaneously and read in interleaved order without
+corrupting one another. Without that declared capability the single-live-stream default
+contract applies ("Declared member-stream capabilities"); with it, access cost still
+does not determine legality.
 
-**Scope / carve-out.** This requirement applies to backends that serve members via independent
-byte-range views over the source (e.g. the native 7z/RAR readers, single-file). A backend
-that serves members through a **single shared decoder or parser object** — notably the
-stdlib-`tarfile`-backed random-access TAR reader — is **exempt**: it MAY require that only one
-member stream be open at a time (or serialize opens), and MUST NOT be expected to support
-interleaved concurrent opens. A **solid** format (7z folder, RAR block) satisfies the
-requirement by giving each `open()` its own decompressor over its own shared-source view,
-re-decoding from the block start as the *random open on a solid member* scenario already
-permits. Backends whose member addressing is owned by an external library that already
-coordinates the shared handle (ISO via `pycdlib`, ZIP via stdlib `zipfile` — path and
-stream sources alike, through its `_SharedFile`) are
-outside this SharedSource retrofit; they are not listed as non-compliant under this
-requirement.
+**Post-materialization worker seam.** After one owner has completed `members()` or
+`scan_members()` and the reader has published its member list/name index, concurrent calls
+from multiple threads to `open(member_or_name)` SHALL be supported. Streams returned by
+different opens SHALL have independent logical positions/state: workers MAY concurrently call
+`read`, `readinto`, and `close` on **different stream objects**, plus `seek`/`tell` under
+`MemberStreams.SEEKABLE` where that stream supports positioning. Non-seekable streams
+retain normal `BinaryIO` behavior:
+`seekable()` is false and unsupported positioning raises `io.UnsupportedOperation`.
+Simultaneous operations on the same stream object require caller synchronization, matching
+ordinary Python file objects. The supported behavior SHALL NOT rely on the GIL.
 
-**Single-reader guarantee only.** The reader object itself remains **not thread-safe**: it MUST
-NOT be driven (concurrent `open()`, iteration, or `close()`) from multiple threads. That misuse
-is **unsupported and undefined** — the reader holds no lock and does not detect it. The
-guarantee here is confined to interleaved use of already-opened member streams from one thread.
+**Materialization boundary.** The members and name index SHALL be built in private/local
+state, completed (including link resolution), and published together exactly once as immutable
+internal containers. A public API whose existing return type is `list` SHALL return a
+copy that cannot structurally mutate those cache containers. `ArchiveMember` objects
+retain their existing backend-populated late-bound fields. Materialization/iteration itself
+is a single-owner operation and MUST NOT overlap worker opens. A second operation detected
+while materialization is in progress SHALL raise `ArchiveyUsageError` without
+observing a partial cache or disturbing the first operation. Late-bound random-open updates
+to a member MUST be idempotent and synchronized; conflicting last-writer-wins updates are
+forbidden. Materialization state is exactly `UNMATERIALIZED` / `MATERIALIZING` /
+`MATERIALIZED`; reader lifecycle is separate and MUST NOT add `CLOSED` to the cache state.
+A failed build discards private state and returns to `UNMATERIALIZED`.
 
-**Failing loudly on detectable misuse.** Where the shared-source view *can* detect misuse — a
-read after the source is closed — the reader surface SHALL raise a typed error (translated
-from the primitive's stdlib-shaped error at the reader boundary; the `streamtools` primitive
-itself raises `ValueError`/`OSError` and defines no archivey exception). A view whose
-requested bounds extend past the source is **clamped** to the available bytes (like a real
-stream), so a truncated archive still yields a short readable view rather than failing at
-construction. This "fail loudly" clause covers only detectable primitive misuse (closed
-handle), not the undefined multi-thread-reader case above.
+**Backend compliance.** Archivey-owned byte-range backends MUST use views with per-view
+positions and atomic shared-source handle operations. External-library backends MUST provide
+equivalent coordination: ZIP MAY rely on stdlib `_SharedFile`; random-access TAR and ISO MUST
+use the one-per-reader lock specified by `tar-concurrent-open`, covering every operation on
+the shared library handle. A solid format satisfies correctness by giving each returned
+stream independent logical position/state. It MAY use per-open decoders or a synchronized,
+bounded/spooled shared decode/materialization strategy; the contract neither requires
+one decoder per open nor promises elimination of redundant decompression.
 
-#### Scenario: interleaved reads of two open members stay correct
+**Reader-wide operation ownership.** Public iteration, materialization, `scan_members`,
+`get_members_if_available` initialization, `stream_members`, `extract_all`, and reader
+`close` are single-owner operations and cannot overlap one another or the random worker seam.
+The base reader SHALL represent ownership with an explicit unforgeable root token, not thread
+identity. Private helpers MAY receive that token to enter child scopes: materialization may
+perform link-data reads; a random worker `open()` may do name lookup/link following and late
+link-data reads; `extract_all` may inspect available members/source counters and drive one or
+more `stream_members` passes; and a pass may advance and perform I/O/close on its yielded
+stream. An unrelated/reentrant public call has no token even on the owner thread and is
+rejected. The later conflicting operation SHALL raise `ArchiveyUsageError` before
+changing state; the earlier root and children remain usable.
 
-- **WHEN** two members of a byte-range random-access archive are opened at the same time and
-  read in an interleaved sequence of partial reads
-- **THEN** each stream returns exactly its own member's bytes in order, regardless of the
-  interleaving, and neither is affected by the other's position
+Random `open()` and each operation on a random-open stream SHALL hold a short-lived worker
+token only while that call executes. An idle open stream owns a lifecycle lease, not active
+operation ownership. It carries a private lease-bound entry capability so later stream I/O
+remains admissible after `reader.close()`. Thus reader close MAY run while streams are idle,
+but is rejected while a worker call is executing; closure does not enable any new reader API.
 
-#### Scenario: reading after the reader is closed fails loudly
+"Overlap" means concurrent method/I/O execution, not the lifetime of an idle open member
+stream: a non-concurrent `reader.close()` MAY run while member streams remain open, and their
+leases preserve resources for later stream I/O. This is not a blanket thread-safety guarantee
+for every reader method.
 
-- **WHEN** a member stream is read after its reader (and the underlying source) has been closed
-- **THEN** a typed error is raised at the reader surface rather than returning arbitrary or
-  empty bytes
+**`stream_members()` is separate.** A `stream_members()` pass owns the reader's one-pass
+data path. It MUST NOT overlap random `open()` work or any other forward/data pass.
+Advancing the iterator closes/invalidates the previously yielded stream before yielding the
+next; this iterator-owned lifecycle does not apply to independent streams returned by random
+`open()`. The yielded stream carries a child scope so its I/O is permitted during the pass.
+Exhaustion, exceptions, explicit generator close, and generator abandonment/finalization
+SHALL close the current yielded stream and release the pass scope/token exactly once. A caller
+needing simultaneous streams SHALL materialize and use random `open()`.
 
-#### Scenario: single-decoder backend need not support interleaved opens
+**Cost is informational.** `AccessCost.SOLID` / `solid_block_count` tell callers that
+simultaneous random streams may repeat decompression. They never disable the guarantee.
+`stream_members()` remains the efficient bounded-memory, one-decode path for a sequential
+solid-archive workload.
 
-- **WHEN** the random-access TAR reader (one shared `tarfile` object) is asked to hold two
-  member streams open and interleave them
-- **THEN** this is outside the concurrent-open guarantee; the backend MAY serve one member
-  stream at a time without violating this requirement
+**Detectable closed-source misuse and bounds.** A live lease prevents reader-owned backend
+resources from closing underneath a member stream. If a caller-owned source is nevertheless
+closed externally, the reader surface SHALL raise a typed error rather than return arbitrary
+or empty bytes. Archivey shared-source views clamp bounds extending past the available source
+like normal streams, so truncation produces a short view rather than a construction failure.
+
+**Callbacks and lock scope.** Password providers, selectors/filters, progress callbacks,
+logging handlers, diagnostic formatting/stamping, `sys.unraisablehook`, and user-visible
+close/finalizer hooks MUST execute without any Archivey lock held. Decode/password candidate
+validation is not a callback: it MUST run without lifecycle/operation, materialization, or
+password locks, but MAY hold the narrowly required backend/source lock around an atomic
+decoder/handle operation. Nested reader-state order is lifecycle/operation → materialization
+→ password. Backend/source locks are leaves. Individual stream state uses claim/call/publish
+and MUST be released before invoking lazy `open_fn`, inner I/O/close, backend/source
+operations, or lifecycle lease release.
+
+#### Scenario: workers open and operate on independent streams after materialization
+
+- **WHEN** a random-access reader has completed `members()` and two threads concurrently
+  call `open()` for different members, then use the operations each stream supports
+- **THEN** each stream returns exactly its member's bytes and keeps its own position, with no
+  cache, reader-state, or source-position race
+
+#### Scenario: declared concurrency is honored regardless of cost
+
+- **WHEN** a reader opened with `MemberStreams.CONCURRENT` opens two member streams and
+  reads them interleaved
+- **THEN** both are correct on every format; `AccessCost` describes the expense but never
+  denies the declared capability
+
+#### Scenario: materialization overlap is rejected without partial publication
+
+- **WHEN** one thread is materializing a reader and another operation attempts to
+  materialize or open from the not-yet-published cache
+- **THEN** the later operation raises `ArchiveyUsageError`, and no caller observes a
+  partial member list/name index
+
+#### Scenario: materialization failure does not close or poison the cache
+
+- **WHEN** a materialization owner fails before publication
+- **THEN** its private structures are discarded, cache state returns to `UNMATERIALIZED`,
+  and lifecycle remains independently `OPEN`
+
+#### Scenario: reader-wide mutation does not overlap the worker seam
+
+- **WHEN** worker member-stream operations are active and iteration, `stream_members`,
+  `extract_all`, or reader `close()` is attempted concurrently
+- **THEN** the detected later operation raises `ArchiveyUsageError` without closing
+  or corrupting the active member streams
+
+#### Scenario: solid concurrent streams are correct but may repeat work
+
+- **WHEN** two members in one solid block are opened simultaneously
+- **THEN** each stream returns correct independent bytes; `AccessCost.SOLID` describes the
+  possible re-decode cost, and no concurrency exception is raised
+
+#### Scenario: free-threaded correctness does not depend on the GIL
+
+- **WHEN** the post-materialization worker scenario runs for a backend/runtime combination
+  covered by the required CPython `3.13t` job
+- **THEN** cache publication, lifecycle leases, password state, and member/source positions
+  remain data-race-free with the same observable results as a regular build
+
+#### Scenario: unsupported seek keeps normal stream semantics
+
+- **WHEN** a returned member stream reports `seekable() is False` and the caller seeks
+- **THEN** it raises `io.UnsupportedOperation` rather than gaining a synthetic seek guarantee
+
+#### Scenario: extraction is an owner with permitted child passes
+
+- **WHEN** `extract_all()` drives `stream_members()`, reads/closes its yielded streams, and
+  performs a random-access hardlink recovery pass
+- **THEN** those token-bearing child scopes are permitted while an unrelated public operation
+  is rejected
+
+#### Scenario: externally closed source fails loudly
+
+- **WHEN** a caller-owned underlying source is externally closed while a member stream still
+  holds a reader lease
+- **THEN** the reader surface raises a typed error rather than returning arbitrary or empty
+  bytes
 
 ### Requirement: Random-access member-open is reentrant and reader-state-free
 
-The system SHALL require that, for a **random-access backend that advertises independent member
-open** (`streaming=False`, serving members by byte-range access — e.g. the native 7z/RAR
-readers, ZIP, single-file), the member-open implementation (`_open_member`) is a function of the
-member and the archive's shared source only: it MUST NOT mutate shared reader state, and it MUST
-NOT keep per-open scratch on the reader that a second concurrent open would overwrite. Any
-byte-range access it performs MUST go through a shared-source view (per the *Multiple
-concurrently-open member streams* requirement) rather than by seeking a single shared handle
-directly. Backends MAY hold immutable, already-materialized state (the member list and name
-index) read-only.
+For every random-access backend, `_open_member` SHALL derive the returned stream from the
+member plus immutable/published archive state and coordinated backend resources. It MUST
+NOT keep unsynchronized per-open scratch on the reader that another open can overwrite.
+Synchronized shared bookkeeping—operation state, stream leases, password/key caches, and
+backend handle locks—is permitted and required where applicable.
 
-**Scope.** This invariant does **not** apply to forward-only/streaming reads (`streaming=True`),
-which are inherently single-pass, nor to backends exempted from concurrent-open (a single shared
-decoder/parser object, such as the random-access TAR reader). Backends whose member addressing
-is owned by an external library that already coordinates the shared handle (ISO via `pycdlib`,
-ZIP path-source via stdlib `zipfile`) are outside the SharedSource retrofit and are not required
-to route opens through an archivey shared-source view; they remain subject to the no-per-open-
-scratch rule on archivey-owned reader state. It is a forward-compatibility contract that keeps
-the reader ABC ready for a future parallel-extraction consumer without an interface retrofit; it
-does not by itself make the reader object thread-safe, and it imposes no ordering or performance
-guarantee.
+Archivey-owned byte ranges MUST use shared-source views with per-view position. A
+library-owned seek-before-read backend (random-access TAR/ISO) MUST coordinate the complete
+shared-handle lifecycle through its per-reader lock. Immutable member/name structures MAY
+be read concurrently after materialization.
 
-**Materialize-before-fan-out.** A future concurrent consumer MUST materialize the member list
-(a completed random-access pass) before opening members concurrently; the one-time member-cache
-build is not itself concurrency-safe. This precondition is documented on the ABC now so Phase 6
-backends and any future consumer honor it.
+Forward-only/streaming passes remain out of scope because they own one progressive decoder
+and cannot overlap. There is no random-access TAR/ISO exemption: those backends satisfy the
+random-access invariant through their locked library streams.
 
-#### Scenario: opening one member does not disturb another open
+#### Scenario: one open cannot overwrite another open's state
 
-- **WHEN** a random-access backend that advertises independent member open serves two members
-  opened concurrently from the same reader
-- **THEN** neither open call has mutated reader state the other depends on, and each returned
-  stream reads its own member's bytes correctly under interleaving
+- **WHEN** two post-materialization `open()` calls execute concurrently
+- **THEN** neither stores unsynchronized per-open state on the reader, and both returned
+  streams remain correct under interleaving
 
-#### Scenario: member-open derives access from the shared source
+#### Scenario: TAR and ISO comply through comprehensive handle locking
 
-- **WHEN** such a backend implements `_open_member`
-- **THEN** it obtains the member's byte range through a shared-source view rather than by
-  seeking a single shared handle in place, so concurrent opens cannot corrupt each other's
-  position
-
-#### Scenario: streaming and single-decoder backends are out of scope; ISO is library-owned
-
-- **WHEN** the reader is a forward-only streaming pass, or a backend served by a single shared
-  decoder object (random-access TAR)
-- **THEN** this invariant does not apply and the backend is not required to support concurrent
-  member opens
-- **WHEN** the backend is ISO (`pycdlib` owns member addressing)
-- **THEN** it is not required to route opens through an archivey shared-source view and is not
-  listed as non-compliant; archivey-owned reader state still MUST NOT hold per-open scratch
+- **WHEN** a random-access TAR or ISO reader opens/uses multiple member streams
+- **THEN** every required shared-handle/library decode operation is serialized by its one
+  per-reader lock, while archivey callbacks and diagnostics run with no Archivey lock
 

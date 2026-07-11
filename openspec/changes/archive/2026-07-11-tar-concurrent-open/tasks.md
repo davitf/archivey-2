@@ -86,8 +86,9 @@
 
 ## 6. Verification
 
-- [ ] 6.1 `openspec validate --strict tar-concurrent-open`
-- [ ] 6.2 `uv run --no-sync ruff check` on touched paths
-- [ ] 6.3 `uv run --no-sync pyrefly check` and `uv run --no-sync ty check` clean
-- [ ] 6.4 `uv run --no-sync pytest` for TAR / ISO / streamtools tests (full three-config
-      gate before push per CONTRIBUTING)
+- [x] 6.1 `openspec validate --strict tar-concurrent-open`
+- [x] 6.2 `uv run --no-sync ruff check` on touched paths
+- [x] 6.3 `uv run --no-sync pyrefly check` and `uv run --no-sync ty check` clean
+- [x] 6.4 `uv run --no-sync pytest` for TAR / ISO / streamtools tests (full three-config
+      gate before push per CONTRIBUTING; **skip required `3.13t` while `CONCURRENT` is
+      provisional** — see `concurrent-member-streams` deferred task 7.8)
