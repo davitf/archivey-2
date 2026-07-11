@@ -205,9 +205,9 @@ def test_adversarial_extract_has_exact_outcome(
                 )
         elif entry.extract_outcome == "filesystem_name_refusal":
             # A UTF-8-enforcing filesystem (e.g. APFS) refuses the surrogateescape
-            # name; byte-preserving filesystems extract it. Raw OSError is tolerated
-            # until task 2.4 translates the refusal into a typed ExtractionError,
-            # after which the OSError arm tightens to the typed error only.
+            # name with EILSEQ; the coordinator translates that to ExtractionError
+            # (landed on main via hypothesis-property-tests). Byte-preserving
+            # filesystems extract the member normally.
             try:
                 results = archive.extract_all(
                     dest, members=[target], policy=ExtractionPolicy.TRUSTED
@@ -215,9 +215,7 @@ def test_adversarial_extract_has_exact_outcome(
             except ExtractionError as exc:
                 cause = exc.__cause__
                 assert isinstance(cause, OSError)
-                assert cause.errno in {errno.EILSEQ, errno.EINVAL}
-            except OSError as exc:
-                assert exc.errno in {errno.EILSEQ, errno.EINVAL}
+                assert cause.errno == errno.EILSEQ
             else:
                 assert len(results) == 1
                 assert results[0].status is ExtractionStatus.EXTRACTED

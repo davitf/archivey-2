@@ -61,7 +61,8 @@ cannot be generated in the test environment and require sidecar rationale.
 - **Repeated independent materializations can warn again** → Registration guarantees once
   per presented `ArchiveMember` object, not once per archive byte sequence across separate
   API calls.
-- **Filesystem refusal differs by platform for surrogateescaped TAR names** → Only
-  `EILSEQ`/`EINVAL` are tolerated; all other exceptions still fail.
+- **Filesystem refusal differs by platform for surrogateescaped TAR names** → On
+  UTF-8-enforcing filesystems the write-time `EILSEQ` is a typed `ExtractionError`;
+  on byte-preserving filesystems the member extracts. Other exceptions still fail.
 - **Containment checks cannot observe arbitrary external paths** → Claims are explicitly
   limited to returned result paths and named sandbox escape targets.

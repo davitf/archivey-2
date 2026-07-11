@@ -11,11 +11,11 @@
       resolution. (Landed on main via `hypothesis-property-tests`; this branch merged
       main and dropped its narrower duplicate guard.)
 - [x] 2.3 Cover central warning behavior through ZIP/TAR, directory, and single-file readers.
-- [ ] 2.4 Translate a filesystem's write-time refusal of a representable member name
-      (`EILSEQ`/`EINVAL` from UTF-8-enforcing filesystems) into a typed
-      `ExtractionError` per the safe-extraction delta; the corpus's
-      `filesystem_name_refusal` branch then tightens from tolerating raw `OSError` to
-      requiring the typed error.
+- [x] 2.4 Translate a filesystem's write-time refusal of a representable member name
+      (`EILSEQ` from UTF-8-enforcing filesystems) into a typed `ExtractionError`.
+      Landed on main via `hypothesis-property-tests`; this branch's corpus
+      `filesystem_name_refusal` case now requires the typed error (no raw
+      `OSError` arm).
 
 ## 3. Documentation and verification
 
