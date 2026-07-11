@@ -35,6 +35,7 @@ from archivey.internal.naming import (
     _warn_for_bidirectional_controls,
     resolve_link_target_name,
 )
+from archivey.internal.open_site import OpenSite
 from archivey.internal.selection import normalize_member_selector
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.counting import CountingReader
@@ -49,6 +50,7 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveMember,
     MagicSignature,
+    MemberStreams,
     MemberType,
 )
 
@@ -102,6 +104,8 @@ class ReadBackend(ABC):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> "BaseArchiveReader":
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller). A
@@ -205,6 +209,8 @@ class BaseArchiveReader(ArchiveReader):
         archive_name: str | None,
         config: ArchiveyConfig | None = None,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> None:
         self._format = format
         self._streaming = streaming
@@ -215,6 +221,8 @@ class BaseArchiveReader(ArchiveReader):
             if collector is not None
             else collector_from_config(self._config)
         )
+        self._member_streams = member_streams
+        self._open_site = open_site
         # A random, opaque identity token (not id(self), which the allocator can reuse
         # after a reader is garbage-collected — a member of a dead reader must never
         # pass another reader's identity check; and not a plain counter, whose small

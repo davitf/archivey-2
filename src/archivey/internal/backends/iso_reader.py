@@ -49,6 +49,7 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
@@ -60,6 +61,7 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     MagicSignature,
+    MemberStreams,
     MemberType,
 )
 
@@ -239,9 +241,19 @@ class IsoReader(BaseArchiveReader):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name, config, collector=collector)
+        super().__init__(
+            format,
+            streaming,
+            archive_name,
+            config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
+        )
         self._source = source
         if pycdlib is None:
             raise PackageNotInstalledError(
@@ -493,6 +505,8 @@ class IsoReadBackend(ReadBackend):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> IsoReader:
         # `format` is always ISO here (single-format backend); accepted for the uniform
         # ReadBackend signature.
@@ -505,6 +519,8 @@ class IsoReadBackend(ReadBackend):
             archive_name,
             config,
             collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
         )
 
 

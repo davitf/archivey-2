@@ -30,6 +30,7 @@ from archivey.exceptions import ArchiveyError, StreamNotSeekableError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
@@ -51,6 +52,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    MemberStreams,
     MemberType,
 )
 
@@ -89,9 +91,19 @@ class SingleFileReader(BaseArchiveReader):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name, config, collector=collector)
+        super().__init__(
+            format,
+            streaming,
+            archive_name,
+            config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
+        )
         self._source = source
         self._stream_codec = stream_codec_for_format(format.stream)
         self._codec = self._stream_codec.codec
@@ -102,9 +114,12 @@ class SingleFileReader(BaseArchiveReader):
         # needs either a seekable stream or a real OS fileno, and archivey wraps a non-seekable
         # source in a PeekableStream that has neither (so it raises StreamNotSeekableError).
         # Keep the codec sequential for such a source regardless of the archive's streaming flag.
+        # Declared seek demand (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution.
+        seek_declared = MemberStreams.SEEKABLE in member_streams
         self._codec_config = stream_config_from_archivey(
             self._config,
             streaming=self._streaming or not self._seekable,
+            seekable=seek_declared and self._seekable,
         )
 
         # The compressed-source header, read at most once and cached (only the gzip metadata
@@ -340,6 +355,8 @@ class SingleFileBackend(ReadBackend):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> SingleFileReader:
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
@@ -352,6 +369,8 @@ class SingleFileBackend(ReadBackend):
             archive_name,
             config,
             collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
         )
 
 

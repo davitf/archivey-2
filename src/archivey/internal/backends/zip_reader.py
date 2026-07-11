@@ -45,6 +45,7 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -73,6 +74,7 @@ from archivey.types import (
     CompressionMethod,
     CreateSystem,
     MagicSignature,
+    MemberStreams,
     MemberType,
 )
 
@@ -294,9 +296,17 @@ class ZipReader(BaseArchiveReader):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> None:
         super().__init__(
-            ArchiveFormat.ZIP, streaming, archive_name, config, collector=collector
+            ArchiveFormat.ZIP,
+            streaming,
+            archive_name,
+            config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
         )
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
@@ -919,6 +929,8 @@ class ZipReadBackend(ReadBackend):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
@@ -930,6 +942,8 @@ class ZipReadBackend(ReadBackend):
             archive_name,
             config,
             collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
         )
 
 

@@ -39,6 +39,7 @@ from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
@@ -60,6 +61,7 @@ from archivey.types import (
     CompressionMethod,
     ContainerFormat,
     MagicSignature,
+    MemberStreams,
     MemberType,
     StreamFormat,
 )
@@ -141,9 +143,19 @@ class TarReader(BaseArchiveReader):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name, config, collector=collector)
+        super().__init__(
+            format,
+            streaming,
+            archive_name,
+            config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
+        )
         self._encoding = encoding
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
@@ -152,7 +164,9 @@ class TarReader(BaseArchiveReader):
         self._owned_stream: BinaryIO | None = None
 
         try:
-            self._tar = self._open_tarfile(source, format, streaming)
+            self._tar = self._open_tarfile(
+                source, format, streaming, member_streams=member_streams
+            )
         except tarfile.TarError as exc:
             # Only tarfile's own (format) errors are translated; a genuine OSError from the
             # underlying handle propagates unchanged (see error-handling: "Genuine runtime
@@ -160,7 +174,12 @@ class TarReader(BaseArchiveReader):
             raise self._translate_open_error(exc) from exc
 
     def _open_tarfile(
-        self, source: Path | BinaryIO, format: ArchiveFormat, streaming: bool
+        self,
+        source: Path | BinaryIO,
+        format: ArchiveFormat,
+        streaming: bool,
+        *,
+        member_streams: MemberStreams,
     ) -> tarfile.TarFile:
         if self._compressed:
             codec = codec_for_stream_format(format.stream)
@@ -174,7 +193,11 @@ class TarReader(BaseArchiveReader):
             stream = open_codec_stream(
                 codec,
                 codec_source,
-                config=stream_config_from_archivey(self._config, streaming=streaming),
+                config=stream_config_from_archivey(
+                    self._config,
+                    streaming=streaming,
+                    seekable=MemberStreams.SEEKABLE in member_streams,
+                ),
                 stamp=lambda exc: self._stamp_error_context(exc),
                 collector=self._diagnostics_collector,
             )
@@ -510,6 +533,8 @@ class TarReadBackend(ReadBackend):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> TarReader:
         # `format` carries the concrete (TAR, <stream>) variant the detector/caller resolved;
         # the backend uses its stream to pick the codec to decompress with.
@@ -522,6 +547,8 @@ class TarReadBackend(ReadBackend):
             archive_name,
             config,
             collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
         )
 
 
