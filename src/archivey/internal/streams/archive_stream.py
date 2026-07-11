@@ -196,16 +196,17 @@ class ArchiveStream(ReadOnlyIOStream):
                 if self.closed:
                     raise ValueError("I/O operation on closed file.")
                 raise ArchiveyUsageError(
-                    "Cannot open this member stream: lazy initialization already failed."
+                    "Cannot open this member stream: it is already being opened by "
+                    "another caller, or a previous open attempt failed. Concurrent "
+                    "operations on a single stream object require caller synchronization."
                 )
             open_fn = self._open_fn
             self._open_fn = None  # claim: only one caller proceeds to open_fn
         try:
             opened = open_fn()
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
-            with self._open_lock:
-                # Leave _open_fn None so a retry does not re-enter a half-open backend.
-                pass
+            # _open_fn stays None (claimed above) so a retry raises rather than
+            # re-entering a half-open backend.
             self._fail(e)
         with self._open_lock:
             if self.closed:

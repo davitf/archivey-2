@@ -812,11 +812,17 @@ class BaseArchiveReader(ArchiveReader):
             finally:
                 self._state.release_pass(token)
             return
+        # Random access: iteration just walks the already-published immutable member
+        # snapshot, so it must NOT hold a reader-wide pass across consumption — that would
+        # reject the common `for m in reader: reader.open(m)` idiom as overlap. Acquire the
+        # pass only around materialization (matching members()), then yield the captured
+        # snapshot with no pass held so open()/get() inside the loop are admitted.
         token = self._state.acquire_pass("__iter__")
         try:
-            yield from self._get_members_registered()
+            snapshot = list(self._get_members_registered())
         finally:
             self._state.release_pass(token)
+        yield from snapshot
 
     def members(self) -> list[ArchiveMember]:
         self._require_random_access("members()")

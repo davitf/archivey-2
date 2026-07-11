@@ -58,6 +58,56 @@ def test_members_then_open_ok(tmp_path: Path) -> None:
         s2.close()
 
 
+# --- iterate-then-open regression (random-mode __iter__ holds no pass across consumption) ---
+
+
+@pytest.mark.parametrize("streams", [MemberStreams(0), MemberStreams.CONCURRENT])
+def test_iterate_and_open_inside_loop(tmp_path: Path, streams: MemberStreams) -> None:
+    """`for m in reader: reader.open(m)` must work on default and CONCURRENT readers.
+
+    Random-mode iteration only walks the published snapshot, so it must not hold a
+    reader-wide pass that would reject open()/get() in the loop body (D7 scope).
+    """
+    root = _dir_with_files(tmp_path)
+    got: dict[str, bytes] = {}
+    with open_archive(root, member_streams=streams) as reader:
+        for member in reader:
+            if member.is_file:
+                with reader.open(member) as stream:
+                    got[member.name] = stream.read()
+    assert got == {"a.txt": b"aaa", "b.txt": b"bbb"}
+
+
+def test_iterate_and_get_inside_loop(tmp_path: Path) -> None:
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        for member in reader:
+            assert reader.get(member.name) is not None
+
+
+def test_iterate_default_single_live_stream_gate_preserved(tmp_path: Path) -> None:
+    """The fix must not weaken the default single-live-stream gate during iteration."""
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        with pytest.raises(ConcurrentAccessError):
+            held = []
+            for member in reader:
+                if member.is_file:
+                    # Keep each stream open (never closed) → the second overlaps the first.
+                    held.append(reader.open(member))
+
+
+def test_iterate_rejected_during_active_pass(tmp_path: Path) -> None:
+    """Random-mode iteration still cannot start while another pass owns the reader."""
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        it = reader.stream_members()
+        next(it)
+        with pytest.raises(ArchiveyUsageError, match="already active"):
+            next(iter(reader))
+        list(it)
+
+
 def test_close_during_stream_members_raises(tmp_path: Path) -> None:
     root = _dir_with_files(tmp_path)
     reader = open_archive(root)
