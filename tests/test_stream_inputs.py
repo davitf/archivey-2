@@ -34,6 +34,7 @@ from typing import BinaryIO, Callable
 
 import pytest
 
+from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.lzip import LzipDecompressorStream
@@ -185,7 +186,11 @@ def _zlib_decompressor(_tmp_path: Path) -> BinaryIO:
 
 
 def _codec_gzip(_tmp_path: Path) -> BinaryIO:
-    return open_codec_stream(Codec.GZIP, io.BytesIO(gzip.compress(CONTENT)))
+    return open_codec_stream(
+        Codec.GZIP,
+        io.BytesIO(gzip.compress(CONTENT)),
+        config=StreamConfig(seekable=True),
+    )
 
 
 def _urllib3_response(_tmp_path: Path) -> BinaryIO:

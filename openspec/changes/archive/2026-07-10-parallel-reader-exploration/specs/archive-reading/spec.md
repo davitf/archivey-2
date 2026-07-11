@@ -1,5 +1,11 @@
 # Archive Reading — delta (parallel-reader-exploration)
 
+> **Historical delta — superseded in part by `concurrent-member-streams`.**
+> The active delta replaces the TAR/ISO carve-outs, unsynchronized materialization
+> precondition, and "does not make the reader thread-safe" framing with a narrow,
+> post-materialization concurrent-open/member-stream contract. This archived text remains
+> unchanged below to preserve the decision recorded when the change was archived.
+
 ## ADDED Requirements
 
 ### Requirement: Random-access member-open is reentrant and reader-state-free

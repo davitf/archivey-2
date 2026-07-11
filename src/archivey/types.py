@@ -4,12 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
-from enum import Enum
+from enum import Enum, Flag, auto
 from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple
 
 if TYPE_CHECKING:
     from archivey.cost import CostReceipt
     from archivey.diagnostics import Diagnostic
+
+
+class MemberStreams(Flag):
+    """Declared member-stream capabilities for :func:`archivey.open_archive`.
+
+    Default (no bits) is forward-only streams with at most one live member stream.
+    Combine with ``|``::
+
+        MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
+
+    ``CONCURRENT`` is **provisional** in v1: correct under cooperative use (materialize,
+    then fan out; callers synchronize their own shared streams) with the documented
+    misuse set detected. Free-threaded / adversarial hardening lands when the bit is
+    promoted to fully supported — see ``openspec/changes/concurrent-member-streams``.
+    """
+
+    CONCURRENT = auto()
+    SEEKABLE = auto()
 
 
 class ContainerFormat(str, Enum):

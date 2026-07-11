@@ -8,7 +8,7 @@ two orthogonal gates — the access mode (``streaming=True`` is forward-only) an
 from __future__ import annotations
 
 import io
-from typing import BinaryIO, Iterator
+from typing import Iterator
 
 import pytest
 
@@ -19,7 +19,9 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.base_reader import BaseArchiveReader
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -52,8 +54,8 @@ class _IndexedReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
-        return io.BytesIO(b"x")
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(ArchiveFormat.ZIP, ListingCost.INDEXED, StreamCapability.SEEKABLE)
@@ -72,8 +74,8 @@ class _ForwardOnlyReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
-        return io.BytesIO(b"x")
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(
@@ -152,9 +154,9 @@ class _OpenCountingReader(_IndexedReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
         yield ArchiveMember(type=MemberType.FILE, name="b.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         self.opens += 1
-        return io.BytesIO(b"x")
+        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
 
 def test_stream_members_opens_lazily() -> None:
@@ -178,7 +180,7 @@ def test_open_rejects_member_from_another_reader() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
     other = _IndexedReader(ArchiveFormat.ZIP, False, "y.zip")
     foreign = other.members()[0]
-    with pytest.raises(ValueError, match="does not belong to this reader"):
+    with pytest.raises(ArchiveyUsageError, match="does not belong to this reader"):
         reader.open(foreign)
     # The same name opens fine when looked up on the right reader.
     assert reader.read("a.txt") == b"x"

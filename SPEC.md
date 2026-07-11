@@ -20,7 +20,7 @@ Archivey is a Python library for reading, streaming, and safely extracting archi
 | Core dependencies | None (stdlib only) |
 | Optional extras | `[7z]`, `[rar]`, `[crypto]`, `[7z-write]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`, `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]` (RAR member-data decompression additionally needs the system `unrar` binary) |
 | OS support | Linux, macOS, Windows |
-| Thread safety | Readers are not thread-safe. One reader per thread. Writers are not thread-safe. |
+| Thread safety | The `ArchiveReader` object is not thread-safe. `open_archive(..., member_streams=MemberStreams.CONCURRENT)` (provisional in v1) unlocks cooperative concurrent `open()` after materialization; see `MemberStreams`. Writers are not thread-safe. |
 
 ---
 

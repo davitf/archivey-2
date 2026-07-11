@@ -462,8 +462,11 @@ class XzDecompressorStream(SegmentedDecompressorStream["_XzState | _XzBlockChain
         path: str | os.PathLike[str] | BinaryIO,
         *,
         collector: DiagnosticCollector | None = None,
+        seekable: bool = True,
     ) -> None:
-        super().__init__(path, collector=collector, codec_name="xz")
+        super().__init__(
+            path, collector=collector, codec_name="xz", seekable=seekable
+        )
 
     def _make_decompressor(self, point: SeekPoint) -> "_XzState | _XzBlockChain":
         if point.state is None:
@@ -493,7 +496,11 @@ class XzDecompressorStream(SegmentedDecompressorStream["_XzState | _XzBlockChain
                     [SeekPoint(stream_decomp_start, stream_comp_start, state=None)]
                 )
             stream_comp_end = stream_comp_start + compressed_size
-            if not self._index_built and self._inner.seekable():
+            if (
+                self._index_enabled
+                and not self._index_built
+                and self._inner.seekable()
+            ):
                 saved_pos = self._inner.tell()
                 try:
                     blocks = _read_xz_index_backwards(

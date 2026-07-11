@@ -1,4 +1,11 @@
-"""Directory pseudo-backend: presents a filesystem directory as an ArchiveReader."""
+"""Directory pseudo-backend: presents a filesystem directory as an ArchiveReader.
+
+Uniformity principle (`format-directory`): this reader is never more lenient than
+archive readers. Declared member-stream capabilities (`MemberStreams.CONCURRENT` /
+`SEEKABLE`) gate concurrent opens and seekability here exactly as for ZIP/TAR/ISO —
+the directory backend exists to keep archive-vs-directory code uniform, not to offer a
+more permissive escape hatch.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ from archivey.diagnostics import DiagnosticCode, ScanRaceContext
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
+from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
@@ -28,6 +36,7 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveMember,
     MagicSignature,
+    MemberStreams,
     MemberType,
 )
 
@@ -55,9 +64,17 @@ class DirectoryReader(BaseArchiveReader):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> None:
         super().__init__(
-            ArchiveFormat.DIRECTORY, streaming, archive_name, config, collector=collector
+            ArchiveFormat.DIRECTORY,
+            streaming,
+            archive_name,
+            config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
         )
         self._root = root
         # uid/gid -> name caches: most entries in a tree share an owner/group, and
@@ -278,13 +295,21 @@ class DirectoryReadBackend(ReadBackend):
         archive_name: str | None,
         config: ArchiveyConfig,
         collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
     ) -> DirectoryReader:
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
         return DirectoryReader(
-            source, streaming, archive_name or str(source), config, collector=collector
+            source,
+            streaming,
+            archive_name or str(source),
+            config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
         )
 
 

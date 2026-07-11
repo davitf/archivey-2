@@ -27,6 +27,7 @@ from archivey.core import (
     list_known_formats,
     list_supported_formats,
     open_archive,
+    open_stream,
 )
 from archivey.cost import (
     AccessCost,
@@ -56,6 +57,8 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import (
     ArchiveyError,
+    ArchiveyUsageError,
+    ConcurrentAccessError,
     CorruptionError,
     DiagnosticRaisedError,
     EncryptionError,
@@ -95,6 +98,7 @@ from archivey.types import (
     CompressionMethod,
     ContainerFormat,
     CreateSystem,
+    MemberStreams,
     MemberType,
     StreamFormat,
 )
@@ -102,6 +106,7 @@ from archivey.types import (
 __all__ = [
     "__version__",
     "open_archive",
+    "open_stream",
     "extract",
     "ArchiveyConfig",
     "DEFAULT_ARCHIVEY_CONFIG",
@@ -135,6 +140,7 @@ __all__ = [
     "ArchiveMember",
     "ArchiveInfo",
     "MemberType",
+    "MemberStreams",
     "CompressionAlgorithm",
     "CompressionMethod",
     "CreateSystem",
@@ -161,6 +167,8 @@ __all__ = [
     "StreamRewindContext",
     "SymlinkTargetContext",
     "ArchiveyError",
+    "ArchiveyUsageError",
+    "ConcurrentAccessError",
     "OpenError",
     "FormatDetectionError",
     "UnsupportedFormatError",

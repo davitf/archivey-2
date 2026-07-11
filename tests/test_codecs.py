@@ -45,7 +45,7 @@ CONTENT = b"the quick brown fox jumps over the lazy dog\n" * 50
 # Force the stdlib gzip backend for the translation-contract tests so they assert the same
 # exception taxonomy regardless of whether the [seekable] rapidgzip accelerator is
 # installed (rapidgzip, when present, would otherwise be auto-selected for random access).
-_STDLIB_GZIP = StreamConfig(use_rapidgzip=AcceleratorMode.OFF)
+_STDLIB_GZIP = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
 
 
 # --- default backends ------------------------------------------------------------------
@@ -200,7 +200,7 @@ def test_accelerator_path_translates_errors_no_raw_leak() -> None:
         pytest.skip("rapidgzip is not installed; the accelerator path cannot run")
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[1] = 0x00
-    config = StreamConfig(use_rapidgzip=AcceleratorMode.ON)
+    config = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
     with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=config) as stream:
         with pytest.raises(ArchiveyError):  # never a raw rapidgzip ValueError
             stream.read()
@@ -420,7 +420,9 @@ def test_codec_stream_size_via_cheap_index(tmp_path) -> None:
     import lzma
 
     payload = b"sizeable " * 4096
-    stream = open_codec_stream(Codec.XZ, io.BytesIO(lzma.compress(payload)))
+    stream = open_codec_stream(
+        Codec.XZ, io.BytesIO(lzma.compress(payload)), config=StreamConfig(seekable=True)
+    )
     assert stream.size == len(payload)
     # gzip via stdlib has no cheap index; its stream must not claim a size.
     gz = open_codec_stream(

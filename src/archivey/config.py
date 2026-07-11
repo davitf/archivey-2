@@ -19,31 +19,31 @@ class AcceleratorMode(Enum):
     - ``ON``  — always use the accelerator (raise ``PackageNotInstalledError`` if its
       package is absent: the caller asked for it explicitly).
     - ``OFF`` — never use it; the stream stays sequential-only.
-    - ``AUTO`` — use it only when random access is actually wanted, i.e. the archive was
-      opened for random access (``streaming=False``). Under ``streaming=True`` a forward
-      pass needs no seeking, so AUTO leaves the cheaper sequential backend in place. When
-      AUTO would enable the accelerator but its package is absent, fall back to sequential
-      silently (it is an enhancement, not a requirement).
+    - ``AUTO`` — use it only when seekability was declared
+      (``MemberStreams.SEEKABLE`` / seek demand). Without declared seek demand, AUTO
+      leaves the cheaper sequential backend in place (no index/accelerator work). When
+      AUTO would enable the accelerator but its package is absent, fall back to
+      sequential silently (it is an enhancement, not a requirement).
     """
 
     AUTO = "auto"
     ON = "on"
     OFF = "off"
 
-    def enabled_for(self, *, streaming: bool, available: bool) -> bool:
+    def enabled_for(self, *, seekable: bool, available: bool) -> bool:
         """Resolve the tri-state to "use the accelerator?".
 
         ``ON`` always returns ``True`` (the caller checks availability and raises
         ``PackageNotInstalledError`` if the package is missing — the user asked for it
-        explicitly). ``AUTO`` enables it only for random access and only when available, so
-        a missing package falls back silently to the sequential backend.
+        explicitly). ``AUTO`` enables it only when seekability is declared and the
+        package is available, so a missing package falls back silently.
         """
         if self is AcceleratorMode.OFF:
             return False
         if self is AcceleratorMode.ON:
             return True
-        # AUTO: random access wants seeking; a forward-only pass does not.
-        return available and not streaming
+        # AUTO: only pay for seek machinery when the caller asked for seekable streams.
+        return available and seekable
 
 
 @dataclass(frozen=True)

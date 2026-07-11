@@ -168,6 +168,14 @@ def _open_member(self, member: ArchiveMember) -> BinaryIO: ...
 # Return a raw data stream for member. No link following.
 # A solid backend re-decodes the block from its start (no persistent cache).
 # Called only for file members.
+#
+# Reentrancy (random-access backends): MUST be a function of (member, shared source) —
+# no per-open scratch on self, no shared-reader-state mutation; archivey-owned byte
+# ranges go through SharedSource.view. Streaming and single-decoder TAR (TAR-RA) are
+# exempt unless MemberStreams.CONCURRENT is declared (then TAR/ISO use one per-reader
+# shared-handle lock). CONCURRENT is provisional in v1: materialize, then fan out;
+# free-threaded hardening is deferred. Full contract: docs/parallel-reader.md and the
+# concurrent-member-streams change.
 
 @abstractmethod
 def _close_archive(self) -> None: ...

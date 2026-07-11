@@ -206,7 +206,7 @@ def _probe_inner_tar(
     source = _BoundedPeekReader(peek_more, _INNER_TAR_MAX_PROBE_BYTES)
     try:
         with open_codec_stream(
-            codec, source, config=StreamConfig(streaming=True)
+            codec, source, config=StreamConfig(streaming=True, seekable=False)
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
     except (ArchiveyError, OSError, ValueError):

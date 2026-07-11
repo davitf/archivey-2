@@ -76,6 +76,7 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         *,
         collector: DiagnosticCollector | None = None,
         codec_name: str = "",
+        seekable: bool = True,
     ) -> None:
         super().__init__()
         if isinstance(path, (str, os.PathLike)):
@@ -86,6 +87,10 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
             self._should_close = False
         self._diagnostics_collector = collector
         self._codec_name = codec_name
+        # Declared seek demand: without it, skip seek-point tables / index scans, but
+        # still allow O(n) seeks from the origin (compressed TAR needs that for random
+        # access even when MemberStreams.SEEKABLE was not declared).
+        self._index_enabled = seekable
         self._seek_points: list[SeekPoint] = [SeekPoint(0, 0)]
         self._index_built = False
         self._index_build_attempted = False
@@ -121,8 +126,11 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         """Merge ``points`` into the sorted index, skipping duplicates.
 
         Pass points in ascending ``decompressed_offset`` order; the common in-order case
-        is an O(1) append, out-of-order insertions fall back to bisect.
+        is an O(1) append, out-of-order insertions fall back to bisect. No-ops when
+        index construction was not declared (no seek-point table is built).
         """
+        if not self._index_enabled:
+            return
         for point in points:
             if point < self._seek_points[-1]:
                 i = bisect.bisect_left(self._seek_points, point)
@@ -194,7 +202,7 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         super().close()
 
     def _ensure_index_built(self) -> None:
-        if self._index_built or self._index_build_attempted:
+        if not self._index_enabled or self._index_built or self._index_build_attempted:
             return
         inner_pos = self._inner.tell()
         new_points, new_size = self._build_index(self._seek_points[-1])
@@ -214,7 +222,7 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         """The total decompressed size if cheaply available (via the index), else ``None``."""
         if self._size is not None:
             return self._size
-        if not self._inner.seekable():
+        if not self._index_enabled or not self._inner.seekable():
             return None
         self._ensure_index_built()
         return self._size
@@ -308,11 +316,14 @@ class SegmentedDecompressorStream(DecompressorStream[_SDT]):
         *,
         collector: DiagnosticCollector | None = None,
         codec_name: str = "",
+        seekable: bool = True,
     ) -> None:
         # Pre-declare cursors: super().__init__ calls _create_decompressor, which reads them.
         self._comp_cursor = 0
         self._decomp_cursor = 0
-        super().__init__(path, collector=collector, codec_name=codec_name)
+        super().__init__(
+            path, collector=collector, codec_name=codec_name, seekable=seekable
+        )
 
     @abc.abstractmethod
     def _make_decompressor(self, point: SeekPoint) -> _SDT: ...
