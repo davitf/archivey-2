@@ -120,32 +120,61 @@ stays on the sequential backend). See `docs/known-issues.md`.
 
 ### Requirement: Index-less codecs warn on a rewinding seek
 
-The system SHALL log a warning via the `archivey` streams logger when a codec with no
-random-access index services a backward seek by re-decompressing the stream from the start
-— O(n) per rewind. This applies to gzip and bzip2 without an accelerator (above) and,
-with no accelerator available at all, to **brotli, lz4, zstd, and zlib**. With the stdlib
-zstd backend (`compression.zstd` / `backports.zstd`), zstd rewinds **in place** like the
-other index-less codecs (no reopen-from-source special case). The slow path is permitted
-(a slow seek beats failing, and not every format can offer fast random access), but the
-rewind SHALL NOT be silent. Where an accelerator backend exists (gzip,
-bzip2) the warning names the `[seekable]` extra; for brotli/lz4/zstd/zlib, which have no
-accelerator, it states that the codec re-decompresses from the start. Forward seeks and
-no-op seeks do not warn.
+When an index-less codec first services a backward seek by re-decompressing from the
+start, the system SHALL emit `STREAM_REWIND_REDECOMPRESSES` with codec, before/after
+offsets, and accelerator name (or `None`) in typed context. It SHALL be emitted at most
+once per stream, matching the existing warning's transition semantics; exact counts
+therefore report affected streams, not every seek call.
 
-Codecs that carry their own index (xz, lzip, unix-compress) seek efficiently and SHALL NOT
-warn.
+The event SHALL live on the stream operation and cumulative owning-reader aggregate, never
+on `CostReceipt` or `ArchiveInfo`. Diagnostic policy controls logging, callback delivery,
+and escalation. Forward/no-op seeks SHALL emit nothing.
 
-#### Scenario: rewinding an index-less codec warns
+This applies to gzip/bzip2 when their accelerator is unavailable or disabled and to
+brotli, lz4, zstd, and zlib, which have no random-access index. Gzip/bzip2 context names
+the `[seekable]` accelerator; the other codecs record no accelerator. XZ, lzip, and
+unix-compress use their own indexes and SHALL not emit this event for indexed seeks.
 
-- **WHEN** a brotli, lz4, zstd, or zlib stream is read and then seeked backward to an earlier offset
-- **THEN** the data is delivered correctly **AND** a warning is logged that the codec re-decompresses from the start (no accelerator is named, because none exists for these codecs)
+With the stdlib zstd backend (`compression.zstd` / `backports.zstd`), zstd rewinds **in
+place** like the other index-less codecs (no reopen-from-source special case).
+
+#### Scenario: repeated rewinds emit once for the stream
+
+- **WHEN** one index-less stream performs 1,000 backward seeks
+- **THEN** it emits one `STREAM_REWIND_REDECOMPRESSES` occurrence, later rewinds emit no duplicate, and no open-time metadata object changes
+
+#### Scenario: raised rewind halts at the seek
+
+- **WHEN** `STREAM_REWIND_REDECOMPRESSES` resolves to `RAISE`
+- **THEN** the backward seek's diagnostic is delivered and `DiagnosticRaisedError` is raised from that seek operation
+
+#### Scenario: forward seek has no rewind event
+
+- **WHEN** an index-less stream seeks only forward or to its current position
+- **THEN** no `STREAM_REWIND_REDECOMPRESSES` occurrence is emitted
 
 #### Scenario: zstd rewinds in place via the stdlib backend
 
 - **WHEN** a zstd stream is read forward and then seeked backward
-- **THEN** the stdlib `ZstdFile` services the rewind by re-decompressing from the start (no reopen-from-source special case) and logs the index-less rewind warning once
+- **THEN** the stdlib `ZstdFile` services the rewind by re-decompressing from the start (no reopen-from-source special case) and emits one `STREAM_REWIND_REDECOMPRESSES` occurrence
 
-#### Scenario: a forward-only seek does not warn
+### Requirement: Optional seek-index degradation is diagnostic data
 
-- **WHEN** an index-less codec stream is seeked only forward (or to its current position)
-- **THEN** no rewind warning is logged
+When an XZ/lzip backward index or trailer scan fails in a way for which the stream can
+safely fall back to sequential decompression, the system SHALL emit
+`SEEK_INDEX_DEGRADED` with codec, scan kind, and public failure type in typed context.
+The occurrence SHALL be aggregate-only on the stream/reader operation.
+
+If policy escalates the code, the stream SHALL halt with `DiagnosticRaisedError` instead
+of taking the fallback. Genuine corruption that already makes decoding unsafe remains its
+typed read exception rather than a diagnostic.
+
+#### Scenario: recoverable XZ index failure falls back under default policy
+
+- **WHEN** an XZ backward index scan fails but sequential decompression remains valid
+- **THEN** `SEEK_INDEX_DEGRADED` is collected/logged and the stream uses sequential fallback
+
+#### Scenario: unsafe corruption remains an error
+
+- **WHEN** the same corruption prevents correct sequential decoding
+- **THEN** the appropriate `CorruptionError`/`TruncatedError` is raised rather than converting the failure to a recoverable diagnostic

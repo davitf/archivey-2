@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple
 
 if TYPE_CHECKING:
     from archivey.cost import CostReceipt
+    from archivey.diagnostics import Diagnostic
 
 
 class ContainerFormat(str, Enum):
@@ -302,11 +303,20 @@ class ArchiveMember:
     """Opaque backend handle carried on the member (e.g. the stdlib ``ZipInfo`` /
     ``TarInfo``), so a backend can open the member's data straight from the member without
     a separate name/id lookup table. Not part of the public contract."""
+    _diagnostics: tuple["Diagnostic", ...] = field(
+        default=(), repr=False, compare=False
+    )
+    """Library-retained diagnostic attachments (bounded by the collector budget)."""
 
     # Mutable members are intentionally unhashable. Annotated `-> int` (the call
     # always raises) so the override stays compatible with object.__hash__.
     def __hash__(self) -> int:
         raise TypeError(f"unhashable type: '{type(self).__name__}'")
+
+    @property
+    def diagnostics(self) -> tuple["Diagnostic", ...]:
+        """Read-only tuple of diagnostics attached to this member (may be empty)."""
+        return self._diagnostics
 
     @property
     def member_id(self) -> int:

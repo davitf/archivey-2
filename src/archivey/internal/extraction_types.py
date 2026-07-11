@@ -87,9 +87,14 @@ class ExtractionProgress:
     members_total: int | None  # None when the count would require a full scan
 
 
-@dataclass
+@dataclass(frozen=True)
 class ExtractionResult:
-    """One entry per member processed, returned from ``extract()`` / ``extract_all()``."""
+    """One entry per member processed, returned from ``extract()`` / ``extract_all()``.
+
+    Frozen outcome structure (``path`` / ``status`` / ``error`` cannot be replaced after
+    construction). ``member`` still refers to the live mutable :class:`ArchiveMember`
+    whose late-bound metadata may be filled in place.
+    """
 
     member: ArchiveMember
     path: Path | None  # the written path, or None if the member was not written

@@ -15,10 +15,13 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.diagnostics import DiagnosticCode, ScanRaceContext
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     ArchiveFormat,
@@ -51,8 +54,11 @@ class DirectoryReader(BaseArchiveReader):
         streaming: bool,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> None:
-        super().__init__(ArchiveFormat.DIRECTORY, streaming, archive_name, config)
+        super().__init__(
+            ArchiveFormat.DIRECTORY, streaming, archive_name, config, collector=collector
+        )
         self._root = root
         # uid/gid -> name caches: most entries in a tree share an owner/group, and
         # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
@@ -77,7 +83,17 @@ class DirectoryReader(BaseArchiveReader):
             with os.scandir(directory) as it:
                 entries = sorted(it, key=lambda e: e.name)
         except FileNotFoundError:
-            logger.warning("Directory vanished during scan, skipping: %r", str(directory))
+            relative = rel_prefix.rstrip("/") or "."
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.SCAN_DIRECTORY_VANISHED,
+                message=f"Directory vanished during scan, skipping: {str(directory)!r}",
+                context=ScanRaceContext(
+                    archive_name=self._archive_name,
+                    relative_path=relative,
+                    entry_kind="directory",
+                ),
+                logger=logger,
+            )
             return
 
         # Emit all non-directory entries at this level first, then descend into the
@@ -89,7 +105,16 @@ class DirectoryReader(BaseArchiveReader):
             try:
                 st = entry.stat(follow_symlinks=False)
             except FileNotFoundError:
-                logger.warning("Entry vanished during scan, skipping: %r", entry.path)
+                self._diagnostics_collector.emit(
+                    code=DiagnosticCode.SCAN_ENTRY_VANISHED,
+                    message=f"Entry vanished during scan, skipping: {entry.path!r}",
+                    context=ScanRaceContext(
+                        archive_name=self._archive_name,
+                        relative_path=rel_path,
+                        entry_kind="entry",
+                    ),
+                    logger=logger,
+                )
                 continue
 
             if entry.is_symlink():
@@ -205,7 +230,7 @@ class DirectoryReader(BaseArchiveReader):
                 self._gname_cache[gid] = None
         return self._gname_cache[gid]
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         full_path = self._root / member.name
         # Wrapped like every backend's member stream (the uniform-handle contract): the
         # directory backend has no translator (a genuine OSError propagates unchanged),
@@ -252,12 +277,15 @@ class DirectoryReadBackend(ReadBackend):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> DirectoryReader:
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not isinstance(source, Path):
             raise TypeError("Directory backend requires a Path source")
-        return DirectoryReader(source, streaming, archive_name or str(source), config)
+        return DirectoryReader(
+            source, streaming, archive_name or str(source), config, collector=collector
+        )
 
 
 # Self-register at import time

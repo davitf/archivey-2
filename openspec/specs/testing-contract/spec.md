@@ -120,7 +120,7 @@ contents (names, types, sizes, link targets), and extract cleanly to a temporary
 directory under the default safety policy with contents verified — or, for an entry that
 declares an expected failure (encrypted without a password, unsupported variant,
 adversarial member), raise exactly the documented `ArchiveyError` subclass. Corpus
-entries for formats that are not yet implemented (7z/RAR before Phase 7) SHALL be
+entries for formats that are not yet implemented (7z/RAR before Phase 6) SHALL be
 carried in the corpus but skipped by the sweep via a registry-driven guard, so enabling
 a format activates its entries without re-porting. Entries needing an absent optional
 dependency SHALL skip, not fail.

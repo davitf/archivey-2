@@ -6,10 +6,13 @@ listed in `archivey.__all__`.
 ## Opening archives
 
 ::: archivey.open_archive
+::: archivey.extract
+::: archivey.detect_format
 
 ## The reader interface
 
 ::: archivey.ArchiveReader
+::: archivey.ArchiveStream
 
 ## Data model
 
@@ -23,6 +26,33 @@ listed in `archivey.__all__`.
 ::: archivey.CompressionMethod
 ::: archivey.CreateSystem
 
+## Diagnostics
+
+Structured advisories (formerly log-only warnings). See the `diagnostics` capability
+spec for lifecycle, retention, and policy.
+
+::: archivey.Diagnostic
+::: archivey.DiagnosticCode
+::: archivey.DiagnosticSeverity
+::: archivey.DiagnosticDisposition
+::: archivey.DiagnosticPolicy
+::: archivey.DiagnosticSummary
+::: archivey.ExtractionReport
+
+## Extraction
+
+::: archivey.ExtractionResult
+::: archivey.ExtractionStatus
+::: archivey.ExtractionPolicy
+::: archivey.OverwritePolicy
+::: archivey.OnError
+
+## Configuration
+
+::: archivey.ArchiveyConfig
+::: archivey.ExtractionLimits
+::: archivey.AcceleratorMode
+
 ## Access cost
 
 ::: archivey.CostReceipt
@@ -33,3 +63,4 @@ listed in `archivey.__all__`.
 ## Errors
 
 ::: archivey.ArchiveyError
+::: archivey.DiagnosticRaisedError

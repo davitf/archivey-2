@@ -13,12 +13,20 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO, Callable, NoReturn
 
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticSummary,
+    StreamRewindContext,
+)
 from archivey.exceptions import ArchiveyError, UnsupportedOperationError
+from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
+
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 # A translator maps a raw exception to an ArchiveyError, or returns None to signal "not
 # mine — let it propagate unchanged" (the catch-all-free rule in CONTRIBUTING).
@@ -64,6 +72,7 @@ class ArchiveStream(ReadOnlyIOStream):
         seekable: bool = True,
         rewind_warning: RewindWarning | None = None,
         size: int | None = None,
+        collector: DiagnosticCollector | None = None,
     ) -> None:
         super().__init__()
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
@@ -75,8 +84,24 @@ class ArchiveStream(ReadOnlyIOStream):
         self._rewind_warning = rewind_warning
         self._rewind_warned = False
         self._size = size
+        self._diagnostics_collector = collector
+        # A stream's diagnostics are everything emitted from its open onward: capture the
+        # collector position here and difference against "now" on each query. No per-stream
+        # bookkeeping is retained collector-side.
+        self._diagnostics_watermark = (
+            collector.watermark() if collector is not None else None
+        )
         if not lazy:
             self._ensure_open()
+
+    @property
+    def diagnostics(self) -> DiagnosticSummary:
+        """Diagnostic snapshot for events emitted since this stream opened, or empty."""
+        collector = self._diagnostics_collector
+        watermark = self._diagnostics_watermark
+        if collector is None or watermark is None:
+            return DiagnosticSummary.empty()
+        return collector.snapshot(since=watermark)
 
     @property
     def size(self) -> int | None:
@@ -182,25 +207,34 @@ class ArchiveStream(ReadOnlyIOStream):
         return result
 
     def _maybe_warn_rewind(self, before: int, after: int) -> None:
-        """Warn once when a backward seek will re-decompress from the start (O(n))."""
+        """Emit once when a backward seek will re-decompress from the start (O(n))."""
         warning = self._rewind_warning
         if warning is None or self._rewind_warned or after >= before:
             return
         self._rewind_warned = True
         if warning.accelerator is not None:
-            logger.warning(
-                "Seeking backward in a %s stream without a random-access accelerator "
-                "re-decompresses from the start (O(n) per rewind). Install the 'seekable' "
-                "extra (%s) for indexed random access.",
-                warning.codec_name,
-                warning.accelerator,
+            message = (
+                f"Seeking backward in a {warning.codec_name} stream without a "
+                f"random-access accelerator re-decompresses from the start "
+                f"(O(n) per rewind). Install the 'seekable' extra "
+                f"({warning.accelerator}) for indexed random access."
             )
         else:
-            logger.warning(
-                "Seeking backward in a %s stream re-decompresses from the start (O(n) per "
-                "rewind): this codec has no random-access index.",
-                warning.codec_name,
+            message = (
+                f"Seeking backward in a {warning.codec_name} stream re-decompresses "
+                f"from the start (O(n) per rewind): this codec has no random-access index."
             )
+        resolve_collector(self._diagnostics_collector).emit(
+            code=DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+            message=message,
+            context=StreamRewindContext(
+                codec=warning.codec_name,
+                from_offset=before,
+                to_offset=after,
+                accelerator=warning.accelerator,
+            ),
+            logger=logger,
+        )
 
     def tell(self, /) -> int:
         if self.closed:

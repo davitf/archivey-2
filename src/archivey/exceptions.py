@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from archivey.diagnostics import Diagnostic
     from archivey.types import ArchiveFormat
 
 
@@ -108,3 +109,28 @@ class PackageNotInstalledError(ArchiveyError):
 
 class UnsupportedOperationError(ArchiveyError):
     """API misuse: operation not valid for this reader's mode."""
+
+
+class DiagnosticRaisedError(ArchiveyError):
+    """A diagnostic was escalated to an error via :class:`~archivey.diagnostics.DiagnosticPolicy`.
+
+    Always-stop: extraction MUST NOT catch this as a per-member failure under
+    ``OnError.CONTINUE``. Carries the escalated :class:`~archivey.diagnostics.Diagnostic`.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostic: "Diagnostic",
+        source_format: "ArchiveFormat | None" = None,
+        archive_name: str | None = None,
+        member_name: str | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            source_format=source_format,
+            archive_name=archive_name,
+            member_name=member_name,
+        )
+        self.diagnostic = diagnostic

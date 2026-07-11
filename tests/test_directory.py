@@ -440,7 +440,7 @@ def test_extract_all_writes_members(simple_dir: Path, tmp_path: Path) -> None:
 
     dest = tmp_path / "out"
     with open_archive(simple_dir) as reader:
-        results = reader.extract_all(dest)
+        results = reader.extract_all(dest).results
     assert (dest / "a.txt").read_bytes() == b"hello"
     assert (dest / "b.txt").read_bytes() == b"world"
     assert (dest / "sub" / "c.txt").read_bytes() == b"nested"

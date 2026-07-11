@@ -18,12 +18,14 @@ Spec: https://www.nongnu.org/lzip/manual/lzip_manual.html#File-format
 from __future__ import annotations
 
 import lzma
+import os
 import struct
 import zlib
 from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     SegmentedDecompressorStream,
@@ -229,6 +231,14 @@ class LzipDecompressorStream(SegmentedDecompressorStream[_LzipState]):
     reads, and via a one-shot backward trailer scan for SEEK_END / backward seeks.
     """
 
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | BinaryIO,
+        *,
+        collector: DiagnosticCollector | None = None,
+    ) -> None:
+        super().__init__(path, collector=collector, codec_name="lzip")
+
     def _make_decompressor(self, point: SeekPoint) -> _LzipState:
         return _LzipState()
 
@@ -246,4 +256,5 @@ class LzipDecompressorStream(SegmentedDecompressorStream[_LzipState]):
             "Lzip backwards index scan failed (the file may have trailing data after the "
             "last member, which is valid per the lzip spec); falling back to sequential "
             "decompression. Reason: %s",
+            scan="backwards_trailer",
         )

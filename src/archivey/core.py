@@ -12,16 +12,17 @@ from archivey.config import (
     ExtractionLimits,
     PasswordInput,
 )
+from archivey.diagnostics import ExtractionReport
 from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
     UnsupportedOperationError,
 )
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
+from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
-    ExtractionResult,
     OnError,
     OverwritePolicy,
 )
@@ -137,6 +138,11 @@ def open_archive(
     passwords = _PasswordCandidates.from_input(password)
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
+    # The reader's diagnostic collector is created here, before detection, so automatic
+    # detection and the reader share one budget/occurrence order (see diagnostics design)
+    # and ``reader.diagnostics`` covers the whole open — which is what one-shot extract()
+    # reads back, no cross-call collector plumbing needed.
+    collector = collector_from_config(effective_config)
     resolved = resolve_source(source)
     open_source = resolved.open_source
     archive_name = resolved.archive_name
@@ -151,7 +157,7 @@ def open_archive(
         # replayed to the backend; the same wrapper is then handed over.
         if is_stream(open_source) and not is_seekable(open_source):
             open_source = PeekableStream(open_source)
-        detected = detect_format(open_source)
+        detected = detect_format(open_source, collector=collector)
         format = detected.format
 
     if resolved.volume_count > 1:
@@ -214,6 +220,7 @@ def open_archive(
         encoding=effective_encoding,
         archive_name=archive_name,
         config=effective_config,
+        collector=collector,
     )
 
 
@@ -230,7 +237,7 @@ def extract(
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     config: ArchiveyConfig | None = None,
     limits: ExtractionLimits | None = None,
-) -> list[ExtractionResult]:
+) -> ExtractionReport:
     """Open ``source``, apply safety checks, and write **all** members to ``dest``.
 
     The one-shot extraction API (see ``safe-extraction``). It deliberately has **no**
@@ -245,7 +252,8 @@ def extract(
     keeps random-access mode — that preserves the re-readable second pass that recovers a
     hardlink whose target failed or preceded it in archive order.
 
-    Returns one :class:`~archivey.ExtractionResult` per member processed.
+    Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
+    detection, open, and extraction for this call.
     """
     # Peek at the resolved open target only to pick the access mode; open_archive
     # re-resolves the original source itself (resolution is cheap and idempotent).
@@ -262,11 +270,19 @@ def extract(
     ) as reader:
         # The reader already carries `config` (passed to open_archive above), so
         # extract_all falls back to it — no need to forward `config` a second time.
-        return reader.extract_all(
+        report = reader.extract_all(
             dest,
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
             on_progress=on_progress,
             limits=limits,
+        )
+        # `reader.diagnostics` is the reader's cumulative snapshot. Because this reader was
+        # opened fresh for this one-shot call, that already spans detection, open, and
+        # extraction exactly once — a superset of extract_all's extraction-only delta — so
+        # the one-shot report is assembled entirely from the public surface.
+        return ExtractionReport(
+            results=report.results,
+            diagnostics=reader.diagnostics,
         )

@@ -142,7 +142,7 @@ def _check_extraction(tmp_path: Path, source, entry: CorpusEntry, key: str) -> N
             dest,
             on_error=OnError.CONTINUE,
             overwrite=OverwritePolicy.REPLACE if has_duplicates else OverwritePolicy.ERROR,
-        )
+        ).results
 
     by_member_name: dict[str, list] = {}
     for r in results:

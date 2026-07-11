@@ -26,18 +26,22 @@ import logging
 import os
 import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable
+from typing import TYPE_CHECKING, BinaryIO, Callable, Literal
 
 from archivey.config import ExtractionLimits
+from archivey.diagnostics import DiagnosticCode, ExtractionOutcomeContext
 from archivey.exceptions import (
     ArchiveyError,
+    DiagnosticRaisedError,
     ExtractionError,
     FilterRejectionError,
     LinkTargetNotFoundError,
     SymlinkEscapeError,
 )
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
@@ -219,6 +223,9 @@ class ExtractionCoordinator:
         self._members = members
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
+        # Set for the duration of ``run()``; diagnostic emission reads these.
+        self._diagnostics_collector: DiagnosticCollector
+        self._archive_name: str | None = None
 
     # --- entry point ---------------------------------------------------------------
 
@@ -229,6 +236,8 @@ class ExtractionCoordinator:
         self._ensure_dest_root(dest)
         dest_root = dest.resolve()
         forward_only = reader._streaming
+        self._diagnostics_collector = reader._diagnostics_collector
+        self._archive_name = reader._archive_name
 
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -304,7 +313,7 @@ class ExtractionCoordinator:
                 # A filter-skipped member (transformed is None) records no result, but
                 # still counts as processed for progress below — it is one of the
                 # selected members this pass walked over.
-            except _AlwaysStopExtractionError:
+            except (_AlwaysStopExtractionError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
                 # A name the universal filter accepted (it is fsencodable) but that the
@@ -334,8 +343,27 @@ class ExtractionCoordinator:
                     results.append(result)
                 if self._on_error is OnError.STOP:
                     raise error
-                logger.warning(
-                    "Skipping %s %r: %s", original.type.value, original.name, error
+                code = (
+                    DiagnosticCode.EXTRACTION_MEMBER_REJECTED
+                    if status is ExtractionStatus.REJECTED
+                    else DiagnosticCode.EXTRACTION_MEMBER_FAILED
+                )
+                outcome: Literal["rejected", "failed"] = (
+                    "rejected" if status is ExtractionStatus.REJECTED else "failed"
+                )
+                self._diagnostics_collector.emit(
+                    code=code,
+                    message=(
+                        f"Skipping {original.type.value} {original.name!r}: {error}"
+                    ),
+                    context=ExtractionOutcomeContext(
+                        archive_name=self._archive_name,
+                        member_name=original.name,
+                        member_id=original._member_id,
+                        status=outcome,
+                        error_type=type(error).__name__,
+                    ),
+                    logger=logger,
                 )
             finally:
                 self._close(stream)
@@ -582,7 +610,7 @@ class ExtractionCoordinator:
                 self._materialize_orphan_source(
                     member, stream, group, source_paths, tracker, results
                 )
-            except _AlwaysStopExtractionError:
+            except (_AlwaysStopExtractionError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
                 for orphan in group:
@@ -591,9 +619,24 @@ class ExtractionCoordinator:
                     )
                 if self._on_error is OnError.STOP:
                     raise
-                logger.warning(
-                    "Skipping orphaned hardlink source %r: %s", member.name, exc
-                )
+                group_id = uuid.uuid4().hex
+                group_size = len(group)
+                message = f"Skipping orphaned hardlink source {member.name!r}: {exc}"
+                for orphan in group:
+                    self._diagnostics_collector.emit(
+                        code=DiagnosticCode.EXTRACTION_MEMBER_FAILED,
+                        message=message,
+                        context=ExtractionOutcomeContext(
+                            archive_name=self._archive_name,
+                            member_name=orphan.original.name,
+                            member_id=orphan.original._member_id,
+                            status="failed",
+                            error_type=type(exc).__name__,
+                            failure_group_id=group_id,
+                            failure_group_size=group_size,
+                        ),
+                        logger=logger,
+                    )
             finally:
                 self._close(stream)
             needed.discard(member.member_id)
@@ -676,13 +719,26 @@ class ExtractionCoordinator:
                 self._place_link(
                     source_paths, source_id, orphan.dest_path, orphan.transformed
                 )
+            except (_AlwaysStopExtractionError, DiagnosticRaisedError):
+                raise
             except (ArchiveyError, OSError) as exc:
                 results[orphan.result_index] = ExtractionResult(
                     orphan.original, None, ExtractionStatus.FAILED, exc
                 )
                 if self._on_error is OnError.STOP:
                     raise
-                logger.warning("Skipping hardlink %r: %s", orphan.original.name, exc)
+                self._diagnostics_collector.emit(
+                    code=DiagnosticCode.EXTRACTION_MEMBER_FAILED,
+                    message=f"Skipping hardlink {orphan.original.name!r}: {exc}",
+                    context=ExtractionOutcomeContext(
+                        archive_name=self._archive_name,
+                        member_name=orphan.original.name,
+                        member_id=orphan.original._member_id,
+                        status="failed",
+                        error_type=type(exc).__name__,
+                    ),
+                    logger=logger,
+                )
                 continue
             results[orphan.result_index] = ExtractionResult(
                 orphan.original, orphan.dest_path, ExtractionStatus.EXTRACTED, None

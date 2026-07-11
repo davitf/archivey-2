@@ -17,6 +17,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, cast
@@ -28,6 +29,11 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.diagnostics import (
+    DiagnosticCode,
+    MemberTimestampContext,
+    SymlinkTargetContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -36,8 +42,9 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
-from archivey.internal.naming import normalize_member_name
+from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -47,6 +54,7 @@ from archivey.internal.password_confirm import (
     first_crc_match,
 )
 from archivey.internal.registry import register_reader
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     SlicingStream,
     is_seekable,
@@ -132,23 +140,40 @@ def _is_candidate_integrity_failure(exc: Exception) -> bool:
 _NTFS_EPOCH_OFFSET = 11_644_473_600
 
 
-def _filetime_to_datetime(value: int, filename: str) -> datetime | None:
+@dataclass(frozen=True)
+class _TimestampIssue:
+    field: str
+    source: str
+    value_repr: str
+    message: str
+
+
+def _filetime_to_datetime(
+    value: int, filename: str, *, field: str
+) -> tuple[datetime | None, _TimestampIssue | None]:
     """An NTFS FILETIME (100 ns ticks since 1601, UTC) as a datetime; 0 means "not set"."""
     if value == 0:
-        return None
+        return None, None
     try:
-        return datetime.fromtimestamp(
-            value / 10_000_000 - _NTFS_EPOCH_OFFSET, tz=timezone.utc
+        return (
+            datetime.fromtimestamp(
+                value / 10_000_000 - _NTFS_EPOCH_OFFSET, tz=timezone.utc
+            ),
+            None,
         )
     except (ValueError, OverflowError, OSError):
-        logger.warning("Invalid NTFS timestamp for %r: %r", filename, value)
-        return None
+        return None, _TimestampIssue(
+            field=field,
+            source="ntfs",
+            value_repr=repr(value),
+            message=f"Invalid NTFS timestamp for {filename!r}: {value!r}",
+        )
 
 
 def _zip_timestamps(
     info: zipfile.ZipInfo,
-) -> tuple[datetime | None, datetime | None, datetime | None]:
-    """Return ``(modified, accessed, created)`` for a member.
+) -> tuple[datetime | None, datetime | None, datetime | None, list[_TimestampIssue]]:
+    """Return ``(modified, accessed, created, issues)`` for a member.
 
     Sources, lowest to highest precedence (each layer overrides only the times it
     actually carries):
@@ -163,14 +188,23 @@ def _zip_timestamps(
        signed 32-bit Unix time interpreted as UTC. The central directory typically
        carries only the modification time even when the flags advertise more.
     """
+    issues: list[_TimestampIssue] = []
     if info.date_time == (1980, 0, 0, 0, 0, 0):
         modified: datetime | None = None
     else:
         try:
             modified = datetime(*info.date_time)
         except ValueError:
-            logger.warning(
-                "Invalid ZIP date_time for %r: %r", info.filename, info.date_time
+            issues.append(
+                _TimestampIssue(
+                    field="date_time",
+                    source="dos",
+                    value_repr=repr(info.date_time),
+                    message=(
+                        f"Invalid ZIP date_time for {info.filename!r}: "
+                        f"{info.date_time!r}"
+                    ),
+                )
             )
             modified = None
     accessed: datetime | None = None
@@ -204,9 +238,24 @@ def _zip_timestamps(
                 and cursor + 24 <= len(ntfs_field)
             ):
                 mtime, atime, ctime = struct.unpack_from("<QQQ", ntfs_field, cursor)
-                modified = _filetime_to_datetime(mtime, info.filename) or modified
-                accessed = _filetime_to_datetime(atime, info.filename) or accessed
-                created = _filetime_to_datetime(ctime, info.filename) or created
+                for value, field_name in (
+                    (mtime, "mtime"),
+                    (atime, "atime"),
+                    (ctime, "ctime"),
+                ):
+                    dt, issue = _filetime_to_datetime(
+                        value, info.filename, field=field_name
+                    )
+                    if issue is not None:
+                        issues.append(issue)
+                    if dt is None:
+                        continue
+                    if field_name == "mtime":
+                        modified = dt
+                    elif field_name == "atime":
+                        accessed = dt
+                    else:
+                        created = dt
                 break
             cursor += attr_size
 
@@ -227,7 +276,7 @@ def _zip_timestamps(
                     created = when
                 cursor += 4
 
-    return modified, accessed, created
+    return modified, accessed, created, issues
 
 
 class ZipReader(BaseArchiveReader):
@@ -244,8 +293,11 @@ class ZipReader(BaseArchiveReader):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> None:
-        super().__init__(ArchiveFormat.ZIP, streaming, archive_name, config)
+        super().__init__(
+            ArchiveFormat.ZIP, streaming, archive_name, config, collector=collector
+        )
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
         self._encoding = encoding
@@ -397,8 +449,8 @@ class ZipReader(BaseArchiveReader):
             info.compress_type, CompressionAlgorithm.UNKNOWN
         )
 
-        modified, accessed, created = _zip_timestamps(info)
-        return ArchiveMember(
+        modified, accessed, created, ts_issues = _zip_timestamps(info)
+        member = ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
@@ -415,6 +467,29 @@ class ZipReader(BaseArchiveReader):
             extra={"zip.compress_type": info.compress_type},
             _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )
+        emit_member_name_normalized(
+            self._diagnostics_collector,
+            member=member,
+            presented_name=decoded,
+            archive_name=self._archive_name,
+        )
+        for issue in ts_issues:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+                message=issue.message,
+                context=MemberTimestampContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    field=issue.field,
+                    source=issue.source,
+                    value_repr=issue.value_repr,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
+        return member
 
     def _zipcrypto_check_byte(self, info: zipfile.ZipInfo) -> int:
         if info.flag_bits & _ZIP_MASK_USE_DATA_DESCRIPTOR:
@@ -742,10 +817,22 @@ class ZipReader(BaseArchiveReader):
             with self._open_zip_entry(info, member, member_name=member.name) as f:
                 member.link_target = f.read().decode("utf-8", errors="surrogateescape")
         except EncryptionError:
-            logger.warning(
-                "Cannot read the symlink target of %r without the correct "
-                "password; leaving link_target unset.",
-                info.filename,
+            message = (
+                f"Cannot read the symlink target of {info.filename!r} without the "
+                f"correct password; leaving link_target unset."
+            )
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+                message=message,
+                context=SymlinkTargetContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    reason="password_required",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
             )
         except (
             zipfile.BadZipFile,
@@ -766,7 +853,7 @@ class ZipReader(BaseArchiveReader):
                 raise translated from exc
             raise
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map
         # — and a duplicate member name can't resolve to the wrong entry.
         info = member._raw
@@ -831,10 +918,19 @@ class ZipReadBackend(ReadBackend):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
-        return ZipReader(source, streaming, passwords, encoding, archive_name, config)
+        return ZipReader(
+            source,
+            streaming,
+            passwords,
+            encoding,
+            archive_name,
+            config,
+            collector=collector,
+        )
 
 
 register_reader(ZipReadBackend)

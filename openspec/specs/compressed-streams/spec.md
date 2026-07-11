@@ -175,67 +175,60 @@ No raw backend exception escapes unwrapped.
 
 ### Requirement: Verify decompressed output against expected digests
 
-The system SHALL provide a composable verification **stage** that wraps a
-sequential decompressed stream and, given the expected digests from a member's
-`hashes`, computes each algorithm incrementally as bytes are read and verifies the
-results when the stream reaches **clean end-of-stream**, raising `CorruptionError`
-(naming the algorithm) on mismatch. Because expected digests come from
-already-parsed member metadata, the stage is agnostic to whether the source format
-stored them before or after the data.
+The verification stage SHALL continue to raise `CorruptionError` for a computable digest
+mismatch at clean EOF and skip verification after a partial read. It SHALL compute each
+available algorithm incrementally over decompressed bytes. A mismatch SHALL surface from
+the terminal read that would otherwise signal EOF, after every data chunk has been
+delivered; a bytes-returning full read SHALL raise and return no bytes. Codec-internal
+checks remain distinct from this container-supplied digest stage, and random-access/
+partial reads do not verify.
 
-This stage is distinct from any integrity check a codec performs internally (e.g.
-the gzip trailer CRC or the xz stream check, which the codec backend already
-surfaces as `CorruptionError`/`TruncatedError`); it verifies the *container-supplied*
-digest over the decompressed bytes.
+When an expected digest algorithm cannot be computed because it is unknown or its backend
+is unavailable, the stage SHALL emit `DIGEST_UNVERIFIABLE` with typed context containing
+the algorithm, non-secret reason, and member identity when available.
 
-Constraints:
+The event SHALL follow diagnostic policy. Under `COLLECT`, that algorithm is skipped while
+other computable algorithms are still verified; the occurrence appears in the stream/
+reader aggregate and MAY attach to the member under the shared retention budget. Under
+`IGNORE`, it is counted but has no delivery/detail and verification still skips it. Under
+`RAISE`, `DiagnosticRaisedError` halts the read.
 
-- Verification SHALL run **only on a full sequential read to clean EOF**. A stream
-  closed after a partial read SHALL NOT verify or raise, because the digest of
-  partial content is undefined. The stage therefore applies to the sequential read
-  path, not to random-access reads served by `seekable-decompressor-streams`.
-- **The mismatch SHALL be raised from the read that signals end-of-stream — after all
-  decompressed bytes have already been delivered to the caller.** The stage MUST NOT
-  withhold or discard the final data chunk: a consumer using the canonical
-  `while chunk := f.read(n): ...` loop receives **every** byte first, and then the
-  terminal read (the call that would otherwise return `b""`/EOF) raises
-  `CorruptionError` instead. This guarantees the caller never loses a trailing chunk of
-  data that may well be correct; the integrity verdict is delivered *after* the data,
-  not in place of it. The bytes-returning `read()`-all path (and `reader.read(member)`)
-  internally reads to EOF, so it raises on mismatch and returns no bytes — an
-  all-or-nothing read of data that failed integrity cannot be handed back as valid.
-  (A consumer that stops early, or reads exactly `size` bytes without probing EOF, falls
-  under the partial-read rule above and is not verified.)
-- For a digest algorithm the stage cannot compute — because its backend is not
-  installed (e.g. `blake2sp` without the `[rar]` Blake2sp backend) or it is an
-  unknown algorithm — it SHALL emit a warning via the `archivey` integrity logger
-  and skip that algorithm rather than failing the read; algorithms it can compute
-  (always including CRC32, via stdlib) are still verified. This is the verification
-  counterpart of the decode rule: a missing *decode* backend raises (the bytes
-  cannot be produced), but a missing *hash* backend only skips (the bytes are fine,
-  just unverified).
+#### Scenario: unverifiable digest is collected as data
+
+- **WHEN** a member's expected `blake2sp` cannot be computed and default policy applies
+- **THEN** `DIGEST_UNVERIFIABLE` is counted/retained/logged, may attach to the member, and the readable bytes are returned without that digest check
 
 #### Scenario: digest mismatch on full read
 
-- **WHEN** a member is read to EOF and its decompressed bytes do not match `hashes["crc32"]`
+- **WHEN** a member is read to EOF and its decompressed bytes do not match an expected computable digest
 - **THEN** `CorruptionError` naming the algorithm is raised
 
-#### Scenario: mismatch surfaces at EOF without losing the final chunk
+#### Scenario: mismatch does not discard the final chunk
 
-- **WHEN** a consumer reads a member with `while chunk := f.read(n)` and the content's digest does not match
-- **THEN** every data chunk (including the last) is delivered normally, and the **following** read — the one that would signal EOF — raises `CorruptionError`; no trailing data is withheld
+- **WHEN** a caller consumes chunks until EOF from a member whose digest mismatches
+- **THEN** every data chunk is delivered, and the following terminal read raises `CorruptionError`
 
 #### Scenario: partial read is not verified
 
-- **WHEN** a consumer reads only the first part of a member's stream and abandons it
-- **THEN** no verification occurs and no error is raised
+- **WHEN** a caller abandons a member stream before clean EOF
+- **THEN** no digest verdict or mismatch exception is produced
 
-#### Scenario: unverifiable algorithm is skipped with a warning
+#### Scenario: strict caller escalates unverifiable digest
 
-- **WHEN** a member's only expected digest is `blake2sp` and the Blake2sp backend is not installed
-- **THEN** the stage logs an integrity warning and returns the data without raising
+- **WHEN** `DIGEST_UNVERIFIABLE` resolves to `RAISE`
+- **THEN** `DiagnosticRaisedError` halts opening/reading the stream rather than silently skipping the check
 
----
+### Requirement: Public ArchiveStream exposes bounded operation snapshots
+
+Every public `ArchiveStream` SHALL expose an immutable `diagnostics` snapshot. For a
+reader-owned stream this is an operation-filtered view over the reader collector; for a
+standalone codec stream it is a stream-lifetime collector. Serving the view SHALL not
+retain a second aggregate copy of each occurrence.
+
+#### Scenario: standalone stream owns its diagnostics
+
+- **WHEN** a standalone codec stream emits an index or rewind diagnostic
+- **THEN** `stream.diagnostics` exposes exact counts and bounded retained details without requiring an `ArchiveReader`
 
 ### Requirement: Read-only stream wrappers share an internal base; the public surface is an ArchiveStream
 

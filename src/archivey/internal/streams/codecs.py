@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from types import ModuleType
-from typing import BinaryIO, Callable, ClassVar
+from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -63,6 +63,9 @@ from archivey.types import (
     MissingComponent,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 
 # Optional packages: resolved once via importlib (rather than static imports) because
@@ -1087,6 +1090,7 @@ def open_codec_stream(
     config: StreamConfig = DEFAULT_STREAM_CONFIG,
     params: CodecParams = _DEFAULT_PARAMS,
     stamp: Callable[[ArchiveyError], None] | None = None,
+    collector: "DiagnosticCollector | None" = None,
 ) -> BinaryIO:
     """Open a decompressing stream for ``codec`` with exceptions translated/stamped.
 
@@ -1109,4 +1113,5 @@ def open_codec_stream(
         stamp=stamp,
         lazy=False,
         rewind_warning=backend.rewind_warning,
+        collector=collector,
     )

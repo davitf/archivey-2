@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, ClassVar
+
+from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
 
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
@@ -78,6 +80,9 @@ class ArchiveyConfig:
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     strict_archive_eof: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
+    diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
+    max_retained_diagnostic_references: int = 256
+    on_diagnostic: OnDiagnostic | None = None
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()

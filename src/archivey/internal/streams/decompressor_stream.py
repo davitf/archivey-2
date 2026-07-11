@@ -26,7 +26,12 @@ from typing import (
     cast,
 )
 
+from archivey.diagnostics import DiagnosticCode, SeekIndexContext
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.diagnostics_collector import (
+    DiagnosticCollector,
+    resolve_collector,
+)
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, ensure_bufferedio
 
@@ -65,7 +70,13 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
     (``readinto`` is built on this class's ``read``); subclasses provide the decode primitives.
     """
 
-    def __init__(self, path: str | os.PathLike[str] | BinaryIO) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | BinaryIO,
+        *,
+        collector: DiagnosticCollector | None = None,
+        codec_name: str = "",
+    ) -> None:
         super().__init__()
         if isinstance(path, (str, os.PathLike)):
             self._inner: BinaryIO = open(os.fspath(path), "rb")
@@ -73,6 +84,8 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         else:
             self._inner = cast("BinaryIO", ensure_bufferedio(path))
             self._should_close = False
+        self._diagnostics_collector = collector
+        self._codec_name = codec_name
         self._seek_points: list[SeekPoint] = [SeekPoint(0, 0)]
         self._index_built = False
         self._index_build_attempted = False
@@ -289,11 +302,17 @@ class SegmentedDecompressorStream(DecompressorStream[_SDT]):
     decompressor; provides the shared backward-scan index skeleton.
     """
 
-    def __init__(self, path: str | os.PathLike[str] | BinaryIO) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | BinaryIO,
+        *,
+        collector: DiagnosticCollector | None = None,
+        codec_name: str = "",
+    ) -> None:
         # Pre-declare cursors: super().__init__ calls _create_decompressor, which reads them.
         self._comp_cursor = 0
         self._decomp_cursor = 0
-        super().__init__(path)
+        super().__init__(path, collector=collector, codec_name=codec_name)
 
     @abc.abstractmethod
     def _make_decompressor(self, point: SeekPoint) -> _SDT: ...
@@ -325,12 +344,15 @@ class SegmentedDecompressorStream(DecompressorStream[_SDT]):
         scan_fn: Callable[..., list[Any]],
         to_point: Callable[[Any], SeekPoint],
         warning_msg: str,
+        *,
+        scan: str = "backwards_index",
     ) -> tuple[list[SeekPoint], int | None]:
         """Backward scan → seek points + total decompressed size.
 
         ``scan_fn`` reads only index/trailer structures (no decompression). On a
-        ``CorruptionError`` (e.g. valid-but-unparseable trailing data) it logs and
-        returns an empty index so the stream falls back to sequential decoding.
+        ``CorruptionError`` (e.g. valid-but-unparseable trailing data) it emits
+        ``SEEK_INDEX_DEGRADED`` and returns an empty index so the stream falls back to
+        sequential decoding.
         """
         file_size = self._inner.seek(0, io.SEEK_END)
         try:
@@ -341,7 +363,17 @@ class SegmentedDecompressorStream(DecompressorStream[_SDT]):
                 start_decompressed_offset=last_known.decompressed_offset,
             )
         except CorruptionError as e:
-            logger.warning(warning_msg, e)
+            message = warning_msg % (e,)
+            resolve_collector(self._diagnostics_collector).emit(
+                code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+                message=message,
+                context=SeekIndexContext(
+                    codec=self._codec_name,
+                    scan=scan,
+                    error_type=type(e).__name__,
+                ),
+                logger=logger,
+            )
             return [], None
         points = [
             to_point(b)

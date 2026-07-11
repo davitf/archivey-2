@@ -25,7 +25,7 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 | 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams` | `archive/2026-06-21-phase-2-stream-layer` ✓ |
 | 3 | Indexed leaf formats + detection | `format-zip`, `format-tar` (random-access read), `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry`, `access-mode-and-cost` | `archive/2026-06-30-phase-3-indexed-leaf-formats` ✓ |
 | 4 | TAR streaming + safe extraction | `format-tar` (forward-only `stream_members`, hardlinks, truncation), `safe-extraction`, `archive-reading` (sequential + `stream_members`), `format-detection` (gzip-wrapped tar regression), `testing-contract` (adversarial + non-seekable `tar.gz`) | `archive/2026-06-30-package-layout-restructure` ✓ → `phase-4-tar-streaming` + `phase-4-safe-extraction` |
-| 5 | Public API finalization & cost | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling` | `phase-5-public-api` |
+| 5 | Public API finalization, cost & diagnostics | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling`, `diagnostics`, `logging`, `format-detection`, `safe-extraction`, `compressed-streams`, `seekable-decompressor-streams`, `format-directory`, `format-tar`, `format-zip` | `phase-5-public-api` → `diagnostics-warnings-as-data` (specs first; implementation follow-on before Phase 6) |
 | 6 | Native 7z + RAR read (was Phase 7; **fuzzing is an entry gate** — see cross-cutting) | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
 | 7 | CLI (was Phase 9; pulled forward as dev tool + the safe-extraction demo, per `VISION.md`) | `cli` | — |
 | 8 | Seekable zstd + blocked gzip (rescoped; original zst/lz4 read goals landed in Phases 2–3, `w:zst` moved to the writing phase) | `seekable-decompressor-streams`, `format-single-file-compressors` | `seekable-gzip-and-block-writing` (partial) |
@@ -39,6 +39,9 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 
 **In-flight changes unrelated to a PLAN phase** (do not block Phase 4, but may land
 alongside): `seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`.
+`diagnostics-warnings-as-data` is explicitly a **Phase 5 public-API follow-on** rather
+than an unsequenced cross-cutting change; its implementation must land before Phase 6
+native readers add more diagnostic-producing paths.
 Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor`,
 `compression-library-evaluation`, `zstd-stdlib-backend-migration`.
 
@@ -113,9 +116,9 @@ Foundations (declarative corpus, on-demand generation + content-keyed cache unde
 The 7z/RAR **read** path is native-first, and DEV's `py7zr`/`rarfile` read
 backends are explicitly interim. The clean-slate answer to the open sequencing
 question in `openspec/project.md` is therefore: **do not port them.** 7z and RAR
-reads are marked `xfail`/`skip` until the native readers land in **Phase 7**;
+reads are marked `xfail`/`skip` until the native readers land in **Phase 6**;
 `py7zr`/`rarfile` enter earlier only as `dev`-group oracles. Those formats are
-simply absent from the equivalence matrix until Phase 7.
+simply absent from the equivalence matrix until Phase 6.
 
 ---
 
@@ -170,7 +173,7 @@ All codec/detection-dependent formats stay unwired until Phases 2–3.
    **reduced ~12-job matrix** (vs DEV's ~18): Linux × `{3.11,3.12,3.13,3.14}` ×
    `{core-only, [all]}` (8), plus macOS + Windows on min/max Python with `[all]` (4);
    each job runs ruff + Pyrefly + ty + pytest (coverage report only). uv-cached on
-   `uv.lock`; 7z/RAR read tests `xfail` until Phase 7.
+   `uv.lock`; 7z/RAR read tests `xfail` until Phase 6.
 
 ### Tests added
 Harness self-tests (corpus round-trips through generation+cache); `__version__`
@@ -332,9 +335,11 @@ as a light tripwire, not a hard ban).
 
 ---
 
-## Phase 5 — Public API finalization & cost surface
+## Phase 5 — Public API finalization, cost surface, and diagnostics
 
-**Goal:** the public surface matches `SPEC.md` across every format built so far.
+**Goal:** the public surface matches `SPEC.md` across every format built so far, and
+warning-producing paths use the lifecycle-aware diagnostics contract before native
+7z/RAR readers expand that surface.
 
 **Entry criteria:** Phase 4 green.
 
@@ -357,14 +362,23 @@ as a light tripwire, not a hard ban).
    ambient (contextvars/global) configuration. Also decided there: the password
    candidate-sequence + provider model, multi-source acceptance + path volume-set
    discovery, and the MemberSelector collection semantics.
+5. **Diagnostics follow-on** (specified by `diagnostics-warnings-as-data`) — add the
+   bounded lifecycle collector and exact counts; reader/stream/format/member/result
+   projections; first-class `ExtractionReport`; per-code policy/callback/escalation;
+   typed `DiagnosticRaisedError`; and migrate all 17 current warning calls. Runtime
+   rewind/index/EOF events stay off frozen `CostReceipt` / `ArchiveInfo`. This task is
+   ordered after `phase-5-public-api` and before Phase 6.
 
 ### Tests added
-`archive-data-model`, `access-mode-and-cost`, `error-handling`, and the remaining
-`archive-reading` scenarios; per-format CostReceipt assertions.
+`archive-data-model`, `access-mode-and-cost`, `error-handling`, `diagnostics`, and the
+remaining `archive-reading` scenarios; per-format CostReceipt assertions; policy,
+retention, lifecycle, callback, escalation, and extraction-report coverage for every
+migrated warning path.
 
 ### Acceptance — spec scenarios covered
 All of `archive-reading`, `archive-data-model`, `access-mode-and-cost`,
-`error-handling`.
+`error-handling`, and `diagnostics`, including affected deltas for detection,
+extraction, streams, formats, and logging.
 **Gates:** `pyrefly` + `ty` clean (strict); public API matches `SPEC.md §2–§7`; CostReceipt
 correct for every format implemented so far.
 

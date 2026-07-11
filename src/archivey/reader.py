@@ -4,20 +4,23 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import BinaryIO, Callable, Collection, Iterator
+from typing import TYPE_CHECKING, Callable, Collection, Iterator
 
 from archivey.config import ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
+from archivey.diagnostics import DiagnosticSummary, ExtractionReport
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
-    ExtractionResult,
     MemberFilter,
     MemberSelectorArg,
     OnError,
     OverwritePolicy,
 )
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember
+
+if TYPE_CHECKING:
+    from archivey.internal.streams.archive_stream import ArchiveStream
 
 # Type alias for the member selector passed to stream_members() and extract_all().
 # Accepts a predicate, a collection of names / ArchiveMember objects, or None (all).
@@ -52,6 +55,12 @@ class ArchiveReader(ABC):
     @abstractmethod
     def cost(self) -> CostReceipt:
         """The listing/access cost receipt for this archive (see ``access-mode-and-cost``)."""
+        ...
+
+    @property
+    @abstractmethod
+    def diagnostics(self) -> DiagnosticSummary:
+        """Fresh immutable cumulative snapshot of diagnostics for this reader."""
         ...
 
     @abstractmethod
@@ -107,12 +116,12 @@ class ArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def open(self, member: str | ArchiveMember) -> BinaryIO:
+    def open(self, member: str | ArchiveMember) -> ArchiveStream:
         """Open a member as a binary stream, following symlinks/hardlinks. Accepts a
         member object or a name (an unknown name raises ``KeyError``; a member object
         that was not yielded by this reader raises ``ValueError`` — same identity rule
         as ``member in reader``). The caller is responsible for closing the returned
-        stream."""
+        stream. Returns an :class:`~archivey.ArchiveStream` (usable as ``BinaryIO``)."""
         ...
 
     @abstractmethod
@@ -124,7 +133,7 @@ class ArchiveReader(ABC):
     @abstractmethod
     def stream_members(
         self, members: MemberSelector = None
-    ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
         ``members`` is an optional selector (predicate, name/member collection, or
         ``None`` for all). The yielded stream is valid only until the iterator advances;
@@ -144,7 +153,7 @@ class ArchiveReader(ABC):
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
-    ) -> list[ExtractionResult]:
+    ) -> ExtractionReport:
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
 
         ``members`` selects which members to extract (names/``ArchiveMember``s, or a
@@ -152,8 +161,8 @@ class ArchiveReader(ABC):
         the ``policy`` transform, and may rename/sanitize a member (return a
         ``.replace()``d copy) or skip it (return ``None``). ``config`` defaults to the
         config the reader was opened with; ``limits`` overrides its extraction limits for
-        this call only. Returns one :class:`~archivey.ExtractionResult` per member
-        processed.
+        this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
+        summary is the delta for this extraction call.
         """
         ...
 
