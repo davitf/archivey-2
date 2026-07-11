@@ -24,11 +24,13 @@ from archivey import (
     AcceleratorMode,
     ArchiveFormat,
     ArchiveyConfig,
+    MemberStreams,
     MemberType,
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost
 from archivey.exceptions import (
+    ArchiveyUsageError,
     CorruptionError,
     StreamNotSeekableError,
     TruncatedError,
@@ -247,9 +249,17 @@ def test_non_seekable_gzip_streams_fine() -> None:
     # streaming=True (the mode a non-seekable source requires).
     data = gzip.compress(b"streamed payload")
     with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
-        ((member, stream),) = list(ar.stream_members())
+        # Read while the generator is live: exhaustion closes the current stream.
+        pairs = list(ar.stream_members())
+        assert len(pairs) == 1
+        member, stream = pairs[0]
         assert stream is not None
-        assert stream.read() == b"streamed payload"
+        # Re-open via random open is unavailable in streaming mode; drain via a fresh
+        # streaming pass that reads before the generator finishes.
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+        for _member, stream in ar.stream_members():
+            assert stream is not None
+            assert stream.read() == b"streamed payload"
 
 
 @requires("uncompresspy", "ncompress")
@@ -350,9 +360,10 @@ def test_explicit_format_bypasses_detection() -> None:
 
 
 def _read_single_streamed_member(ar) -> bytes:
-    ((_member, stream),) = list(ar.stream_members())
-    assert stream is not None
-    return stream.read()
+    for _member, stream in ar.stream_members():
+        assert stream is not None
+        return stream.read()
+    raise AssertionError("expected one member stream")
 
 
 def test_truncated_gzip_raises_truncated() -> None:
@@ -388,7 +399,10 @@ def test_concurrent_open_same_member_interleaved() -> None:
     # Single-file routes through SharedSource: two opens of the one member stay correct
     # when read in interleaved partial chunks (and open is reentrant — no _first_stream).
     payload = b"abcdefghijklmnopqrstuvwxyz" * 40
-    with open_archive(io.BytesIO(gzip.compress(payload))) as ar:
+    with open_archive(
+        io.BytesIO(gzip.compress(payload)),
+        member_streams=MemberStreams.CONCURRENT | MemberStreams.SEEKABLE,
+    ) as ar:
         (member,) = ar.members()
         s1 = ar.open(member)
         s2 = ar.open(member)
@@ -406,7 +420,9 @@ def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
     path = tmp_path / "data.txt.gz"
     payload = b"reentrant payload " * 50
     path.write_bytes(gzip.compress(payload))
-    with open_archive(path) as ar:
+    with open_archive(
+        path, member_streams=MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
+    ) as ar:
         (member,) = ar.members()
         first = ar.open(member)
         assert first.read(8) == payload[:8]
@@ -437,7 +453,7 @@ def test_read_after_reader_and_source_close_raises_typed_error() -> None:
     ar.close()
     assert stream.read(16) == payload[16:32]  # reader close alone: still readable
     source.close()
-    with pytest.raises(UnsupportedOperationError):
+    with pytest.raises(ArchiveyUsageError):
         while stream.read(65536):
             pass
     with contextlib.suppress(Exception):

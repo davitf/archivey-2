@@ -26,6 +26,7 @@ import importlib
 import re
 import stat
 import struct
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -53,7 +54,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.streams.streamtools import DelegatingStream, LockedStream
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -255,6 +256,10 @@ class IsoReader(BaseArchiveReader):
             open_site=open_site,
         )
         self._source = source
+        # Shared-handle lock: only for CONCURRENT readers (default path takes none).
+        self._handle_lock: threading.Lock | None = (
+            threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
+        )
         if pycdlib is None:
             raise PackageNotInstalledError(
                 "The 'pycdlib' package is required to read ISO images "
@@ -264,10 +269,17 @@ class IsoReader(BaseArchiveReader):
 
         self._iso = pycdlib.PyCdlib()
         try:
-            if isinstance(source, Path):
-                self._iso.open(str(source))
+            if self._handle_lock is not None:
+                with self._handle_lock:
+                    if isinstance(source, Path):
+                        self._iso.open(str(source))
+                    else:
+                        self._iso.open_fp(source)
             else:
-                self._iso.open_fp(source)
+                if isinstance(source, Path):
+                    self._iso.open(str(source))
+                else:
+                    self._iso.open_fp(source)
         except _PYCDLIB_ERRORS as exc:
             translated = self._translate_exception(exc)
             if translated is not None:
@@ -441,6 +453,16 @@ class IsoReader(BaseArchiveReader):
         ns_path = member._raw
         assert isinstance(ns_path, str), "ISO member is missing its namespace path"
         try:
+            if self._handle_lock is not None:
+                with self._handle_lock:
+                    raw = self._iso.open_file_from_iso(**{self._path_kw: ns_path})
+                    # Construct under the lock so enter-time pycdlib seek is covered.
+                    locked: BinaryIO = LockedStream(
+                        _PyCdlibStream(raw), self._handle_lock
+                    )
+                return self._wrap_member_stream(
+                    locked, member.name, size=member.size
+                )
             raw = self._iso.open_file_from_iso(**{self._path_kw: ns_path})
             # Construct inside the try so any enter-time pycdlib error is translated too;
             # _PyCdlibStream enters the PyCdlibIO context in its __init__.
@@ -476,6 +498,10 @@ class IsoReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
+        if self._handle_lock is not None:
+            with self._handle_lock:
+                self._iso.close()
+            return
         self._iso.close()
 
 

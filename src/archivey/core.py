@@ -14,6 +14,7 @@ from archivey.config import (
 )
 from archivey.diagnostics import ExtractionReport
 from archivey.exceptions import (
+    ArchiveyUsageError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
     UnsupportedOperationError,
@@ -26,6 +27,7 @@ from archivey.internal.extraction_types import (
     OnError,
     OverwritePolicy,
 )
+from archivey.internal.open_site import capture_open_site
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import (
     FormatAvailability,
@@ -45,7 +47,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.volumes import OpenSourceInput, resolve_source
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveFormat, ContainerFormat
+from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams
 
 __all__ = [
     "DetectionConfidence",
@@ -89,6 +91,7 @@ def open_archive(
     *,
     format: ArchiveFormat | None = None,
     streaming: bool = False,
+    member_streams: MemberStreams = MemberStreams(0),
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -98,6 +101,22 @@ def open_archive(
     ``streaming=False`` (the default) opens for random access and fails fast at open
     time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
     access (works on any source, but disables random-access methods).
+
+    ``member_streams`` declares stream capabilities beyond the default forward-only,
+    single-live-stream contract:
+
+    - ``MemberStreams.CONCURRENT`` — multiple member streams may be open at once
+      (including post-materialization worker fan-out).
+    - ``MemberStreams.SEEKABLE`` — member streams are seekable where the backend can
+      provide positioning.
+
+    Without those flags, a second overlapping ``open()`` raises
+    ``ConcurrentAccessError``, and ``seek()`` raises ``io.UnsupportedOperation``.
+    Declared concurrency does **not** gate solid open-order cost — see ``AccessCost`` /
+    ``stream_members()``.
+
+    ``streaming=True`` combined with ``MemberStreams.CONCURRENT`` is rejected
+    (``ArchiveyUsageError``): a forward-only pass cannot fan out.
 
     ``config`` supplies library tuning knobs (accelerator modes, TAR end-of-archive
     strictness via ``strict_archive_eof``, default extraction limits). ``None`` selects
@@ -134,6 +153,15 @@ def open_archive(
     """
     # Import backends to ensure they are registered
     import archivey.internal.backends  # noqa: F401
+
+    open_site = capture_open_site()
+
+    if streaming and MemberStreams.CONCURRENT in member_streams:
+        raise ArchiveyUsageError(
+            "open_archive(streaming=True) cannot be combined with "
+            "MemberStreams.CONCURRENT: a forward-only pass has one progressive decoder "
+            "and cannot fan out concurrent member streams."
+        )
 
     passwords = _PasswordCandidates.from_input(password)
 
@@ -221,6 +249,8 @@ def open_archive(
         archive_name=archive_name,
         config=effective_config,
         collector=collector,
+        member_streams=member_streams,
+        open_site=open_site,
     )
 
 

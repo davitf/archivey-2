@@ -18,7 +18,7 @@ from archivey.diagnostics import (
     DiagnosticSummary,
     StreamRewindContext,
 )
-from archivey.exceptions import ArchiveyError, UnsupportedOperationError
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 ExceptionTranslator = Callable[[Exception], ArchiveyError | None]
 # A stamp attaches context (format/archive/member) to an already-translated error.
 ErrorStamp = Callable[[ArchiveyError], None]
+# Optional close hook (e.g. reader live-stream / lease release).
+CloseHook = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class ArchiveStream(ReadOnlyIOStream):
         rewind_warning: RewindWarning | None = None,
         size: int | None = None,
         collector: DiagnosticCollector | None = None,
+        on_close: CloseHook | None = None,
     ) -> None:
         super().__init__()
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
@@ -85,6 +88,7 @@ class ArchiveStream(ReadOnlyIOStream):
         self._rewind_warned = False
         self._size = size
         self._diagnostics_collector = collector
+        self._on_close = on_close
         # A stream's diagnostics are everything emitted from its open onward: capture the
         # collector position here and difference against "now" on each query. No per-stream
         # bookkeeping is retained collector-side.
@@ -151,19 +155,15 @@ class ArchiveStream(ReadOnlyIOStream):
             self._stamp(e)
             raise e
         if isinstance(e, ValueError) and "closed file" in str(e):
-            # The *inner* stream hit a closed handle underneath it — a member stream
-            # being read after its reader (or the caller's own source stream) was
-            # closed. Library-agnostic and mapped here, before the per-library
-            # translator, so a backend's generic ValueError mapping (e.g. ZIP's
-            # corrupt-offset rule) cannot claim it. The wrapper's own read-after-close
-            # never reaches _fail (it raises plain ValueError from _ensure_open,
-            # standard file semantics). See archive-reading: "fail loudly" on
-            # concurrent-open misuse.
-            translated_closed = UnsupportedOperationError(
-                "Cannot read this member stream: its underlying source has been "
-                "closed (e.g. the archive reader that produced it was closed)."
+            # The *inner* stream hit a closed handle underneath it — typically the
+            # caller closed their supplied BinaryIO early. Mapped here, before the
+            # per-library translator, so a backend's generic ValueError mapping cannot
+            # claim it. The wrapper's own read-after-close never reaches _fail (plain
+            # ValueError from _ensure_open).
+            translated_closed = ArchiveyUsageError(
+                "Cannot read this member stream: its underlying caller-owned source "
+                "has been closed."
             )
-            self._stamp(translated_closed)
             logger.debug("Translated exception: %r -> %r", e, translated_closed)
             raise translated_closed from e
         translated = self._translate(e)
@@ -197,6 +197,8 @@ class ArchiveStream(ReadOnlyIOStream):
             self._fail(e)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if not self._seekable_hint:
+            raise io.UnsupportedOperation("seek")
         inner = self._ensure_open()  # outside the try, same as read()
         try:
             before = inner.tell()
@@ -245,9 +247,13 @@ class ArchiveStream(ReadOnlyIOStream):
 
     def seekable(self) -> bool:
         # readable()/writable()/write() come from ReadOnlyIOStream.
+        # Undeclared SEEKABLE forces forward-only even when the inner handle could seek
+        # (directory uniformity / declared-capabilities contract).
+        if not self._seekable_hint:
+            return False
         if self._inner is not None:
             return is_seekable(self._inner)
-        return self._seekable_hint
+        return True
 
     def close(self) -> None:
         if self.closed:
@@ -264,6 +270,10 @@ class ArchiveStream(ReadOnlyIOStream):
                     self._fail(e)
         finally:
             super().close()
+            on_close = self._on_close
+            self._on_close = None
+            if on_close is not None:
+                on_close()
 
     def __repr__(self) -> str:
         return f"<ArchiveStream inner={self._inner!r}>"

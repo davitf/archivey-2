@@ -19,7 +19,7 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
-from archivey.exceptions import ArchiveyError, CorruptionError
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError, CorruptionError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.types import (
     ArchiveFormat,
@@ -138,10 +138,9 @@ def test_archive_stream_translates_closed_source_before_backend_translator() -> 
     # The inner stream hitting a closed handle ("I/O operation on closed file.") is a
     # library-agnostic condition (reader or caller source closed under a live member
     # stream — see archive-reading's concurrent-open "fail loudly" clause). It must map
-    # to UnsupportedOperationError *before* the per-library translator runs, so a
+    # to ArchiveyUsageError *before* the per-library translator runs, so a
     # backend's generic ValueError mapping (e.g. ZIP's corrupt-offset rule) cannot
     # claim it as corruption.
-    from archivey.exceptions import UnsupportedOperationError
     from archivey.internal.streams.archive_stream import ArchiveStream
 
     class _ClosedUnderneath(io.BytesIO):
@@ -157,5 +156,5 @@ def test_archive_stream_translates_closed_source_before_backend_translator() -> 
         lambda: _ClosedUnderneath(b"data"),
         translate=_greedy_value_error_translate,
     )
-    with pytest.raises(UnsupportedOperationError):
+    with pytest.raises(ArchiveyUsageError):
         stream.read()

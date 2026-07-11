@@ -108,7 +108,35 @@ class PackageNotInstalledError(ArchiveyError):
 
 
 class UnsupportedOperationError(ArchiveyError):
-    """API misuse: operation not valid for this reader's mode."""
+    """Operation not valid for this archive, format, backend, or access mode.
+
+    Describes what an archive or mode cannot provide — not a bug in calling code.
+    Caller misuse (wrong-reader identity, post-close use, undeclared concurrent
+    streams) raises :class:`ArchiveyUsageError` instead.
+    """
+
+
+class ArchiveyUsageError(Exception):
+    """Caller misuse of the Archivey API — deliberately not an :class:`ArchiveyError`.
+
+    ``except ArchiveyError`` wraps archive/environment problems; usage errors indicate
+    a bug in calling code and must not be swallowed by those handlers.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class ConcurrentAccessError(ArchiveyUsageError):
+    """A second overlapping member stream was opened without ``MemberStreams.CONCURRENT``.
+
+    The message includes the ``open_archive()`` call site so the error points at where
+    the capability should have been declared.
+    """
 
 
 class DiagnosticRaisedError(ArchiveyError):

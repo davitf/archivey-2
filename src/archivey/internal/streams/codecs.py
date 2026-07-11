@@ -216,13 +216,13 @@ _DEFAULT_PARAMS = CodecParams()
 
 def _gzip_uses_accelerator(config: StreamConfig) -> bool:
     return _rapidgzip is not None and config.use_rapidgzip.enabled_for(
-        streaming=config.streaming, available=True
+        seekable=config.seekable, available=True
     )
 
 
 def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
     return _rapidgzip_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
-        streaming=config.streaming, available=True
+        seekable=config.seekable, available=True
     )
 
 
@@ -503,7 +503,7 @@ class GzipCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if config.use_rapidgzip.enabled_for(
-            streaming=config.streaming, available=_rapidgzip is not None
+            seekable=config.seekable, available=_rapidgzip is not None
         ):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(
@@ -619,7 +619,7 @@ class Bzip2Codec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if config.use_indexed_bzip2.enabled_for(
-            streaming=config.streaming, available=_rapidgzip_bzip2 is not None
+            seekable=config.seekable, available=_rapidgzip_bzip2 is not None
         ):
             if _rapidgzip_bzip2 is None:
                 raise PackageNotInstalledError(

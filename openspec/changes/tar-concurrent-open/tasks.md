@@ -1,12 +1,12 @@
 ## 1. Locked member-stream primitive
 
-- [ ] 1.1 Add a `streamtools` wrapper that delegates to an inner `BinaryIO` and holds a
+- [x] 1.1 Add a `streamtools` wrapper that delegates to an inner `BinaryIO` and holds a
       caller-supplied lock across `read`, `readinto`, supported `seek`/`tell`, and inner
       close/context exit (plus every related method audit shows can touch the shared handle);
       preserve normal `io.UnsupportedOperation` for unsupported positioning
-- [ ] 1.2 Unit-test two fake seek-before-read streams sharing one handle/lock:
+- [x] 1.2 Unit-test two fake seek-before-read streams sharing one handle/lock:
       single-thread and threaded interleave, readinto, seek/tell, close-vs-operation
-- [ ] 1.3 Re-export from `streamtools` as appropriate
+- [x] 1.3 Re-export from `streamtools` as appropriate
 - [ ] 1.4 Ensure raw exceptions are captured under the lock but translated/stamped/logged
       only after release; no provider/callback/finalizer/lifecycle hook runs under the helper
       lock, while unavoidable library-internal decode may remain within the atomic handle call
@@ -15,18 +15,18 @@
 
 ## 2. Wire TAR-RA and ISO
 
-- [ ] 2.1 Create the `TarReader` lock before opening tarfile; use it for `tarfile.open`,
+- [x] 2.1 Create the `TarReader` lock before opening tarfile; use it for `tarfile.open`,
       `getmembers()` (verified to call `_load()` / `next()` seek/tell/read), direct strict-EOF
       `TarFile.fileobj.read()`, `extractfile`, every wrapped member operation, any other
       audited shared-fileobj access, and `_tar.close()`
-- [ ] 2.2 Create the `IsoReader` lock before opening pycdlib; use it for `PyCdlib.open` /
+- [x] 2.2 Create the `IsoReader` lock before opening pycdlib; use it for `PyCdlib.open` /
       `open_fp`, `open_file_from_iso`, `PyCdlibIO.__enter__`, every wrapped member operation,
       any other audited `PyCdlib._cdfp` / `PyCdlibIO._fp` access, and `_iso.close()`
-- [ ] 2.3 Place the locked layer below archivey buffering/error/lifecycle wrappers so no
+- [x] 2.3 Place the locked layer below archivey buffering/error/lifecycle wrappers so no
       refill or delegated seek/tell bypasses it
 - [ ] 2.4 Close inner member/archive library resources under the backend lock, release it,
       then translate/log/release lifecycle leases (never backend lock → lifecycle lock)
-- [ ] 2.5 Leave the streaming TAR public contract unchanged and exclusive
+- [x] 2.5 Leave the streaming TAR public contract unchanged and exclusive
 - [ ] 2.6 Use the same lock for streaming TAR initialization, iterator/shared-handle calls,
       `extractfile`, yielded-stream operations, EOF verification, and close; it remains
       exclusive and the lock is normally uncontended
@@ -40,7 +40,7 @@
 
 - [ ] 3.1 Land after / with `concurrent-member-streams` (it owns the cross-format worker/
       lifecycle contract); apply this change's `format-tar` and `format-iso` deltas
-- [ ] 3.2 Ensure TAR-RA and ISO support simultaneous random-access streams under declared
+- [x] 3.2 Ensure TAR-RA and ISO support simultaneous random-access streams under declared
       `MemberStreams.CONCURRENT`, with no TAR/ISO-specific exemption; the lock mechanism is
       not instantiated for undeclared (default single-stream) readers
 - [ ] 3.3 Update `docs/parallel-reader.md` TAR-RA/ISO rows with comprehensive shared-handle

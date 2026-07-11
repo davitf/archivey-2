@@ -21,10 +21,10 @@ holds. Every member stream (random `open()` and `stream_members()` yields alike)
 report `seekable() is False`; `seek()` SHALL raise `io.UnsupportedOperation`; `tell()`
 SHALL work. The ordinary `open → read → close → open next` loop is unaffected.
 
-`open_archive()` SHALL record its caller's location (`file:line`, cheaply captured) and
-`ConcurrentAccessError` SHALL include it, so the error points at where the capability
-should have been declared. A configuration/debug switch MAY retain the full stack; the
-default cost is one frame walk.
+`open_archive()` SHALL record its caller's stack (captured once at open) and
+`ConcurrentAccessError` SHALL include the caller's `file:line`, so the error points at
+where the capability should have been declared. The full captured stack is retained on
+the reader for diagnostics; there is no separate config knob.
 
 The capability declaration is per-archive intent: there SHALL be no `ArchiveyConfig`
 equivalent and no per-`open()` capability argument. Access cost never determines

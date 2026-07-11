@@ -25,11 +25,16 @@ misuse states:
 - any new reader operation/property except repeated `close()` / `__exit__` after
   `reader.close()`;
 - same-reader password-provider reentry into a password-requiring operation that would
-  deadlock; and
+  deadlock;
+- opening/using an `ArchiveMember` that does not belong to this reader (wrong-reader
+  identity); and
 - member I/O after the caller closed its own supplied source early.
 
 The error SHALL be raised at the later operation before it changes state and MUST leave
 the earlier operation/stream usable.
+
+`open_archive(streaming=True, member_streams=…CONCURRENT…)` SHALL raise
+`ArchiveyUsageError` (invalid access-mode/capability combination).
 
 Boundaries of the hierarchy:
 

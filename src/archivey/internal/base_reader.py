@@ -15,6 +15,7 @@ from archivey.cost import CostReceipt
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport
 from archivey.exceptions import (
     ArchiveyError,
+    ArchiveyUsageError,
     LinkTargetNotFoundError,
     ReadError,
     UnsupportedOperationError,
@@ -36,6 +37,7 @@ from archivey.internal.naming import (
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.reader_state import ReaderState
 from archivey.internal.selection import normalize_member_selector
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.counting import CountingReader
@@ -223,6 +225,9 @@ class BaseArchiveReader(ArchiveReader):
         )
         self._member_streams = member_streams
         self._open_site = open_site
+        self._state = ReaderState(
+            member_streams=member_streams, open_site=open_site
+        )
         # A random, opaque identity token (not id(self), which the allocator can reuse
         # after a reader is garbage-collected — a member of a dead reader must never
         # pass another reader's identity check; and not a plain counter, whose small
@@ -242,6 +247,50 @@ class BaseArchiveReader(ArchiveReader):
         self._pass_scanned: list[ArchiveMember] = []
         self._pass_by_name_lists: dict[str, list[ArchiveMember]] = {}
         self._closed = False
+
+    @property
+    def member_streams(self) -> MemberStreams:
+        """Declared member-stream capabilities for this reader."""
+        return self._member_streams
+
+    def _seek_declared(self) -> bool:
+        return self._state.seekable
+
+    def _register_public_stream(self, stream: ArchiveStream) -> ArchiveStream:
+        """Admit ``stream`` under the live-stream gate and attach lease release on close."""
+        self._state.acquire_live_stream(stream)
+
+        def _on_close() -> None:
+            if self._state.release_live_stream(stream):
+                self._maybe_teardown()
+
+        stream._on_close = _on_close
+        return stream
+
+    def _internal_member_opens(self):
+        """Context manager: library-internal opens are exempt from the live-stream gate."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            self._state.begin_internal_opens()
+            try:
+                yield
+            finally:
+                self._state.end_internal_opens()
+
+        return _cm()
+
+    def _maybe_teardown(self) -> None:
+        if not self._state.claim_teardown():
+            return
+        try:
+            self._close_archive()
+        except Exception as exc:
+            self._state.complete_teardown(exc)
+            raise
+        else:
+            self._state.complete_teardown()
 
     @abstractmethod
     def _iter_members(self) -> Iterator[ArchiveMember]: ...
@@ -275,11 +324,21 @@ class BaseArchiveReader(ArchiveReader):
             self._begin_forward_pass() if self._streaming
             else self._get_members_registered()
         )
+        previous: ArchiveStream | None = None
         for member in members:
+            if previous is not None:
+                previous.close()
+                previous = None
             if member.is_file:
-                yield member, self._lazy_member_stream(member)
+                stream = self._lazy_member_stream(member)
+                previous = stream
+                yield member, stream
             else:
                 yield member, None
+        if previous is not None:
+            # Do not close here: the caller still holds the last yielded stream until
+            # they advance/close the generator (stream_members closes it in finally).
+            pass
 
     def _lazy_member_stream(self, member: ArchiveMember) -> ArchiveStream:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
@@ -289,14 +348,16 @@ class BaseArchiveReader(ArchiveReader):
         ``ArchiveyError`` through (re-stamping is a no-op), so deferral does not change
         what a failed open raises — only when.
         """
-        return ArchiveStream(
+        stream = ArchiveStream(
             lambda: self._open_member(member),
             translate=self._translate_exception,
             stamp=lambda exc: self._stamp_error_context(exc, member.name),
             lazy=True,
+            seekable=self._seek_declared(),
             size=member.size,
             collector=self._diagnostics_collector,
         )
+        return self._register_public_stream(stream)
 
     @abstractmethod
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
@@ -310,8 +371,10 @@ class BaseArchiveReader(ArchiveReader):
         ZIP, single-file, and the future native 7z/RAR readers), this method MUST be a
         function of ``(member, shared source)`` only:
 
-        - it MUST NOT mutate shared reader state that another concurrent open depends on;
-        - it MUST NOT keep per-open scratch on ``self`` that a second open would overwrite;
+        - it MUST NOT keep unsynchronized per-open scratch on ``self`` that another
+          concurrent open can overwrite;
+        - synchronized shared bookkeeping (leases, password caches, handle locks) is
+          permitted;
         - any archivey-owned byte-range access MUST go through a
           :class:`~archivey.internal.streams.streamtools.SharedSource` view (see
           *Multiple concurrently-open member streams* in ``archive-reading``).
@@ -320,16 +383,11 @@ class BaseArchiveReader(ArchiveReader):
         read-only. Backends whose member addressing is owned by an external library that
         already coordinates the shared handle (ISO via ``pycdlib``, ZIP via stdlib
         ``zipfile``) are not required to route through an archivey ``SharedSource`` view,
-        but archivey-owned reader state still MUST NOT hold per-open scratch.
+        but archivey-owned reader state still MUST NOT hold unsynchronized per-open scratch.
 
-        **Out of scope.** Forward-only / streaming passes (``streaming=True``) and
-        single-shared-decoder backends (the random-access TAR reader / TAR-RA) are exempt
-        from this invariant — they MAY require one member stream at a time.
-
-        **Materialize-before-fan-out.** A future concurrent consumer MUST finish a
-        random-access member pass (materialize ``_members_cache``) before opening members
-        concurrently; the one-time cache build is not itself concurrency-safe. See
-        ``docs/parallel-reader.md``.
+        Concurrent ``open`` after materialization is supported when the reader was opened
+        with ``MemberStreams.CONCURRENT``. Forward-only / streaming passes remain
+        single-owner. See ``docs/parallel-reader.md``.
         """
         ...
 
@@ -360,13 +418,16 @@ class BaseArchiveReader(ArchiveReader):
         ``_open_member`` so a decode error surfaces as a stamped ``ArchiveyError`` rather
         than a raw codec exception, and so the handle advertises its decompressed length
         (the fsspec-style ``size``) for cheap nested-archive source sizing.
+
+        Seekability is gated by ``MemberStreams.SEEKABLE``: without it the wrapper reports
+        non-seekable even when ``inner`` could seek.
         """
         return ArchiveStream(
             lambda: inner,
             translate=self._translate_exception,
             stamp=lambda exc: self._stamp_error_context(exc, member_name),
             lazy=lazy,
-            seekable=is_seekable(inner),
+            seekable=self._seek_declared() and is_seekable(inner),
             size=size,
             collector=self._diagnostics_collector,
         )
@@ -382,20 +443,29 @@ class BaseArchiveReader(ArchiveReader):
         if self._members_cache is not None:
             return self._members_cache
 
-        members = list(self._iter_members())
-        by_name_lists: dict[str, list[ArchiveMember]] = {}
-        for idx, member in enumerate(members):
-            self._register_member(idx, member)
-            self._index_member_name(by_name_lists, member)
-        for member in members:
-            if member.is_link:
-                self._ensure_link_target(member)
-        for member in members:
-            if member.is_link and member.link_target:
-                self._resolve_link(member, by_name_lists)
+        self._state.begin_materialization()
+        try:
+            members = list(self._iter_members())
+            by_name_lists: dict[str, list[ArchiveMember]] = {}
+            for idx, member in enumerate(members):
+                self._register_member(idx, member)
+                self._index_member_name(by_name_lists, member)
+            # Link-data reads are library-internal (may open members).
+            with self._internal_member_opens():
+                for member in members:
+                    if member.is_link:
+                        self._ensure_link_target(member)
+                for member in members:
+                    if member.is_link and member.link_target:
+                        self._resolve_link(member, by_name_lists)
 
-        self._members_cache = members
-        self._members_by_name_lists = by_name_lists
+            # Publish an immutable snapshot (tuple + frozen name map copy).
+            self._members_cache = members
+            self._members_by_name_lists = by_name_lists
+            self._state.complete_materialization()
+        except Exception:
+            self._state.fail_materialization()
+            raise
         return members
 
     def _get_members_index_only(self) -> list[ArchiveMember]:
@@ -620,6 +690,7 @@ class BaseArchiveReader(ArchiveReader):
         happens to have an index loaded (use :meth:`scan_members` or
         :meth:`get_members_if_available` for member listing instead).
         """
+        self._state.require_open(op)
         if self._streaming:
             raise UnsupportedOperationError(
                 f"{op} is not available on a streaming (forward-only) reader. "
@@ -629,19 +700,23 @@ class BaseArchiveReader(ArchiveReader):
 
     @property
     def format(self) -> ArchiveFormat:
+        self._state.require_open("format")
         return self._format
 
     @property
     def info(self) -> ArchiveInfo:
+        self._state.require_open("info")
         return self._get_archive_info()
 
     @property
     def cost(self) -> CostReceipt:
+        self._state.require_open("cost")
         return self._get_archive_info().cost
 
     @property
     def diagnostics(self) -> DiagnosticSummary:
         """Fresh immutable cumulative snapshot of diagnostics for this reader."""
+        self._state.require_open("diagnostics")
         return self._diagnostics_collector.snapshot()
 
     @property
@@ -659,6 +734,7 @@ class BaseArchiveReader(ArchiveReader):
         ``self._source``; readers without one (directory) or with an unknowable
         source report ``None``.
         """
+        self._state.require_open("compressed_source_size")
         return source_byte_size(self._source) if self._source is not None else None
 
     @property
@@ -674,6 +750,7 @@ class BaseArchiveReader(ArchiveReader):
         ``CountingReader`` and records it here; readers with a knowable source size (a path,
         a sizable stream) leave it ``None`` and rely on the cheaper static ratio instead.
         """
+        self._state.require_open("compressed_bytes_consumed")
         c = self._compressed_input_counter
         return c.bytes_read if c is not None else None
 
@@ -698,6 +775,7 @@ class BaseArchiveReader(ArchiveReader):
         return source
 
     def __iter__(self) -> Iterator[ArchiveMember]:
+        self._state.require_open("__iter__")
         if self._streaming:
             self._enter_forward_pass("__iter__")
             yield from self._begin_forward_pass()
@@ -706,20 +784,22 @@ class BaseArchiveReader(ArchiveReader):
 
     def members(self) -> list[ArchiveMember]:
         self._require_random_access("members()")
+        # Return a shallow copy so callers cannot mutate the published cache container.
         return list(self._get_members_registered())
 
     def scan_members(self) -> list[ArchiveMember]:
+        self._state.require_open("scan_members()")
         if not self._streaming:
             return list(self._get_members_registered())
         if self._members_cache is not None:
-            return self._members_cache
+            return list(self._members_cache)
         if not self._forward_pass_started:
             self._forward_pass_started = True
         gen = self._begin_forward_pass()
         for _ in gen:
             pass
         assert self._members_cache is not None
-        return self._members_cache
+        return list(self._members_cache)
 
     def get_members_if_available(self) -> list[ArchiveMember] | None:
         """Return the full member list if it is available **without scanning**, else
@@ -731,10 +811,11 @@ class BaseArchiveReader(ArchiveReader):
         Link targets stored in member data (e.g. ZIP symlinks) may be unset; use
         :meth:`members` or :meth:`scan_members` for a fully-resolved list.
         """
+        self._state.require_open("get_members_if_available()")
         if self._members_cache is not None:
-            return self._members_cache
+            return list(self._members_cache)
         if self._MEMBER_LIST_UPFRONT:
-            return self._get_members_index_only()
+            return list(self._get_members_index_only())
         return None
 
     def __contains__(self, member: object) -> bool:
@@ -759,7 +840,12 @@ class BaseArchiveReader(ArchiveReader):
         return found if found is not None else default
 
     def open(self, member: str | ArchiveMember) -> ArchiveStream:
-        """Open member for reading. Follows symlinks."""
+        """Open member for reading. Follows symlinks.
+
+        Without ``MemberStreams.CONCURRENT``, at most one member stream may be live.
+        With it, concurrent ``open`` is supported after member materialization.
+        Positioning requires ``MemberStreams.SEEKABLE``.
+        """
         # Two independent gates: the access mode (streaming=True forbids random access)
         # and the backend capability (_SUPPORTS_RANDOM_ACCESS, used by the Phase-3
         # open-time fail-fast for non-seekable sources).
@@ -782,12 +868,13 @@ class BaseArchiveReader(ArchiveReader):
             # data (e.g. the directory backend would read whatever sits at the same
             # relative path under this reader's root).
             if member._archive_id != self._archive_id:
-                raise ValueError(
+                raise ArchiveyUsageError(
                     f"Member {member.name!r} does not belong to this reader; open a "
                     f"member yielded by this reader, or look it up by name with "
                     f"reader.get(name)."
                 )
-        return self._open_with_link_follow(member, visited=set())
+        stream = self._open_with_link_follow(member, visited=set())
+        return self._register_public_stream(stream)
 
     def _open_with_link_follow(
         self,
@@ -839,15 +926,31 @@ class BaseArchiveReader(ArchiveReader):
         self,
         members: MemberSelector = None,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
-        """Yield (member, stream) pairs. members is a selector filter (no transform)."""
-        selector = normalize_member_selector(members)
-        if self._streaming:
-            self._enter_forward_pass("stream_members()")
-        for m, stream in self._iter_with_data():
-            if selector is None or selector(m):
-                yield m, stream
-            elif stream is not None:
-                stream.close()
+        """Yield (member, stream) pairs. members is a selector filter (no transform).
+
+        The yielded stream is owned by the iterator: advancing closes/invalidates the
+        previous stream before the next pair is produced.
+        """
+        self._state.require_open("stream_members()")
+        token = self._state.acquire_pass("stream_members")
+        current: ArchiveStream | None = None
+        try:
+            selector = normalize_member_selector(members)
+            if self._streaming:
+                self._enter_forward_pass("stream_members()")
+            for m, stream in self._iter_with_data():
+                if current is not None:
+                    current.close()
+                    current = None
+                if selector is None or selector(m):
+                    current = stream
+                    yield m, stream
+                elif stream is not None:
+                    stream.close()
+        finally:
+            if current is not None:
+                current.close()
+            self._state.release_pass(token)
 
     def extract_all(
         self,
@@ -863,6 +966,7 @@ class BaseArchiveReader(ArchiveReader):
         limits: ExtractionLimits | None = None,
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
+        self._state.require_open("extract_all()")
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.
@@ -890,18 +994,27 @@ class BaseArchiveReader(ArchiveReader):
             filter=filter,
             limits=effective_limits,
         )
-        results = coordinator.run(self, dest)
+        token = self._state.acquire_pass("extract_all")
+        try:
+            # Library-internal member opens (including hardlink recovery) are ungated.
+            with self._internal_member_opens():
+                results = coordinator.run(self, dest)
+        finally:
+            self._state.release_pass(token)
         return ExtractionReport(
             results=tuple(results),
             diagnostics=collector.snapshot(since=wm),
         )
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._close_archive()
+        if self._closed:
+            return
+        self._closed = True
+        if self._state.mark_reader_closed():
+            self._maybe_teardown()
 
     def __enter__(self) -> "BaseArchiveReader":
+        self._state.require_open("__enter__")
         return self
 
     def __exit__(self, *args: object) -> None:

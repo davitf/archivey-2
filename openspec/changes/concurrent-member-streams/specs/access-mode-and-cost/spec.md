@@ -19,8 +19,10 @@ has no `ArchiveyConfig` equivalent:
 - **`streaming=True` (forward-only):** random `open()`/`read()` remain unavailable. The
   existing single progressive pass is exclusive and cannot overlap another pass,
   materialization, extraction invocation, or reader close. `MemberStreams.CONCURRENT`
-  grants nothing here (one progressive decoder exists); declaring it is not an error,
-  merely inert for the pass.
+  is incompatible with this mode (one progressive decoder exists and cannot fan out):
+  `open_archive(streaming=True, member_streams=…CONCURRENT…)` SHALL raise
+  `ArchiveyUsageError` at open time. `MemberStreams.SEEKABLE` alone MAY be declared
+  with `streaming=True` (it governs yielded-stream positioning where applicable).
 
 Random-access `stream_members()` is also an exclusive one-pass/data-path operation even
 though random `open()` is otherwise available. A caller needing simultaneous streams
@@ -35,6 +37,12 @@ Where the reader detects unsupported overlap, the later operation SHALL raise
 `ArchiveyUsageError` before changing state and leave the active operation/stream
 usable. Reader operations after `reader.close()` likewise raise
 `ArchiveyUsageError`, except that repeated `close()` remains idempotent.
+
+#### Scenario: streaming plus CONCURRENT is rejected at open
+
+- **WHEN** `open_archive(..., streaming=True, member_streams=MemberStreams.CONCURRENT)`
+  is called (alone or combined with `SEEKABLE`)
+- **THEN** `ArchiveyUsageError` is raised and no reader is returned
 
 #### Scenario: declared concurrency works after materialization
 

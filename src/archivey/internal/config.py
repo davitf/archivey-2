@@ -24,26 +24,32 @@ __all__ = [
 class StreamConfig:
     """Options that influence how compressed streams are opened.
 
-    ``streaming`` mirrors the archive's access mode (``open_archive(streaming=...)``) so
-    the accelerator modes can resolve ``AUTO`` against it.
+    ``seekable`` is declared seek demand (``MemberStreams.SEEKABLE``): accelerator
+    ``AUTO`` resolution and index construction key off it. ``streaming`` remains the
+    archive access mode for backends that still need to know forward-only vs random.
     """
 
     streaming: bool = False
+    seekable: bool = False
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
 
 
 def stream_config_from_archivey(
-    config: ArchiveyConfig, *, streaming: bool
+    config: ArchiveyConfig,
+    *,
+    streaming: bool,
+    seekable: bool = False,
 ) -> StreamConfig:
-    """Derive the codec-layer view from the public config and access mode."""
+    """Derive the codec-layer view from the public config and declared seek demand."""
     return StreamConfig(
         streaming=streaming,
+        seekable=seekable,
         use_rapidgzip=config.use_rapidgzip,
         use_indexed_bzip2=config.use_indexed_bzip2,
     )
 
 
 DEFAULT_STREAM_CONFIG = stream_config_from_archivey(
-    DEFAULT_ARCHIVEY_CONFIG, streaming=False
+    DEFAULT_ARCHIVEY_CONFIG, streaming=False, seekable=False
 )

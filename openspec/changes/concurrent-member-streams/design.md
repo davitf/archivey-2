@@ -95,10 +95,11 @@ owner (if stream A was opened without the flag and B with it, the error would bl
 whichever call happened to come second, and library-internal opens would need flags of
 their own).
 
-**Debugging breadcrumb.** `open_archive()` always records its caller's `file:line` (one
-frame walk, microseconds; skipping archivey frames). `ConcurrentAccessError` includes it:
-`"…this archive was opened without MemberStreams.CONCURRENT at app.py:42"`. Retaining
-the full stack is available behind a config/debug switch, not paid unconditionally.
+**Debugging breadcrumb.** `open_archive()` always records its caller's stack (one
+capture at open). `ConcurrentAccessError` includes the caller's `file:line`:
+`"…this archive was opened without MemberStreams.CONCURRENT at app.py:42"`. The full
+captured stack is retained on the reader for diagnostics; there is no separate
+config/debug knob — open-time capture is cheap enough to keep unconditionally.
 
 **`open_stream()` (compressed-streams) matches.** The single-stream entry point takes
 `seekable: bool = False` (concurrency is meaningless for one stream; a boolean, not the
@@ -332,7 +333,6 @@ Not a user compatibility migration (pre-1.0). During implementation:
 
 ## Open Questions
 
-- Whether any *additional* existing errors should migrate into `ArchiveyUsageError`
-  (audit item during implementation; the delta lists the initial set).
-- Exact `MemberStreams` spelling (`enum.Flag` member names) is settled here as
-  `CONCURRENT` / `SEEKABLE`; bikeshed at implementation only if a collision emerges.
+_(none remaining — wrong-reader identity and related misuse migrate to
+`ArchiveyUsageError`; `MemberStreams` spelling is `CONCURRENT` / `SEEKABLE`; full
+open-site stack is retained unconditionally.)_

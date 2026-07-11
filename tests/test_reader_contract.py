@@ -19,6 +19,7 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.types import (
     ArchiveFormat,
@@ -178,7 +179,7 @@ def test_open_rejects_member_from_another_reader() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
     other = _IndexedReader(ArchiveFormat.ZIP, False, "y.zip")
     foreign = other.members()[0]
-    with pytest.raises(ValueError, match="does not belong to this reader"):
+    with pytest.raises(ArchiveyUsageError, match="does not belong to this reader"):
         reader.open(foreign)
     # The same name opens fine when looked up on the right reader.
     assert reader.read("a.txt") == b"x"

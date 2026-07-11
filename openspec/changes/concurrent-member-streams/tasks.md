@@ -1,44 +1,43 @@
 ## 1. Public contract: declared capabilities, gate, and usage errors
 
-- [ ] 1.1 Add the `MemberStreams` flags enum (`CONCURRENT`, `SEEKABLE`) and the
+- [x] 1.1 Add the `MemberStreams` flags enum (`CONCURRENT`, `SEEKABLE`) and the
       `member_streams` parameter to `open_archive()`; no `ArchiveyConfig` equivalent, no
       per-`open()` argument
-- [ ] 1.2 Implement the default single-live-stream gate uniformly on every format
+- [x] 1.2 Implement the default single-live-stream gate uniformly on every format
       (directory included): a second overlapping public `open()` raises
       `ConcurrentAccessError`; the first stream stays untouched; the ordinary
       open→read→close loop never triggers it; library-internal opens (extraction,
       hardlink recovery, symlink targets, password confirmation) are exempt
-- [ ] 1.3 Record the `open_archive()` caller's `file:line` cheaply (skip archivey
-      frames) and include it in `ConcurrentAccessError`; add a config/debug switch for
-      full-stack retention
-- [ ] 1.4 Add the `ArchiveyUsageError` hierarchy outside `ArchiveyError` with
+- [x] 1.3 Record the `open_archive()` caller's stack (skip archivey frames for the
+      `file:line` breadcrumb) and include it in `ConcurrentAccessError`; retain the full
+      captured stack on the reader unconditionally (no config/debug knob)
+- [x] 1.4 Add the `ArchiveyUsageError` hierarchy outside `ArchiveyError` with
       `ConcurrentAccessError` as its first subclass; route detected misuse (single-owner
-      overlap, post-close reader use, provider reentry, early-closed caller source) to
-      it; keep `UnsupportedOperationError`/`UnsupportedFeatureError` as `ArchiveyError`s
-      for archive/mode/feature limitations; audit for other errors that should migrate
-- [ ] 1.5 Implement default non-seekable member streams (`seekable() is False`,
+      overlap, post-close reader use, provider reentry, early-closed caller source,
+      wrong-reader member identity) to it; keep `UnsupportedOperationError`/
+      `UnsupportedFeatureError` as `ArchiveyError`s for archive/mode/feature limitations
+- [x] 1.5 Implement default non-seekable member streams (`seekable() is False`,
       `io.UnsupportedOperation` on `seek()`, working `tell()`) for random `open()` and
       `stream_members()` yields on every format; `MemberStreams.SEEKABLE` restores
       backend-provided positioning
-- [ ] 1.6 Add `seekable: bool = False` to the single-stream API and key the
-      `use_rapidgzip`/`use_indexed_bzip2` `AUTO` resolution and native XZ/lzip index
-      parsing on declared seek demand; undeclared streams build no index, accelerator,
-      or rewind machinery
-- [ ] 1.7 Apply the spec deltas (`archive-reading`, `access-mode-and-cost`,
-      `error-handling`, `compressed-streams`, `seekable-decompressor-streams`,
-      `format-directory`, `packaging-and-extras`, `testing-contract`); confirm neither
-      `allow_multiple_open_streams` nor the unconditional no-flag contract survives in
-      any spec or doc
+- [x] 1.6 Key the `use_rapidgzip`/`use_indexed_bzip2` `AUTO` resolution and native XZ/lzip
+      index parsing on declared seek demand (`MemberStreams.SEEKABLE`); undeclared
+      streams build no index, accelerator, or rewind machinery. (`open_stream` /
+      `seekable=` is deferred — not in this change.)
+- [x] 1.7 Reject `streaming=True` combined with `MemberStreams.CONCURRENT` at
+      `open_archive()` with `ArchiveyUsageError`; apply the remaining spec deltas;
+      confirm neither `allow_multiple_open_streams` nor the unconditional no-flag
+      contract survives in any spec or doc
 
 ## 2. Materialization and operation state (machinery under CONCURRENT)
 
-- [ ] 2.1 Add a lifecycle-independent `UNMATERIALIZED` / `MATERIALIZING` / `MATERIALIZED`
+- [x] 2.1 Add a lifecycle-independent `UNMATERIALIZED` / `MATERIALIZING` / `MATERIALIZED`
       cache state (never `CLOSED`) and build member/name structures locally before atomic
       publication
-- [ ] 2.2 Reject a second operation that overlaps materialization with
+- [x] 2.2 Reject a second operation that overlaps materialization with
       `ArchiveyUsageError`; on build/link/publication failure discard private state,
       return to `UNMATERIALIZED`, and preserve ordinary single-thread lazy retry
-- [ ] 2.3 Make the published member/name structures structurally immutable and audit
+- [x] 2.3 Make the published member/name structures structurally immutable and audit
       list-returning APIs to prevent caller mutation of cache containers; retain existing
       late-bound `ArchiveMember` behavior with idempotent per-member synchronization
 - [ ] 2.4 Add unforgeable root operation-owner tokens and explicit private child scopes:
@@ -51,26 +50,26 @@
 - [ ] 2.6 Give random `open()` and each random-stream method a short-lived worker token; keep
       only a lifecycle lease while the stream is idle, and let its private lease-bound entry
       capability admit later I/O after reader close without reopening reader APIs
-- [ ] 2.7 Update `_open_member` and `ArchiveReader.open` docstrings: concurrent `open` is
+- [x] 2.7 Update `_open_member` and `ArchiveReader.open` docstrings: concurrent `open` is
       supported after materialization under `MemberStreams.CONCURRENT`; synchronized
       bookkeeping is allowed; per-open scratch that can be overwritten is forbidden
-- [ ] 2.8 Ensure the undeclared default path takes no shared-handle locks and no lease
+- [x] 2.8 Ensure the undeclared default path takes no shared-handle locks and no lease
       accounting beyond its single stream; the machinery activates with the declared
       capability
 
 ## 3. Stream lifecycle
 
-- [ ] 3.1 Add lifecycle state `OPEN` / `READER_CLOSED` / `TEARDOWN_RUNNING` /
+- [x] 3.1 Add lifecycle state `OPEN` / `READER_CLOSED` / `TEARDOWN_RUNNING` /
       `TEARDOWN_COMPLETE`, independent of cache state, with guarded leases and one-shot
       teardown claim (leases apply to default readers too — one escaped stream can
       outlive its reader)
-- [ ] 3.2 Reserve a backend-resource lease before eager/lazy `_open_member`; transfer it to
+- [x] 3.2 Reserve a backend-resource lease before eager/lazy `_open_member`; transfer it to
       `ArchiveStream`; release exactly once on never-opened lazy close, initialization failure,
       ordinary close, or finalization
 - [ ] 3.3 Refactor `ArchiveStream` lazy initialization from the current stream-lock →
       `open_fn` behavior to `UNOPENED` / `OPENING` / `OPEN` / `FAILED` / `CLOSED`
       claim/call/publish: invoke `open_fn` and inner close with no stream-state lock held
-- [ ] 3.4 Make idempotent `reader.close()` mark `READER_CLOSED`, release its lease, and defer
+- [x] 3.4 Make idempotent `reader.close()` mark `READER_CLOSED`, release its lease, and defer
       teardown; reject every later reader operation/property except repeated `close()` /
       `__exit__` with `ArchiveyUsageError`, while escaped streams use pre-captured context
       and remain capability-correct
@@ -105,14 +104,14 @@
 
 ## 5. Backend compliance
 
-- [ ] 5.1 Audit directory, ZIP, single-file, and SharedSource paths for declared concurrent
+- [x] 5.1 Audit directory, ZIP, single-file, and SharedSource paths for declared concurrent
       `open` and independent stream read/readinto/close plus capability-conditional seek/tell
       after materialization; unsupported positioning remains normal `io.UnsupportedOperation`
 - [ ] 5.2 Audit native 7z/RAR designs for independent logical position/state, allowing either
       per-open decoders or synchronized bounded/spooled shared decoding; make no guarantee
       against redundant decompression, keep no unsynchronized per-open reader scratch, and
       synchronize password/key caches
-- [ ] 5.3 Land `tar-concurrent-open` with one per-reader lock around every shared-handle
+- [x] 5.3 Land `tar-concurrent-open` with one per-reader lock around every shared-handle
       operation, instantiated only for `CONCURRENT` readers, including archive
       initialization/failure cleanup, TAR `getmembers()` and direct EOF reads, member
       open/context entry, read/readinto, supported seek/tell, member close, and archive close
@@ -122,7 +121,7 @@
       add a version-regression probe and lock any path that gains handle access
 - [ ] 5.5 Confirm lock wrappers sit below buffering/error wrappers; callbacks/diagnostics stay
       outside, while unavoidable library/source decode may execute in the handle critical section
-- [ ] 5.6 Keep streaming-mode `_iter_with_data` single-owner and outside concurrent-open
+- [x] 5.6 Keep streaming-mode `_iter_with_data` single-owner and outside concurrent-open
       support; advancing `stream_members()` closes/invalidates its prior yielded stream
 
 ## 6. Authoritative docs and project declarations
@@ -151,12 +150,12 @@
 
 ## 7. Tests, CI, and measurements
 
-- [ ] 7.1 Gate tests: the capability matrix of the `testing-contract` delta — uniform
+- [x] 7.1 Gate tests: the capability matrix of the `testing-contract` delta — uniform
       `ConcurrentAccessError` (with open-site breadcrumb) across every format including
       directory; sequential loop unaffected; default non-seekability everywhere;
       `SEEKABLE` restores positioning; extraction ungated; usage errors escape
       `except ArchiveyError`; demand-driven accelerator activation
-- [ ] 7.2 Worker tests (declared `CONCURRENT`): after `members()`, concurrent `open` by member
+- [x] 7.2 Worker tests (declared `CONCURRENT`): after `members()`, concurrent `open` by member
       and name plus independent stream operations return exact bytes/positions; non-seekable
       streams raise normal `io.UnsupportedOperation` for unsupported positioning
 - [ ] 7.3 State tests: overlapping materialization/pass/extraction/reader-close raises

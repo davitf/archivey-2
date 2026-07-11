@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import stat
 import tarfile
+import threading
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -49,6 +50,7 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
 )
 from archivey.internal.streams.streamtools import (
+    LockedStream,
     ensure_binaryio,
     ensure_bufferedio,
     is_seekable,
@@ -162,11 +164,21 @@ class TarReader(BaseArchiveReader):
         # A decompression stream we open and therefore must close (compressed tars only);
         # for a plain tar from a path, tarfile owns and closes the file handle itself.
         self._owned_stream: BinaryIO | None = None
+        # Shared-handle lock: only for CONCURRENT readers (default path takes none).
+        self._handle_lock: threading.Lock | None = (
+            threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
+        )
 
         try:
-            self._tar = self._open_tarfile(
-                source, format, streaming, member_streams=member_streams
-            )
+            if self._handle_lock is not None:
+                with self._handle_lock:
+                    self._tar = self._open_tarfile(
+                        source, format, streaming, member_streams=member_streams
+                    )
+            else:
+                self._tar = self._open_tarfile(
+                    source, format, streaming, member_streams=member_streams
+                )
         except tarfile.TarError as exc:
             # Only tarfile's own (format) errors are translated; a genuine OSError from the
             # underlying handle propagates unchanged (see error-handling: "Genuine runtime
@@ -253,7 +265,11 @@ class TarReader(BaseArchiveReader):
             yield from self._iter_members_progressive()
             return
         try:
-            members = self._tar.getmembers()  # forces the full header scan
+            if self._handle_lock is not None:
+                with self._handle_lock:
+                    members = self._tar.getmembers()  # forces the full header scan
+            else:
+                members = self._tar.getmembers()  # forces the full header scan
         except tarfile.TarError as exc:
             # A genuine OSError from the source is not caught here, so it propagates unchanged.
             translated = self._translate_exception(exc)
@@ -457,7 +473,11 @@ class TarReader(BaseArchiveReader):
         info = member._raw
         assert isinstance(info, tarfile.TarInfo), "TAR member is missing its TarInfo handle"
         try:
-            raw = self._tar.extractfile(info)
+            if self._handle_lock is not None:
+                with self._handle_lock:
+                    raw = self._tar.extractfile(info)
+            else:
+                raw = self._tar.extractfile(info)
         except tarfile.TarError as exc:
             # A genuine OSError from the source is not caught here, so it propagates unchanged.
             translated = self._translate_exception(exc)
@@ -469,7 +489,10 @@ class TarReader(BaseArchiveReader):
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.
             raw = BytesIO(b"")
-        return self._wrap_member_stream(ensure_binaryio(raw), member.name, size=member.size)
+        stream: BinaryIO = ensure_binaryio(raw)
+        if self._handle_lock is not None:
+            stream = LockedStream(stream, self._handle_lock)
+        return self._wrap_member_stream(stream, member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         stream_cap = self._source_stream_capability()
@@ -499,6 +522,13 @@ class TarReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
+        if self._handle_lock is not None:
+            with self._handle_lock:
+                self._tar.close()
+                if self._owned_stream is not None:
+                    self._owned_stream.close()
+                    self._owned_stream = None
+            return
         self._tar.close()
         # tarfile never closes an external fileobj, so close the decompression stream we
         # opened ourselves (which in turn closes a path source it owns). A plain-tar path is

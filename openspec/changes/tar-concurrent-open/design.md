@@ -85,10 +85,12 @@ required. It MUST NOT use reentrancy to permit archivey callbacks under the lock
 Archivey-owned byte-range backends still use SharedSource views. Library-owned
 seek-before-read backends (TAR, ISO) use this lock wrapper. ZIP already has `_SharedFile`.
 
-### D5. Apply coordination whenever RA member streams are handed out
+### D5. Instantiate the lock only for `CONCURRENT` readers
 
-**Choice:** Always coordinate TAR-RA / ISO member data streams. There is no flag and no
-unlocked random-access path; correctness cannot vary by caller argument.
+**Choice:** The per-reader shared-handle lock and locked member-stream wrapper are
+created only when `MemberStreams.CONCURRENT` is declared. The default single-live-stream
+path takes no shared-handle lock — one owner cannot race itself on the library handle.
+`MemberStreams.SEEKABLE` alone does not instantiate the lock.
 
 ### D6. Streaming TAR
 

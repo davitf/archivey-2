@@ -56,6 +56,8 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import (
     ArchiveyError,
+    ArchiveyUsageError,
+    ConcurrentAccessError,
     CorruptionError,
     DiagnosticRaisedError,
     EncryptionError,
@@ -95,6 +97,7 @@ from archivey.types import (
     CompressionMethod,
     ContainerFormat,
     CreateSystem,
+    MemberStreams,
     MemberType,
     StreamFormat,
 )
@@ -135,6 +138,7 @@ __all__ = [
     "ArchiveMember",
     "ArchiveInfo",
     "MemberType",
+    "MemberStreams",
     "CompressionAlgorithm",
     "CompressionMethod",
     "CreateSystem",
@@ -161,6 +165,8 @@ __all__ = [
     "StreamRewindContext",
     "SymlinkTargetContext",
     "ArchiveyError",
+    "ArchiveyUsageError",
+    "ConcurrentAccessError",
     "OpenError",
     "FormatDetectionError",
     "UnsupportedFormatError",

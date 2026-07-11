@@ -286,12 +286,12 @@ def test_bzip2_accelerator_on_without_package_raises() -> None:
 
 
 def test_accelerator_mode_auto_resolution() -> None:
-    """AUTO enables only for random access (streaming=False) and only when available."""
-    assert AcceleratorMode.AUTO.enabled_for(streaming=False, available=True) is True
-    assert not AcceleratorMode.AUTO.enabled_for(streaming=True, available=True)
-    assert not AcceleratorMode.AUTO.enabled_for(streaming=False, available=False)
-    assert AcceleratorMode.ON.enabled_for(streaming=True, available=True)
-    assert not AcceleratorMode.OFF.enabled_for(streaming=False, available=True)
+    """AUTO enables only when seekability is declared and the package is available."""
+    assert AcceleratorMode.AUTO.enabled_for(seekable=True, available=True) is True
+    assert not AcceleratorMode.AUTO.enabled_for(seekable=False, available=True)
+    assert not AcceleratorMode.AUTO.enabled_for(seekable=True, available=False)
+    assert AcceleratorMode.ON.enabled_for(seekable=False, available=True)
+    assert not AcceleratorMode.OFF.enabled_for(seekable=True, available=True)
     # ON resolves to "use it" even when absent; the opener turns that into a clear
     # PackageNotInstalledError (asserted in the gzip/bzip2 ON-without-package tests).
-    assert AcceleratorMode.ON.enabled_for(streaming=False, available=False)
+    assert AcceleratorMode.ON.enabled_for(seekable=True, available=False)

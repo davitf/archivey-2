@@ -61,8 +61,8 @@ operations.
   Opening a second member stream while one is still open raises `ConcurrentAccessError`
   — uniformly on every format, directory included. `open_archive()` records its caller's
   `file:line` cheaply and the error message includes it ("this archive was opened without
-  MemberStreams.CONCURRENT at app.py:42"); a config/debug switch may retain the full
-  stack.
+  MemberStreams.CONCURRENT at app.py:42"); the full open-site stack is retained on the
+  reader unconditionally (no config knob).
 - **Uniform strictness is documented as a principle:** the directory reader is never more
   lenient than archive readers — it exists to make archive-vs-directory code uniform, to
   exercise the API, and to serve future dir↔archive piping (`format-directory` delta).
@@ -70,9 +70,10 @@ operations.
   (root, not an `ArchiveyError`) with `ConcurrentAccessError` as its first subclass.
   `except ArchiveyError` means "the archive or environment did something"; caller misuse
   — undeclared capability, operations on a closed reader, detected single-owner overlap,
-  provider reentry — indicates a bug in the calling code and must not be swallowed by
-  blanket archive-error handlers. `UnsupportedOperationError` remains an `ArchiveyError`
-  for archive/mode/feature limitations.
+  provider reentry, wrong-reader member identity, early-closed caller source — indicates a
+  bug in the calling code and must not be swallowed by blanket archive-error handlers.
+  `UnsupportedOperationError` remains an `ArchiveyError` for archive/mode/feature
+  limitations.
 - **`open_stream()` (compressed-streams) follows the same rule:** non-seekable by
   default, with a `seekable: bool = False` parameter. One story everywhere: no archivey
   stream is seekable unless asked.
