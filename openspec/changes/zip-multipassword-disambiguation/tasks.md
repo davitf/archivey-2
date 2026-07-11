@@ -75,7 +75,7 @@ tools through `uv` (`uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
 
 ## 5. Verification
 
-- [ ] 5.1 Run focused tests, full tests in all three dependency configurations, Ruff,
+- [x] 5.1 Run focused tests, full tests in all three dependency configurations, Ruff,
       Pyrefly, ty, and strict OpenSpec validation.
 
 ## 6. Deferred changes (not part of this implementation)
