@@ -40,23 +40,29 @@ The system SHALL expose the following cost and capability properties for every o
 
 ### Requirement: Scan errors are loud, races are tolerated
 
-The system SHALL propagate a genuine `OSError` (permission denied, I/O failure) raised
-while walking the directory tree — silently dropping entries would present an incomplete
-listing as complete (see the design authority: no silent guesses; and `error-handling`:
-genuine I/O errors are not reclassified or swallowed). The one tolerated case is a
-**race**: an entry (or subdirectory) that vanished between being listed and being
-inspected is skipped with a warning on the `archivey.backends` logger — a live filesystem
-changing under the walk is not an error.
+Genuine directory-walk `OSError`s SHALL continue to propagate unchanged. When a listed
+entry or subdirectory vanishes before inspection, the reader SHALL continue and emit
+`SCAN_ENTRY_VANISHED` or `SCAN_DIRECTORY_VANISHED` with a JSON-safe relative path and path
+kind. These events are reader-operation aggregate data and SHALL not attach to a member
+that does not exist.
 
-#### Scenario: unreadable subdirectory fails the listing
+Under `RAISE`, `DiagnosticRaisedError` SHALL halt the scan. Context SHALL not retain
+`DirEntry`, `Path`, exception, or filesystem handle objects.
 
-- **WHEN** walking the tree hits a subdirectory the process may not read (`PermissionError`)
-- **THEN** the error propagates unchanged (no silently truncated listing)
+#### Scenario: entry deleted mid-walk is collected
 
-#### Scenario: entry deleted mid-walk is skipped with a warning
+- **WHEN** an entry disappears between directory listing and `stat` under default policy
+- **THEN** it is skipped, `SCAN_ENTRY_VANISHED` is counted/retained/logged on the reader, and the walk continues
 
-- **WHEN** an entry disappears between directory listing and its `stat`
-- **THEN** it is skipped, a warning is logged, and the walk continues
+#### Scenario: directory race is escalated by policy
+
+- **WHEN** a subdirectory vanishes and `SCAN_DIRECTORY_VANISHED` resolves to `RAISE`
+- **THEN** `DiagnosticRaisedError` halts the scan
+
+#### Scenario: permission error remains genuine I/O
+
+- **WHEN** walking a subdirectory raises `PermissionError`
+- **THEN** that original error propagates unchanged and no vanished-path diagnostic substitutes for it
 
 ### Requirement: Support use in conversion pipelines
 

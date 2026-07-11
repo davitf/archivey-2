@@ -6,7 +6,7 @@ Safe extraction writes archive members to a destination directory on disk while 
 ## Requirements
 ### Requirement: One-Shot Extraction API
 
-The system SHALL expose a top-level `archivey.extract()` function that opens an archive, applies safety checks, and writes **all** members to a destination directory in a single call. It deliberately has **no** member-selection parameter: selecting a subset requires the member list, which would force the caller to open the archive first and reopen it here — an anti-pattern. Subset extraction is done through `ArchiveReader.extract_all(members=..., filter=...)` on an already-open reader.
+The top-level API SHALL return a first-class report rather than a bare result list:
 
 ```python
 archivey.extract(
@@ -22,124 +22,113 @@ archivey.extract(
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     config: ArchiveyConfig | None = None,
     limits: ExtractionLimits | None = None,
-) -> list[ExtractionResult]
+) -> ExtractionReport
 ```
 
-The function delegates to `open_archive()`, so its `source`, `password`, and `encoding`
-parameters carry exactly the `open_archive()` semantics (see `archive-reading`): `source`
-MAY be an ordered sequence forming a multi-volume archive, `password` accepts the
-candidate/provider model, and `encoding` overrides member-name decoding for formats that
-record none. The four loose bomb-limit keywords of the Phase 4b signature
-(`max_extracted_bytes`, `max_ratio`, `ratio_activation_threshold`, `max_entries`) are
-**removed**; the limits travel in `config.extraction_limits` or the per-call `limits`
-override (see the configuration requirement below).
+The one-shot call SHALL use exactly one collector and one retention budget for the whole
+call. Because the temporary reader is opened fresh, its collector — created before format
+detection and owning detection, backend open, read, and extraction — already covers every
+phase; the one-shot report SHALL take its diagnostic summary from that reader's cumulative
+snapshot. No phase creates a second collector, seeds/copies retained occurrences, or resets
+the budget. The final report summary SHALL therefore include all events caused by the call
+exactly once.
 
-The default policy is `ExtractionPolicy.STRICT` and the default overwrite behaviour is `OverwritePolicy.ERROR`.
+`results` SHALL be an immutable tuple. If an always-stop condition or `OnError.STOP`
+raises, no report is returned.
+The function still extracts all members and deliberately has no `members=` selector;
+subset extraction uses `ArchiveReader.extract_all()` on an already-open reader.
+`source`, `password`, `encoding`, config/limits precedence, default STRICT policy,
+default ERROR overwrite behavior, and automatic streaming mode for a non-seekable source
+retain their existing contracts.
 
-**Access mode is chosen automatically.** A non-seekable stream source (a pipe, a socket)
-is opened in streaming mode: extraction is a single forward pass, so it needs no random
-access, and failing fast would reject a source the one-shot function can perfectly well
-consume. A seekable source keeps random-access mode, preserving the re-readable second
-pass that recovers a hardlink whose target failed or preceded it in archive order.
+#### Scenario: successful one-shot extraction returns one report
+
+- **WHEN** `archivey.extract(source, dest)` completes
+- **THEN** it returns `ExtractionReport(results=(...), diagnostics=...)`, including any detection and extraction diagnostics caused by the call
+
+#### Scenario: one-shot phases share one collector
+
+- **WHEN** detection emits one retained conflict and extraction later emits one retained failure
+- **THEN** the report uses one occurrence order and budget from before detection, with neither event copied or re-retained at a phase handoff
 
 #### Scenario: one-shot extraction from a non-seekable pipe
 
-- **WHEN** `archivey.extract(pipe, "/dest/")` is called with a non-seekable stream carrying e.g. a `.tar.gz`
-- **THEN** the archive is opened in streaming mode automatically and all members are extracted, identical to `open_archive(pipe, streaming=True)` + `extract_all(dest)`
-
-#### Scenario: extract all members from an untrusted archive
-
-- **WHEN** `archivey.extract("untrusted.zip", "/safe/output/")` is called with no other arguments
-- **THEN** all members are extracted to `/safe/output/` under `ExtractionPolicy.STRICT` and `OverwritePolicy.ERROR`
-- **AND** a `list[ExtractionResult]` describing each member's outcome is returned
+- **WHEN** `archivey.extract(pipe, dest)` receives a non-seekable supported source
+- **THEN** it opens in streaming mode automatically and extracts in one forward pass
 
 #### Scenario: subset extraction goes through an open reader
 
 - **WHEN** a caller wants only some members
-- **THEN** they open the archive and call `reader.extract_all(dest, members=...)` rather than passing members to the top-level function (which would require reopening)
+- **THEN** they open the archive and call `reader.extract_all(dest, members=...)`; the top-level function has no selection parameter
 
 #### Scenario: one-shot extraction of a non-UTF-8-named archive
 
 - **WHEN** `archivey.extract(src, dest, encoding="cp932")` is called on a TAR whose member names are CP932-encoded
 - **THEN** the members land on disk under their correctly decoded names, identical to `open_archive(src, encoding="cp932")` + `extract_all(dest)`
 
----
-
 ### Requirement: Per-Reader Extract-All Helper
 
-The system SHALL provide a single `extract_all()` instance method on `ArchiveReader` that delegates to the same extraction internals as `archivey.extract()`. There is **no** single-member `reader.extract()`: extracting one file is expressed as `extract_all(members=[name])`, which is also strictly better for solid archives (selecting a set of files costs one pass, whereas one-at-a-time extraction would re-decompress per file).
+`ArchiveReader.extract_all()` SHALL return:
 
 ```python
-class ArchiveReader:
-    def extract_all(
-        self,
-        dest: str | Path,
-        *,
-        members: MemberSelector | None = None,  # names/members or predicate; None = all
-        filter: MemberFilter | None = None,      # per-member sanitize/rename; None to skip a member
-        policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-        overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-        on_error: OnError = OnError.STOP,
-        on_progress: Callable[[ExtractionProgress], None] | None = None,
-        config: ArchiveyConfig | None = None,    # None = the reader's own config
-        limits: ExtractionLimits | None = None,  # per-call bomb-limit override
-    ) -> list[ExtractionResult]: ...
+def extract_all(
+    dest: str | Path,
+    *,
+    members: MemberSelector | None = None,
+    filter: MemberFilter | None = None,
+    policy: ExtractionPolicy = ExtractionPolicy.STRICT,
+    overwrite: OverwritePolicy = OverwritePolicy.ERROR,
+    on_error: OnError = OnError.STOP,
+    on_progress: Callable[[ExtractionProgress], None] | None = None,
+    config: ArchiveyConfig | None = None,
+    limits: ExtractionLimits | None = None,
+) -> ExtractionReport: ...
 ```
 
-`members` selects which members to extract (a collection of names/`ArchiveMember`s, or a
-`Callable[[ArchiveMember], bool]` predicate); `None` extracts all. In the collection form a
-`str` entry matches **every** member with that name (duplicates included), while an
-`ArchiveMember` entry matches only that exact member, by object identity — so with duplicate
-names the caller can select one specific occurrence (the same semantics the Phase 5
-`MemberSelector` collection form specifies). `filter` runs **after**
-the universal safety checks and the `policy` transform, letting the caller rename or
-further sanitize each member (returning a `.replace()`d copy) or skip it (returning
-`None`). `policy` and `overwrite` carry the same meaning as on the top-level function.
-`config` defaults to the config the reader was opened with; `limits` overrides its
-`extraction_limits` for this call only (see the configuration requirement below).
+The reader records a collector watermark when the call begins. The returned report's
+diagnostic summary SHALL contain exact count/retained deltas for this extraction call only,
+while `reader.diagnostics` remains cumulative and includes earlier and later events.
+An extraction config override changes new-event policy/callback behavior but uses the
+reader's existing collector and retention maximum.
+Selection, filter ordering, one-pass selected extraction, reader-config inheritance, and
+per-call limits precedence retain their existing contracts. There is still no
+single-member `reader.extract()` method.
 
-#### Scenario: extract all via reader
+#### Scenario: extraction report excludes prior reader events
 
-- **WHEN** `reader.extract_all(dest)` is called
-- **THEN** all members are extracted and a `list[ExtractionResult]` is returned, with the same safety guarantees as `archivey.extract()`
+- **WHEN** a reader emits a diagnostic before `extract_all()` and another during extraction
+- **THEN** the report summary includes only the extraction occurrence, while `reader.diagnostics` includes both
 
-#### Scenario: extract a selected subset in one pass
+#### Scenario: selected solid members extract in one pass
 
-- **WHEN** `reader.extract_all(dest, members=["a.txt", "b.txt"])` is called on a solid archive
-- **THEN** only those members are extracted, in a single decompression pass over the archive
+- **WHEN** `reader.extract_all(dest, members=["a", "b"])` runs on a solid archive
+- **THEN** only those members are selected and their data is extracted in one decompression pass
 
 #### Scenario: single-file extraction via selector
 
 - **WHEN** a caller wants just one file
 - **THEN** they call `reader.extract_all(dest, members=[name])`; there is no separate single-member `extract()` method
 
----
-
 ### Requirement: Extraction reads limits and strictness from the configuration object
 
 `archivey.extract()` and `ArchiveReader.extract_all()` SHALL accept
-`config: ArchiveyConfig | None` (see `archive-reading`), whose `extraction_limits`
-field (an `ExtractionLimits` of `max_extracted_bytes`, `max_ratio`,
-`ratio_activation_threshold`, `max_entries` — defaults unchanged from the individual
-requirements) supplies the decompression-bomb limits, **and** a per-call
-`limits: ExtractionLimits | None` override. Precedence: per-call `limits` >
-`config.extraction_limits` > library default. `extract_all()` SHALL default to
-the config the reader was opened with; `archivey.extract()` SHALL default to the
-library default config. Per-call operational parameters (`members`, `filter`,
-`policy`, `overwrite`, `on_error`, `on_progress`, `password`) remain keyword
-arguments and are not part of the config object.
+`config: ArchiveyConfig | None` and `limits: ExtractionLimits | None`. Per-call `limits`
+takes precedence over `config.extraction_limits`, then the reader/library default.
+`ExtractionLimits.UNLIMITED` disables all four guards. Extraction policy/overwrite/error/
+progress/member-selection arguments remain keyword operational arguments outside config.
 
-`ExtractionLimits.UNLIMITED` SHALL be provided as a preset that disables all four
-guards, for archives the caller explicitly trusts. Presets are not named by trust and
-are independent of `ExtractionPolicy`: policy governs metadata/permission semantics,
-limits govern resource bounds, and neither implies the other (the documented
-trusted-archive recipe is the explicit pair `policy=ExtractionPolicy.TRUSTED,
-limits=ExtractionLimits.UNLIMITED`).
+Top-level `extract()` uses the supplied config for its one collector. `extract_all()` uses
+the reader config by default; an explicit config may change new-event diagnostic policy
+and callback but SHALL use the existing collector and its original retention maximum.
 
-The returned `list[ExtractionResult]` is accumulated unconditionally in v1: a
-no-tracking mode would not bound memory on its own (readers cache the member list
-internally), so it is deferred until a no-member-cache reader mode exists (see the
-phase-5 design document).
+Both APIs return `ExtractionReport`, whose result tuple is always accumulated. There is no
+no-tracking mode in this capability. The report diagnostic summary is bounded by the
+collector's shared budget.
+
+#### Scenario: limits override does not split diagnostics
+
+- **WHEN** `extract_all(limits=...)` overrides bomb limits on an existing reader
+- **THEN** the limits apply to that extraction while its report remains a watermark range over the reader's existing diagnostic collector
 
 #### Scenario: limits taken from the config
 
@@ -160,8 +149,6 @@ phase-5 design document).
 
 - **WHEN** a reader opened with a custom `ArchiveyConfig` runs `extract_all(dest)` with no `config` argument
 - **THEN** the reader's config (including its extraction limits) governs the run
-
----
 
 ### Requirement: Non-Bypassable Universal Path-Safety Constraints
 
@@ -652,25 +639,70 @@ of the member; the collection form always is.
 
 ### Requirement: Per-ArchiveMember ExtractionResult with Status
 
-The system SHALL return a `list[ExtractionResult]` from `archivey.extract()` and `ArchiveReader.extract_all()`, with one entry per member processed. Each result SHALL carry the member, the path it was written to (or `None` if not written), and an `ExtractionStatus`.
+`ExtractionReport.results` SHALL contain one `ExtractionResult` for every selected member
+the extraction coordinator processes when the operation completes. This includes a member
+rejected by universal/policy safety checks before the user filter runs. Selector-excluded
+members are outside the operation and SHALL have no result.
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class ExtractionResult:
     member: ArchiveMember
-    path: Path | None            # the written path, or None if not written
+    path: Path | None
     status: ExtractionStatus
-    error: ArchiveyError | OSError | None = None   # the failure, for FAILED/REJECTED under
-                                         # OnError.CONTINUE; an OSError when the failure is a
-                                         # filesystem read/write error on this member
+    error: ArchiveyError | OSError | None = None
 
-class ExtractionStatus(Enum):
+class ExtractionStatus(str, Enum):
     EXTRACTED = "extracted"
-    SKIPPED   = "skipped"       # pre-existing destination, under OverwritePolicy.SKIP
-    REJECTED  = "rejected"      # blocked by a safety filter (universal or policy check)
-    FAILED    = "failed"        # error while extracting (corrupt/truncated/encrypted data,
-                                # ratio bomb, write error) — recorded under OnError.CONTINUE
+    SKIPPED = "skipped"
+    REJECTED = "rejected"
+    FAILED = "failed"
 ```
+
+Statuses SHALL mean:
+
+- `EXTRACTED`: an entry was successfully created; `path` is that path and `error=None`.
+- `SKIPPED`: writing was intentionally bypassed because the user filter returned `None`
+  or `OverwritePolicy.SKIP` found an existing destination; `path=None`, `error=None`.
+- `REJECTED`: a `FilterRejectionError` blocked the member under
+  `OnError.CONTINUE`; `path=None`, `error` is that rejection.
+- `FAILED`: another per-member `ArchiveyError` or permitted filesystem `OSError` failed
+  under `OnError.CONTINUE`; `path=None`, `error` is that failure.
+
+`SKIPPED` is not a failure and SHALL NOT itself emit a diagnostic. A continued rejection
+or failure SHALL emit `EXTRACTION_MEMBER_REJECTED` or
+`EXTRACTION_MEMBER_FAILED`. Those occurrences live only in the extraction/reader
+aggregate. `ExtractionResult` deliberately has no diagnostics field: `status` and `error`
+are the complete per-result outcome, independent of detail-retention budget.
+
+Each continued `REJECTED` or `FAILED` result SHALL produce exactly one occurrence of its
+matching code. Thus exact extraction code counts equal result counts under `IGNORE` or
+`COLLECT`. If one failed hardlink source causes `N` hardlink results to fail under
+`IGNORE` or `COLLECT`, the coordinator SHALL emit `N` ordered
+`EXTRACTION_MEMBER_FAILED` occurrences, one naming each result member. Their contexts
+SHALL share `failure_group_id` and `failure_group_size=N`. Under `RAISE`, the first
+occurrence in result order escalates immediately; no completed report or `N`-occurrence
+guarantee applies.
+
+#### Scenario: user-filter skip is represented
+
+- **WHEN** a selected member's user filter returns `None`
+- **THEN** the report includes that member with `SKIPPED`, `path=None`, `error=None`, and no skip diagnostic
+
+#### Scenario: selector exclusion is not a skip result
+
+- **WHEN** a selector excludes a member before extraction
+- **THEN** that member has no `ExtractionResult` and does not affect report result counts
+
+#### Scenario: rejection and failure are distinct
+
+- **WHEN** one member is blocked by `PathTraversalError` and another encounters a write `OSError`, both under `OnError.CONTINUE`
+- **THEN** their results are respectively `REJECTED` and `FAILED`, with matching errors and diagnostic codes
+
+#### Scenario: group hardlink failure counts results
+
+- **WHEN** one failed source causes three hardlink members to receive `FAILED` results under `OnError.CONTINUE`
+- **THEN** the report count for `EXTRACTION_MEMBER_FAILED` increases by three and the three retained contexts, if budget permits, share one failure-group id and size three
 
 #### Scenario: successfully extracted member
 
@@ -682,67 +714,55 @@ class ExtractionStatus(Enum):
 - **WHEN** a member's destination path already exists and `OverwritePolicy.SKIP` is active
 - **THEN** the member's `ExtractionResult` has `status=ExtractionStatus.SKIPPED` and `path=None`
 
-#### Scenario: rejected member under OnError.CONTINUE
-
-- **WHEN** a member is blocked by a safety filter and `OnError.CONTINUE` is active
-- **THEN** the member's `ExtractionResult` has `status=ExtractionStatus.REJECTED`, `path=None`, and `error` set to the `FilterRejectionError`, and extraction continues
-
-#### Scenario: failed member under OnError.CONTINUE
-
-- **WHEN** a member fails to extract (e.g. `CorruptionError`) and `OnError.CONTINUE` is active
-- **THEN** any partial output for that member is removed, its `ExtractionResult` has `status=ExtractionStatus.FAILED` and `error` set, and extraction proceeds to the next member
-
----
-
 ### Requirement: Error Policy (OnError) for extraction failures
 
-The system SHALL accept an `on_error` parameter on `archivey.extract()` and
-`ArchiveReader.extract_all()` that governs what happens when an individual member cannot
-be extracted — distinct from `OverwritePolicy`, which governs only pre-existing
-destination files.
+`OnError.STOP` and `CONTINUE` SHALL retain their per-member meanings, but diagnostic
+disposition composes as follows:
 
-```python
-class OnError(Enum):
-    STOP     = "stop"      # default: raise the first failure and halt (no further members)
-    CONTINUE = "continue"  # best-effort: record the failure, clean up, proceed to the next member
-```
+- Under `IGNORE` or `COLLECT`, `CONTINUE` records `REJECTED`/`FAILED` and proceeds.
+- Under `RAISE`, emission raises `DiagnosticRaisedError`; this is an always-stop control
+  exception and SHALL NOT be caught, converted to `REJECTED`/`FAILED`, or suppressed by
+  `OnError.CONTINUE`.
+- A diagnostic logging-handler or callback exception likewise propagates unchanged and is
+  always-stop.
+- Existing global resource guards, `KeyboardInterrupt`, `MemoryError`, and unexpected
+  programming exceptions remain always-stop.
 
-A per-member failure is an error raised while processing one member. It is usually an
-`ArchiveyError` — a `FilterRejectionError` (universal/policy safety check), a data error
-(`CorruptionError`/`TruncatedError`/`EncryptionError`), or the per-member ratio
-`ExtractionError` — but it **also includes a plain filesystem `OSError`** raised while
-reading this member's bytes out of the source archive or writing its output file to disk
-(a permission error, a name the OS rejects, an I/O error on the destination, etc.). Those
-filesystem errors are *not* translated into `ArchiveyError`s; they are caught at the
-extraction-coordinator level and recorded (or, under `STOP`, re-raised) as-is — which is
-why `ExtractionResult.error` is typed `ArchiveyError | OSError`.
+Under `OnError.STOP`, the original rejection/failure raises immediately. It SHALL not also
+be converted to an extraction advisory, because the operation did not continue; genuine
+exceptions remain the source of truth for fatal failures.
 
-- **`OnError.STOP` (default):** the first per-member failure is raised immediately;
-  already-extracted members remain on disk, the failing member's partial output is
-  removed, and no further members are processed. This is the safe default for untrusted
-  input — you learn about the problem at once.
-- **`OnError.CONTINUE`:** the failure is caught, the failing member's partial output (if
-  any) is removed (a failed member never leaves a half-written file), an
-  `ExtractionResult` with `status` `REJECTED` (filter) or `FAILED` (other) and `error`
-  set is recorded, a `logging.WARNING` is emitted, and extraction proceeds to the next
-  member. The returned `list[ExtractionResult]` is the report — it carries every member's
-  outcome, including the `REJECTED`/`FAILED` entries; the library does **not** raise an
-  aggregate at the end (the caller inspects `status`/`error`).
+A per-member failure remains a `FilterRejectionError`, another member-scoped
+`ArchiveyError`, or a filesystem `OSError` raised while reading/writing that member.
+Under `CONTINUE`, partial output is removed before recording the result. A per-member
+ratio violation remains continuable; cumulative bytes, archive-wide/live ratio, and
+entry-count guards remain global always-stop limits. Exceptions outside the documented
+`ArchiveyError` / per-member `OSError` set are never swallowed.
 
-`on_error` replaces the earlier ad-hoc rejection flag: `STOP` is the old "raise on
-rejection", `CONTINUE` is the old "warn and skip", now applied uniformly to all failure
-kinds.
+#### Scenario: collected continued failure returns in report
 
-**Always-stop exceptions, regardless of `on_error`:**
-- The cumulative `max_extracted_bytes` limit is a global resource guard — exceeding it
-  raises `ExtractionError` and halts even under `CONTINUE` (continuing would defeat the
-  guard). (The *per-member* ratio limit is a per-member failure and is skippable under
-  `CONTINUE`.)
-- `KeyboardInterrupt`, `MemoryError`, and any exception that is neither an `ArchiveyError`
-  nor a per-member filesystem `OSError` (a programming error such as `TypeError`, a
-  `SystemExit`, …) propagate unchanged and are never swallowed by `CONTINUE`. The carve-out
-  is deliberate: a per-member filesystem `OSError` (above) *is* caught under `CONTINUE`,
-  whereas an unexpected non-IO exception signals a bug and must surface.
+- **WHEN** a corrupt member fails under `OnError.CONTINUE` and default diagnostic policy
+- **THEN** extraction logs/collects `EXTRACTION_MEMBER_FAILED`, records a `FAILED` result, and continues
+
+#### Scenario: raised diagnostic defeats CONTINUE
+
+- **WHEN** `EXTRACTION_MEMBER_FAILED` resolves to `RAISE` under `OnError.CONTINUE`
+- **THEN** `DiagnosticRaisedError` carrying that occurrence halts extraction immediately and no report is returned
+
+#### Scenario: STOP raises the genuine failure without advisory duplication
+
+- **WHEN** a member raises `CorruptionError` under `OnError.STOP`
+- **THEN** that `CorruptionError` propagates immediately and no continued-failure diagnostic is emitted
+
+#### Scenario: filesystem error remains a continued member failure
+
+- **WHEN** writing one member raises `OSError` under `OnError.CONTINUE`
+- **THEN** partial output is removed, a `FAILED` result and `EXTRACTION_MEMBER_FAILED` occurrence are recorded, and extraction proceeds
+
+#### Scenario: global resource guard still halts
+
+- **WHEN** cumulative extracted bytes exceed their limit under `OnError.CONTINUE`
+- **THEN** `ExtractionError` propagates immediately and no later member is processed
 
 #### Scenario: STOP halts on the first failure
 
@@ -752,17 +772,33 @@ kinds.
 #### Scenario: CONTINUE extracts the good members and reports the rest
 
 - **WHEN** an archive with some corrupt members is extracted under `OnError.CONTINUE`
-- **THEN** every extractable member is written, and the returned `list[ExtractionResult]` contains `EXTRACTED` entries plus `FAILED`/`REJECTED` entries (each with its `error`); no exception is raised for the per-member failures
+- **THEN** every extractable member is written, and the returned report contains `EXTRACTED` entries plus `FAILED`/`REJECTED` entries (each with its `error`); no exception is raised for the per-member failures
 
-#### Scenario: cumulative bomb limit still halts under CONTINUE
+### Requirement: ExtractionReport is an immutable operation result
 
-- **WHEN** the cumulative `max_extracted_bytes` limit is exceeded during a `CONTINUE` extraction
-- **THEN** `ExtractionError` is raised and extraction halts regardless of `on_error`
+The system SHALL define:
 
-#### Scenario: filesystem write error is a per-member failure
+```python
+@dataclass(frozen=True)
+class ExtractionReport:
+    results: tuple[ExtractionResult, ...]
+    diagnostics: DiagnosticSummary
+```
 
-- **WHEN** writing a member's output file fails with an `OSError` (e.g. a permission error or an I/O error on the destination)
-- **THEN** under `OnError.CONTINUE` the partial file is removed, the member's `ExtractionResult` has `status=FAILED` and `error` set to the `OSError`, and extraction proceeds; under `OnError.STOP` the `OSError` is raised directly
+The summary SHALL preserve exact operation counts after detail retention is exhausted.
+The report SHALL not duplicate the cumulative reader collector or retain diagnostics
+beyond the configured shared budget.
+
+The report and each `ExtractionResult` freeze their structure, but this is not a deep
+freeze. `ExtractionResult.member` is the original mutable, caller-read-only
+`ArchiveMember`; its documented late-bound metadata and diagnostics MAY still change in
+place. `error` may likewise refer to an ordinary exception object. The fixed result
+outcomes and point-in-time `DiagnosticSummary` SHALL not change.
+
+#### Scenario: report remains a point-in-time value
+
+- **WHEN** a caller retains an extraction report and the reader later performs more work
+- **THEN** the result tuple/outcome fields and diagnostic summary remain unchanged, although a referenced member may receive documented late-bound metadata
 
 ### Requirement: Archive-wide decompression ratio for solid containers
 

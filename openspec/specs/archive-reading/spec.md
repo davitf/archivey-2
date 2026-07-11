@@ -8,52 +8,47 @@ Provides a uniform interface for opening and reading archives across all support
 
 ### Requirement: Opening an archive for reading
 
-The system SHALL expose a top-level `archivey.open_archive()` function that accepts a file path, `Path`, or binary stream and returns an `ArchiveReader`.
+The system SHALL expose:
 
 ```python
 archivey.open_archive(
     source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
     *,
-    format: ArchiveFormat | None = None,  # override detection
-    streaming: bool = False,             # False = random access; True = forward-only one pass
-    password: str | bytes | Sequence[str | bytes] | PasswordProvider | None = None,
-    encoding: str | None = None,         # None = auto-detect member-name encoding
-    config: ArchiveyConfig | None = None,  # None = the library default configuration
+    format: ArchiveFormat | None = None,
+    streaming: bool = False,
+    password: PasswordInput = None,
+    encoding: str | None = None,
+    config: ArchiveyConfig | None = None,
 ) -> ArchiveReader
 ```
 
-The `format` parameter MAY be omitted; when omitted the library performs automatic
-format detection. `encoding` defaults to `None`, meaning the library auto-detects the
-encoding of member-name fields: it uses the **format's internal signal** when present
-(e.g. the ZIP UTF-8 general-purpose-bit, RAR5 UTF-8 names, tar PAX UTF-8 records), and
-otherwise detects from the raw name bytes. A caller MAY pass an explicit `encoding` as a
-last-resort override when the format records none and detection is unreliable; the
-verbatim bytes are always preserved in `ArchiveMember.raw_name` so names can be
-re-decoded losslessly. `source` MAY also be an ordered sequence of files/streams that
-together form a single multi-volume archive (see the multi-volume requirement below).
-`password` accepts a single value, an ordered sequence of candidate values, or a
-provider callable (see the password requirement below). `config` carries the library's
-tuning/policy knobs (see the configuration requirement below); per-call operational
-arguments remain keyword parameters and MUST NOT move into the config object. The
-Phase 4 `strict_eof` keyword is removed — end-of-archive strictness lives at
-`config.strict_archive_eof`.
+`source`, multi-volume ordering, `streaming`, password candidates/providers, encoding,
+configuration precedence, and backend selection retain their existing contracts.
+`format=None` performs automatic detection; an explicit format bypasses detection.
 
-#### Scenario: open with auto-detected format
+The implementation SHALL create the prospective reader's one collector, budget, and
+initial operation watermark before detection or backend open. Automatic detection SHALL
+receive that collector. On successful open, the returned reader assumes ownership of the
+same collector; opening SHALL NOT seed, merge, replay, or copy detection events into a
+second collector. An occurrence retained during detection therefore consumes exactly one
+aggregate budget slot and keeps one occurrence id/order position in the reader lifetime.
+If detection/open raises, no reader is returned and the temporary collector is discarded
+after the exception propagates.
 
-- **WHEN** `archivey.open_archive("archive.tar.gz")` is called with no `format` override
-- **THEN** the library detects the format from magic bytes and returns an `ArchiveReader` wrapping the appropriate backend
+#### Scenario: open with automatic detection transfers ownership
 
-#### Scenario: open with explicit format override
+- **WHEN** `open_archive()` automatically detects a format and successfully builds its reader
+- **THEN** the reader owns the exact collector used during detection, including its counters and retained entries, without duplicated references
 
-- **WHEN** `archivey.open_archive(source, format=ArchiveFormat.ZIP)` is called
-- **THEN** the library uses the specified format backend without running detection
+#### Scenario: explicit format has no detection events
+
+- **WHEN** `open_archive(source, format=ArchiveFormat.ZIP)` succeeds
+- **THEN** one collector still covers open and later work, but detection is not run and no detection diagnostic is recorded
 
 #### Scenario: open with password
 
 - **WHEN** `archivey.open_archive(source, password="secret")` is called
 - **THEN** the returned `ArchiveReader` uses the provided password for encrypted members
-
----
 
 ### Requirement: Multi-volume and multi-source input
 
@@ -284,104 +279,81 @@ reader's single forward pass and compare members by value.
 
 ### Requirement: Reading member data
 
-The system SHALL provide two data-access methods: `read()` which returns the full member content as `bytes`, and `open()` which returns a streaming `BinaryIO` that the caller is responsible for closing.
+The public `ArchiveStream` SHALL implement the `BinaryIO` contract, remain caller-closed,
+and additionally expose an immutable operation-filtered diagnostic snapshot:
 
 ```python
+class ArchiveStream(BinaryIO):
+    @property
+    def diagnostics(self) -> DiagnosticSummary: ...
+
 def read(self, member: str | ArchiveMember) -> bytes: ...
-def open(self, member: str | ArchiveMember) -> BinaryIO: ...   # streaming; caller must close
+def open(self, member: str | ArchiveMember) -> ArchiveStream: ...
 ```
 
-Both methods accept either a member name string or an `ArchiveMember` object. An unknown
-name raises `KeyError`; an `ArchiveMember` object that was **not yielded by this reader**
-raises `ValueError` — the same identity rule as `member in reader`. (Without the check, a
-foreign member would resolve against this reader's offsets/paths and could silently
-return the wrong data.)
+Both methods accept a name or an `ArchiveMember` yielded by this reader. An unknown name
+raises `KeyError`; a foreign member raises `ValueError`. `read()` materializes the entire
+payload without extraction bomb checks and is intended for small trusted members.
+`open()` streams in bounded chunks. Full reads verify any supported member digest;
+streaming verification raises `CorruptionError` on the terminal read only after all valid
+chunks have been delivered, while `read()` raises without returning bytes.
 
-**Integrity on full reads.** When a member carries a verifiable digest, reading it fully
-verifies the content (see `compressed-streams`). A mismatch is surfaced **after** all
-bytes are delivered: in a streaming `open()` loop the data chunks all arrive normally and
-the terminal end-of-stream read raises `CorruptionError`, so the caller never loses a
-trailing chunk; `read()` reads to EOF internally and therefore raises `CorruptionError`
-(returning no bytes) on mismatch.
+A reader-owned stream SHALL use an operation token/watermark over the reader's collector.
+It SHALL NOT own or retain a second copy of its diagnostics. A standalone
+`ArchiveStream` not owned by a reader SHALL own one stream-lifetime collector.
 
-**Memory profile — `read()` is unbounded.** `read(member)` materializes the member's
-**entire decompressed payload in memory at once** and returns it as a single `bytes`
-object. It is intended for small members — configuration files, manifests, small assets —
-whose full content comfortably fits in RAM. For large or untrusted members, callers MUST
-use `open()` (a streaming `BinaryIO` read in bounded chunks) or `stream_members()` (bounded
-sequential iteration) instead; neither buffers the whole payload. `read()` also performs no
-decompression-bomb checks (see `safe-extraction`), so a hostile member can expand without
-limit — another reason to prefer `open()`/`stream_members()` for anything not known to be small.
+#### Scenario: opening a member returns the diagnostic stream type
+
+- **WHEN** `reader.open("data.bin")` succeeds
+- **THEN** it returns an `ArchiveStream` usable as `BinaryIO`, and `stream.diagnostics` reports only that stream operation's events
+
+#### Scenario: stream and reader do not duplicate retention
+
+- **WHEN** a reader-owned stream emits a rewind diagnostic
+- **THEN** stream and reader snapshots can both expose it while the shared collector retains and charges it only once
 
 #### Scenario: reading member as bytes
 
 - **WHEN** `ar.read("readme.txt")` is called
 - **THEN** the full uncompressed content is returned as `bytes`
 
-#### Scenario: opening a member as a stream
-
-- **WHEN** `ar.open("data.bin")` is called
-- **THEN** a `BinaryIO` stream is returned; the caller reads from it and closes it when done
-
 #### Scenario: opening a member from a different reader is rejected
 
 - **WHEN** `ar.open(member)` is called with an `ArchiveMember` yielded by a *different* reader
 - **THEN** `ValueError` is raised (never data from the wrong entry)
 
----
-
 ### Requirement: Bounded-memory sequential streaming via stream_members
 
-The system SHALL provide `stream_members()` which yields `(member, stream)` pairs in archive order with bounded memory. Decompression is **always streaming**: a solid block is decompressed progressively as its members are consumed, never buffered whole in advance, so peak memory is the decompressor's working state plus one member's in-flight chunk — not a whole block. The yielded stream is only valid until the iterator advances; callers MUST NOT hold it across yields. For non-file members the stream is `None`.
+The system SHALL provide:
 
 ```python
-# Shared vocabulary:
-MemberSelector = Collection[ArchiveMember | str] | Callable[[ArchiveMember], bool]
-MemberFilter   = Callable[[ArchiveMember], ArchiveMember | None]  # transform/sanitize:
-                 #   return a (possibly .replace()'d) member, or None to skip. Used by the
-                 #   EXTRACTION/WRITING sinks (extract_all, add_members), NOT here.
-
 def stream_members(
     self,
     members: MemberSelector | None = None,
-) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]: ...
+) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]: ...
 ```
 
-`members` **selects** which members to yield — a collection of members/names, or a
-predicate `Callable[[ArchiveMember], bool]`; `None` yields all. Streams are opened lazily,
-so unselected members cost nothing. A consequence: an open-time failure (e.g. a wrong or
-missing password for an encrypted member) surfaces on the stream's **first read**, not
-while iterating — a caller that only lists names never triggers it.
+It yields original caller-read-only members in archive order and an `ArchiveStream` for
+file data (`None` for non-files), with peak memory bounded by decompressor state and one
+in-flight chunk rather than a whole solid block. A yielded stream is valid only until the
+iterator advances. Streams open lazily; selector-excluded and unread members are not
+opened. `members` keeps the existing name/member collection or predicate semantics.
+There is no transform `MemberFilter` on this pure generator because late-bound member
+metadata must continue to update the original member in place.
 
-#### Scenario: skipped members are never opened
+Each yielded stream is an operation-filtered view over the reader's single collector and
+budget; advancing the iterator does not create a new diagnostic collector or aggregate
+copy.
 
-- **WHEN** `stream_members(members=...)` iterates past members the selector excludes (or the caller never reads a yielded stream)
-- **THEN** those members' data is never opened or decompressed, and an encrypted member's password is never requested for them
+#### Scenario: sequential stream has public diagnostics
 
-`stream_members()` deliberately takes **only the selector**, not a transform/sanitize
-`MemberFilter`. It is a pure generator that yields the **original, mutable**
-`ArchiveMember` so the backend can keep filling late-bound fields (final `size`/CRC, a
-`link_target` stored in the member's data) in place on the object the caller holds. A
-`MemberFilter` returns a `.replace()` **copy**; applying it here would yield that copy
-while the backend went on updating the original, so the caller's object would never see
-the late values. Transformation therefore lives at the sinks that consume the stream —
-`extract_all()` (applies it on a transient copy; see `safe-extraction`) and the writer's
-`add_members()` — where the original is still available for accurate limits/metadata. A
-caller streaming directly can of course apply its own transform per item in the loop.
+- **WHEN** a yielded file stream encounters a diagnostic before the iterator advances
+- **THEN** the stream snapshot and cumulative reader snapshot expose that occurrence from one retained aggregate entry
 
-**Two sequential access patterns — different memory profiles:**
+#### Scenario: skipped member data is never opened
 
-| Pattern | Memory profile | When to use |
-|---------|---------------|-------------|
-| `for m, f in ar.stream_members()` | Bounded and small — streaming decompression; peak ≈ decompressor state + one in-flight chunk. | Sequential one-pass processing: hashing, conversion, scanning. |
-| `for m in ar: ar.open(m)` | Bounded, but re-does work on solid blocks — `open()` on a solid member re-decompresses its block from the block start and skips to the member, logging a warning. No growing cache is ever held. | Random or mixed access on `DIRECT` formats; acceptable on solid formats only for a few members. |
-
-The library MUST NOT hold a growing cache of decompressed block data that is released
-only at `close()`. On a solid archive, repeated `open()` calls trade CPU (re-decompression)
-for bounded memory, and SHOULD emit a `logging.WARNING` via `archivey.backends` advising
-`stream_members()` for full sequential passes. For formats without solid compression
-(ZIP, plain `.tar`, single-file `.gz`), both patterns are equally efficient — `open()`
-seeks directly to the member with no re-decompression.
+- **WHEN** a selector excludes a member or the caller does not read its yielded stream
+- **THEN** that member's data is not opened/decompressed and no data-path diagnostic is produced for it
 
 #### Scenario: streaming a solid archive
 
@@ -399,22 +371,44 @@ seeks directly to the member with no re-decompression.
 - **WHEN** a caller iterates `ar.stream_members()`, fully reads a member's stream, then inspects that same member object
 - **THEN** any field the backend completed while reading (e.g. `size`/CRC) is now visible on it, because `stream_members()` yields the original object rather than a pre-read copy
 
-#### Scenario: random open on a solid member re-decompresses with a warning
-
-- **WHEN** `ar.open(member)` is called for a member inside a solid block
-- **THEN** the block is re-decompressed from its start and skipped to the member (no persistent decompressed cache is retained)
-- **AND** a `logging.WARNING` is emitted suggesting `stream_members()` for sequential passes
-
 #### Scenario: stream is invalid after advance
 
 - **WHEN** the iterator advances to the next `(member, stream)` pair
 - **THEN** the previously yielded stream MUST NOT be used; it is no longer guaranteed to be valid
 
----
+#### Scenario: random open on a solid member re-decompresses with a warning
+
+- **WHEN** `ar.open(member)` is called for a member inside a solid block
+- **THEN** the block is re-decompressed from its start and skipped to the member (no persistent decompressed cache is retained)
+- **AND** a diagnostic/warning is emitted suggesting `stream_members()` for sequential passes
 
 ### Requirement: Transparent link following
 
-The system SHALL transparently follow symlinks and hardlinks in `open()` and `read()`. If `member.type` is `SYMLINK` or `HARDLINK`, the call is redirected to the target member. This behavior is format-independent and is implemented once in the `ArchiveReader` ABC. The fully dereferenced target (the terminal member at the end of the link chain — not the immediate hop — see `archive-data-model`), when known, is also exposed as `member.link_target_member`.
+`open()` and `read()` SHALL transparently follow symlinks and hardlinks through the shared
+reader implementation, and `open()` SHALL preserve its public `ArchiveStream` return type
+after following:
+
+```python
+def open(self, member: str | ArchiveMember) -> ArchiveStream: ...
+```
+
+Hardlinks resolve to the most recent matching target strictly before the link, with the
+existing random-access fallback for a malformed later-only source; streaming mode cannot
+resolve that forward target. Random-access symlinks resolve to the last matching target
+overall, while streaming symlinks can resolve only to a target already seen. Hardlink
+targets are archive-root relative; symlink targets are resolved relative to the link's
+directory, and absolute/root-escaping targets do not resolve. Bare and trailing-slash
+directory forms are both considered.
+
+The reader SHALL follow chains recursively, detect actual cycles by member id rather than
+name, and impose no arbitrary depth limit. A missing/unresolvable target raises
+`LinkTargetNotFoundError`; a cycle raises `ReadError`. A stream reached through a link
+uses the same operation collector/token as the initiating `open()` call rather than
+creating or retaining another diagnostic operation.
+
+The fully dereferenced target (the terminal member at the end of the link chain — not the
+immediate hop — see `archive-data-model`), when known, is also exposed as
+`member.link_target_member`.
 
 **Hardlinks resolve positionally**: the target is the most recent occurrence of the
 target name **strictly before** the link in archive order (this is the TAR model — every
@@ -455,82 +449,66 @@ reports the cycle. Tracking is by member id, never by name: a chain passing thro
 falsely report one. There is no fixed depth limit; an acyclic chain of any length
 resolves, and only an actual cycle (or a missing target) fails.
 
-```python
-# Illustrative only — the real code lives in internal/base_reader.py:
-#   _open_with_link_follow()  (open()/read() link following)
-#   _lookup_link_target()     (target-name resolution; not get(name))
-#   _resolve_link() / _register_progressively()  (eager link_target_member fill)
-def open(self, member: str | ArchiveMember, _seen: frozenset[int] = frozenset()) -> BinaryIO:
-    if isinstance(member, str):
-        found = self.get(member)  # name lookup — there is no __getitem__ on the reader
-        if found is None:
-            raise KeyError(f"Member {member!r} not found")
-        member = found
-    if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
-        if member.member_id in _seen:
-            raise ReadError(f"Link cycle detected at '{member.name}'")
-        target = member.link_target_member or self._lookup_link_target(
-            member, self._members_by_name_lists
-        )
-        if target is None:
-            raise LinkTargetNotFoundError(f"Link target '{member.link_target}' not in archive")
-        return self.open(target, _seen=_seen | {member.member_id})
-    return self._open_member(member)
-```
+#### Scenario: linked open preserves stream diagnostics
 
-This does not rely on format-level link resolution; format-level resolution (e.g. a RAR5 reader following hardlinks internally) happens at a lower level.
+- **WHEN** `reader.open(link_member)` follows a valid chain to file data
+- **THEN** it returns one `ArchiveStream` whose operation-filtered diagnostics cover work performed while following and reading that open operation
+
+#### Scenario: opening a hardlink returns the target's data
+
+- **WHEN** `ar.open(hardlink_member)` is called and the hardlink resolves to a file member present earlier in the archive
+- **THEN** the returned stream yields that file member's uncompressed data
+
+#### Scenario: missing link target raises LinkTargetNotFoundError
+
+- **WHEN** `ar.open(link_member)` is called and the stored target is absent from the archive
+- **THEN** `LinkTargetNotFoundError` is raised
+
+#### Scenario: link cycle is detected by member id
+
+- **WHEN** following a symlink/hardlink chain revisits a member already on the current chain
+- **THEN** `ReadError` is raised reporting the cycle (no infinite recursion)
 
 #### Scenario: reading via a symlink member
 
-- **WHEN** `ar.read("data/latest")` is called and `"data/latest"` is a `SYMLINK` pointing to `"data/v1.0/report.txt"`
-- **THEN** the content of `"data/v1.0/report.txt"` is returned transparently
+- **WHEN** `ar.open(symlink_member)` is called and the symlink resolves to a file member in the archive
+- **THEN** the returned stream yields that file member's uncompressed data
 
 #### Scenario: relative symlink target resolves against the link's directory
 
-- **WHEN** member `"dir/link"` is a `SYMLINK` whose stored target is `"file"` and the archive contains both `"dir/file"` and a root-level `"file"`
-- **THEN** `ar.read("dir/link")` returns the content of `"dir/file"` (not the root-level `"file"`), and `member.link_target_member` points at `"dir/file"`
+- **WHEN** a symlink at `dir/link` has stored target `file` (or `./file`)
+- **THEN** resolution looks up `dir/file` in the archive namespace (joined to the link's directory), not a root-relative `file`
 
 #### Scenario: absolute symlink target stays unresolved
 
-- **WHEN** a `SYMLINK` member's stored target is absolute (e.g. `"/etc/passwd"`)
-- **THEN** `member.link_target_member` is `None` and `ar.open()` on it raises `LinkTargetNotFoundError`
+- **WHEN** a symlink's stored target is absolute or `..`-escapes the archive root
+- **THEN** `link_target_member` remains `None` and opening through it raises `LinkTargetNotFoundError`
 
 #### Scenario: hardlink resolves to an earlier member
 
-- **WHEN** a `HARDLINK` member is read and its target is an earlier member in archive order
-- **THEN** the earlier member's content is returned, resolved in a single forward pass
+- **WHEN** `ar.open(hardlink_member)` is called and a matching file name appears strictly before the hardlink
+- **THEN** the returned stream yields that earlier file member's data
 
 #### Scenario: duplicate names — hardlink links to the latest earlier occurrence
 
-- **WHEN** an archive contains `A.txt` (content1), then a `HARDLINK` `L → A.txt`, then a second `A.txt` (content2)
-- **THEN** `ar.read("L")` returns content1 in **both** access modes, and extraction links `L` against the content1 inode — matching what a sequential extraction leaves on disk
+- **WHEN** multiple members share the hardlink's target name and at least one precedes the link
+- **THEN** hardlink resolution selects the most recent occurrence strictly before the link
 
 #### Scenario: duplicate names — symlink resolves to the last occurrence
 
-- **WHEN** an archive contains `A.txt` (content1), a `SYMLINK` `S → A.txt`, then a second `A.txt` (content2), opened in random-access mode
-- **THEN** `S.link_target_member` points at the second `A.txt` (the final on-disk state of that name)
+- **WHEN** multiple members share the symlink's target name in random-access mode
+- **THEN** symlink resolution selects the last occurrence overall
 
 #### Scenario: hardlink source only appears later (malformed archive)
 
-- **WHEN** a `HARDLINK` precedes its source in archive order and the archive is opened in random-access mode
-- **THEN** the link resolves to the later member and `ar.read()` on it returns that content; in streaming mode the same link fails per `OnError` (a single pass cannot see forward)
-
-#### Scenario: link target not in archive
-
-- **WHEN** `ar.open(link_member)` is called and `link_member.link_target` is absent from the archive
-- **THEN** `LinkTargetNotFoundError` is raised
-
-#### Scenario: link cycle detected
-
-- **WHEN** following a link chain revisits a member (by member id) already seen on that chain
-- **THEN** `ReadError` is raised with a message reporting the cycle (no fixed depth limit is used; only genuine cycles fail)
+- **WHEN** a hardlink's source appears only later in archive order
+- **THEN** random-access mode falls back to that later member; streaming mode cannot resolve the forward target
 
 #### Scenario: same-named members on one chain are not a false cycle
 
-- **WHEN** a link chain passes through two distinct members that share a normalized name
-- **THEN** the chain resolves normally — cycle detection tracks member ids, so the shared name does not trigger a spurious cycle error
+- **WHEN** a link chain passes through two distinct members that share a name
+- **THEN** cycle detection (by member id) does not treat that as a cycle
 
----
 
 ### Requirement: Context-manager and close lifecycle
 
@@ -707,20 +685,17 @@ This requirement does not restrict the caller's own buffering of a returned stre
 
 ### Requirement: Explicit configuration object
 
-The system SHALL define a frozen `ArchiveyConfig` dataclass carrying the library's
-tuning/policy knobs, passed explicitly as `config=` to `open_archive()` and
-`extract()` (`None` selects the immutable library default):
+The system SHALL define these complete frozen configuration schemas:
 
 ```python
 @dataclass(frozen=True)
 class ExtractionLimits:
-    # None disables that guard; the UNLIMITED preset is all-None.
     max_extracted_bytes: int | None = 2 * 2**30
     max_ratio: float | None = 1000.0
     ratio_activation_threshold: int = 5 * 2**20
     max_entries: int | None = 1_048_576
 
-    UNLIMITED: ClassVar["ExtractionLimits"]  # every guard disabled (trusted archives)
+    UNLIMITED: ClassVar["ExtractionLimits"]
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
@@ -728,41 +703,80 @@ class ArchiveyConfig:
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     strict_archive_eof: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
+    diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
+    max_retained_diagnostic_references: int = 256
+    on_diagnostic: Callable[[Diagnostic], None] | None = None
 ```
 
-A reader carries the config it was opened with; `extract_all()` uses the reader's
-config unless the call overrides it. The extraction limits are additionally overridable
-per call via `limits: ExtractionLimits | None` on `extract()`/`extract_all()`
-(precedence: per-call `limits` > `config.extraction_limits` > library default; the
-`ExtractionLimits.UNLIMITED` preset disables all four guards — see `safe-extraction`).
-Configuration is **explicit only**: the library
-SHALL NOT read ambient state (no context variables, no mutable global default) to
-resolve configuration. Per-call operational arguments — `format`, `streaming`,
-`password`, `encoding`, and extraction's `members`/`filter`/`policy`/`overwrite`/
-`on_error`/`on_progress` — are keyword parameters and MUST NOT be absorbed into the
-config object.
+`max_retained_diagnostic_references` SHALL be non-negative. Policy/default/override
+mappings and both config dataclasses SHALL be defensively immutable. `config=None`
+selects the immutable library default. Configuration is explicit only; Archivey SHALL
+read no mutable global/context-local diagnostic policy or callback.
 
-`strict_archive_eof` governs archive-level end-of-data verification (today: the TAR
-two-block trailer check; extensible to other formats): `False` (default) emits a
-`logging.WARNING` on a failed check, `True` raises `TruncatedError`. The check
-necessarily runs only after a full pass reaches the archive's end.
+A reader carries its open config. A later `extract_all(config=...)` MAY override policy,
+callback, strictness, accelerators, and limits for new work, but its
+`max_retained_diagnostic_references` field SHALL NOT replace, reset, lower, or enlarge the
+existing reader collector's budget. Per-call `limits` still takes precedence over
+`config.extraction_limits`, then the reader/library default. Existing per-call operational
+arguments remain outside `ArchiveyConfig`.
 
-#### Scenario: default configuration without a config argument
+`strict_archive_eof=False` follows ordinary diagnostic policy for a failed EOF check.
+`True` forces `TruncatedError` after the ordered diagnostic counting/delivery rules
+specified by `error-handling`.
 
-- **WHEN** `archivey.open_archive(source)` is called with no `config`
-- **THEN** the library default `ArchiveyConfig()` applies (accelerators AUTO, `strict_archive_eof=False`, default limits)
+Callbacks run synchronously after count/retention/logging updates and without any
+collector, reader, stream, backend, or registry lock. Snapshot reads from a callback are
+allowed. Starting another operation on the same currently emitting reader/stream SHALL
+raise `UnsupportedOperationError`; operating on a different reader is allowed.
 
-#### Scenario: strict end-of-archive via config
+#### Scenario: complete default configuration
 
-- **WHEN** a truncated TAR (missing trailer) is fully read under `config=ArchiveyConfig(strict_archive_eof=True)`
-- **THEN** `TruncatedError` is raised at the end of the pass; with the default config the same condition only logs a warning
+- **WHEN** `ArchiveyConfig()` is used
+- **THEN** accelerators are AUTO, EOF strictness is false, extraction limits are the documented defaults, diagnostics default to COLLECT, the budget is 256, and no callback is installed
+
+#### Scenario: extraction override cannot replace lifetime budget
+
+- **WHEN** a reader opened with budget 10 calls `extract_all(config=ArchiveyConfig(max_retained_diagnostic_references=1000))`
+- **THEN** new policy/callback settings may apply, but all reader-owned diagnostics remain subject to the original budget 10
 
 #### Scenario: extraction limits travel in the config
 
 - **WHEN** `archivey.extract(src, dest, config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=100)))` runs
 - **THEN** the 100:1 per-member ratio limit is enforced (see `safe-extraction`)
 
----
+### Requirement: Reader-lifetime cumulative diagnostic snapshots
+
+Every successfully created `ArchiveReader` SHALL own a diagnostic collector for its
+lifetime and expose:
+
+```python
+@property
+def diagnostics(self) -> DiagnosticSummary: ...
+```
+
+Each access SHALL return a fresh immutable cumulative snapshot. Exact counts SHALL include
+automatic-detection occurrences that led to the reader plus every open/list/read/stream/
+extract occurrence subsequently owned by it, including events whose detail could not be
+retained. Previously returned snapshots SHALL not change.
+
+A stream returned by a reader SHALL expose an operation-filtered `diagnostics` snapshot
+over the same collector. It SHALL not separately retain aggregate copies merely to serve
+both stream and reader views.
+
+#### Scenario: reader snapshot grows over its lifetime
+
+- **WHEN** a reader is opened after a detection conflict, then listing emits a scan diagnostic and a member stream emits a rewind diagnostic
+- **THEN** a later `reader.diagnostics` has exact cumulative counts for all three in emission order, while an earlier snapshot remains unchanged
+
+#### Scenario: stream view is a filtered reader view
+
+- **WHEN** two member streams emit different diagnostics
+- **THEN** each stream's snapshot includes only its operation's events and the reader snapshot includes both, without separately retained aggregate copies
+
+#### Scenario: callback may query but not re-enter
+
+- **WHEN** `on_diagnostic` reads `reader.diagnostics` and then attempts `reader.read(...)` on the same emitting reader
+- **THEN** the snapshot read succeeds and includes the current event, while the operational reentry raises `UnsupportedOperationError`
 
 ### Requirement: Collection form of MemberSelector
 

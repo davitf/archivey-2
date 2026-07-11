@@ -151,34 +151,65 @@ push-model deferred-creation machine.
 - **WHEN** `os.link()` against every recorded on-disk path of the source fails with a cross-device error
 - **THEN** the system copies the source content to the link destination and appends that path for reuse by later links on the same device
 
+### Requirement: Invalid TAR timestamps are member diagnostic data
+
+The existing TAR mapping remains. If `TarInfo.mtime` cannot be represented as a Python
+`datetime`, the member's `modified` SHALL be `None` and the reader SHALL emit
+`MEMBER_TIMESTAMP_INVALID` with member identity, field/source kind, and a JSON-safe value
+representation. Under default policy the occurrence is collected/logged and MAY attach to
+the member under the shared budget; under `RAISE`, listing halts with
+`DiagnosticRaisedError`.
+
+#### Scenario: invalid TAR mtime is member data
+
+- **WHEN** a TAR member carries an out-of-range mtime
+- **THEN** `modified is None`, `MEMBER_TIMESTAMP_INVALID` is counted on the reader, and its retained occurrence may attach to the member
+
 ### Requirement: Detect truncated TAR archives
 
-The system SHALL verify archive integrity at the end of iteration by checking for valid end-of-archive markers.
+After full iteration, a missing/invalid TAR end marker SHALL emit
+`ARCHIVE_EOF_MARKER_MISSING` on the reader operation aggregate. It SHALL not attach to
+`ArchiveInfo`, `CostReceipt`, or a member.
 
-After iterating all members, the system verifies that the final 512-byte block(s) are null-filled end-of-archive markers. Strictness is configured by `ArchiveyConfig.strict_archive_eof` (see `archive-reading`; the Phase 4 `open_archive(strict_eof=)` keyword is removed). If the markers are absent:
+Its context SHALL be `ArchiveEofContext(kind="archive_eof", format="tar",
+expected_marker="two_zero_blocks", expected_bytes=1024, observed_bytes=...,
+observed_kind=...)` plus the best-effort archive display name. `observed_kind` SHALL be
+`"absent"`, `"short"`, or `"nonzero"` as applicable; raw trailing archive bytes SHALL
+not be retained.
 
-- By default (`config.strict_archive_eof=False`): emit a `logging.WARNING` via the `archivey.backends.*` logger.
-- When `config.strict_archive_eof=True`: raise `TruncatedError`.
+The event first follows the common count/retention/log/callback order. Then:
 
-#### Scenario: Valid TAR end-of-archive markers present
+- with `strict_archive_eof=False`, ordinary disposition applies (`IGNORE` continues,
+  `COLLECT` continues, `RAISE` raises `DiagnosticRaisedError`);
+- with `strict_archive_eof=True`, `TruncatedError` always halts and takes precedence over
+  `DiagnosticRaisedError`, including when disposition is `IGNORE` or `RAISE`.
 
-- **WHEN** all TAR members have been iterated
-- **AND** the archive ends with null-filled 512-byte end-of-archive block(s)
-- **THEN** no warning or error is emitted
+A logging-handler or callback exception propagates at its earlier ordered step.
 
-#### Scenario: Missing end-of-archive markers, default mode
+#### Scenario: valid TAR marker has no event
 
-- **WHEN** all TAR members have been iterated
-- **AND** the archive does not end with valid null-filled end-of-archive block(s)
-- **AND** `config.strict_archive_eof` is `False` (the default)
-- **THEN** the system emits a `logging.WARNING` indicating the archive may be truncated
+- **WHEN** full iteration ends with valid null-filled end-of-archive marker blocks
+- **THEN** no EOF diagnostic or error is produced
 
-#### Scenario: Missing end-of-archive markers, strict mode
+#### Scenario: missing marker collected by default
 
-- **WHEN** all TAR members have been iterated
-- **AND** the archive does not end with valid null-filled end-of-archive block(s)
-- **AND** `config.strict_archive_eof` is `True`
-- **THEN** the system raises `TruncatedError`
+- **WHEN** a TAR pass reaches a missing EOF marker with default config
+- **THEN** `ARCHIVE_EOF_MARKER_MISSING` is counted/retained/logged on the reader and the pass completes
+
+#### Scenario: ignored missing marker is still strict
+
+- **WHEN** the code resolves to `IGNORE` and `strict_archive_eof=True`
+- **THEN** the event count increments without delivery and `TruncatedError` is raised
+
+#### Scenario: strict error type wins over diagnostic raise
+
+- **WHEN** the code resolves to `RAISE`, delivery succeeds, and `strict_archive_eof=True`
+- **THEN** `TruncatedError` is raised after delivery rather than `DiagnosticRaisedError`
+
+#### Scenario: runtime EOF event does not mutate open-time info
+
+- **WHEN** the missing marker is discovered only after iteration
+- **THEN** `reader.diagnostics` changes and frozen `ArchiveInfo` / `CostReceipt` remain unchanged
 
 ### Requirement: Detect TAR compression variant from magic bytes
 

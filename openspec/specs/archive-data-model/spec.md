@@ -136,132 +136,92 @@ A `tuple[CompressionMethod, ...]` models a filter chain. For example, a typical 
 
 ### Requirement: The ArchiveMember record
 
-The system SHALL define `ArchiveMember` as a dataclass representing one archive entry. All fields that the format cannot provide SHALL be `None`; the library MUST NOT substitute silent defaults or guesses.
-
-`ArchiveMember` is **mutable** (not frozen). Several fields are genuinely unknown when
-a member is first yielded and only become known once its data has been read — the
-final `size`/CRC of a gzip stream or a ZIP data-descriptor entry, or a `link_target`
-that is stored in (or encrypted within) the member's *data* rather than its header.
-The library fills these fields **in place** as it streams, so the `ArchiveMember` a
-caller already holds gains its late values without a re-fetch. This is required for
-`streaming=True` mode, where the member list cannot be materialized and re-read.
-
-Because the object is mutable, the contract is: **callers MUST treat an
-`ArchiveMember` as read-only.** The library is the only writer. A caller (or an
-extraction/iteration filter) that needs an altered member SHALL call `.replace(**kwargs)`,
-which returns a **copy** with the changes applied and never mutates the original. As a
-consequence, `ArchiveMember` is **not hashable** (a mutable value object must not be a
-dict key or set element); callers key by `member.name` or `member.member_id` instead.
+The system SHALL define the complete mutable, unhashable, caller-read-only
+`ArchiveMember` schema as:
 
 ```python
 @dataclass
 class ArchiveMember:
-    # --- Type ---
     type: MemberType
 
-    # --- Identity ---
-    name: str                               # normalized: forward slashes; trailing / for dirs; no leading /
-    raw_name: bytes | None                  # verbatim name bytes as stored, before decode/normalize;
-                                            #   None if the format stores no separate raw form. Kept as
-                                            #   bytes so a wrong encoding guess can never garble it and
-                                            #   the name can be re-decoded losslessly.
+    name: str
+    raw_name: bytes | None
 
-    # --- Sizes (None if format cannot provide) ---
-    size: int | None                        # uncompressed size in bytes (may be filled after reading)
+    size: int | None
     compressed_size: int | None
 
-    # --- Timestamps ---
-    # timezone-aware if format records UTC or a UTC offset; naive if local wall-clock
     modified: datetime | None
     accessed: datetime | None
     created: datetime | None
 
-    def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
-        # `modified` normalized to aware UTC, for comparing/sorting members whose formats
-        # mix wall-clock and UTC timestamps (naive vs aware datetimes raise TypeError on
-        # comparison). A naive value gets `tz_for_naive` attached first -- the caller's
-        # explicit assumption about where the archive was created -- defaulting to the
-        # local timezone. The faithful stored form stays on `modified` itself; "was it
-        # wall-clock?" remains checkable as `modified.tzinfo is None`.
-
-    # --- Permissions & ownership ---
-    mode: int | None                        # low 12 bits: standard Unix permission bits
+    mode: int | None
     uid: int | None
     gid: int | None
     uname: str | None
     gname: str | None
 
-    # --- Link semantics ---
-    link_target: str | None                 # SYMLINK/HARDLINK target path as stored (not normalized);
-                                            #   may be None until filled while streaming
-    link_target_member: "ArchiveMember | None"  # the fully dereferenced target within this same
-                                            #   archive — the terminal member at the end of the
-                                            #   link chain (not the immediate hop); or None when
-                                            #   the target is unknown, not yet resolved (streaming),
-                                            #   or absent from the archive
+    link_target: str | None
+    link_target_member: "ArchiveMember | None"
 
-    # --- Compression ---
     compression: tuple[CompressionMethod, ...] = ()
-
-    # --- Flags ---
     is_encrypted: bool = False
-    is_sparse: bool = False                 # TAR sparse files; extraction as regular file
+    is_sparse: bool = False
 
-    # --- Provenance / extra metadata (None when the format does not record it) ---
-    comment: str | None = None              # per-member comment (some formats)
-    create_system: "CreateSystem | None" = None   # OS that created the entry (ZIP create_system
-                                            #   values: FAT/UNIX/NTFS/…; other formats map where they can)
-    windows_attrs: int | None = None        # Windows FILE_ATTRIBUTE_* bitmask, if recorded
+    comment: str | None = None
+    create_system: "CreateSystem | None" = None
+    windows_attrs: int | None = None
 
-    # --- Integrity ---
-    # Per-algorithm digests, keyed by lowercase algorithm name. CRC32 values are
-    # ints ("crc32"); cryptographic/other digests are raw bytes ("blake2sp",
-    # "sha256", ...). Empty when the format records no integrity data. A format
-    # MUST NOT report one algorithm's value under another's key (e.g. a RAR5
-    # Blake2sp hash is "blake2sp", never "crc32"). Excluded from __eq__.
     hashes: Mapping[str, int | bytes] = field(default_factory=dict, compare=False)
-
-    # --- Format-specific overflow ---
-    # Keys are namespaced: "zip.extra_fields", "tar.pax_headers", "iso.rock_ridge", etc.
-    # Excluded from __eq__: format-specific extras don't affect logical identity.
+    diagnostics: tuple[Diagnostic, ...] = field(default=(), compare=False)
     extra: dict[str, Any] = field(default_factory=dict, compare=False)
 
     @property
-    def member_id(self) -> int: ...         # stable 0-based position in the source archive,
-                                            #   assigned at registration; identity for de-dup/ordering
+    def member_id(self) -> int: ...
     @property
-    def archive_id(self) -> str: ...        # id of the archive this member belongs to; used to
-                                            #   validate a member passed back into its own reader
+    def archive_id(self) -> str: ...
 
-    # --- Read-only convenience helpers (derived from `type`/`extra`; never settable) ---
     @property
-    def is_file(self) -> bool: ...          # type == FILE
+    def is_file(self) -> bool: ...
     @property
-    def is_dir(self) -> bool: ...           # type == DIRECTORY
+    def is_dir(self) -> bool: ...
     @property
-    def is_link(self) -> bool: ...          # type in (SYMLINK, HARDLINK)
+    def is_link(self) -> bool: ...
     @property
-    def is_other(self) -> bool: ...         # type == OTHER
+    def is_other(self) -> bool: ...
     @property
-    def is_junction(self) -> bool: ...      # SYMLINK with extra["is_junction"] is True
+    def is_junction(self) -> bool: ...
 
-    def replace(self, **kwargs: Any) -> "ArchiveMember":
-        """Return a *copy* with the given fields changed; never mutates self.
-        Filters use this to sanitize/rename a member without touching the original."""
+    def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
+    def replace(self, **kwargs: Any) -> "ArchiveMember": ...
 ```
 
-`ArchiveMember` is mutable so the library can complete metadata during a streaming
-pass; the `hashes` and `extra` fields are excluded from `__eq__` (integrity digests
-vary by format and would break cross-format equivalence; format-specific extras do not
-affect logical identity). There is no `crc32` field or accessor — callers read
-`member.hashes.get("crc32")`. The object is **not hashable**.
+All existing field meanings remain: unavailable values are `None`; `name` follows the
+normalization contract while `raw_name` preserves stored bytes; timestamps preserve their
+stored timezone semantics; digest keys identify their real algorithms; link targets,
+sizes, hashes, and other late-bound values may be filled in place during streaming.
+`member_id`/`archive_id` preserve source identity, convenience properties are derived, and
+`replace()` creates an edited copy. `hashes`, `diagnostics`, and `extra` are excluded from
+equality. There is no `crc32` alias.
 
-The `is_file`/`is_dir`/`is_link`/`is_other`/`is_junction` helpers and `comment` /
-`create_system` (a `CreateSystem` enum mirroring ZIP's create-system values:
-FAT/UNIX/NTFS/…) / `windows_attrs` metadata fields are carried for ergonomics and
-fidelity. Archivey deliberately does **not** expose `zipfile`-compatibility aliases
-(`date_time`, `CRC`, a naive-`mtime` alias) — it is not impersonating `zipfile`; callers
-use `modified`, `hashes["crc32"]`, and the `MemberType` enum directly.
+`ArchiveMember` is intentionally not frozen because the library may complete metadata
+after yielding it. Callers SHALL treat it as read-only, and it SHALL remain unhashable.
+The `diagnostics` tuple itself is immutable/read-only, but the library MAY replace that
+tuple in place when a later member-specific event occurs. This is not a promise that a
+previously returned member is a point-in-time snapshot.
+
+Only occurrences about that concrete member are eligible: initially
+`MEMBER_NAME_NORMALIZED`, `MEMBER_TIMESTAMP_INVALID`,
+`SYMLINK_TARGET_UNAVAILABLE`, and `DIGEST_UNVERIFIABLE`. Attachment SHALL occur only when
+the owning collector first retained the aggregate occurrence and has another shared
+retention-budget slot. Aggregate and member values carry the same occurrence id but have
+no object-identity guarantee.
+
+Like other late-bound fields, an eligible diagnostic MAY be attached after the member is
+yielded. `member.replace()` copies the tuple's current value; caller-created copies do not
+consume additional library-retention slots.
+
+`ArchiveInfo` SHALL NOT carry runtime diagnostics. In particular, detection conflict lives
+on `FormatInfo`, while runtime scan/rewind/EOF events live on reader/stream summaries.
 
 #### Scenario: unavailable field is None
 
@@ -294,7 +254,30 @@ use `modified`, `hashes["crc32"]`, and the `MemberType` enum directly.
 - **WHEN** a ZIP member records a CRC32 and a RAR5 member records only a Blake2sp hash
 - **THEN** the ZIP member has `hashes["crc32"]` as an int and no `"blake2sp"` key, and the RAR5 member has `hashes["blake2sp"]` as bytes and no `"crc32"` key
 
----
+#### Scenario: normalization attaches under the shared budget
+
+- **WHEN** normalization emits a retained member diagnostic and an attachment slot remains
+- **THEN** the member exposes it in `member.diagnostics` with the aggregate occurrence id
+
+#### Scenario: attachment is omitted when only aggregate capacity remains
+
+- **WHEN** a member diagnostic is emitted with one collector budget slot remaining
+- **THEN** the aggregate retains the occurrence, `member.diagnostics` does not, and exact counts still include it
+
+#### Scenario: late integrity diagnostic appears in place
+
+- **WHEN** an already-yielded member's stream discovers that its stored digest algorithm cannot be verified
+- **THEN** `DIGEST_UNVERIFIABLE` may be appended in place to that same member's diagnostics tuple, budget permitting
+
+#### Scenario: member references remain live in reports
+
+- **WHEN** an `ExtractionReport` contains a result referring to a member and the library later completes a late-bound field on that member
+- **THEN** the member field changes in place even though the report's result tuple and diagnostic summary remain immutable
+
+#### Scenario: ArchiveInfo remains an open-time value
+
+- **WHEN** a rewind or missing EOF marker occurs after open
+- **THEN** the reader/stream summary changes and frozen `ArchiveInfo` remains unchanged
 
 ### Requirement: ArchiveMember name normalization rules
 

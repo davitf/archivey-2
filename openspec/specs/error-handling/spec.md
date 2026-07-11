@@ -8,43 +8,37 @@ Error handling provides a single rooted exception hierarchy so callers can catch
 
 ### Requirement: Single Rooted Exception Hierarchy
 
-The system SHALL define all library exceptions as subclasses of `ArchiveyError`, which itself subclasses the built-in `Exception`. The full hierarchy is:
+The system SHALL define every library exception under this complete hierarchy:
 
-```
+```text
 ArchiveyError(Exception)
-├── OpenError                   # cannot open / parse the archive header
-│   ├── FormatDetectionError    # could not detect format
-│   ├── UnsupportedFormatError  # format detected but no backend available
-│   └── StreamNotSeekableError  # source is non-seekable but this format/backend needs seek
-├── ReadError                   # error reading a member
-│   ├── CorruptionError         # CRC mismatch, bad data block
-│   ├── TruncatedError          # unexpected EOF
-│   ├── EncryptionError         # password required or wrong password
-│   └── LinkTargetNotFoundError # a symlink/hardlink target is absent from the archive
-├── WriteError                  # error writing an archive
-├── ExtractionError             # error extracting a member to disk
-│   └── FilterRejectionError    # safety filter blocked the member
-│       ├── PathTraversalError  # ../ or absolute path
-│       ├── SymlinkEscapeError  # symlink resolves outside dest
-│       └── SpecialFileError    # device node, FIFO, socket
-├── UnsupportedFeatureError     # recognized but unhandled feature/variant/codec
-│                               #   (e.g. a ZIP codec stdlib zipfile lacks, an
-│                               #   AES-encrypted ZIP, the 7z BCJ2 coder)
-├── PackageNotInstalledError    # a required optional package or external tool is
-│                               #   absent (codec backend, crypto backend, unrar)
-└── UnsupportedOperationError   # API misuse: operation not valid for this reader's mode
-                                #   (e.g. random access on a sequential reader)
+├── OpenError
+│   ├── FormatDetectionError
+│   ├── UnsupportedFormatError
+│   └── StreamNotSeekableError
+├── ReadError
+│   ├── CorruptionError
+│   ├── TruncatedError
+│   ├── EncryptionError
+│   └── LinkTargetNotFoundError
+├── WriteError
+├── ExtractionError
+│   └── FilterRejectionError
+│       ├── PathTraversalError
+│       ├── SymlinkEscapeError
+│       └── SpecialFileError
+├── UnsupportedFeatureError
+├── PackageNotInstalledError
+├── UnsupportedOperationError
+└── DiagnosticRaisedError
 ```
 
-`UnsupportedFeatureError` and `PackageNotInstalledError` may be raised at open or
-read time (e.g. opening a 7z archive that uses the BCJ2 coder, or reading a ZIP
-member whose compression method stdlib `zipfile` cannot decode), so they are
-top-level `ArchiveyError` subtypes rather than nested under `OpenError`/`ReadError`.
-
-`StreamNotSeekableError` is an **open-time** failure: the source cannot `seek()` but the
-chosen format/backend requires a seekable source (e.g. opening a ZIP from a pipe with
-`streaming=False`). It is a subclass of `OpenError` (it is about the source/format being
-incompatible at open), **not** `UnsupportedOperationError`.
+All existing meanings and subclass boundaries remain. In particular,
+`UnsupportedFeatureError`/`PackageNotInstalledError` may occur at open or read time,
+`StreamNotSeekableError` is an `OpenError`, and `UnsupportedOperationError` denotes API
+misuse or invalid reader mode. `DiagnosticRaisedError` is a direct `ArchiveyError`
+subclass because diagnostic escalation can occur in detection, open, read, stream, or
+extraction and is not itself one of those underlying failures.
 
 **`UnsupportedOperationError` vs `UnsupportedFeatureError` — a deliberate split:**
 
@@ -64,6 +58,11 @@ incompatible at open), **not** `UnsupportedOperationError`.
 - **WHEN** any operation (open, read, extract, write) fails due to a library-detected error
 - **THEN** the raised exception is an instance of `ArchiveyError` (or a subclass), so `except ArchiveyError` catches it
 
+#### Scenario: catch escalation at the common root
+
+- **WHEN** diagnostic policy escalates an advisory occurrence
+- **THEN** `except ArchiveyError` catches the resulting `DiagnosticRaisedError`
+
 #### Scenario: distinguish specific error subtypes
 
 - **WHEN** an archive member has a bad CRC
@@ -79,7 +78,60 @@ incompatible at open), **not** `UnsupportedOperationError`.
 - **WHEN** an archive uses a recognized feature the reader does not handle (e.g. a ZIP compression method stdlib `zipfile` doesn't implement, or the 7z BCJ2 coder)
 - **THEN** `UnsupportedFeatureError` is raised rather than producing incorrect output
 
----
+### Requirement: DiagnosticRaisedError is the typed escalation bridge
+
+The public exception hierarchy SHALL add a direct `ArchiveyError` subtype:
+
+```python
+class DiagnosticRaisedError(ArchiveyError):
+    diagnostic: Diagnostic
+```
+
+It SHALL require and expose the escalated immutable diagnostic. The standard
+`source_format`, `archive_name`, and `member_name` fields SHALL be stamped through the
+existing central context mechanism. Escalation alone has no underlying exception, so
+`__cause__` MAY be `None`; an exception from logging/callback delivery propagates itself
+instead and is not replaced.
+
+`DiagnosticRaisedError` is an always-stop control exception. Extraction SHALL propagate
+it even under `OnError.CONTINUE`, never record it as `FAILED`/`REJECTED`, and never proceed
+to another member.
+
+#### Scenario: strict policy raises a typed error carrying data
+
+- **WHEN** a code resolves to `RAISE` and logging/callback delivery returns normally
+- **THEN** `DiagnosticRaisedError` is raised with the exact emitted diagnostic and centrally stamped archive/member context
+
+#### Scenario: extraction continuation cannot swallow escalation
+
+- **WHEN** a member diagnostic escalates during `OnError.CONTINUE`
+- **THEN** `DiagnosticRaisedError` propagates immediately and extraction halts
+
+### Requirement: Specialized archive EOF strictness takes precedence
+
+For `ARCHIVE_EOF_MARKER_MISSING`, `ArchiveyConfig.strict_archive_eof=True` SHALL force
+`TruncatedError` after the diagnostic's policy-controlled count/retention/log/callback
+steps. This specific validation error SHALL take precedence over
+`DiagnosticRaisedError`: even when the code resolves to `RAISE`, the terminal exception is
+`TruncatedError`. With strict EOF disabled, the normal disposition applies.
+
+A logging-handler or callback exception still propagates at its earlier ordered delivery
+step and therefore prevents either terminal exception.
+
+#### Scenario: strict EOF overrides ignored disposition
+
+- **WHEN** the EOF code resolves to `IGNORE` but `strict_archive_eof=True`
+- **THEN** the exact diagnostic count increments and `TruncatedError` is raised without retention/logging/callback delivery
+
+#### Scenario: strict EOF overrides diagnostic escalation type
+
+- **WHEN** the EOF code resolves to `RAISE`, delivery succeeds, and `strict_archive_eof=True`
+- **THEN** the event is retained/logged/called back according to `RAISE`, then `TruncatedError` is raised instead of `DiagnosticRaisedError`
+
+#### Scenario: non-strict EOF follows ordinary raise policy
+
+- **WHEN** the EOF code resolves to `RAISE` and `strict_archive_eof=False`
+- **THEN** `DiagnosticRaisedError` is raised after delivery
 
 ### Requirement: Required Attributes on Every ArchiveyError
 
