@@ -8,7 +8,7 @@ tools through `uv` (`uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
 
 ## 1. Codec gibberish-rejection investigation
 
-- [ ] 1.1 Measure how quickly stdlib DEFLATE, BZIP2, and LZMA reject wrong-key ZipCrypto
+- [x] 1.1 Measure how quickly stdlib DEFLATE, BZIP2, and LZMA reject wrong-key ZipCrypto
       output (bytes consumed until failure, distribution over many wrong keys); record
       the findings in `design.md`.
 - [ ] 1.2 Pin the findings with regression tests: for each codec, wrong-key confirmation
@@ -17,6 +17,7 @@ tools through `uv` (`uv run pytest`, `uv run pyrefly check`, `uv run ty check`,
 - [ ] 1.3 Calibrate the STORED compressibility probe: chunk size, fast-compressor choice
       (e.g. zlib level 1), the conservative accept margin, and the minimum member size
       below which the probe is skipped; verify wrong-key chunks never reach the margin.
+      (Exploration done — draft constants in `design.md`; awaiting sign-off before coding.)
 
 ## 2. Bounded confirmation implementation
 
