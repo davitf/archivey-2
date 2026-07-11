@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -111,6 +112,22 @@ def test_members_include_files_and_dirs(simple_dir: Path) -> None:
         assert "b.txt" in names
         assert "sub/" in names
         assert "sub/c.txt" in names
+
+
+def test_bidi_control_name_warns_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    name = "invoice\u202ecod.exe"
+    (tmp_path / name).write_bytes(b"x")
+    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
+        with open_archive(tmp_path) as reader:
+            assert reader.members()[0].name == name
+    warnings = [
+        record
+        for record in caplog.records
+        if "bidirectional control" in record.message
+    ]
+    assert len(warnings) == 1
 
 
 def test_members_have_correct_types(simple_dir: Path) -> None:

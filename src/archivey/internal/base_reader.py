@@ -27,7 +27,10 @@ from archivey.internal.extraction_types import (
     OnError,
     OverwritePolicy,
 )
-from archivey.internal.naming import resolve_link_target_name
+from archivey.internal.naming import (
+    _warn_for_bidirectional_controls,
+    resolve_link_target_name,
+)
 from archivey.internal.selection import normalize_member_selector
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.counting import CountingReader
@@ -325,9 +328,7 @@ class BaseArchiveReader(ArchiveReader):
         members = list(self._iter_members())
         by_name_lists: dict[str, list[ArchiveMember]] = {}
         for idx, member in enumerate(members):
-            if member._member_id is None:
-                member._member_id = idx
-                member._archive_id = self._archive_id
+            self._register_member(idx, member)
             self._index_member_name(by_name_lists, member)
         for member in members:
             if member.is_link:
@@ -344,10 +345,16 @@ class BaseArchiveReader(ArchiveReader):
         """Index-only member list: stamp ids, no link resolution, no member-data reads."""
         members = list(self._iter_members())
         for idx, member in enumerate(members):
-            if member._member_id is None:
-                member._member_id = idx
-                member._archive_id = self._archive_id
+            self._register_member(idx, member)
         return members
+
+    def _register_member(self, idx: int, member: ArchiveMember) -> None:
+        """Assign identity and run backend-independent presentation checks once."""
+        if member._member_id is not None:
+            return
+        member._member_id = idx
+        member._archive_id = self._archive_id
+        _warn_for_bidirectional_controls(member.name)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         """Populate ``link_target`` from member data when needed. Base is a no-op."""
@@ -509,9 +516,7 @@ class BaseArchiveReader(ArchiveReader):
         self._members_by_name_lists = self._pass_by_name_lists
 
     def _stamp_progressive_member(self, idx: int, member: ArchiveMember) -> None:
-        if member._member_id is None:
-            member._member_id = idx
-            member._archive_id = self._archive_id
+        self._register_member(idx, member)
         if member.is_link and member.link_target_member is None:
             target = self._lookup_link_target_for_member(
                 member,
