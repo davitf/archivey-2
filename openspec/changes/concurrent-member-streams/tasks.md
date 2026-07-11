@@ -49,8 +49,10 @@
       disturbing the active root/children; release root/child scopes exactly once on normal
       return, exception, generator close, exhaustion, and abandonment/finalization
 - [ ] 2.6 Give random `open()` and each random-stream method a short-lived worker token; keep
-      only a lifecycle lease while the stream is idle, and let its private lease-bound entry
-      capability admit later I/O after reader close without reopening reader APIs
+      only a lifecycle lease while the stream is idle. A stream's own I/O
+      (`read`/`readinto`/`seek`/`tell`/`close`) is routed around the operation-owner gate
+      entirely (touching only its lease + backend), so later I/O after reader close is
+      admissible with **no** separate lease-bound entry capability object (D7 simplification)
 - [x] 2.7 Update `_open_member` and `ArchiveReader.open` docstrings: concurrent `open` is
       supported after materialization under `MemberStreams.CONCURRENT`; synchronized
       bookkeeping is allowed; per-open scratch that can be overwritten is forbidden
@@ -67,9 +69,11 @@
 - [x] 3.2 Reserve a backend-resource lease before eager/lazy `_open_member`; transfer it to
       `ArchiveStream`; release exactly once on never-opened lazy close, initialization failure,
       ordinary close, or finalization
-- [ ] 3.3 Refactor `ArchiveStream` lazy initialization from the current stream-lock →
-      `open_fn` behavior to `UNOPENED` / `OPENING` / `OPEN` / `FAILED` / `CLOSED`
-      claim/call/publish: invoke `open_fn` and inner close with no stream-state lock held
+- [ ] 3.3 Refactor `ArchiveStream` lazy initialization so `open_fn` and the inner close run
+      with **no stream-state lock held** (the essential rule: never nest stream → backend
+      under teardown's backend acquisition, D13). A minimal claimed-to-open flag guarding a
+      single caller into `open_fn` outside the lock is sufficient; the `UNOPENED` / `OPENING`
+      / `OPEN` / `FAILED` / `CLOSED` enum is optional documentation, not a requirement
 - [x] 3.4 Make idempotent `reader.close()` mark `READER_CLOSED`, release its lease, and defer
       teardown; reject every later reader operation/property except repeated `close()` /
       `__exit__` with `ArchiveyUsageError`, while escaped streams use pre-captured context
@@ -91,9 +95,12 @@
 - [ ] 4.1 Make static password candidates immutable; protect known-good snapshot/promotion
       and per-unit tried/attempt state without lifecycle/materialization/password locks during
       decrypt/key derivation; permit a required backend/source lock around atomic validation
-- [ ] 4.2 Serialize provider resolution with a claim/call/validate/publish condition protocol;
-      retain the turn through success/`None`, invoke the provider with no Archivey lock, scope
-      validation locks as in 4.1, publish promotion before release, and wake waiters in `finally`
+- [ ] 4.2 Serialize provider resolution with a **simple lock released around the callback**
+      (invoke the provider with no Archivey lock, scope validation locks as in 4.1, publish
+      promotion under the lock). Do **not** build the resolution-turn condition protocol
+      (D10 simplification): concurrent first-touch may call the provider / attempt a
+      candidate redundantly, which is acceptable because promotion stays synchronized and
+      convergent
 - [ ] 4.3 Detect same-reader password-provider reentry into a password-requiring operation
       and raise `ArchiveyUsageError` rather than self-deadlocking
 - [ ] 4.4 Audit selectors, filters, progress callbacks, logging, error stamping/formatting,
@@ -168,20 +175,23 @@
       no lease, teardown/dual-close failures propagate once with correct chaining/grouping,
       finalizers do not raise, post-close matrix is exact, and caller-owned sources are not
       closed
-- [ ] 7.5 Password tests: concurrent candidates, known-good promotion, one provider callback
-      at a time, attempt counts per unit, provider reentry rejection, no callback deadlock
+- [ ] 7.5 Password tests: concurrent candidates, known-good promotion converges, provider
+      invoked under no Archivey lock, provider reentry rejection, no callback deadlock (per
+      D10 the provider is **not** guaranteed to be called at most once under concurrent
+      first-touch; assert convergence and no corruption, not single-call)
 - [ ] 7.6 Lock tests: prove `ArchiveStream.open_fn`/inner close execute without stream-state
       lock, candidate validation may use backend/source locks, and adversarial provider/logging/
       close/finalizer hooks run with no Archivey lock and cannot invert lock order
 - [ ] 7.7 `stream_members()` tests: advance invalidates the prior stream; cross-API overlap
       raises without consuming the pass; exhaustion/error/close/abandon closes the current
       stream and releases root/child ownership exactly once
-- [ ] 7.8 Add required Linux `free-threaded-concurrency` job to `.github/workflows/ci.yml`:
+- [ ] 7.8 **[post-v1, per D15 — deferred while `CONCURRENT` is provisional]** Add required
+      Linux `free-threaded-concurrency` job to `.github/workflows/ci.yml`:
       `uv python install 3.13t`, `uv sync --python 3.13t --no-dev`, then
       `uv run --python 3.13t --no-sync --with pytest --with pytest-timeout pytest -m
       concurrent_reader`; mark directory, ZIP, single-file stdlib, SharedSource,
       lifecycle/operation state, and TAR tests, and do not count skipped optional backends as
-      free-threaded support
+      free-threaded support. Lands when `CONCURRENT` is promoted from provisional to supported
 - [ ] 7.9 Record a proportionate TAR/ISO lock baseline (wall and wait/hold time; seeks and
       bytes where practical) with no pass/fail threshold; require only targeted before/after
       metrics for later performance claims or strategy changes
@@ -203,3 +213,10 @@ machinery (sections 1–5). The `SEEKABLE` machinery flip (task 1.5/1.6 internal
 demand-driven accelerators, non-seekable defaults through `seekable-decompressor-streams`
 and the single-stream API) may land as a second step; until it does, declared `SEEKABLE`
 preserves today's behavior.
+
+**Provisional `CONCURRENT` (D15).** v1 lands the load-bearing correctness machinery
+(tokens/child scopes, materialization publication, leases, the gate, the TAR/ISO handle
+lock) and the *cooperative-use* guarantee. The adversarial/free-threaded hardening —
+task 7.8's required `3.13t` CI job and the heavier interleaving/lock stress in
+7.3/7.4/7.6 — is deferred until `CONCURRENT` is promoted from provisional to supported.
+Tasks 6.x must state the provisional status in the docstrings and capability matrix.

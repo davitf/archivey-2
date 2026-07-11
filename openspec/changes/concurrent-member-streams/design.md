@@ -205,9 +205,12 @@ earlier operation intact.
 
 Under `CONCURRENT`, random `open()` and each random-stream call hold a short-lived
 worker token only for that call; an idle open stream holds a lifecycle lease, not
-active ownership, plus a private lease-bound entry capability so its later I/O remains
-admissible after `reader.close()`. On a default reader the same states degenerate to
-the single live stream.
+active ownership. A stream's own I/O (`read`/`readinto`/`seek`/`tell`/`close`) touches
+only its lease and the backend and does **not** consult the operation-owner gate, so it
+stays admissible after `reader.close()` without any separate "lease-bound entry
+capability" object — the simplification is that stream I/O is never routed through the
+token check in the first place. On a default reader the same states degenerate to the
+single live stream.
 
 Backends claimed for a free-threaded runtime must be data-race-free under accidental
 overlap (no memory corruption or crash), but behavior beyond the stated detected errors
@@ -238,25 +241,39 @@ lease-deferred teardown applies to every reader. Post-close reader operations ra
 
 ### D10. Password resolution is concurrency-safe and callback-safe
 
-Unchanged from the prior draft: immutable ordered static candidates; synchronized
-known-good snapshot/promotion; per-unit tried/attempt state; expensive key
-derivation/decrypt outside all reader-state locks (a required backend/source lock only
-around atomic decode/handle work); one provider-driven resolution turn per reader via a
-claim/call/validate/publish condition protocol with the provider invoked under no
-Archivey lock; waiters re-snapshot known-good before claiming the next turn; same-reader
-provider reentry into a password-requiring operation raises a usage error rather than
-deadlocking. Only load-bearing under `CONCURRENT`; the default path runs the same code
-single-owner.
+**Simplified from the prior draft.** The load-bearing, cheap-to-provide guarantees are
+kept: immutable ordered static candidates; synchronized known-good snapshot/promotion;
+per-unit tried/attempt state; expensive key derivation/decrypt outside all reader-state
+locks (a required backend/source lock only around atomic decode/handle work); the
+provider is invoked under **no** Archivey lock; same-reader provider reentry into a
+password-requiring operation raises a usage error rather than deadlocking.
+
+What is **dropped** as unnecessary machinery: the "one provider-driven resolution turn
+per reader via a claim/call/validate/publish condition protocol, with waiters
+re-snapshotting known-good before claiming the next turn." That protocol only exists to
+suppress *redundant* provider calls / decrypt attempts when several threads first touch
+an encrypted member simultaneously — an efficiency footnote, not a correctness property.
+Instead, provider calls are serialized by a simple lock that is **released around the
+callback** (preserving the no-lock-during-provider and reentry-rejection rules above);
+under concurrent first-touch a provider may be asked more than once and a candidate may
+be attempted redundantly. That is explicitly acceptable: promotion is still synchronized,
+so the known-good result converges and no state is corrupted. Only load-bearing under
+`CONCURRENT`; the default path runs the same code single-owner.
 
 ### D11. Lock scope, callback rule, and ordering
 
-Unchanged: nested reader-state acquisition follows lifecycle/operation-state →
-materialization → password; backend/source locks are leaves; `ArchiveStream` lazy
-open/close is refactored to claim/call/publish (`UNOPENED`, `OPENING`, `OPEN`, `FAILED`,
-`CLOSED`) so stream state is never held while acquiring backend/source or lifecycle
-locks. Password providers, progress callbacks, selectors/filters, logging handlers,
-diagnostic formatting/stamping, `sys.unraisablehook`, and user-visible close/finalizer
-hooks execute with no Archivey lock held.
+Nested reader-state acquisition follows lifecycle/operation-state → materialization →
+password; backend/source locks are leaves. The essential `ArchiveStream` rule is narrow
+and concrete: `open_fn` and the inner close must run **without the stream-state lock
+held**, so that a lazy open which acquires a backend lock (the TAR/ISO shared-handle lock
+of D13) never nests stream → backend under teardown's backend acquisition. The
+claim/call/publish states (`UNOPENED`, `OPENING`, `OPEN`, `FAILED`, `CLOSED`) are the
+means of expressing that — a minimal "claimed-to-open" flag guarding a single caller into
+`open_fn` outside the lock is equally acceptable; the five-state enum is documentation,
+not a requirement. This refactor is load-bearing precisely because D13's TAR/ISO lock has
+landed; it is not speculative. Password providers, progress callbacks, selectors/filters,
+logging handlers, diagnostic formatting/stamping, `sys.unraisablehook`, and user-visible
+close/finalizer hooks execute with no Archivey lock held.
 
 ### D12. Backend compliance paths
 
@@ -284,13 +301,35 @@ archive close); pinned pycdlib `walk()`/`get_record()` remain audited in-memory 
 and version-regression items; proportionate serialization baselines are recorded without
 becoming a correctness merge threshold.
 
-### D14. Free-threaded Python is a correctness target for `CONCURRENT`
+### D14. Free-threaded Python is a *post-v1* correctness target for `CONCURRENT`
 
-Unchanged: for every claimed backend/runtime combination the D5 seam must behave
-identically on regular and free-threaded CPython, with real synchronization rather than
-incidental GIL serialization; a required Linux `free-threaded-concurrency` CI job runs
-`3.13t` against `concurrent_reader`-marked core-backend tests; backends not exercised
-there are not claimed covered. No speedup is promised.
+The design goal is unchanged — for every claimed backend/runtime combination the D5 seam
+should behave identically on regular and free-threaded CPython, with real synchronization
+rather than incidental GIL serialization — but per D15 it is **not a v1 merge gate**. The
+required Linux `free-threaded-concurrency` CI job (`3.13t` against
+`concurrent_reader`-marked core-backend tests) and the adversarial free-threaded stress
+coverage land when `CONCURRENT` is promoted from provisional to supported; until then
+they are optional and any backend not exercised there is simply not claimed covered. No
+speedup is promised.
+
+### D15. `CONCURRENT` ships *provisional* in v1
+
+The token/child-scope model (D7), the materialization publication boundary (D6), the
+lifecycle leases (D9), the single-live-stream gate (D1), and the TAR/ISO handle lock
+(D13) are the load-bearing correctness machinery and ship as the supported contract.
+Everything whose only purpose is hardening `CONCURRENT` against *adversarial* reentrancy
+and *free-threaded* execution — the dropped password turn protocol (D10), the required
+`3.13t` CI job and free-threaded stress suite (D14), and the heavier interleaving/lock
+stress tests — is deferred behind a documented "**`CONCURRENT` is provisional**" note.
+
+The dividing line is the design's own concession that "behavior beyond the stated
+detected errors is not a supported scheduling contract" (D7): v1 guarantees `CONCURRENT`
+is correct under *cooperative* use (materialize, then fan out; callers synchronize their
+own shared streams) and that the documented misuse set is *detected*, without promising a
+hardened free-threaded scheduling contract. Because `CONCURRENT` is opt-in and pre-1.0,
+promoting it later from provisional to fully-supported is additive, not a breaking
+change. The public docstrings and `packaging-and-extras` matrix state the provisional
+status explicitly so no caller mistakes it for a settled guarantee.
 
 ## Risks / Trade-offs
 
@@ -314,6 +353,11 @@ there are not claimed covered. No speedup is promised.
 - **Two-step landing:** the API shape lands whole, but `SEEKABLE`'s machinery flip
   lands after the `CONCURRENT` gate; until then declared-`SEEKABLE` simply preserves
   today's behavior.
+- **Provisional `CONCURRENT` (D15):** v1 ships the correctness machinery and cooperative
+  guarantee but defers adversarial/free-threaded hardening and its required CI. Risk: a
+  caller reads "concurrent" as "hardened for hostile free-threaded scheduling." Mitigated
+  by stating the provisional status in the docstrings and capability matrix, and by the
+  fact that the detected-misuse errors still fire under the default and cooperative paths.
 
 ## Migration Plan
 
@@ -336,3 +380,17 @@ Not a user compatibility migration (pre-1.0). During implementation:
 _(none remaining — wrong-reader identity and related misuse migrate to
 `ArchiveyUsageError`; `MemberStreams` spelling is `CONCURRENT` / `SEEKABLE`; full
 open-site stack is retained unconditionally.)_
+
+**Maintainer decisions folded in (2026-07-11 review of #59):**
+
+- Keep the unforgeable operation-token model (D7): it is the minimal correct primitive
+  for distinguishing a deliberately-spawned child scope from an unrelated reentrant call,
+  and neither thread-identity (breaks cross-thread fan-out *and* same-thread callback
+  reentry) nor a reentrant lock (silently re-admits reentry) can express it. It is
+  already implemented; the remaining work is wiring, not new machinery.
+- Drop the separate "lease-bound entry capability" (D7): route stream I/O around the
+  operation gate instead.
+- Simplify password resolution (D10): keep no-lock-during-provider + reentry rejection;
+  drop the resolution-turn condition protocol.
+- Ship `CONCURRENT` provisional (D15): defer free-threaded/adversarial hardening and the
+  required `3.13t` CI to a post-v1 promotion.

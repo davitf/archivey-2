@@ -104,10 +104,14 @@ operations.
   Leases apply to the default single stream as well — one escaped stream can outlive its
   reader regardless of declared capabilities.
 - Synchronize password state and require providers/callbacks/diagnostics to run outside
-  all Archivey locks (unchanged; active under `CONCURRENT`).
-- Require the `CONCURRENT` seam to be data-race-free on claimed free-threaded
-  backend/runtime combinations, with a required CPython `3.13t` core-backend CI job
-  (unchanged). This is a correctness promise, not a parallel-speed promise.
+  all Archivey locks (active under `CONCURRENT`). Provider calls are serialized by a
+  simple lock released around the callback, with same-reader provider reentry rejected;
+  the resolution-turn condition protocol is dropped as unnecessary (design D10).
+- **`CONCURRENT` ships provisional in v1 (design D15):** the correctness machinery and the
+  cooperative-use guarantee land now; the free-threaded/adversarial hardening — the
+  data-race-free free-threaded seam and its required CPython `3.13t` core-backend CI job —
+  is a documented post-v1 promotion, not a v1 merge gate. When it lands it is a correctness
+  promise, not a parallel-speed promise.
 - Fold TAR/ISO into the declared capability through `tar-concurrent-open`: its
   one-lock-per-reader mechanism is instantiated only for `CONCURRENT` readers.
 - Replace the blanket prose declarations ("readers are not thread-safe; one per thread")

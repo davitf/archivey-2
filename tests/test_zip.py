@@ -25,7 +25,6 @@ from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
-    UnsupportedOperationError,
 )
 from tests.streams_util import NonSeekableBytesIO
 
