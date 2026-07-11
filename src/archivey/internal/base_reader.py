@@ -296,7 +296,7 @@ class BaseArchiveReader(ArchiveReader):
         teardown_exc: Exception | None = None
         try:
             self._close_archive()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - combine with pending stream-close failure
             teardown_exc = exc
             self._state.complete_teardown(exc)
         else:
