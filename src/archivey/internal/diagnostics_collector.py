@@ -1,7 +1,13 @@
 """Lifecycle diagnostic collector and emission path.
 
-Owns exact counts, bounded retention (aggregate + member attachments), operation
-watermarks, policy resolution, logging/callback delivery, and RAISE escalation.
+Owns exact counts, bounded retention (aggregate + member attachments), watermark-based
+ranged snapshots, policy resolution, logging/callback delivery, and RAISE escalation.
+
+Memory is bounded by design: the only lifetime-retained structure is ``_retained``, which
+is capped at ``max_retained``. Exact counts are kept as a small fixed per-code ``Counter``,
+and ranged/stream snapshots are computed by differencing a cheap :class:`DiagnosticWatermark`
+(a sequence number plus a per-code count snapshot) against the live counters — so nothing
+grows with the number of emitted diagnostics or opened streams.
 """
 
 from __future__ import annotations
@@ -10,8 +16,8 @@ import logging
 import threading
 import uuid
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from archivey.diagnostics import (
@@ -36,9 +42,16 @@ _log = logging.getLogger("archivey.diagnostics")
 
 @dataclass(frozen=True)
 class DiagnosticWatermark:
-    """Opaque collector position; creating one copies no diagnostics and costs no slots."""
+    """Opaque collector position: the sequence number plus per-code counts at capture time.
+
+    Creating one copies no diagnostics and costs no retention slots. Ranged snapshots
+    difference two watermarks (or a watermark against "now"), so the collector needs no
+    per-emission log to answer "what happened since here".
+    """
 
     _sequence: int
+    _total: int
+    _counts: Mapping[DiagnosticCode, int]
 
 
 @dataclass
@@ -70,11 +83,10 @@ class DiagnosticCollector:
         self._counts: Counter[DiagnosticCode] = Counter()
         self._retained: list[_RetainedEntry] = []
         self._slots_used = 0
-        self._emitting = False
-        # Every emission: (sequence, code) for exact ranged counts.
-        self._emission_log: list[tuple[int, DiagnosticCode]] = []
-        # Named operation scopes for stream-filtered snapshots.
-        self._operations: dict[str, tuple[int, int | None]] = {}
+        # Thread ids currently inside a delivery (log/callback) step. Keyed per thread so
+        # legitimate concurrent emits on separate threads do not read as reentrancy, while
+        # a callback re-entering emit on its own thread still trips the guard.
+        self._emitting_threads: set[int] = set()
 
     @property
     def policy(self) -> DiagnosticPolicy:
@@ -86,79 +98,58 @@ class DiagnosticCollector:
 
     def watermark(self) -> DiagnosticWatermark:
         with self._lock:
-            return DiagnosticWatermark(_sequence=self._sequence)
+            return DiagnosticWatermark(
+                _sequence=self._sequence,
+                _total=self._total_count,
+                _counts=dict(self._counts),
+            )
 
-    def begin_operation(self, operation_id: str) -> DiagnosticWatermark:
-        """Mark the start of a named operation (e.g. a stream open) for filtered views."""
-        with self._lock:
-            wm = DiagnosticWatermark(_sequence=self._sequence)
-            self._operations[operation_id] = (self._sequence, None)
-            return wm
+    def _summary_between(
+        self,
+        start_seq: int,
+        start_total: int,
+        start_counts: Mapping[DiagnosticCode, int],
+        end_seq: int,
+        end_total: int,
+        end_counts: Mapping[DiagnosticCode, int],
+    ) -> DiagnosticSummary:
+        """Build a summary for the half-open range ``(start_seq, end_seq]``.
 
-    def end_operation(self, operation_id: str) -> None:
-        with self._lock:
-            start_end = self._operations.get(operation_id)
-            if start_end is None:
-                return
-            start, _ = start_end
-            self._operations[operation_id] = (start, self._sequence)
+        Counts and totals are exact deltas of the two count snapshots; retained detail is
+        filtered from the (bounded) retention list by sequence. The caller holds the lock.
+        """
+        total = end_total - start_total
+        count_map: dict[DiagnosticCode, int] = {}
+        for code, n in end_counts.items():
+            delta = n - start_counts.get(code, 0)
+            if delta:
+                count_map[code] = delta
+        retained = tuple(
+            e.diagnostic for e in self._retained if start_seq < e.sequence <= end_seq
+        )
+        return DiagnosticSummary(
+            total_count=total,
+            counts=count_map,
+            retained=retained,
+            dropped_count=total - len(retained),
+        )
 
-    def snapshot(self, *, since: DiagnosticWatermark | None = None) -> DiagnosticSummary:
-        """Fresh immutable cumulative (or ranged) snapshot."""
+    def snapshot(
+        self, *, since: DiagnosticWatermark | None = None
+    ) -> DiagnosticSummary:
+        """Fresh immutable cumulative snapshot, or the delta since ``since``."""
         with self._lock:
             if since is None:
-                total = self._total_count
-                counts = MappingProxyType(dict(self._counts))
-                retained = tuple(e.diagnostic for e in self._retained)
-                return DiagnosticSummary(
-                    total_count=total,
-                    counts=counts,
-                    retained=retained,
-                    dropped_count=total - len(retained),
+                return self._summary_between(
+                    0, 0, {}, self._sequence, self._total_count, self._counts
                 )
-
-            start = since._sequence
-            ranged = [(seq, code) for seq, code in self._emission_log if seq > start]
-            count_map: Counter[DiagnosticCode] = Counter()
-            for _, code in ranged:
-                count_map[code] += 1
-            retained = tuple(
-                e.diagnostic for e in self._retained if e.sequence > start
-            )
-            total = len(ranged)
-            return DiagnosticSummary(
-                total_count=total,
-                counts=MappingProxyType(dict(count_map)),
-                retained=retained,
-                dropped_count=total - len(retained),
-            )
-
-    def snapshot_operation(self, operation_id: str) -> DiagnosticSummary:
-        with self._lock:
-            bounds = self._operations.get(operation_id)
-            if bounds is None:
-                return DiagnosticSummary.empty()
-            start, end = bounds
-            end_seq = end if end is not None else self._sequence
-            ranged = [
-                (seq, code)
-                for seq, code in self._emission_log
-                if start < seq <= end_seq
-            ]
-            count_map: Counter[DiagnosticCode] = Counter()
-            for _, code in ranged:
-                count_map[code] += 1
-            retained = tuple(
-                e.diagnostic
-                for e in self._retained
-                if start < e.sequence <= end_seq
-            )
-            total = len(ranged)
-            return DiagnosticSummary(
-                total_count=total,
-                counts=MappingProxyType(dict(count_map)),
-                retained=retained,
-                dropped_count=total - len(retained),
+            return self._summary_between(
+                since._sequence,
+                since._total,
+                since._counts,
+                self._sequence,
+                self._total_count,
+                self._counts,
             )
 
     def emit(
@@ -188,9 +179,10 @@ class DiagnosticCollector:
         validate_code_context(code, context)
         disposition = self._policy.resolve(code)
         log = logger if logger is not None else self._logger
+        thread_id = threading.get_ident()
 
         with self._lock:
-            if self._emitting:
+            if thread_id in self._emitting_threads:
                 raise UnsupportedOperationError(
                     "Diagnostic callback/reentrancy: cannot drive another operation on "
                     "the same reader/stream while a diagnostic is being emitted."
@@ -206,7 +198,6 @@ class DiagnosticCollector:
             )
             self._total_count += 1
             self._counts[code] += 1
-            self._emission_log.append((sequence, code))
 
             retained_aggregate = False
             if disposition is not DiagnosticDisposition.IGNORE:
@@ -228,7 +219,7 @@ class DiagnosticCollector:
             should_deliver = disposition is not DiagnosticDisposition.IGNORE
             should_raise_diagnostic = disposition is DiagnosticDisposition.RAISE
             if should_deliver:
-                self._emitting = True
+                self._emitting_threads.add(thread_id)
 
         try:
             if should_deliver:
@@ -243,7 +234,7 @@ class DiagnosticCollector:
                 raise DiagnosticRaisedError(message, diagnostic=diagnostic)
         finally:
             with self._lock:
-                self._emitting = False
+                self._emitting_threads.discard(thread_id)
 
         return diagnostic
 

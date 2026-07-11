@@ -240,6 +240,47 @@ def test_operational_reentrancy_rejected() -> None:
         _emit_norm(collector)
 
 
+def test_concurrent_emits_are_not_treated_as_reentrancy() -> None:
+    # A slow callback holds one thread inside delivery while other threads emit. The
+    # reentrancy guard is per-thread, so concurrent emitters must NOT be rejected.
+    import threading
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def cb(d: Diagnostic) -> None:
+        if d.message == "slow":
+            entered.set()
+            release.wait(5)
+
+    collector = DiagnosticCollector(on_diagnostic=cb)
+    errors: list[BaseException] = []
+
+    def slow() -> None:
+        try:
+            _emit_norm(collector, message="slow")
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+            errors.append(exc)
+
+    def fast() -> None:
+        try:
+            entered.wait(5)  # ensure the slow emit is mid-delivery
+            _emit_norm(collector, message="fast")
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+            errors.append(exc)
+        finally:
+            release.set()
+
+    t_slow, t_fast = threading.Thread(target=slow), threading.Thread(target=fast)
+    t_slow.start()
+    t_fast.start()
+    t_slow.join(5)
+    t_fast.join(5)
+
+    assert errors == []
+    assert collector.snapshot().total_count == 2
+
+
 def test_snapshots_are_immutable_points_in_time() -> None:
     collector = DiagnosticCollector()
     _emit_norm(collector, message="one")
@@ -294,6 +335,25 @@ def test_oneshot_extract_report_includes_detection(
     assert isinstance(report, ExtractionReport)
     assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in report.diagnostics.counts
     assert any(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+
+
+def test_extraction_report_behaves_like_its_results_sequence(tmp_path: Path) -> None:
+    # The report iterates / sizes / indexes as ``results`` so the common extraction loop
+    # (`for r in extract(...)`, `len(...)`, `report[0]`) keeps working alongside
+    # ``report.diagnostics``.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+        zf.writestr("b.txt", b"yo")
+    src = tmp_path / "a.zip"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    report = extract(src, dest)
+    assert len(report) == len(report.results)
+    assert list(report) == list(report.results)
+    assert report[0] is report.results[0]
 
 
 def test_extract_all_report_is_delta_only(tmp_path: Path) -> None:

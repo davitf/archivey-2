@@ -7,7 +7,8 @@ for the lifecycle, retention, and policy contracts.
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable, Mapping
+import dataclasses
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -25,6 +26,20 @@ def _freeze_mapping(mapping: Mapping[_K, _V] | None) -> Mapping[_K, _V]:
     if mapping is None:
         return MappingProxyType({})
     return MappingProxyType(dict(mapping))
+
+
+@dataclass(frozen=True)
+class _JsonSafeContext:
+    """Base for the flat, frozen context dataclasses below: a single JSON-safe ``to_dict``.
+
+    It carries no fields itself (so subclasses keep their own field lists) but is a
+    dataclass, which lets ``dataclasses.asdict`` accept ``self``. Every context field is a
+    ``str`` / ``int`` / ``None`` (or a ``Literal`` thereof), so ``asdict`` yields a
+    JSON-serializable mapping in field order — no per-class boilerplate needed.
+    """
+
+    def to_dict(self) -> dict[str, object]:
+        return dataclasses.asdict(self)
 
 
 class DiagnosticCode(str, Enum):
@@ -63,7 +78,7 @@ class DiagnosticDisposition(str, Enum):
 
 
 @dataclass(frozen=True)
-class NameNormalizationContext:
+class NameNormalizationContext(_JsonSafeContext):
     kind: Literal["name_normalization"] = "name_normalization"
     archive_name: str | None = None
     member_name: str = ""
@@ -72,54 +87,26 @@ class NameNormalizationContext:
     presented_name: str = ""
     normalized_name: str = ""
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "member_name": self.member_name,
-            "member_id": self.member_id,
-            "raw_name_base64": self.raw_name_base64,
-            "presented_name": self.presented_name,
-            "normalized_name": self.normalized_name,
-        }
-
 
 @dataclass(frozen=True)
-class FormatConflictContext:
+class FormatConflictContext(_JsonSafeContext):
     kind: Literal["format_conflict"] = "format_conflict"
     source_name: str | None = None
     extension: str | None = None
     extension_format: str = ""
     detected_format: str = ""
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "source_name": self.source_name,
-            "extension": self.extension,
-            "extension_format": self.extension_format,
-            "detected_format": self.detected_format,
-        }
-
 
 @dataclass(frozen=True)
-class ScanRaceContext:
+class ScanRaceContext(_JsonSafeContext):
     kind: Literal["scan_race"] = "scan_race"
     archive_name: str | None = None
     relative_path: str = ""
     entry_kind: Literal["directory", "entry"] = "entry"
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "relative_path": self.relative_path,
-            "entry_kind": self.entry_kind,
-        }
-
 
 @dataclass(frozen=True)
-class ArchiveEofContext:
+class ArchiveEofContext(_JsonSafeContext):
     kind: Literal["archive_eof"] = "archive_eof"
     archive_name: str | None = None
     format: str = ""
@@ -128,20 +115,9 @@ class ArchiveEofContext:
     observed_bytes: int = 0
     observed_kind: Literal["absent", "short", "nonzero"] = "absent"
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "format": self.format,
-            "expected_marker": self.expected_marker,
-            "expected_bytes": self.expected_bytes,
-            "observed_bytes": self.observed_bytes,
-            "observed_kind": self.observed_kind,
-        }
-
 
 @dataclass(frozen=True)
-class MemberTimestampContext:
+class MemberTimestampContext(_JsonSafeContext):
     kind: Literal["member_timestamp"] = "member_timestamp"
     archive_name: str | None = None
     member_name: str = ""
@@ -150,38 +126,18 @@ class MemberTimestampContext:
     source: str = ""
     value_repr: str = ""
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "member_name": self.member_name,
-            "member_id": self.member_id,
-            "field": self.field,
-            "source": self.source,
-            "value_repr": self.value_repr,
-        }
-
 
 @dataclass(frozen=True)
-class SymlinkTargetContext:
+class SymlinkTargetContext(_JsonSafeContext):
     kind: Literal["symlink_target"] = "symlink_target"
     archive_name: str | None = None
     member_name: str = ""
     member_id: int | None = None
     reason: str = ""
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "member_name": self.member_name,
-            "member_id": self.member_id,
-            "reason": self.reason,
-        }
-
 
 @dataclass(frozen=True)
-class DigestContext:
+class DigestContext(_JsonSafeContext):
     kind: Literal["digest"] = "digest"
     archive_name: str | None = None
     member_name: str = ""
@@ -189,19 +145,9 @@ class DigestContext:
     algorithm: str = ""
     reason: str = ""
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "member_name": self.member_name,
-            "member_id": self.member_id,
-            "algorithm": self.algorithm,
-            "reason": self.reason,
-        }
-
 
 @dataclass(frozen=True)
-class SeekIndexContext:
+class SeekIndexContext(_JsonSafeContext):
     kind: Literal["seek_index"] = "seek_index"
     archive_name: str | None = None
     member_name: str | None = None
@@ -210,20 +156,9 @@ class SeekIndexContext:
     scan: str = ""
     error_type: str = ""
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "member_name": self.member_name,
-            "member_id": self.member_id,
-            "codec": self.codec,
-            "scan": self.scan,
-            "error_type": self.error_type,
-        }
-
 
 @dataclass(frozen=True)
-class StreamRewindContext:
+class StreamRewindContext(_JsonSafeContext):
     kind: Literal["stream_rewind"] = "stream_rewind"
     archive_name: str | None = None
     member_name: str | None = None
@@ -233,21 +168,9 @@ class StreamRewindContext:
     to_offset: int = 0
     accelerator: str | None = None
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "member_name": self.member_name,
-            "member_id": self.member_id,
-            "codec": self.codec,
-            "from_offset": self.from_offset,
-            "to_offset": self.to_offset,
-            "accelerator": self.accelerator,
-        }
-
 
 @dataclass(frozen=True)
-class ExtractionOutcomeContext:
+class ExtractionOutcomeContext(_JsonSafeContext):
     kind: Literal["extraction_outcome"] = "extraction_outcome"
     archive_name: str | None = None
     member_name: str = ""
@@ -256,18 +179,6 @@ class ExtractionOutcomeContext:
     error_type: str = ""
     failure_group_id: str | None = None
     failure_group_size: int | None = None
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "archive_name": self.archive_name,
-            "member_name": self.member_name,
-            "member_id": self.member_id,
-            "status": self.status,
-            "error_type": self.error_type,
-            "failure_group_id": self.failure_group_id,
-            "failure_group_size": self.failure_group_size,
-        }
 
 
 DiagnosticContext = (
@@ -320,7 +231,8 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
     ):
         raise ValueError("SCAN_ENTRY_VANISHED requires entry_kind='entry'")
     if code is DiagnosticCode.EXTRACTION_MEMBER_REJECTED and (
-        not isinstance(context, ExtractionOutcomeContext) or context.status != "rejected"
+        not isinstance(context, ExtractionOutcomeContext)
+        or context.status != "rejected"
     ):
         raise ValueError("EXTRACTION_MEMBER_REJECTED requires status='rejected'")
     if code is DiagnosticCode.EXTRACTION_MEMBER_FAILED and (
@@ -360,7 +272,9 @@ class DiagnosticSummary:
     """Immutable point-in-time snapshot of diagnostic counts and retained detail."""
 
     total_count: int
-    counts: Mapping[DiagnosticCode, int] = field(default_factory=lambda: MappingProxyType({}))
+    counts: Mapping[DiagnosticCode, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     retained: tuple[Diagnostic, ...] = ()
     dropped_count: int = 0
 
@@ -396,10 +310,23 @@ class ExtractionReport:
     but ``ExtractionResult.member`` refers to the live mutable :class:`ArchiveMember`
     (caller-read-only), whose late-bound metadata and member diagnostics may still be
     filled in place.
+
+    The report iterates, indexes, and sizes as its ``results`` sequence, so the common
+    ``for result in extract(...)`` / ``len(...)`` / ``report[0]`` idioms keep working while
+    ``report.diagnostics`` exposes the operation's diagnostic summary.
     """
 
     results: tuple[ExtractionResult, ...]
     diagnostics: DiagnosticSummary
+
+    def __iter__(self) -> Iterator[ExtractionResult]:
+        return iter(self.results)
+
+    def __len__(self) -> int:
+        return len(self.results)
+
+    def __getitem__(self, index: int) -> ExtractionResult:
+        return self.results[index]
 
 
 OnDiagnostic = Callable[[Diagnostic], None]

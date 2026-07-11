@@ -20,7 +20,6 @@ from archivey.internal.extraction_types import (
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember
 
 if TYPE_CHECKING:
-    from archivey.internal.diagnostics_collector import DiagnosticWatermark
     from archivey.internal.streams.archive_stream import ArchiveStream
 
 # Type alias for the member selector passed to stream_members() and extract_all().
@@ -154,7 +153,6 @@ class ArchiveReader(ABC):
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
-        _report_since: DiagnosticWatermark | None = None,
     ) -> ExtractionReport:
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
 
@@ -164,8 +162,7 @@ class ArchiveReader(ABC):
         ``.replace()``d copy) or skip it (return ``None``). ``config`` defaults to the
         config the reader was opened with; ``limits`` overrides its extraction limits for
         this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
-        summary is the delta for this extraction call (or from ``_report_since`` when
-        provided by top-level :func:`archivey.extract`).
+        summary is the delta for this extraction call.
         """
         ...
 

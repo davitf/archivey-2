@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 import threading
-import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO, Callable, NoReturn
 
@@ -74,7 +73,6 @@ class ArchiveStream(ReadOnlyIOStream):
         rewind_warning: RewindWarning | None = None,
         size: int | None = None,
         collector: DiagnosticCollector | None = None,
-        operation_id: str | None = None,
     ) -> None:
         super().__init__()
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
@@ -87,23 +85,23 @@ class ArchiveStream(ReadOnlyIOStream):
         self._rewind_warned = False
         self._size = size
         self._diagnostics_collector = collector
-        if collector is not None:
-            op_id = operation_id if operation_id is not None else uuid.uuid4().hex
-            self._operation_id: str | None = op_id
-            collector.begin_operation(op_id)
-        else:
-            self._operation_id = operation_id
+        # A stream's diagnostics are everything emitted from its open onward: capture the
+        # collector position here and difference against "now" on each query. No per-stream
+        # bookkeeping is retained collector-side.
+        self._diagnostics_watermark = (
+            collector.watermark() if collector is not None else None
+        )
         if not lazy:
             self._ensure_open()
 
     @property
     def diagnostics(self) -> DiagnosticSummary:
-        """Operation-filtered diagnostic snapshot for this stream, or empty."""
+        """Diagnostic snapshot for events emitted since this stream opened, or empty."""
         collector = self._diagnostics_collector
-        op_id = self._operation_id
-        if collector is None or op_id is None:
+        watermark = self._diagnostics_watermark
+        if collector is None or watermark is None:
             return DiagnosticSummary.empty()
-        return collector.snapshot_operation(op_id)
+        return collector.snapshot(since=watermark)
 
     @property
     def size(self) -> int | None:

@@ -95,7 +95,6 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-    collector: DiagnosticCollector | None = None,
 ) -> ArchiveReader:
     """Open an archive for reading.
 
@@ -135,9 +134,33 @@ def open_archive(
     candidate in parallel) to decide. That full pass is rare in practice (multiple
     passwords *and* a colliding wrong candidate *and* a STORED member) but can matter
     for very large stored members.
+    """
+    return _open_archive(
+        source,
+        format=format,
+        streaming=streaming,
+        password=password,
+        encoding=encoding,
+        config=config,
+        collector=None,
+    )
 
-    ``collector`` is an internal hook used by :func:`extract` to share one diagnostic
-    collector across detection, open, and extraction. Callers normally omit it.
+
+def _open_archive(
+    source: OpenSourceInput,
+    *,
+    format: ArchiveFormat | None = None,
+    streaming: bool = False,
+    password: PasswordInput = None,
+    encoding: str | None = None,
+    config: ArchiveyConfig | None = None,
+    collector: DiagnosticCollector | None = None,
+) -> ArchiveReader:
+    """Collector-aware core of :func:`open_archive`.
+
+    ``collector`` lets :func:`extract` share one diagnostic collector across detection,
+    open, and extraction so the one-shot report spans every phase. ``open_archive`` passes
+    ``None``, and the reader then owns a fresh collector built from ``config``.
     """
     # Import backends to ensure they are registered
     import archivey.internal.backends  # noqa: F401
@@ -268,11 +291,13 @@ def extract(
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     # One collector + watermark from before detection so the report includes every
-    # phase of this one-shot call exactly once.
+    # phase of this one-shot call exactly once. The reader shares this collector (via
+    # the internal _open_archive hook), so re-snapshotting from this watermark widens
+    # extract_all's extraction-only report to also cover detection and open.
     collector = collector_from_config(effective_config)
     report_since = collector.watermark()
 
-    with open_archive(
+    with _open_archive(
         source,
         format=format,
         streaming=streaming,
@@ -283,12 +308,15 @@ def extract(
     ) as reader:
         # The reader already carries `config` (passed to open_archive above), so
         # extract_all falls back to it — no need to forward `config` a second time.
-        return reader.extract_all(
+        report = reader.extract_all(
             dest,
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
             on_progress=on_progress,
             limits=limits,
-            _report_since=report_since,
+        )
+        return ExtractionReport(
+            results=report.results,
+            diagnostics=collector.snapshot(since=report_since),
         )

@@ -21,7 +21,6 @@ from archivey.exceptions import (
 )
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
-    DiagnosticWatermark,
     collector_from_config,
 )
 from archivey.internal.extraction_types import (
@@ -289,7 +288,6 @@ class BaseArchiveReader(ArchiveReader):
             lazy=True,
             size=member.size,
             collector=self._diagnostics_collector,
-            operation_id=uuid.uuid4().hex,
         )
 
     @abstractmethod
@@ -331,7 +329,6 @@ class BaseArchiveReader(ArchiveReader):
             seekable=is_seekable(inner),
             size=size,
             collector=self._diagnostics_collector,
-            operation_id=uuid.uuid4().hex,
         )
 
     @abstractmethod
@@ -824,7 +821,6 @@ class BaseArchiveReader(ArchiveReader):
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
-        _report_since: DiagnosticWatermark | None = None,
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
         # Check (but do not enter) the single-pass guard here, so a second extract_all
@@ -841,13 +837,10 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else effective_config.extraction_limits
         )
         collector = self._diagnostics_collector
-        # Top-level extract() may pass a watermark from before detection; otherwise
-        # this call's report covers only extraction-phase events.
-        wm = (
-            _report_since
-            if _report_since is not None
-            else collector.watermark()
-        )
+        # This call's report covers only its own extraction-phase events. The one-shot
+        # extract() re-snapshots against its own pre-detection watermark to widen the
+        # window, so extract_all() never needs to know about that outer scope.
+        wm = collector.watermark()
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
