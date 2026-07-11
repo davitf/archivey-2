@@ -23,12 +23,13 @@ archivey.extract(
 ) -> ExtractionReport
 ```
 
-The one-shot call SHALL create one collector, one retention budget, and its report
-watermark before format detection. It SHALL pass that collector through internal
-detection, backend open, read, and extraction; the temporary reader owns it during the
-call. No phase creates a second collector, seeds/copies retained occurrences, or resets
-the budget. The final report summary SHALL span the original watermark and therefore
-include all events caused by the call exactly once.
+The one-shot call SHALL use exactly one collector and one retention budget for the whole
+call. Because the temporary reader is opened fresh, its collector — created before format
+detection and owning detection, backend open, read, and extraction — already covers every
+phase; the one-shot report SHALL take its diagnostic summary from that reader's cumulative
+snapshot. No phase creates a second collector, seeds/copies retained occurrences, or resets
+the budget. The final report summary SHALL therefore include all events caused by the call
+exactly once.
 
 `results` SHALL be an immutable tuple. If an always-stop condition or `OnError.STOP`
 raises, no report is returned.

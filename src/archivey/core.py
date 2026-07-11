@@ -19,10 +19,7 @@ from archivey.exceptions import (
     UnsupportedOperationError,
 )
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
-from archivey.internal.diagnostics_collector import (
-    DiagnosticCollector,
-    collector_from_config,
-)
+from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
@@ -135,43 +132,17 @@ def open_archive(
     passwords *and* a colliding wrong candidate *and* a STORED member) but can matter
     for very large stored members.
     """
-    return _open_archive(
-        source,
-        format=format,
-        streaming=streaming,
-        password=password,
-        encoding=encoding,
-        config=config,
-        collector=None,
-    )
-
-
-def _open_archive(
-    source: OpenSourceInput,
-    *,
-    format: ArchiveFormat | None = None,
-    streaming: bool = False,
-    password: PasswordInput = None,
-    encoding: str | None = None,
-    config: ArchiveyConfig | None = None,
-    collector: DiagnosticCollector | None = None,
-) -> ArchiveReader:
-    """Collector-aware core of :func:`open_archive`.
-
-    ``collector`` lets :func:`extract` share one diagnostic collector across detection,
-    open, and extraction so the one-shot report spans every phase. ``open_archive`` passes
-    ``None``, and the reader then owns a fresh collector built from ``config``.
-    """
     # Import backends to ensure they are registered
     import archivey.internal.backends  # noqa: F401
 
     passwords = _PasswordCandidates.from_input(password)
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
-    # Prospective reader collector: created before detection so automatic detection
-    # and the reader share one budget/occurrence order (see diagnostics design).
-    if collector is None:
-        collector = collector_from_config(effective_config)
+    # The reader's diagnostic collector is created here, before detection, so automatic
+    # detection and the reader share one budget/occurrence order (see diagnostics design)
+    # and ``reader.diagnostics`` covers the whole open — which is what one-shot extract()
+    # reads back, no cross-call collector plumbing needed.
+    collector = collector_from_config(effective_config)
     resolved = resolve_source(source)
     open_source = resolved.open_source
     archive_name = resolved.archive_name
@@ -289,22 +260,13 @@ def extract(
     resolved_target = resolve_source(source).open_source
     streaming = is_stream(resolved_target) and not is_seekable(resolved_target)
 
-    effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
-    # One collector + watermark from before detection so the report includes every
-    # phase of this one-shot call exactly once. The reader shares this collector (via
-    # the internal _open_archive hook), so re-snapshotting from this watermark widens
-    # extract_all's extraction-only report to also cover detection and open.
-    collector = collector_from_config(effective_config)
-    report_since = collector.watermark()
-
-    with _open_archive(
+    with open_archive(
         source,
         format=format,
         streaming=streaming,
         password=password,
         encoding=encoding,
         config=config,
-        collector=collector,
     ) as reader:
         # The reader already carries `config` (passed to open_archive above), so
         # extract_all falls back to it — no need to forward `config` a second time.
@@ -316,7 +278,11 @@ def extract(
             on_progress=on_progress,
             limits=limits,
         )
+        # `reader.diagnostics` is the reader's cumulative snapshot. Because this reader was
+        # opened fresh for this one-shot call, that already spans detection, open, and
+        # extraction exactly once — a superset of extract_all's extraction-only delta — so
+        # the one-shot report is assembled entirely from the public surface.
         return ExtractionReport(
             results=report.results,
-            diagnostics=collector.snapshot(since=report_since),
+            diagnostics=reader.diagnostics,
         )
