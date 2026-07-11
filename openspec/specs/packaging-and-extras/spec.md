@@ -200,16 +200,19 @@ Windows. The public API remains synchronous.
 
 Readers and writers are not generally thread-safe, but the reader contract has one
 explicit supported concurrency seam, available on readers opened with
-`MemberStreams.CONCURRENT`: after such a reader's member list has been fully
-materialized and published, workers MAY concurrently call `open()` and independently
-`read`/`readinto`/`close` different returned member streams, plus `seek`/`tell` under
-`MemberStreams.SEEKABLE` when the individual stream supports positioning. Without the
-declared capability, one member stream may be live at a time on every format. Iteration,
-materialization, `stream_members`, extraction coordination, and reader `close` remain
-single-owner operations and cannot execute concurrently with active calls in that seam. An idle
-open member stream may outlive a non-concurrent reader close under the lifecycle-lease
-contract. Single-owner composition uses explicit private child scopes, so extraction may
-drive its own streaming pass/yielded-stream I/O without admitting unrelated public reentry.
+`MemberStreams.CONCURRENT`: concurrent first-touch materialization is coordinated
+(exactly one build; overlapping `open()` / `members()` / `get()` wait for the published
+snapshot rather than rejecting), after which workers MAY concurrently call `open()` and
+independently `read`/`readinto`/`close` different returned member streams, plus
+`seek`/`tell` under `MemberStreams.SEEKABLE` when the individual stream supports
+positioning. `reader.close()` drains in-flight worker calls then closes; escaped idle
+member streams remain governed by the lifecycle-lease contract. Without the declared
+capability, one member stream may be live at a time on every format. Distinct
+reader-wide passes (`__iter__`, `stream_members`, `extract_all`) remain single-owner
+and cannot execute concurrently with each other or with active worker calls. Same-stream
+concurrent access stays the caller's responsibility. Single-owner composition uses
+explicit private child scopes, so extraction may drive its own streaming pass/yielded-stream
+I/O without admitting unrelated public reentry.
 Writers remain not thread-safe.
 
 `MemberStreams.CONCURRENT` is a **supported** opt-in capability: the seam is correct under
@@ -236,8 +239,8 @@ and Archivey makes no parallel-speed guarantee.
 
 #### Scenario: tested free-threaded build preserves the narrow reader contract
 
-- **WHEN** post-materialization concurrent member opens and independent stream operations
-  run in the required CPython `3.13t` core-backend CI job
+- **WHEN** concurrent first-touch materialization, post-publication member opens, and
+  independent stream operations run in the required CPython `3.13t` core-backend CI job
 - **THEN** they produce the same correct bytes/lifecycle behavior as on a regular build,
   without cache/password/source-position data races
 
@@ -247,12 +250,12 @@ and Archivey makes no parallel-speed guarantee.
 - **THEN** its ordinary-build coverage remains valid, but free-threaded support is not claimed
   for that backend until a dedicated job runs it
 
-#### Scenario: general reader mutation is not made thread-safe
+#### Scenario: distinct passes and shared streams remain single-owner
 
-- **WHEN** a caller attempts to overlap iteration, materialization, extraction, or reader
-  close with worker member-stream operations
-- **THEN** that schedule is outside the supported seam and the later public operation is
-  rejected as a usage error
+- **WHEN** a caller overlaps distinct reader-wide passes (`__iter__`, `stream_members`,
+  `extract_all`) or concurrently accesses one stream object
+- **THEN** overlapping passes are rejected as a usage error, and same-stream correctness
+  remains the caller's responsibility under standard file semantics
 
 #### Scenario: CONCURRENT is documented as supported
 

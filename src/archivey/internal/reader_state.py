@@ -43,11 +43,10 @@ class ReaderState:
 
     Under the default (no ``CONCURRENT``) path this enforces the single-live-stream gate
     and exclusive single-owner operations without shared-handle locks. Declared
-    ``CONCURRENT`` activates multi-stream admission while keeping materialization and
-    reader-wide ops exclusive.
-
-    Stream I/O (``read``/``seek``/``close`` on an already-open handle) does **not**
-    consult the operation-owner gate — only leases + backend (D7).
+    ``CONCURRENT`` activates multi-stream admission and coordinates first-touch
+    materialization (wait/share) plus draining ``close()`` (wait for in-flight worker
+    calls). Distinct reader-wide passes and same-stream access remain single-owner /
+    caller-synchronized.
     """
 
     def __init__(
@@ -59,8 +58,12 @@ class ReaderState:
         self.member_streams = member_streams
         self.open_site = open_site
         self._lock = threading.RLock()
+        self._materialization_cv = threading.Condition(self._lock)
+        self._workers_cv = threading.Condition(self._lock)
+        self._close_cv = threading.Condition(self._lock)
         self.cache_state = CacheState.UNMATERIALIZED
         self.lifecycle = LifecycleState.OPEN
+        self._closing = False
         self._root: OperationToken | None = None
         self._children: set[OperationToken] = set()
         self._workers: set[OperationToken] = set()
@@ -81,10 +84,7 @@ class ReaderState:
 
     def require_open(self, op: str) -> None:
         with self._lock:
-            if self.lifecycle is not LifecycleState.OPEN:
-                raise ArchiveyUsageError(
-                    f"{op} is not available after the archive reader has been closed."
-                )
+            self._require_admissible_locked(op)
 
     def current_root(self) -> OperationToken | None:
         with self._lock:
@@ -103,7 +103,7 @@ class ReaderState:
     def acquire_pass(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
         with self._lock:
-            self._require_lifecycle_open_locked(name)
+            self._require_admissible_locked(name)
             if self._root is not None and self._internal_open_depth > 0:
                 child = OperationToken(name=name, parent=self._root, kind="child")
                 self._children.add(child)
@@ -159,7 +159,7 @@ class ReaderState:
         this token is released does not re-check the gate.
         """
         with self._lock:
-            self._require_lifecycle_open_locked(name)
+            self._require_admissible_locked(name)
             if self._root is not None and self._internal_open_depth == 0:
                 raise ArchiveyUsageError(
                     f"Cannot call {name!r}: another reader operation "
@@ -184,27 +184,50 @@ class ReaderState:
                 self._children.discard(token)
                 return
             self._workers.discard(token)
+            if not self._workers:
+                self._workers_cv.notify_all()
 
-    def begin_materialization(self) -> None:
+    def begin_materialization(self) -> bool:
+        """Elect a materialization owner or wait for a published snapshot.
+
+        Returns ``True`` if the caller must perform materialization (and later call
+        :meth:`complete_materialization` or :meth:`fail_materialization`). Returns
+        ``False`` if the immutable snapshot is already published (including after
+        waiting under ``CONCURRENT``).
+
+        Under ``MemberStreams.CONCURRENT``, a second caller that overlaps an in-progress
+        materialization blocks on a condition until the snapshot is published or the
+        attempt fails (then re-elects). Without ``CONCURRENT``, overlapping materialization
+        still raises :class:`~archivey.exceptions.ArchiveyUsageError`. Uncontended paths
+        take the elect-and-run branch with no wait.
+        """
         with self._lock:
-            self._require_lifecycle_open_locked("materialization")
-            if self.cache_state is CacheState.MATERIALIZED:
-                return
-            if self.cache_state is CacheState.MATERIALIZING:
-                raise ArchiveyUsageError(
-                    "Cannot start materialization: another materialization is already "
-                    "in progress."
-                )
-            self.cache_state = CacheState.MATERIALIZING
+            while True:
+                self._require_admissible_locked("materialization")
+                if self.cache_state is CacheState.MATERIALIZED:
+                    return False
+                if self.cache_state is CacheState.MATERIALIZING:
+                    if not self.concurrent:
+                        raise ArchiveyUsageError(
+                            "Cannot start materialization: another materialization is "
+                            "already in progress."
+                        )
+                    self._materialization_cv.wait()
+                    continue
+                # UNMATERIALIZED — elect this caller.
+                self.cache_state = CacheState.MATERIALIZING
+                return True
 
     def complete_materialization(self) -> None:
         with self._lock:
             self.cache_state = CacheState.MATERIALIZED
+            self._materialization_cv.notify_all()
 
     def fail_materialization(self) -> None:
         with self._lock:
             if self.cache_state is CacheState.MATERIALIZING:
                 self.cache_state = CacheState.UNMATERIALIZED
+                self._materialization_cv.notify_all()
 
     def acquire_live_stream(self, stream: ArchiveStream) -> None:
         """Register a public member stream; enforce the single-live-stream gate."""
@@ -236,22 +259,46 @@ class ReaderState:
             return self._release_lease_locked()
 
     def mark_reader_closed(self) -> bool:
-        """Mark reader closed and release the reader lease. True → run teardown now."""
+        """Mark reader closed and release the reader lease. True → run teardown now.
+
+        Under ``MemberStreams.CONCURRENT``, blocks until in-flight worker ``open()`` /
+        ``read()`` / ``get()`` / ``members()`` calls return, then transitions to closed.
+        Escaped idle member streams keep their lifecycle leases and do not block close.
+        A worker that never returns is a caller bug (same as any lock); there is no
+        artificial timeout.
+
+        Without ``CONCURRENT``, overlapping worker calls still raise
+        :class:`~archivey.exceptions.ArchiveyUsageError`. Concurrent double-``close()`` is
+        idempotent: one thread drains and closes; others wait for that transition and
+        return without running teardown again.
+        """
         with self._lock:
-            if self.lifecycle is not LifecycleState.OPEN:
+            # Another closer is draining, or close already finished.
+            if self._closing or self.lifecycle is not LifecycleState.OPEN:
+                while self.lifecycle is LifecycleState.OPEN and self._closing:
+                    self._close_cv.wait()
                 return False
             if self._root is not None:
                 raise ArchiveyUsageError(
                     "Cannot close the archive reader while another reader operation "
                     f"({self._root.name!r}) is active."
                 )
-            if self._workers:
+            if self._workers and not self.concurrent:
                 raise ArchiveyUsageError(
                     "Cannot close the archive reader while an open()/read() call is "
                     "still in progress."
                 )
-            self.lifecycle = LifecycleState.READER_CLOSED
-            return self._release_lease_locked()
+            self._closing = True
+            try:
+                while self._workers:
+                    self._workers_cv.wait()
+                self.lifecycle = LifecycleState.READER_CLOSED
+                self._close_cv.notify_all()
+                return self._release_lease_locked()
+            except BaseException:
+                self._closing = False
+                self._close_cv.notify_all()
+                raise
 
     def claim_teardown(self) -> bool:
         with self._lock:
@@ -290,7 +337,15 @@ class ReaderState:
         )
 
     def _require_lifecycle_open_locked(self, op: str) -> None:
+        """Lifecycle is still OPEN (including during draining close)."""
         if self.lifecycle is not LifecycleState.OPEN:
+            raise ArchiveyUsageError(
+                f"{op} is not available after the archive reader has been closed."
+            )
+
+    def _require_admissible_locked(self, op: str) -> None:
+        """Reject new public admissions after close started or finished."""
+        if self.lifecycle is not LifecycleState.OPEN or self._closing:
             raise ArchiveyUsageError(
                 f"{op} is not available after the archive reader has been closed."
             )

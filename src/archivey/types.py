@@ -20,12 +20,14 @@ class MemberStreams(Flag):
 
         MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
 
-    ``CONCURRENT`` unlocks a supported post-materialization worker seam: after
-    ``members()`` (or equivalent materialization), concurrent ``open()`` and independent
-    stream I/O on different members are correct under cooperative use and are exercised
-    on free-threaded CPython by the Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
-    Callers still synchronize their own shared stream objects; iteration / extraction /
-    reader close remain single-owner.
+    ``CONCURRENT`` unlocks a supported worker seam: concurrent first-touch
+    materialization is coordinated (one build, waiters share the published snapshot),
+    then concurrent ``open()`` and independent stream I/O on different members are
+    correct under cooperative use and are exercised on free-threaded CPython by the
+    Linux ``3.13t`` ``free-threaded-concurrency`` CI job. ``close()`` drains in-flight
+    worker calls before closing; escaped streams keep the lifecycle-lease contract.
+    Callers still synchronize their own shared stream objects; distinct reader-wide
+    passes (``__iter__`` / ``stream_members`` / ``extract_all``) remain single-owner.
     """
 
     CONCURRENT = auto()

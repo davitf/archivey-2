@@ -215,3 +215,210 @@ def test_multithread_open_rejected_during_stream_members(tmp_path: Path) -> None
             t.join(timeout=10)
         assert errors and all(isinstance(e, ArchiveyUsageError) for e in errors)
         list(it)
+
+
+# --- Coordinated first-touch materialization + draining close ----------------------------
+
+
+@pytest.mark.concurrent_reader
+def test_concurrent_first_touch_open_materializes_once(tmp_path: Path) -> None:
+    """N threads first-touch open() share one materialization and read correct bytes."""
+    path = _make_zip(tmp_path / "a.zip", n=8)
+    expected = _expected(8)
+    names = list(expected)
+    reader = open_archive(path, member_streams=MemberStreams.CONCURRENT)
+    scan_calls = {"n": 0}
+    original_iter = reader._iter_members
+
+    def counting_iter():
+        scan_calls["n"] += 1
+        return original_iter()
+
+    reader._iter_members = counting_iter  # type: ignore[method-assign]
+    barrier = threading.Barrier(len(names))
+    got: dict[str, bytes] = {}
+    lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    def worker(name: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            with reader.open(name) as stream:
+                data = stream.read()
+            with lock:
+                got[name] = data
+        except BaseException as exc:  # noqa: BLE001
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive()
+    reader.close()
+    if errors:
+        raise errors[0]
+    assert got == expected
+    assert scan_calls["n"] == 1
+
+
+@pytest.mark.concurrent_reader
+def test_concurrent_first_touch_materialization_failure_wakes_waiters(
+    tmp_path: Path,
+) -> None:
+    """Failed first-touch leaves no partial snapshot; waiters see the error / clean retry."""
+    path = _make_zip(tmp_path / "a.zip", n=4)
+    reader = open_archive(path, member_streams=MemberStreams.CONCURRENT)
+    original_iter = reader._iter_members
+    fail_once = {"armed": True}
+    barrier = threading.Barrier(4)
+    results: list[BaseException | list] = []
+    lock = threading.Lock()
+
+    def flaky_iter():
+        if fail_once["armed"]:
+            fail_once["armed"] = False
+            raise OSError("simulated corrupt header")
+        return original_iter()
+
+    reader._iter_members = flaky_iter  # type: ignore[method-assign]
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            members = reader.members()
+            with lock:
+                results.append(members)
+        except BaseException as exc:  # noqa: BLE001
+            with lock:
+                results.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive()
+
+    # Cache must never have been published as a partial list during the failure.
+    # After the flaky first attempt, a waiter (or the same electing path on retry)
+    # may succeed — collect successes and failures.
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    failures = [r for r in results if isinstance(r, BaseException)]
+    assert failures, "at least the electing thread should observe the translated error"
+    assert all(not isinstance(f, ArchiveyUsageError) for f in failures)
+    # No partial publication: either empty successes (all saw the error before retry
+    # completed) or full member lists only.
+    for members in successes:
+        assert len(members) == 4
+        assert {m.name for m in members if m.is_file} == set(_expected(4))
+    assert reader._members_cache is None or len(reader._members_cache) == 4
+    reader.close()
+
+
+@pytest.mark.concurrent_reader
+def test_close_drains_in_flight_workers_then_closes(tmp_path: Path) -> None:
+    """close() waits for in-flight open() workers; escaped streams stay readable."""
+    path = _make_zip(tmp_path / "a.zip", n=4)
+    reader = open_archive(path, member_streams=MemberStreams.CONCURRENT)
+    reader.members()  # publish so open() work is post-materialization
+    entered = threading.Event()
+    release = threading.Event()
+    original_open_member = reader._open_member
+
+    def blocking_open_member(member):  # noqa: ANN001
+        entered.set()
+        assert release.wait(timeout=5)
+        return original_open_member(member)
+
+    reader._open_member = blocking_open_member  # type: ignore[method-assign]
+    errors: list[BaseException] = []
+    stream_box: dict[str, object] = {}
+
+    def worker() -> None:
+        try:
+            stream_box["s"] = reader.open("f0.txt")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=worker)
+    t.start()
+    assert entered.wait(timeout=5)
+    close_done = threading.Event()
+
+    def closer() -> None:
+        reader.close()
+        close_done.set()
+
+    ct = threading.Thread(target=closer)
+    ct.start()
+    # close must block while the worker is still inside open().
+    assert not close_done.wait(timeout=0.2)
+    release.set()
+    t.join(timeout=10)
+    ct.join(timeout=10)
+    assert close_done.is_set()
+    assert not errors
+    stream = stream_box["s"]
+    assert stream is not None
+    assert stream.read() == _expected(4)["f0.txt"]  # type: ignore[union-attr]
+    stream.close()  # type: ignore[union-attr]
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.open("f1.txt")
+
+
+@pytest.mark.concurrent_reader
+def test_concurrent_double_close_is_idempotent(tmp_path: Path) -> None:
+    path = _make_zip(tmp_path / "a.zip", n=2)
+    reader = open_archive(path, member_streams=MemberStreams.CONCURRENT)
+    reader.members()
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def closer() -> None:
+        try:
+            barrier.wait(timeout=5)
+            reader.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=closer) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive()
+    assert not errors
+    # Second close after both finish remains a no-op.
+    reader.close()
+
+
+@pytest.mark.concurrent_reader
+def test_concurrent_double_close_exception_group_on_dual_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simultaneous inner-close + teardown failure surfaces once as ExceptionGroup."""
+    path = _make_zip(tmp_path / "a.zip", n=1)
+    reader = open_archive(path, member_streams=MemberStreams.CONCURRENT)
+    stream = reader.open("f0.txt")
+
+    def boom_close_archive() -> None:
+        raise OSError("teardown failed")
+
+    monkeypatch.setattr(reader, "_close_archive", boom_close_archive)
+
+    def boom_inner_close() -> None:
+        raise OSError("stream close failed")
+
+    # Force the stream's inner close to fail when the lease drops into teardown via
+    # stream.close() after reader.close() — exercise the ExceptionGroup path on the
+    # stream side (reader close itself only teardowns when no leases remain).
+    reader.close()
+    # Patch after reader close: closing the escaped stream triggers deferred teardown.
+    inner = stream._ensure_open()
+    monkeypatch.setattr(inner, "close", boom_inner_close)
+    with pytest.raises(ExceptionGroup) as exc_info:
+        stream.close()
+    assert "member-stream close and archive teardown both failed" in str(exc_info.value)

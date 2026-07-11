@@ -114,7 +114,7 @@ def open_archive(
     single-live-stream contract:
 
     - ``MemberStreams.CONCURRENT`` — multiple member streams may be open at once
-      (including post-materialization worker fan-out).
+      (coordinated first-touch materialization, then worker fan-out; draining close).
     - ``MemberStreams.SEEKABLE`` — member streams are seekable where the backend can
       provide positioning.
 
