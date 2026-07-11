@@ -211,7 +211,7 @@ def test_adversarial_extract_has_exact_outcome(
             try:
                 results = archive.extract_all(
                     dest, members=[target], policy=ExtractionPolicy.TRUSTED
-                )
+                ).results
             except ExtractionError as exc:
                 cause = exc.__cause__
                 assert isinstance(cause, OSError)
@@ -226,7 +226,7 @@ def test_adversarial_extract_has_exact_outcome(
             assert entry.extract_outcome == "success"
             results = archive.extract_all(
                 dest, members=[target], policy=ExtractionPolicy.TRUSTED
-            )
+            ).results
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.EXTRACTED
             for result in results:

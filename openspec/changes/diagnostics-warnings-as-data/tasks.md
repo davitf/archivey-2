@@ -5,18 +5,18 @@
 
 ## 1. Diagnostic values and collector
 
-- [ ] 1.1 Add the public `DiagnosticCode`, `DiagnosticSeverity`,
+- [x] 1.1 Add the public `DiagnosticCode`, `DiagnosticSeverity`,
       `DiagnosticDisposition`, `Diagnostic`, code-specific frozen context types,
       `DiagnosticSummary`, and `DiagnosticPolicy` values; enforce immutable mappings,
       the closed discriminated code→context mapping, deterministic JSON-safe
       serialization, opaque occurrence ids, and the prohibition on password/key material.
-- [ ] 1.2 Implement the lifecycle collector and immutable snapshots: exact lifetime,
+- [x] 1.2 Implement the lifecycle collector and immutable snapshots: exact lifetime,
       operation, and per-code counts; deterministic emission order; operation watermarks;
       and a single `max_retained_diagnostic_references` budget covering aggregate entries
       plus every library-retained member attachment. Create the prospective collector
       before `open_archive()` detection and transfer it to the reader without copying;
       carry one top-level `extract()` collector/watermark through detect/open/extract.
-- [ ] 1.3 Add `ArchiveyConfig.diagnostic_policy`,
+- [x] 1.3 Add `ArchiveyConfig.diagnostic_policy`,
       `max_retained_diagnostic_references`, and `on_diagnostic`; implement the complete
       IGNORE/COLLECT/RAISE matrix and ordered count → retain/attach → log → callback →
       escalation path, with no internal lock held during logging/callbacks and explicit
@@ -24,16 +24,16 @@
 
 ## 2. Lifecycle-aware public surfaces
 
-- [ ] 2.1 Add cumulative `ArchiveReader.diagnostics` and operation-filtered
+- [x] 2.1 Add cumulative `ArchiveReader.diagnostics` and operation-filtered
       `ArchiveStream.diagnostics` snapshots over the same collector; change public
       `open()` / `stream_members()` return types to `ArchiveStream`; transfer
       automatic-detection collector ownership to the reader; and keep runtime
       seek/index/scan/EOF events off `CostReceipt` and `ArchiveInfo`.
-- [ ] 2.2 Add bounded `FormatInfo.diagnostics` and `ArchiveMember.diagnostics`
+- [x] 2.2 Add bounded `FormatInfo.diagnostics` and `ArchiveMember.diagnostics`
       projections, correlated by occurrence id without object-identity guarantees and
       attached only when the shared collector budget has a slot. Do not add
       `ExtractionResult.diagnostics`.
-- [ ] 2.3 Add frozen `ExtractionReport(results, diagnostics)` and frozen result outcome
+- [x] 2.3 Add frozen `ExtractionReport(results, diagnostics)` and frozen result outcome
       structures, while documenting that referenced `ArchiveMember`s remain live; change
       `archivey.extract()` / `ArchiveReader.extract_all()` to return the report; make
       selected user-filter and overwrite skips `SKIPPED`, safety-filter blocks
@@ -42,7 +42,7 @@
 
 ## 3. Errors and warning migration
 
-- [ ] 3.1 Add `DiagnosticRaisedError` to the public error hierarchy, carrying the
+- [x] 3.1 Add `DiagnosticRaisedError` to the public error hierarchy, carrying the
       escalated diagnostic; make it always-stop despite `OnError.CONTINUE`, and implement
       `strict_archive_eof=True` precedence so a missing EOF marker raises
       `TruncatedError` after policy delivery rather than `DiagnosticRaisedError`.
@@ -51,6 +51,7 @@
       warning severity as projections while removing direct warning-only sources of
       truth. Emit one extraction occurrence per continued result, including one correlated
       occurrence per hardlink result affected by a shared source failure.
+      (Partial: `FORMAT_EXTENSION_CONFLICT` wired; other sites may be mid-migration.)
 
 ## 4. Verification and documentation
 
@@ -66,3 +67,4 @@
 - [ ] 4.3 Export and document the final public API, update examples/type contracts, and
       run lint, Pyrefly, ty, docs, and the full current/lowest/core-only test matrix before
       implementation is committed.
+      (Partial: public exports updated; docs/full matrix still pending.)

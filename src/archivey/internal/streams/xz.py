@@ -22,12 +22,18 @@ XZ spec: https://tukaani.org/xz/xz-file-format.txt
 from __future__ import annotations
 
 import lzma
+import os
 import struct
 import zlib
 from dataclasses import dataclass
 from typing import BinaryIO
 
+from archivey.diagnostics import DiagnosticCode, SeekIndexContext
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.diagnostics_collector import (
+    DiagnosticCollector,
+    resolve_collector,
+)
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
@@ -451,6 +457,14 @@ class XzDecompressorStream(SegmentedDecompressorStream["_XzState | _XzBlockChain
     one-shot backward scan (on SEEK_END or a forward seek past the known frontier).
     """
 
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | BinaryIO,
+        *,
+        collector: DiagnosticCollector | None = None,
+    ) -> None:
+        super().__init__(path, collector=collector, codec_name="xz")
+
     def _make_decompressor(self, point: SeekPoint) -> "_XzState | _XzBlockChain":
         if point.state is None:
             return _XzState()
@@ -496,10 +510,19 @@ class XzDecompressorStream(SegmentedDecompressorStream["_XzState | _XzBlockChain
                     if block_points:
                         self.add_seek_points(block_points)
                 except CorruptionError as e:
-                    logger.warning(
+                    message = (
                         "XZ per-stream backward scan failed; block-level seek points for "
-                        "this stream will not be available: %s",
-                        e,
+                        f"this stream will not be available: {e}"
+                    )
+                    resolve_collector(self._diagnostics_collector).emit(
+                        code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+                        message=message,
+                        context=SeekIndexContext(
+                            codec="xz",
+                            scan="per_stream",
+                            error_type=type(e).__name__,
+                        ),
+                        logger=logger,
                     )
                 finally:
                     self._inner.seek(saved_pos)

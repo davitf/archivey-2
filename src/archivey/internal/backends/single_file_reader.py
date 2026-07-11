@@ -29,8 +29,10 @@ from archivey.cost import (
 from archivey.exceptions import ArchiveyError, StreamNotSeekableError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     MetadataContext,
@@ -86,9 +88,10 @@ class SingleFileReader(BaseArchiveReader):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name, config)
+        super().__init__(format, streaming, archive_name, config, collector=collector)
         self._source = source
         self._stream_codec = stream_codec_for_format(format.stream)
         self._codec = self._stream_codec.codec
@@ -117,7 +120,7 @@ class SingleFileReader(BaseArchiveReader):
         #   opens never clobber the single shared handle position.
         # - Non-seekable: one forward pass; a second open fails loudly once consumed.
         self._shared: SharedSource | None = None
-        self._pending_stream: BinaryIO | None = None
+        self._pending_stream: ArchiveStream | None = None
         if self._seekable and is_stream(source):
             self._shared = SharedSource(source)
         if self._seekable:
@@ -214,7 +217,7 @@ class SingleFileReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield self._member
 
-    def _open_codec_stream(self) -> BinaryIO:
+    def _open_codec_stream(self) -> ArchiveStream:
         """Open a fresh decompression stream over the source.
 
         A seekable stream source goes through a whole-source ``SharedSource`` view so
@@ -229,27 +232,32 @@ class SingleFileReader(BaseArchiveReader):
             view = self._shared.view(0)
             counted = self._wrap_compressed_input(view)
             assert not isinstance(counted, Path)  # view is always a stream
-            return open_codec_stream(
+            raw = open_codec_stream(
                 self._codec,
                 counted,
                 config=self._codec_config,
                 stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
             )
-
-        src = self._source
-        assert src is not None  # always set in __init__
-        # Count compressed bytes pulled from a non-seekable stream so the live ratio guard
-        # has a denominator (a path / seekable stream keeps its cheap static size).
-        counted = self._wrap_compressed_input(src)
-        codec_source = str(counted) if isinstance(counted, Path) else counted
-        return open_codec_stream(
-            self._codec,
-            codec_source,
-            config=self._codec_config,
-            stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+        else:
+            src = self._source
+            assert src is not None  # always set in __init__
+            # Count compressed bytes pulled from a non-seekable stream so the live ratio
+            # guard has a denominator (a path / seekable stream keeps its cheap static size).
+            counted = self._wrap_compressed_input(src)
+            codec_source = str(counted) if isinstance(counted, Path) else counted
+            raw = open_codec_stream(
+                self._codec,
+                codec_source,
+                config=self._codec_config,
+                stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+            )
+        # Wrap so the handle carries the reader's diagnostic collector/operation id.
+        # (open_codec_stream already returns an ArchiveStream; nesting is fine.)
+        return self._wrap_member_stream(
+            raw, self._member.name, size=self._member.size
         )
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         if self._seekable:
             # Reentrant: every open builds a fresh codec (path → independent FD; stream →
             # SharedSource view). No per-open scratch on self.
@@ -331,11 +339,19 @@ class SingleFileBackend(ReadBackend):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> SingleFileReader:
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(
-            source, format, streaming, passwords, encoding, archive_name, config
+            source,
+            format,
+            streaming,
+            passwords,
+            encoding,
+            archive_name,
+            config,
+            collector=collector,
         )
 
 

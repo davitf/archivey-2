@@ -34,9 +34,22 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.diagnostics import (
+    Diagnostic,
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+    DiagnosticSeverity,
+    DiagnosticSummary,
+    ExtractionOutcomeContext,
+    ExtractionReport,
+    FormatConflictContext,
+    NameNormalizationContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    DiagnosticRaisedError,
     EncryptionError,
     ExtractionError,
     FilterRejectionError,
@@ -64,6 +77,7 @@ from archivey.internal.extraction_types import (
     OnError,
     OverwritePolicy,
 )
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,
@@ -93,6 +107,7 @@ __all__ = [
     "ExtractionStatus",
     "ExtractionProgress",
     "ExtractionResult",
+    "ExtractionReport",
     "MemberSelector",
     "MemberFilter",
     "detect_format",
@@ -105,6 +120,7 @@ __all__ = [
     "FormatAvailability",
     "MissingComponent",
     "ArchiveReader",
+    "ArchiveStream",
     "ArchiveFormat",
     "ContainerFormat",
     "StreamFormat",
@@ -118,6 +134,16 @@ __all__ = [
     "ListingCost",
     "AccessCost",
     "StreamCapability",
+    "Diagnostic",
+    "DiagnosticCode",
+    "DiagnosticSeverity",
+    "DiagnosticDisposition",
+    "DiagnosticPolicy",
+    "DiagnosticSummary",
+    "DiagnosticRaisedError",
+    "FormatConflictContext",
+    "NameNormalizationContext",
+    "ExtractionOutcomeContext",
     "ArchiveyError",
     "OpenError",
     "FormatDetectionError",

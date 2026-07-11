@@ -11,9 +11,9 @@ digests (``ArchiveMember.hashes``) against the bytes actually read. Per the
   *after* every data chunk (including the last) has already been delivered. A
   ``while chunk := f.read(n)`` consumer thus receives all bytes, then gets
   ``CorruptionError`` instead of the final empty read.
-- An algorithm whose backend is missing (or that is unknown) is **skipped with a warning**
-  rather than failing the read; algorithms that can be computed (always including CRC32 via
-  stdlib) are still verified.
+- An algorithm whose backend is missing (or that is unknown) is **skipped with a
+  ``DIGEST_UNVERIFIABLE`` diagnostic** rather than failing the read; algorithms that can
+  be computed (always including CRC32 via stdlib) are still verified.
 
 This is distinct from a codec's own internal integrity check (gzip trailer CRC, xz stream
 check) — those are surfaced by the codec backend; this verifies the *container's* digest
@@ -24,11 +24,19 @@ from __future__ import annotations
 
 import hashlib
 import zlib
-from typing import BinaryIO, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
 
+from archivey.diagnostics import DiagnosticCode, DigestContext
 from archivey.exceptions import CorruptionError
+from archivey.internal.diagnostics_collector import (
+    DiagnosticCollector,
+    resolve_collector,
+)
 from archivey.internal.logs import integrity as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
+
+if TYPE_CHECKING:
+    from archivey.types import ArchiveMember
 
 
 class _IncrementalHasher(Protocol):
@@ -94,6 +102,10 @@ class VerifyingStream(ReadOnlyIOStream):
         self,
         inner: BinaryIO,
         expected: Mapping[str, int | bytes],
+        *,
+        collector: DiagnosticCollector | None = None,
+        member: ArchiveMember | None = None,
+        archive_name: str | None = None,
     ) -> None:
         super().__init__()
         self._inner = inner
@@ -102,10 +114,23 @@ class VerifyingStream(ReadOnlyIOStream):
         for algorithm, value in expected.items():
             factory = _make_hasher(algorithm)
             if factory is None:
-                logger.warning(
-                    "Cannot verify digest %r (unknown algorithm or backend not installed); "
-                    "skipping integrity check for it.",
-                    algorithm,
+                message = (
+                    f"Cannot verify digest {algorithm!r} (unknown algorithm or backend "
+                    f"not installed); skipping integrity check for it."
+                )
+                resolve_collector(collector).emit(
+                    code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                    message=message,
+                    context=DigestContext(
+                        archive_name=archive_name,
+                        member_name=member.name if member is not None else "",
+                        member_id=member._member_id if member is not None else None,
+                        algorithm=algorithm,
+                        reason="unknown_algorithm_or_backend",
+                    ),
+                    member=member,
+                    attach_to_member=member is not None,
+                    logger=logger,
                 )
                 continue
             hasher = factory()
@@ -129,21 +154,14 @@ class VerifyingStream(ReadOnlyIOStream):
             for hasher in self._hashers.values():
                 hasher.update(data)
             return data
-        # Empty result. For an explicit read(0) this is not EOF; don't verify.
-        if n == 0:
-            return data
-        # Terminal read (the call that signals EOF): verify now, after all data was
-        # already delivered. Only the first such read verifies.
         if not self._verified:
             self._verify()
         return data
 
     def seekable(self) -> bool:
-        # Verification only makes sense on a forward read; do not advertise seeking even if
-        # the inner stream supports it.
         return False
 
     def close(self) -> None:
-        # Closing without reaching EOF is a partial read: do not verify (per the spec).
-        self._inner.close()
-        super().close()
+        if not self.closed:
+            self._inner.close()
+            super().close()

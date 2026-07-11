@@ -15,7 +15,7 @@ import tarfile
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO, Iterator, Mapping, cast
+from typing import BinaryIO, Iterator, Literal, Mapping, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -24,6 +24,11 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    DiagnosticCode,
+    MemberTimestampContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -31,10 +36,12 @@ from archivey.exceptions import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as backends_logger
-from archivey.internal.naming import normalize_member_name
+from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     codec_for_stream_format,
@@ -133,9 +140,10 @@ class TarReader(BaseArchiveReader):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name, config)
+        super().__init__(format, streaming, archive_name, config, collector=collector)
         self._encoding = encoding
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
@@ -168,6 +176,7 @@ class TarReader(BaseArchiveReader):
                 codec_source,
                 config=stream_config_from_archivey(self._config, streaming=streaming),
                 stamp=lambda exc: self._stamp_error_context(exc),
+                collector=self._diagnostics_collector,
             )
             # tarfile can mis-handle a short read() (fewer bytes than requested) from a
             # decompressor; a BufferedReader in front guarantees full-sized reads.
@@ -250,7 +259,7 @@ class TarReader(BaseArchiveReader):
             raise
         self._verify_tar_eof()
 
-    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
+    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         if not self._streaming:
             yield from super()._iter_with_data()
             return
@@ -301,11 +310,34 @@ class TarReader(BaseArchiveReader):
             "TAR archive may be truncated: missing or invalid "
             "end-of-archive marker block(s)"
         )
-        if self._config.strict_archive_eof:
-            err = TruncatedError(msg)
-            self._stamp_error_context(err)
-            raise err
-        backends_logger.warning(msg)
+        if len(chunk) == 0:
+            observed_kind: Literal["absent", "short", "nonzero"] = "absent"
+        elif len(chunk) < 512:
+            observed_kind = "short"
+        else:
+            observed_kind = "nonzero"
+        escalate_as = TruncatedError if self._config.strict_archive_eof else None
+        escalate_kwargs: dict[str, object] | None = None
+        if escalate_as is not None:
+            escalate_kwargs = {
+                "source_format": self._format,
+                "archive_name": self._archive_name,
+            }
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+            message=msg,
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="tar",
+                expected_marker="two_zero_blocks",
+                expected_bytes=1024,
+                observed_bytes=len(chunk),
+                observed_kind=observed_kind,
+            ),
+            logger=backends_logger,
+            escalate_as=escalate_as,
+            escalate_kwargs=escalate_kwargs,
+        )
 
     def _source_stream_capability(self) -> StreamCapability:
         if isinstance(self._source, Path):
@@ -317,7 +349,8 @@ class TarReader(BaseArchiveReader):
     def _to_member(self, info: tarfile.TarInfo) -> ArchiveMember:
         member_type = _member_type(info)
         # TAR is a POSIX format: a backslash is a legal filename character, not a separator.
-        name = normalize_member_name(info.name, member_type, backslash_is_separator=False)
+        presented = info.name
+        name = normalize_member_name(presented, member_type, backslash_is_separator=False)
         # Re-encode the decoded name with the archive's own codec to recover the stored bytes
         # (tarfile decodes with surrogateescape, which round-trips losslessly).
         raw_name = info.name.encode(self._tar.encoding, errors="surrogateescape")
@@ -332,12 +365,11 @@ class TarReader(BaseArchiveReader):
         # one field honors both the standard ustar mtime and the PAX override. A hostile
         # out-of-range value (e.g. a crafted PAX mtime beyond datetime's range) must not
         # sink the whole listing, so it degrades to None like _pax_time does.
+        mtime_invalid = False
         try:
             modified = datetime.fromtimestamp(info.mtime, tz=timezone.utc)
         except (ValueError, OverflowError, OSError):
-            backends_logger.warning(
-                "Invalid TAR mtime for %r: %r", info.name, info.mtime
-            )
+            mtime_invalid = True
             modified = None
 
         compression = (
@@ -353,7 +385,7 @@ class TarReader(BaseArchiveReader):
             extra["tar.devmajor"] = info.devmajor
             extra["tar.devminor"] = info.devminor
 
-        return ArchiveMember(
+        member = ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
@@ -374,8 +406,31 @@ class TarReader(BaseArchiveReader):
             extra=extra,
             _raw=info,  # carry the TarInfo so _open_member needs no name/id lookup table
         )
+        emit_member_name_normalized(
+            self._diagnostics_collector,
+            member=member,
+            presented_name=presented,
+            archive_name=self._archive_name,
+        )
+        if mtime_invalid:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+                message=f"Invalid TAR mtime for {info.name!r}: {info.mtime!r}",
+                context=MemberTimestampContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    field="mtime",
+                    source="tar",
+                    value_repr=repr(info.mtime),
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=backends_logger,
+            )
+        return member
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         info = member._raw
         assert isinstance(info, tarfile.TarInfo), "TAR member is missing its TarInfo handle"
         try:
@@ -454,11 +509,19 @@ class TarReadBackend(ReadBackend):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> TarReader:
         # `format` carries the concrete (TAR, <stream>) variant the detector/caller resolved;
         # the backend uses its stream to pick the codec to decompress with.
         return TarReader(
-            source, format, streaming, passwords, encoding, archive_name, config
+            source,
+            format,
+            streaming,
+            passwords,
+            encoding,
+            archive_name,
+            config,
+            collector=collector,
         )
 
 

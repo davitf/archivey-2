@@ -24,12 +24,22 @@ feed in later stages.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import TYPE_CHECKING, BinaryIO, Callable
 
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticSummary,
+    FormatConflictContext,
+)
 from archivey.exceptions import ArchiveyError, FormatDetectionError
+from archivey.internal.diagnostics_collector import (
+    DiagnosticCollector,
+    collector_from_config,
+)
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
@@ -45,6 +55,9 @@ from archivey.types import (
     MagicSignature,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
 
 # Decompressed bytes needed to see a TAR ``ustar`` signature at offset 257 (one 512-byte
 # header block covers it).
@@ -74,6 +87,7 @@ class FormatInfo:
     detected_by: str  # "magic", "extension", "content_probe", "sfx_scan"
     encoding_hint: str | None = None
     payload_offset: int = 0  # nonzero only for SFX archives (is-SFX == payload_offset > 0)
+    diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
 
 
 def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
@@ -114,14 +128,14 @@ def _match_magic(
 
 def _match_extension(
     name: str | None, extension_map: dict[str, ArchiveFormat]
-) -> ArchiveFormat | None:
+) -> tuple[ArchiveFormat, str] | None:
     if name is None:
         return None
     lowered = name.lower()
     # Longest extension wins so ".tar.gz" beats ".gz".
     for ext in sorted(extension_map, key=len, reverse=True):
         if lowered.endswith(ext.lower()):
-            return extension_map[ext]
+            return extension_map[ext], ext
     return None
 
 
@@ -238,33 +252,74 @@ def _is_deferred_inner_tar(ext_fmt: ArchiveFormat, resolved: ArchiveFormat) -> b
 
 
 def _warn_on_conflict(
-    name: str | None, ext_fmt: ArchiveFormat | None, resolved: ArchiveFormat
+    collector: DiagnosticCollector,
+    name: str | None,
+    ext_match: tuple[ArchiveFormat, str] | None,
+    resolved: ArchiveFormat,
 ) -> None:
-    if (
-        ext_fmt is not None
-        and ext_fmt != resolved
-        and not _is_deferred_inner_tar(ext_fmt, resolved)
-    ):
-        logger.warning(
-            "Format conflict for %r: extension suggests %r but magic bytes indicate "
-            "%r; using the magic-byte result.",
-            name,
-            ext_fmt,
-            resolved,
-        )
+    if ext_match is None:
+        return
+    ext_fmt, extension = ext_match
+    if ext_fmt == resolved or _is_deferred_inner_tar(ext_fmt, resolved):
+        return
+    message = (
+        f"Format conflict for {name!r}: extension suggests {ext_fmt!r} but magic bytes "
+        f"indicate {resolved!r}; using the magic-byte result."
+    )
+    collector.emit(
+        code=DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
+        message=message,
+        context=FormatConflictContext(
+            source_name=name,
+            extension=extension,
+            extension_format=repr(ext_fmt),
+            detected_format=repr(resolved),
+        ),
+        logger=logger,
+    )
 
 
-def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
+def detect_format(
+    source: str | Path | BinaryIO,
+    *,
+    config: ArchiveyConfig | None = None,
+    collector: DiagnosticCollector | None = None,
+) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
 
     Returns a :class:`FormatInfo`. Raises :class:`FormatDetectionError` when no magic
     pattern matches and no extension guess is available.
+
+    ``collector``, when provided (e.g. from :func:`archivey.open_archive`), receives
+    detection diagnostics into the prospective reader's shared collector. When omitted,
+    a finite standalone collector is created from ``config`` (or the library default).
     """
+    owned_collector = collector is None
+    if owned_collector:
+        effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
+        collector = collector_from_config(effective_config)
+        detection_wm = None
+    else:
+        detection_wm = collector.watermark()
+
+    info = _detect_format_body(source, collector)
+    diagnostics = (
+        collector.snapshot()
+        if owned_collector
+        else collector.snapshot(since=detection_wm)
+    )
+    return replace(info, diagnostics=diagnostics)
+
+
+def _detect_format_body(
+    source: str | Path | BinaryIO, collector: DiagnosticCollector
+) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
     extension_map = registry.extension_map()
     name = source_name(source)
-    ext_fmt = _match_extension(name, extension_map)
+    ext_match = _match_extension(name, extension_map)
+    ext_fmt = ext_match[0] if ext_match is not None else None
 
     # Magic signals split by where they live: "near" ones fit in the default window; "far"
     # ones (ISO's CD001 at 32 769) need an extended peek that is only taken on demand, so the
@@ -291,7 +346,7 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
         info = _resolve_single_file_or_tar(
             magic_fmt, DetectionConfidence.CERTAIN, "magic", peek_more
         )
-        _warn_on_conflict(name, ext_fmt, info.format)
+        _warn_on_conflict(collector, name, ext_match, info.format)
         return info
 
     # 2. Formats without an exact magic, recognized by a content probe (Brotli decodes a
@@ -300,9 +355,11 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
     #    probed for an inner TAR (so .tar.br → TAR_BROTLI).
     for probe_fmt, probe in registry.content_probes():
         if probe(data):
-            return _resolve_single_file_or_tar(
+            info = _resolve_single_file_or_tar(
                 probe_fmt, DetectionConfidence.PROBABLE, "content_probe", peek_more
             )
+            _warn_on_conflict(collector, name, ext_match, info.format)
+            return info
 
     # 3. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on
     #    demand. A stream shorter than the window simply yields no match and falls through —
@@ -312,7 +369,7 @@ def detect_format(source: str | Path | BinaryIO) -> FormatInfo:
         far_data = _peek_prefix(source, far_needed)
         far_fmt = _match_magic(far_data, far)
         if far_fmt is not None:
-            _warn_on_conflict(name, ext_fmt, far_fmt)
+            _warn_on_conflict(collector, name, ext_match, far_fmt)
             return FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic")
 
     # 4. Extension-only guess.

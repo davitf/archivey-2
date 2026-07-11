@@ -389,7 +389,7 @@ def test_extract_zip_basic(tmp_path: Path) -> None:
     src = tmp_path / "a.zip"
     _write_zip(src, {"hello.txt": b"hi", "dir/nested.txt": b"deep"})
     dest = tmp_path / "out"
-    results = extract(src, dest)
+    results = extract(src, dest).results
     assert (dest / "hello.txt").read_bytes() == b"hi"
     assert (dest / "dir" / "nested.txt").read_bytes() == b"deep"
     assert {r.status for r in results} == {ExtractionStatus.EXTRACTED}
@@ -426,7 +426,7 @@ def test_subset_selection(tmp_path: Path) -> None:
     _write_zip(src, {"a.txt": b"a", "b.txt": b"b", "c.txt": b"c"})
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        results = r.extract_all(dest, members=["a.txt", "c.txt"])
+        results = r.extract_all(dest, members=["a.txt", "c.txt"]).results
     assert (dest / "a.txt").exists() and (dest / "c.txt").exists()
     assert not (dest / "b.txt").exists()
     assert len(results) == 2
@@ -481,7 +481,7 @@ def test_overwrite_skip(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.mkdir()
     (dest / "a.txt").write_bytes(b"old")
-    results = extract(src, dest, overwrite=OverwritePolicy.SKIP)
+    results = extract(src, dest, overwrite=OverwritePolicy.SKIP).results
     assert (dest / "a.txt").read_bytes() == b"old"
     assert results[0].status is ExtractionStatus.SKIPPED
 
@@ -625,7 +625,7 @@ def test_on_error_continue_records_rejected(tmp_path: Path) -> None:
         z.writestr("../evil.txt", b"bad")
         z.writestr("good.txt", b"good")
     dest = tmp_path / "out"
-    results = extract(src, dest, on_error=OnError.CONTINUE)
+    results = extract(src, dest, on_error=OnError.CONTINUE).results
     statuses = {r.member.name: r.status for r in results}
     assert ExtractionStatus.REJECTED in statuses.values()
     assert (dest / "good.txt").read_bytes() == b"good"
@@ -695,7 +695,7 @@ def test_selector_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
     with open_archive(src) as r:
         results = r.extract_all(
             dest, members=["f0.txt"], limits=ExtractionLimits(max_entries=1)
-        )
+        ).results
     assert (dest / "f0.txt").read_bytes() == b"x"
     assert len(results) == 1
 
@@ -713,7 +713,7 @@ def test_filter_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
     with open_archive(src) as r:
         results = r.extract_all(
             dest, filter=keep_one, limits=ExtractionLimits(max_entries=1)
-        )
+        ).results
     assert (dest / "f0.txt").read_bytes() == b"x"
     assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
 
@@ -732,7 +732,7 @@ def test_rejected_members_do_not_count_toward_max_entries(tmp_path: Path) -> Non
     with open_archive(src) as r:
         results = r.extract_all(
             dest, limits=ExtractionLimits(max_entries=2), on_error=OnError.CONTINUE
-        )
+        ).results
     statuses = {res.member.name: res.status for res in results}
     assert statuses["good1.txt"] is ExtractionStatus.EXTRACTED
     assert statuses["good2.txt"] is ExtractionStatus.EXTRACTED
@@ -797,7 +797,7 @@ def test_extract_one_shot_from_non_seekable_pipe(tmp_path: Path) -> None:
         [("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz"
     )
     dest = tmp_path / "out"
-    results = extract(NonSeekableBytesIO(raw), dest)
+    results = extract(NonSeekableBytesIO(raw), dest).results
     assert (dest / "a.txt").read_bytes() == b"hello"
     assert (dest / "b.txt").read_bytes() == b"world"
     assert {r.status for r in results} == {ExtractionStatus.EXTRACTED}
@@ -852,7 +852,7 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
         _tar_bytes([("sym", "evil", "../../etc/passwd"), ("file", "ok.txt", b"ok")])
     )
     dest = tmp_path / "out"
-    results = extract(src, dest, on_error=OnError.CONTINUE)
+    results = extract(src, dest, on_error=OnError.CONTINUE).results
     statuses = {r.member.name: r.status for r in results}
     assert statuses["evil"] is ExtractionStatus.REJECTED
     assert (dest / "ok.txt").read_bytes() == b"ok"
@@ -906,7 +906,7 @@ def test_chained_symlink_attack_file_payload_rejected(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     # Under CONTINUE the escaping parent symlink is rejected (never planted) while the run
     # proceeds, proving the FILE payload cannot follow it out of dest.
-    results = extract(src, dest, on_error=OnError.CONTINUE)
+    results = extract(src, dest, on_error=OnError.CONTINUE).results
     statuses = {r.member.name: r.status for r in results}
     assert statuses["sub"] is ExtractionStatus.REJECTED
     assert not (outside / "leak.txt").exists()
@@ -984,7 +984,7 @@ def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
         return None if m.name == "file.txt" else m
 
     with open_archive(src) as r:
-        results = r.extract_all(dest, filter=drop_source)
+        results = r.extract_all(dest, filter=drop_source).results
     assert (dest / "hard.txt").read_bytes() == b"data"
     assert not (dest / "file.txt").exists()
     assert [r.status for r in results] == [ExtractionStatus.EXTRACTED]
@@ -1007,7 +1007,7 @@ def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
     # CONTINUE: records FAILED, does not raise.
     dest2 = tmp_path / "out_continue"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        results = r.extract_all(dest2, filter=drop_source, on_error=OnError.CONTINUE)
+        results = r.extract_all(dest2, filter=drop_source, on_error=OnError.CONTINUE).results
     statuses = {r.member.name: r.status for r in results}
     assert statuses["hard.txt"] is ExtractionStatus.FAILED
     assert not (dest2 / "hard.txt").exists()
@@ -1241,7 +1241,7 @@ def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
             members=["L1.txt", "L2.txt"],  # source A.txt excluded
             overwrite=OverwritePolicy.SKIP,
             on_error=OnError.CONTINUE,
-        )
+        ).results
 
     statuses = {res.member.name: res.status for res in results}
     assert statuses["L1.txt"] is ExtractionStatus.SKIPPED
@@ -1268,7 +1268,7 @@ def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
             dest,
             members=["L1.txt", "L2.txt"],
             overwrite=OverwritePolicy.SKIP,
-        )
+        ).results
 
     assert [res.status for res in results] == [ExtractionStatus.SKIPPED] * 2
     assert (dest / "L1.txt").read_bytes() == b"keep-1"
@@ -1304,7 +1304,7 @@ def test_orphan_materialized_source_carries_link_metadata(tmp_path: Path) -> Non
     dest = tmp_path / "out"
 
     with open_archive(src) as r:
-        results = r.extract_all(dest, members=["L1.txt"])
+        results = r.extract_all(dest, members=["L1.txt"]).results
 
     assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
     st = (dest / "L1.txt").lstat()
@@ -1326,7 +1326,7 @@ def test_hardlink_duplicate_name_extraction_links_first_inode(tmp_path: Path) ->
     )
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        results = r.extract_all(dest, overwrite=OverwritePolicy.REPLACE)
+        results = r.extract_all(dest, overwrite=OverwritePolicy.REPLACE).results
     assert all(res.status is ExtractionStatus.EXTRACTED for res in results)
     assert (dest / "L.txt").read_bytes() == b"content1"
     assert (dest / "A.txt").read_bytes() == b"content2"
@@ -1351,7 +1351,7 @@ def test_hardlink_before_source_shares_inode_and_counts_once(tmp_path: Path) -> 
     with open_archive(src) as r:
         results = r.extract_all(
             dest, on_progress=lambda p: progress_bytes.append(p.bytes_written)
-        )
+        ).results
 
     assert all(res.status is ExtractionStatus.EXTRACTED for res in results)
     assert (dest / "L1.txt").read_bytes() == payload
@@ -1371,14 +1371,14 @@ def test_selector_archivemember_entry_matches_by_identity(tmp_path: Path) -> Non
     with open_archive(src) as r:
         first, second = r.members()
         assert first.name == second.name == "dup.txt"
-        results = r.extract_all(tmp_path / "by_member", members=[first])
+        results = r.extract_all(tmp_path / "by_member", members=[first]).results
     assert len(results) == 1
     assert (tmp_path / "by_member" / "dup.txt").read_bytes() == b"first"
 
     with open_archive(src) as r:
         results = r.extract_all(
             tmp_path / "by_name", members=["dup.txt"], overwrite=OverwritePolicy.REPLACE
-        )
+        ).results
     assert len(results) == 2  # a str entry matches every same-named duplicate
     assert (tmp_path / "by_name" / "dup.txt").read_bytes() == b"second"
 

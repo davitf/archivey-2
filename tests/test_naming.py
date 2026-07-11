@@ -47,9 +47,22 @@ def test_normalize(
 
 
 def test_warns_when_name_changes(caplog: pytest.LogCaptureFixture) -> None:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.naming import emit_member_name_normalized
+    from archivey.types import ArchiveMember
+
+    presented = "foo//bar"
+    name = normalize_member_name(
+        presented, MemberType.FILE, backslash_is_separator=False
+    )
+    member = ArchiveMember(type=MemberType.FILE, name=name, raw_name=None)
+    collector = DiagnosticCollector()
     with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        normalize_member_name("foo//bar", MemberType.FILE, backslash_is_separator=False)
+        emit_member_name_normalized(
+            collector, member=member, presented_name=presented
+        )
     assert any("normalized" in r.message for r in caplog.records)
+    assert collector.snapshot().total_count == 1
 
 
 def test_no_warning_when_unchanged(caplog: pytest.LogCaptureFixture) -> None:

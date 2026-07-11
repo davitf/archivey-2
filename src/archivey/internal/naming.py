@@ -11,9 +11,19 @@ archive-namespace name it refers to (see ``archive-reading``: link following).
 from __future__ import annotations
 
 import posixpath
+from typing import TYPE_CHECKING
 
+from archivey.diagnostics import (
+    DiagnosticCode,
+    NameNormalizationContext,
+    raw_name_to_base64,
+)
 from archivey.internal.logs import normalization as logger
 from archivey.types import MemberType
+
+if TYPE_CHECKING:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.types import ArchiveMember
 
 # Unicode bidi formatting controls can make the displayed order of a filename differ
 # materially from its stored order (for example, disguising an executable suffix).
@@ -51,8 +61,9 @@ def normalize_member_name(
       3. Append ``/`` for directory members if not already present.
       4. Never produce an empty string — an empty name or a bare root becomes ``"."``.
 
-    A warning is emitted via the ``archivey.normalization`` logger when normalization changes
-    the presented path.
+    When normalization changes the presented path, callers should emit
+    :func:`emit_member_name_normalized` once the :class:`~archivey.types.ArchiveMember`
+    exists (member-eligible diagnostic).
     """
     name = decoded
 
@@ -75,10 +86,35 @@ def normalize_member_name(
     if member_type == MemberType.DIRECTORY and name != "." and not name.endswith("/"):
         name = name + "/"
 
-    if name != decoded:
-        logger.warning("Member name normalized: %r -> %r", decoded, name)
-
     return name
+
+
+def emit_member_name_normalized(
+    collector: DiagnosticCollector,
+    *,
+    member: ArchiveMember,
+    presented_name: str,
+    archive_name: str | None = None,
+) -> None:
+    """Emit ``MEMBER_NAME_NORMALIZED`` when normalization changed ``presented_name``."""
+    if member.name == presented_name:
+        return
+    message = f"Member name normalized: {presented_name!r} -> {member.name!r}"
+    collector.emit(
+        code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
+        message=message,
+        context=NameNormalizationContext(
+            archive_name=archive_name,
+            member_name=member.name,
+            member_id=member._member_id,
+            raw_name_base64=raw_name_to_base64(member.raw_name),
+            presented_name=presented_name,
+            normalized_name=member.name,
+        ),
+        member=member,
+        attach_to_member=True,
+        logger=logger,
+    )
 
 
 def resolve_link_target_name(

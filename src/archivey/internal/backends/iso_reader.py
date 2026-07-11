@@ -47,9 +47,11 @@ from archivey.exceptions import (
     PackageNotInstalledError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.internal.naming import normalize_member_name
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import (
     ArchiveFormat,
@@ -236,9 +238,10 @@ class IsoReader(BaseArchiveReader):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> None:
         # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(format, streaming, archive_name, config)
+        super().__init__(format, streaming, archive_name, config, collector=collector)
         self._source = source
         if pycdlib is None:
             raise PackageNotInstalledError(
@@ -329,8 +332,9 @@ class IsoReader(BaseArchiveReader):
             member_type = MemberType.FILE
 
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
+        presented = self._display_name(ns_path)
         name = normalize_member_name(
-            self._display_name(ns_path), member_type, backslash_is_separator=False
+            presented, member_type, backslash_is_separator=False
         )
         raw_name = ns_path.lstrip("/").encode("utf-8", errors="surrogateescape")
 
@@ -345,7 +349,7 @@ class IsoReader(BaseArchiveReader):
             else ()
         )
 
-        return ArchiveMember(
+        member = ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
@@ -362,6 +366,13 @@ class IsoReader(BaseArchiveReader):
             is_encrypted=False,
             _raw=ns_path,  # the namespace path, so _open_member needs no lookup table
         )
+        emit_member_name_normalized(
+            self._diagnostics_collector,
+            member=member,
+            presented_name=presented,
+            archive_name=self._archive_name,
+        )
+        return member
 
     def _timestamps(
         self, record: Any, rr: Any
@@ -414,7 +425,7 @@ class IsoReader(BaseArchiveReader):
 
     # --- data ---------------------------------------------------------------------------
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         ns_path = member._raw
         assert isinstance(ns_path, str), "ISO member is missing its namespace path"
         try:
@@ -481,10 +492,20 @@ class IsoReadBackend(ReadBackend):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> IsoReader:
         # `format` is always ISO here (single-format backend); accepted for the uniform
         # ReadBackend signature.
-        return IsoReader(source, format, streaming, passwords, encoding, archive_name, config)
+        return IsoReader(
+            source,
+            format,
+            streaming,
+            passwords,
+            encoding,
+            archive_name,
+            config,
+            collector=collector,
+        )
 
 
 register_reader(IsoReadBackend)

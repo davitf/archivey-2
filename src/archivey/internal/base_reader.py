@@ -12,16 +12,21 @@ if TYPE_CHECKING:
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
+from archivey.diagnostics import DiagnosticSummary, ExtractionReport
 from archivey.exceptions import (
     ArchiveyError,
     LinkTargetNotFoundError,
     ReadError,
     UnsupportedOperationError,
 )
+from archivey.internal.diagnostics_collector import (
+    DiagnosticCollector,
+    DiagnosticWatermark,
+    collector_from_config,
+)
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
-    ExtractionResult,
     MemberFilter,
     MemberSelectorArg,
     OnError,
@@ -97,11 +102,16 @@ class ReadBackend(ABC):
         encoding: str | None,
         archive_name: str | None,
         config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
     ) -> "BaseArchiveReader":
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller). A
         multi-format backend uses it to pick its concrete codec/variant rather than
-        re-inspecting the source."""
+        re-inspecting the source.
+
+        ``collector`` is the prospective reader's diagnostic collector (created before
+        detection). When omitted, the reader creates one from ``config``.
+        """
         ...
 
 
@@ -195,11 +205,17 @@ class BaseArchiveReader(ArchiveReader):
         streaming: bool,
         archive_name: str | None,
         config: ArchiveyConfig | None = None,
+        collector: DiagnosticCollector | None = None,
     ) -> None:
         self._format = format
         self._streaming = streaming
         self._archive_name = archive_name
         self._config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
+        self._diagnostics_collector = (
+            collector
+            if collector is not None
+            else collector_from_config(self._config)
+        )
         # A random, opaque identity token (not id(self), which the allocator can reuse
         # after a reader is garbage-collected — a member of a dead reader must never
         # pass another reader's identity check; and not a plain counter, whose small
@@ -223,7 +239,7 @@ class BaseArchiveReader(ArchiveReader):
     @abstractmethod
     def _iter_members(self) -> Iterator[ArchiveMember]: ...
 
-    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
+    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs in archive order; backs ``stream_members``.
 
         This default is for **random-access / fully-indexed** backends only (ZIP,
@@ -258,7 +274,7 @@ class BaseArchiveReader(ArchiveReader):
             else:
                 yield member, None
 
-    def _lazy_member_stream(self, member: ArchiveMember) -> BinaryIO:
+    def _lazy_member_stream(self, member: ArchiveMember) -> ArchiveStream:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
@@ -272,10 +288,12 @@ class BaseArchiveReader(ArchiveReader):
             stamp=lambda exc: self._stamp_error_context(exc, member.name),
             lazy=True,
             size=member.size,
+            collector=self._diagnostics_collector,
+            operation_id=uuid.uuid4().hex,
         )
 
     @abstractmethod
-    def _open_member(self, member: ArchiveMember) -> BinaryIO: ...
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream: ...
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         """Map a raw exception (from a codec/library while reading a member) to an
@@ -296,7 +314,7 @@ class BaseArchiveReader(ArchiveReader):
         *,
         lazy: bool = False,
         size: int | None = None,
-    ) -> BinaryIO:
+    ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
 
@@ -312,6 +330,8 @@ class BaseArchiveReader(ArchiveReader):
             lazy=lazy,
             seekable=is_seekable(inner),
             size=size,
+            collector=self._diagnostics_collector,
+            operation_id=uuid.uuid4().hex,
         )
 
     @abstractmethod
@@ -583,6 +603,11 @@ class BaseArchiveReader(ArchiveReader):
         return self._get_archive_info().cost
 
     @property
+    def diagnostics(self) -> DiagnosticSummary:
+        """Fresh immutable cumulative snapshot of diagnostics for this reader."""
+        return self._diagnostics_collector.snapshot()
+
+    @property
     def compressed_source_size(self) -> int | None:
         """Byte size of the archive's source when cheaply knowable, else ``None``.
 
@@ -696,7 +721,7 @@ class BaseArchiveReader(ArchiveReader):
         found = self._last_by_exact_name(name, self._members_by_name_lists)
         return found if found is not None else default
 
-    def open(self, member: str | ArchiveMember) -> BinaryIO:
+    def open(self, member: str | ArchiveMember) -> ArchiveStream:
         """Open member for reading. Follows symlinks."""
         # Two independent gates: the access mode (streaming=True forbids random access)
         # and the backend capability (_SUPPORTS_RANDOM_ACCESS, used by the Phase-3
@@ -731,7 +756,7 @@ class BaseArchiveReader(ArchiveReader):
         self,
         member: ArchiveMember,
         visited: set[int],
-    ) -> BinaryIO:
+    ) -> ArchiveStream:
         if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
             if member._member_id is None:
                 raise LinkTargetNotFoundError(
@@ -776,7 +801,7 @@ class BaseArchiveReader(ArchiveReader):
     def stream_members(
         self,
         members: MemberSelector = None,
-    ) -> Iterator[tuple[ArchiveMember, BinaryIO | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform)."""
         selector = normalize_member_selector(members)
         if self._streaming:
@@ -799,7 +824,8 @@ class BaseArchiveReader(ArchiveReader):
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
-    ) -> list[ExtractionResult]:
+        _report_since: DiagnosticWatermark | None = None,
+    ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
@@ -814,6 +840,14 @@ class BaseArchiveReader(ArchiveReader):
         effective_limits = (
             limits if limits is not None else effective_config.extraction_limits
         )
+        collector = self._diagnostics_collector
+        # Top-level extract() may pass a watermark from before detection; otherwise
+        # this call's report covers only extraction-phase events.
+        wm = (
+            _report_since
+            if _report_since is not None
+            else collector.watermark()
+        )
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
@@ -823,7 +857,11 @@ class BaseArchiveReader(ArchiveReader):
             filter=filter,
             limits=effective_limits,
         )
-        return coordinator.run(self, dest)
+        results = coordinator.run(self, dest)
+        return ExtractionReport(
+            results=tuple(results),
+            diagnostics=collector.snapshot(since=wm),
+        )
 
     def close(self) -> None:
         if not self._closed:
