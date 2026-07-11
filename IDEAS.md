@@ -127,10 +127,9 @@
   decompress-recompress fallback. Pairs with the native ZIP parser (raw-deflate access) above.
 
 - **Parallel extraction / concurrent member streams** — the declared worker seam
-  (`MemberStreams.CONCURRENT`) is committed and **provisional in v1** (cooperative
-  post-materialization fan-out; free-threaded promotion deferred — see
-  `openspec/changes/concurrent-member-streams` D15). Scheduling/throughput for
-  extract-independent-members remains future; any speed claim needs targeted
+  (`MemberStreams.CONCURRENT`) is committed and supported (post-materialization
+  fan-out; free-threaded coverage via the Linux `3.13t` CI job). Scheduling/throughput
+  for extract-independent-members remains future; any speed claim needs targeted
   measurements. Also applies to **solid archives with multiple independent blocks** —
   e.g. a 7z with several solid folders can decompress folders in parallel (py7zr does
   this); members *within* one solid block stay sequential. No benefit for a single-block

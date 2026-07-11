@@ -20,10 +20,12 @@ class MemberStreams(Flag):
 
         MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
 
-    ``CONCURRENT`` is **provisional** in v1: correct under cooperative use (materialize,
-    then fan out; callers synchronize their own shared streams) with the documented
-    misuse set detected. Free-threaded / adversarial hardening lands when the bit is
-    promoted to fully supported — see ``openspec/changes/concurrent-member-streams``.
+    ``CONCURRENT`` unlocks a supported post-materialization worker seam: after
+    ``members()`` (or equivalent materialization), concurrent ``open()`` and independent
+    stream I/O on different members are correct under cooperative use and are exercised
+    on free-threaded CPython by the Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
+    Callers still synchronize their own shared stream objects; iteration / extraction /
+    reader close remain single-owner.
     """
 
     CONCURRENT = auto()

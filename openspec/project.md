@@ -26,7 +26,7 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | Core dependencies | None (stdlib only) |
 | Optional extras | `[7z]`, `[rar]`, `[crypto]`, `[7z-write]` (py7zr), `[iso]` (pycdlib), `[zstd]`, `[lz4]`, `[cli]`, `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]` — RAR data needs the system `unrar` binary (see `packaging-and-extras`) |
 | OS support | Linux, macOS, Windows |
-| Thread safety | The `ArchiveReader` object is not thread-safe. Declared `MemberStreams.CONCURRENT` (provisional in v1) unlocks a cooperative post-materialization worker seam for concurrent `open()` / independent streams; free-threaded hardening is deferred. Writers are not thread-safe. |
+| Thread safety | The `ArchiveReader` object is not thread-safe. Declared `MemberStreams.CONCURRENT` unlocks a post-materialization worker seam for concurrent `open()` / independent streams; free-threaded correctness is covered by the Linux `3.13t` `free-threaded-concurrency` CI job. Writers are not thread-safe. |
 | Concurrency model | Synchronous API only for v1 (async is a deferred follow-on). |
 
 ## Capability map

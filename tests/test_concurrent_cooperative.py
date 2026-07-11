@@ -1,7 +1,7 @@
-"""Cooperative concurrency / lifecycle / password tests (provisional CONCURRENT).
+"""Cooperative concurrency / lifecycle / password tests for MemberStreams.CONCURRENT.
 
-Heavier free-threaded and adversarial lock-order stress is deferred with D15 — see
-``openspec/changes/concurrent-member-streams/tasks.md`` reminders on 7.3/7.4/7.6/7.8.
+Multi-thread / free-threaded stress lives in ``test_concurrent_multithread.py`` and the
+Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from archivey import (
 )
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.archive_stream import ArchiveStream
+
+pytestmark = pytest.mark.concurrent_reader
 
 
 def _dir_with_files(tmp_path: Path) -> Path:

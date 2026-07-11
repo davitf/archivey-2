@@ -5,7 +5,11 @@ from __future__ import annotations
 import io
 import threading
 
+import pytest
+
 from archivey.internal.streams.streamtools import LockedStream
+
+pytestmark = pytest.mark.concurrent_reader
 
 
 class _SeekBeforeRead:

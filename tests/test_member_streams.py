@@ -16,6 +16,8 @@ from archivey import (
     open_archive,
 )
 
+pytestmark = pytest.mark.concurrent_reader
+
 
 def _two_file_dir(tmp_path: Path) -> Path:
     (tmp_path / "a.txt").write_bytes(b"aaa")

@@ -282,6 +282,20 @@ is not required by this capability.
   and read interleaved
 - **THEN** each stream yields that member's exact bytes in order
 
+#### Scenario: multi-thread opens on plain TAR-RA
+
+- **WHEN** multiple threads concurrently open and read distinct file members of a plain
+  random-access TAR under `MemberStreams.CONCURRENT` after materialization
+- **THEN** each thread yields that member's exact bytes without data races on the shared
+  handle
+
+#### Scenario: multi-thread opens on compressed TAR-RA
+
+- **WHEN** multiple threads concurrently open and read distinct file members of a
+  compressed random-access TAR (at least `.tar.gz`) under `MemberStreams.CONCURRENT`
+- **THEN** each thread yields that member's exact bytes (serialization under the lock is
+  acceptable)
+
 #### Scenario: initialization and seek operations share the same lock
 
 - **WHEN** workers concurrently create member streams, perform read/readinto, and use

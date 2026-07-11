@@ -173,9 +173,9 @@ def _open_member(self, member: ArchiveMember) -> BinaryIO: ...
 # no per-open scratch on self, no shared-reader-state mutation; archivey-owned byte
 # ranges go through SharedSource.view. Streaming and single-decoder TAR (TAR-RA) are
 # exempt unless MemberStreams.CONCURRENT is declared (then TAR/ISO use one per-reader
-# shared-handle lock). CONCURRENT is provisional in v1: materialize, then fan out;
-# free-threaded hardening is deferred. Full contract: docs/parallel-reader.md and the
-# concurrent-member-streams change.
+# shared-handle lock). With MemberStreams.CONCURRENT: materialize, then fan out;
+# free-threaded correctness is covered by the Linux 3.13t CI job. Full contract:
+# docs/parallel-reader.md.
 
 @abstractmethod
 def _close_archive(self) -> None: ...
