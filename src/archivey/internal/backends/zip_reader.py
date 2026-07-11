@@ -45,17 +45,12 @@ from archivey.internal.password import (
 )
 from archivey.internal.password_confirm import (
     CONFIRM_PREFIX_BYTES,
-    STORED_PROBE_CHUNK,
-    STORED_PROBE_MIN_MEMBER,
-    compressibility_accepts,
     first_crc_match,
     read_and_discard,
-    unique_accepted,
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.streamtools import is_seekable, is_stream
 from archivey.internal.zipcrypto import (
-    decrypt_after_header,
     parallel_plaintext_crc32,
     password_matches_check_byte,
 )
@@ -634,7 +629,7 @@ class ZipReader(BaseArchiveReader):
         *,
         member_name: str,
     ) -> BinaryIO:
-        """STORED ZipCrypto: compressibility probe, then one shared CRC pass."""
+        """STORED ZipCrypto: one shared CRC pass over surviving weak-check candidates."""
         ambiguous_failure: EncryptionError | None = None
         check_byte = self._zipcrypto_check_byte(info)
         expected_crc = info.CRC & 0xFFFFFFFF
@@ -655,27 +650,8 @@ class ZipReader(BaseArchiveReader):
             nonlocal ambiguous_failure
             if not survivors:
                 return None
-            # Probe only when the member is at least one full probe chunk — below
-            # that the probe would read the whole file, and CRC is cheaper.
-            if info.file_size >= STORED_PROBE_MIN_MEMBER:
-                with self._ciphertext_chunks(
-                    info, body_start=0, body_limit=STORED_PROBE_CHUNK
-                ) as chunks:
-                    probe_cipher = b"".join(chunks)
-                accepted = unique_accepted(
-                    [
-                        (
-                            password,
-                            compressibility_accepts(
-                                decrypt_after_header(password, header, probe_cipher)
-                            ),
-                        )
-                        for password in survivors
-                    ]
-                )
-                if accepted is not None:
-                    return accepted
-
+            # No decompressor to reject garbage: one shared ciphertext pass computes
+            # every survivor's plaintext CRC-32 in constant memory.
             with self._ciphertext_chunks(info) as chunks:
                 crcs = parallel_plaintext_crc32(survivors, header, chunks)
             winner = first_crc_match(expected_crc, crcs)

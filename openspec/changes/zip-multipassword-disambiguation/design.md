@@ -51,33 +51,21 @@ Per ZipCrypto member needing disambiguation:
    reaches EOF and `zipfile` checks the CRC — confirmation is then exact, and the
    ambiguity message below is fully accurate.
 4. **STORED member:** there is no decompressor to reject garbage; only the full-stream
-   CRC discriminates. Two rungs keep this cheap:
+   CRC discriminates. One shared pass over the raw ciphertext decrypts with every
+   surviving candidate in parallel (ZipCrypto keystreams are byte-cheap), accumulating
+   each candidate's plaintext CRC-32 in constant memory. At EOF, the candidate matching
+   the central-directory CRC wins (ties — astronomically unlikely cross-keystream CRC
+   collisions — resolve to the earliest candidate in order). Total cost: at most one
+   extra full read, regardless of candidate count.
 
-   a. **Compressibility probe (accept-early).** Decrypt the first bounded chunk with
-      each surviving candidate and run a fast compressor (e.g. zlib level 1) over each
-      plaintext. A wrong ZipCrypto key yields effectively random bytes, which never
-      compress meaningfully; so if exactly one candidate's chunk shrinks by a
-      conservative margin, that candidate is accepted immediately — no further read.
-      The probe is asymmetric by design: it only ever *accepts*. It must never reject,
-      because STORED plaintext is itself frequently incompressible (files are commonly
-      stored *because* the archiver found them incompressible: media, nested archives).
-      An incompressible chunk is simply "no signal". A heuristically-accepted candidate
-      is still subject to the caller's EOF CRC check, so a (theoretical) wrong
-      compressible candidate fails the caller's read exactly like the residual prefix
-      cases — parity with rung 3. Tiny members skip the probe: compression headers
-      dominate small chunks, and the full pass below is trivially cheap there.
+   A compressibility early-accept probe (and magic-byte detection) were investigated and
+   dropped: STORED members are typically already-compressed media that look random to
+   those heuristics, while compressible plaintext is rarely stored uncompressed, so a
+   probe would almost never avoid the CRC pass. Multi-candidate ZipCrypto is already
+   niche; the shared CRC pass is good enough.
 
-   b. **Single shared CRC pass (exact fallback).** When the probe is inconclusive, one
-      shared pass over the raw ciphertext — continuing from the chunk the probe already
-      read — decrypts with every surviving candidate in parallel (ZipCrypto keystreams
-      are byte-cheap), accumulating each candidate's plaintext CRC-32 in constant
-      memory. At EOF, the candidate matching the central-directory CRC wins (ties —
-      astronomically unlikely cross-keystream CRC collisions — resolve to the earliest
-      candidate in order). Total cost: at most one extra full read, regardless of
-      candidate count.
-
-   Both rungs need raw ciphertext access (a byte-range read of the member's data area
-   via the local header) and a ZipCrypto keystream; the keystream is ~20 lines (see
+   The pass needs raw ciphertext access (a byte-range read of the member's data area via
+   the local header) and a ZipCrypto keystream; the keystream is ~20 lines (see
    `tests/zipcrypto.py`) and is implemented in archivey rather than reaching into
    `zipfile`'s private `_ZipDecrypter`.
 5. **Acceptance:** re-open the member fresh through `zipfile` with the winning password
@@ -137,12 +125,11 @@ be false precision. If no candidate passes the weak check, the normal wrong-pass
 
 The reader never accepts a candidate through a path that bypasses the caller stream's
 read-time integrity check. Candidate order alone, neighbour-member affinity, and
-warning-backed guessing are not acceptance signals. The compressibility probe and the
-bounded prefix are acceptance *accelerators*: their residual error is still caught by
-the caller's EOF CRC check, so nothing is ever silently wrong that would not also have
-been silently wrong on the single-candidate path. (The order tie-break in the STORED
-single-pass applies only among candidates whose full-stream CRC *matched* — those are
-confirmations, not guesses.)
+warning-backed guessing are not acceptance signals. The bounded decompress prefix is an
+acceptance *accelerator*: its residual error is still caught by the caller's EOF CRC
+check, so nothing is ever silently wrong that would not also have been silently wrong on
+the single-candidate path. (The order tie-break in the STORED single-pass applies only
+among candidates whose full-stream CRC *matched* — those are confirmations, not guesses.)
 
 ## The bounded-storage guarantee
 
@@ -192,27 +179,21 @@ orders of magnitude of headroom, and makes “member fits in the bound → exact
 confirmation” cover typical members. A much smaller bound (e.g. 64 KiB) would also be
 evidence-backed if we want cheaper confirmation later.
 
-### STORED compressibility probe (task 1.3)
+### STORED compressibility probe (task 1.3) — investigated, then dropped
 
 Wrong-key plaintext is indistinguishable from `os.urandom` for compression purposes.
-Across chunk sizes 256 B–256 KiB and 400 random trials each:
+Text/JSON shrink dramatically, but:
 
-- **zlib level 1** and **zstd level 1/3** (`backports.zstd`) both yield ratio
-  `compressed/raw` **strictly > 1.0** for every random trial (compressor framing
-  overhead; at 64 KiB, zlib ≈ 1.0004, zstd ≈ 1.0002).
-- **Text / JSON / zeros / RLE** shrink dramatically (zlib text at 64 KiB ≈ 0.007).
-- **Synthetic media/nested-archive first chunks** (JPEG/PNG/MP4/ZIP magic + random
-  body) do **not** shrink — ratio matches random at every chunk size tried. A few
-  header bytes are negligible once the chunk is kilobytes; they do not create false
-  accepts under a conservative margin.
+- STORED members are typically already-compressed media (that is why they were stored),
+  and those look random to zlib/zstd at every chunk size tried (256 B–256 KiB);
+- compressible plaintext is rarely stored uncompressed, and when it is the members are
+  usually small enough that a full CRC pass is cheap anyway.
 
-**Finalized constants:**
+Magic-byte detection was considered as an alternative accept-only signal (better aligned
+with media) but rejected: it would require maintaining a signature table or taking an
+optional dependency (`filetype` / `puremagic` / `python-magic`) for a niche path
+(multi-candidate × ZipCrypto × STORED × weak-byte collision). The shared CRC pass alone
+is exact, O(1) memory, and one full read — good enough.
 
-| Knob | Value | Rationale |
-|------|-------|-----------|
-| Compressor | zlib level 1 (always) | Zero-dep core; separation quality matches zstd for this probe. |
-| Chunk size | 64 KiB | Header overhead negligible; text vs random widely separated. |
-| Skip probe below | 64 KiB (= chunk size) | Below one probe chunk the probe would read the whole member; CRC is cheaper. |
-| Accept when | `compressed_len <= 7/8 * raw_len` (12.5% shrinkage) | Far below random_min (~1.00); far above media-like ratios (~1.00). |
-| Asymmetry | accept-only | Incompressible correct plaintext → fall through to shared CRC pass. |
-| Compressed prefix | 1 MiB decompressed | Extremely conservative vs measured rejection (bytes–tens of bytes). |
+The exploration script `scripts/exploration/zipcrypto_compressibility_probe.py` remains
+as a record of the calibration; it is not used by the runtime.

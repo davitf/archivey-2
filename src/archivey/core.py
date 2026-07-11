@@ -120,6 +120,16 @@ def open_archive(
     ``password`` accepts a single value, an ordered sequence of candidate passwords, or
     a provider callable. List the most likely password first — especially for 7z, where
     each wrong candidate pays an expensive key derivation.
+
+    With multiple candidates (or a provider), formats whose per-open password check is
+    weak may need a confirmation read before a candidate is accepted. For traditional
+    ZipCrypto this is usually cheap: compressed members are confirmed from a bounded
+    decompressed prefix. **STORED** ZipCrypto members are the niche exception — roughly
+    1/256 of wrong passwords pass the one-byte open check, and with no decompressor to
+    reject garbage the reader must scan the member once (CRC over every surviving
+    candidate in parallel) to decide. That full pass is rare in practice (multiple
+    passwords *and* a colliding wrong candidate *and* a STORED member) but can matter
+    for very large stored members.
     """
     # Import backends to ensure they are registered
     import archivey.internal.backends  # noqa: F401

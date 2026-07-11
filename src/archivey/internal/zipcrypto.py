@@ -1,9 +1,8 @@
 """Traditional ZipCrypto (PKWARE) stream cipher — keystream only.
 
-Used by multi-candidate password confirmation for STORED members (parallel CRC /
-compressibility probe over raw ciphertext). Deliberately independent of
-:mod:`zipfile`'s private ``_ZipDecrypter`` so the same helper can back other
-callers later.
+Used by multi-candidate password confirmation for STORED members (parallel CRC
+over raw ciphertext). Deliberately independent of :mod:`zipfile`'s private
+``_ZipDecrypter`` so the same helper can back other callers later.
 
 APPNOTE.txt §6.1: a 96-bit key state seeded from the password, a 12-byte
 encryption header whose final plaintext byte is the verification value, then
@@ -12,7 +11,7 @@ payload bytes, each XORed with a keystream byte derived from the evolving state.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Sequence
 
 
 def _make_crc_table() -> list[int]:
@@ -69,41 +68,6 @@ def password_matches_check_byte(
         keys.update(plain)
         plain_last = plain
     return plain_last == check_byte
-
-
-def decrypt_after_header(
-    password: bytes, header_ciphertext: bytes, body_ciphertext: bytes
-) -> bytes:
-    """Decrypt ``body_ciphertext`` after consuming the 12-byte encryption header."""
-    keys = ZipCryptoKeys(password)
-    for i in range(12):
-        plain = header_ciphertext[i] ^ keys.keystream_byte()
-        keys.update(plain)
-    out = bytearray(len(body_ciphertext))
-    for i, cipher in enumerate(body_ciphertext):
-        plain = cipher ^ keys.keystream_byte()
-        keys.update(plain)
-        out[i] = plain
-    return bytes(out)
-
-
-def iter_decrypt_body(
-    password: bytes,
-    header_ciphertext: bytes,
-    body_chunks: Iterable[bytes],
-) -> Iterator[bytes]:
-    """Yield decrypted body chunks; consumes the 12-byte header first."""
-    keys = ZipCryptoKeys(password)
-    for i in range(12):
-        plain = header_ciphertext[i] ^ keys.keystream_byte()
-        keys.update(plain)
-    for chunk in body_chunks:
-        out = bytearray(len(chunk))
-        for i, cipher in enumerate(chunk):
-            plain = cipher ^ keys.keystream_byte()
-            keys.update(plain)
-            out[i] = plain
-        yield bytes(out)
 
 
 def parallel_plaintext_crc32(
