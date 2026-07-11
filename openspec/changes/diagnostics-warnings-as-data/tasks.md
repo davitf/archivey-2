@@ -55,16 +55,17 @@
 
 ## 4. Verification and documentation
 
-- [ ] 4.1 Add focused tests for every policy-matrix cell, exact counts after retention
+- [x] 4.1 Add focused tests for every policy-matrix cell, exact counts after retention
       exhaustion, aggregate/attachment shared-budget accounting, occurrence-id value
       correlation, immutable/JSON-safe context, secret redaction, callback order/failure,
       snapshot access from callbacks, operational reentrancy rejection, and lock release.
-- [ ] 4.2 Add behavior tests for detection→reader collector transfer, one-shot collector
+- [x] 4.2 Add behavior tests for detection→reader collector transfer, one-shot collector
       handoff, cumulative reader and filtered stream lifecycles, each of the 17 migrated
       warning sites, extraction group-failure count units, `ExtractionReport` scope/status
       and live-member semantics, `RAISE` versus `OnError.CONTINUE`, and all
       `strict_archive_eof` × disposition precedence combinations.
-- [ ] 4.3 Export and document the final public API, update examples/type contracts, and
+- [x] 4.3 Export and document the final public API, update examples/type contracts, and
       run lint, Pyrefly, ty, docs, and the full current/lowest/core-only test matrix before
       implementation is committed.
-      (Partial: public exports updated; docs/full matrix still pending.)
+      (Public exports + docs/api + threat-model C2 updated; three-config matrix run on
+      this branch.)

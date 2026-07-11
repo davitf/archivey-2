@@ -206,14 +206,13 @@ via `MissingComponent`-style data, and document the licensing situation prominen
 (archivey itself stays permissively licensed; the binary is a system dependency).
 Feeds the Phase-6 native-RAR design directly.
 
-### C2. Warnings that should be data
+### C2. Warnings that should be data — addressed
 
-Name normalization, format-detection conflicts, and O(n) rewinds warn via `logging` —
-invisible to most applications, so the "no surprises" property silently degrades to
-"surprises, but logged". Sweep candidates: normalization changes → a flag/field on the
-member (`raw_name` already preserves truth); detection conflicts → already in
-`FormatInfo`; rewind cost → already on `CostReceipt`; audit for the rest. Backlog in
-`IDEAS.md`.
+Addressed by the lifecycle-aware diagnostics capability (`diagnostics-warnings-as-data`):
+advisories are immutable `Diagnostic` values with stable codes, attached to
+lifecycle-appropriate surfaces (`FormatInfo`, `ArchiveReader`/`ArchiveStream`,
+`ArchiveMember`, `ExtractionReport`), with per-code policy (`IGNORE`/`COLLECT`/`RAISE`)
+and a shared retention budget. Logging remains the zero-config projection.
 
 ### C3. Metadata fidelity boundary (xattrs/ACLs/forks)
 
