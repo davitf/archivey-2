@@ -162,3 +162,56 @@ be evaluated when code exists. A future structured diagnostic (`diagnostics-warn
 defines the mechanism; a follow-up defines a password-disambiguation code) could expose
 that disambiguation occurred, but no warning API is invented here and it would not make
 unvalidated guessing safe.
+
+## Investigation findings
+
+Measured with `scripts/exploration/zipcrypto_codec_rejection.py` and
+`scripts/exploration/zipcrypto_compressibility_probe.py` (2026-07-11). These numbers
+back the confirmation bound and the STORED probe constants; they are not public API.
+
+### Codec gibberish rejection (task 1.1)
+
+Feeding high-entropy bytes (uniform random, or ZipCrypto-decrypted with a verification-
+byte-colliding wrong password) into the stdlib codecs used by `zipfile`:
+
+| Codec | Typical rejection | Worst observed (exploration) | Notes |
+|-------|-------------------|------------------------------|-------|
+| DEFLATE (raw, `wbits=-15`) | 1–12 compressed bytes; 0 decompressed | A few random streams form a *complete tiny* DEFLATE stream (`eof` after ≤74 decompressed bytes). In 5 000 trials of 64 KiB random input, **no** stream produced ≥1 KiB of output without error. | Tiny `eof` false-streams still fail the member CRC for any non-empty payload. |
+| BZIP2 | Immediate `OSError("Invalid data stream")` | Even with a forced `BZh9` / `BZh1` magic prefix, rejection after **4–5** input bytes. Never approached a 900 KiB block. | The 900 KiB block size matters for *valid* streams; wrong-key garbage fails at the header, not after a full block. |
+| LZMA (ZIP framing) | Bad props header / `LZMAError` / `ValueError` before any output | Props-size field can make the reader examine up to a few dozen header bytes; decompressed output stayed 0 in all random and wrong-key trials. | Through `zipfile`, wrong-key LZMA raised `BadZipFile` with 0 bytes produced (30/30 collisions). |
+
+**Wrong-key via `zipfile.open` + read** (30 colliding passwords × DEFLATE/BZIP2/LZMA,
+128 KiB compressible plaintext): every compressed codec failed with **0 decompressed
+bytes** produced. STORED failed at CRC after reading the member (as expected — no
+decompressor).
+
+**Confirmation bound.** A ~1 MiB decompressed-prefix budget is extremely conservative
+relative to these margins (practical rejection is in bytes to tens of bytes). Keeping
+1 MiB as the shared internal constant is still reasonable: it is a round number, leaves
+orders of magnitude of headroom, and makes “member fits in the bound → exact CRC
+confirmation” cover typical members. A much smaller bound (e.g. 64 KiB) would also be
+evidence-backed if we want cheaper confirmation later.
+
+### STORED compressibility probe (task 1.3)
+
+Wrong-key plaintext is indistinguishable from `os.urandom` for compression purposes.
+Across chunk sizes 256 B–256 KiB and 400 random trials each:
+
+- **zlib level 1** and **zstd level 1/3** (`backports.zstd`) both yield ratio
+  `compressed/raw` **strictly > 1.0** for every random trial (compressor framing
+  overhead; at 64 KiB, zlib ≈ 1.0004, zstd ≈ 1.0002).
+- **Text / JSON / zeros / RLE** shrink dramatically (zlib text at 64 KiB ≈ 0.007).
+- **Synthetic media/nested-archive first chunks** (JPEG/PNG/MP4/ZIP magic + random
+  body) do **not** shrink — ratio matches random at every chunk size tried. A few
+  header bytes are negligible once the chunk is kilobytes; they do not create false
+  accepts under a conservative margin.
+
+**Draft constants (pending sign-off before implementation):**
+
+| Knob | Draft value | Rationale |
+|------|-------------|-----------|
+| Compressor | zlib level 1 always (zstd optional later) | Zero-dep core; separation quality matches zstd for this probe. zstd is faster but optional (`[zstd]` / `backports.zstd`). |
+| Chunk size | 64 KiB | Header overhead negligible; still cheap; text vs random widely separated. |
+| Accept when | `compressed_len <= 7/8 * raw_len` (12.5% shrinkage) | Far below random_min (~1.00); far above media-like ratios (~1.00). |
+| Skip probe below | 4 KiB member size | Full CRC pass is cheap; small chunks are header-dominated for the compressor. |
+| Asymmetry | accept-only | Incompressible correct plaintext → fall through to shared CRC pass. |
