@@ -513,7 +513,7 @@ class ZipReader(BaseArchiveReader):
     ) -> BinaryIO:
         encrypted = bool(info.flag_bits & 0x1)
         if not encrypted:
-            return cast("BinaryIO", self._archive.open(info, pwd=None))
+            return self._open_zipfile_member(info, password=None, member_name=member_name)
 
         # ZipCrypto's one-byte open check admits ~1/256 of wrong passwords. With more
         # than one possible candidate (or a provider), confirm before accepting.
@@ -525,6 +525,35 @@ class ZipReader(BaseArchiveReader):
             return self._open_stored_confirmed(info, member, member_name=member_name)
         return self._open_compressed_confirmed(info, member, member_name=member_name)
 
+    def _open_zipfile_member(
+        self,
+        info: zipfile.ZipInfo,
+        *,
+        password: bytes | None,
+        member_name: str,
+    ) -> BinaryIO:
+        """Open via ``zipfile`` and translate member-open failures."""
+        try:
+            return cast("BinaryIO", self._archive.open(info, pwd=password))
+        except (
+            zipfile.BadZipFile,
+            RuntimeError,
+            io.UnsupportedOperation,
+            NotImplementedError,
+            zlib.error,
+            lzma.LZMAError,
+            UnicodeDecodeError,
+            ValueError,
+            OSError,
+        ) as exc:
+            translated = self._translate_exception(exc)
+            if translated is not None:
+                if isinstance(translated, EncryptionError):
+                    raise translated from exc
+                self._stamp_error_context(translated, member_name)
+                raise translated from exc
+            raise
+
     def _open_encrypted_lazy(
         self,
         info: zipfile.ZipInfo,
@@ -533,26 +562,9 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
     ) -> BinaryIO:
         def decrypt(password: bytes) -> BinaryIO:
-            try:
-                return cast("BinaryIO", self._archive.open(info, pwd=password))
-            except (
-                zipfile.BadZipFile,
-                RuntimeError,
-                io.UnsupportedOperation,
-                NotImplementedError,
-                zlib.error,
-                lzma.LZMAError,
-                UnicodeDecodeError,
-                ValueError,
-                OSError,
-            ) as exc:
-                translated = self._translate_exception(exc)
-                if translated is not None:
-                    if isinstance(translated, EncryptionError):
-                        raise translated from exc
-                    self._stamp_error_context(translated, member_name)
-                    raise translated from exc
-                raise
+            return self._open_zipfile_member(
+                info, password=password, member_name=member_name
+            )
 
         return self._finish_password_attempt(
             member, member_name, decrypt, ambiguous_holder=None
@@ -575,7 +587,9 @@ class ZipReader(BaseArchiveReader):
                 stream.close()
                 stream = None
                 # Fresh stream for the caller; zipfile re-checks CRC at EOF.
-                return cast("BinaryIO", self._archive.open(info, pwd=password))
+                return self._open_zipfile_member(
+                    info, password=password, member_name=member_name
+                )
             except (
                 zipfile.BadZipFile,
                 RuntimeError,
@@ -701,23 +715,9 @@ class ZipReader(BaseArchiveReader):
 
         if winner is not None:
             self._passwords.record_success(winner)
-            try:
-                return cast("BinaryIO", self._archive.open(info, pwd=winner))
-            except (
-                zipfile.BadZipFile,
-                RuntimeError,
-                zlib.error,
-                lzma.LZMAError,
-                OSError,
-                ValueError,
-                NotImplementedError,
-                UnicodeDecodeError,
-            ) as exc:
-                translated = self._translate_exception(exc)
-                if translated is not None:
-                    self._stamp_error_context(translated, member_name)
-                    raise translated from exc
-                raise
+            return self._open_zipfile_member(
+                info, password=winner, member_name=member_name
+            )
 
         if ambiguous_failure is not None:
             ambiguous = EncryptionError(
