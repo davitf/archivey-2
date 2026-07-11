@@ -16,12 +16,7 @@ from archivey import PasswordRequest, open_archive
 from archivey.exceptions import CorruptionError, EncryptionError
 from archivey.internal import password_confirm, zipcrypto
 from archivey.internal.backends import zip_reader
-from archivey.internal.password_confirm import (
-    CONFIRM_PREFIX_BYTES,
-    STORED_PROBE_CHUNK,
-    STORED_PROBE_MIN_MEMBER,
-    compressibility_accepts,
-)
+from archivey.internal.password_confirm import CONFIRM_PREFIX_BYTES
 from tests.zipcrypto import (
     build_zipcrypto_zip,
     corrupt_zipcrypto_payload,
@@ -264,19 +259,6 @@ def test_wrong_key_rejected_within_tight_prefix_bound(
     assert _read_member(blob, [collider, RIGHT]) == DATA * 64
 
 
-def test_compressibility_probe_never_accepts_random() -> None:
-    for size in (STORED_PROBE_CHUNK, STORED_PROBE_CHUNK * 2):
-        for _ in range(50):
-            assert not compressibility_accepts(os.urandom(size))
-
-
-def test_compressibility_probe_accepts_text() -> None:
-    text = (b"The quick brown fox jumps over the lazy dog.\n" * 2000)[
-        :STORED_PROBE_CHUNK
-    ]
-    assert compressibility_accepts(text)
-
-
 # ---------------------------------------------------------------------------
 # Task 3.5 — large compressed member confirmation is bounded
 # ---------------------------------------------------------------------------
@@ -325,40 +307,12 @@ def test_large_compressed_confirmation_is_bounded(
 
 
 # ---------------------------------------------------------------------------
-# Task 3.6 — STORED probe + shared CRC pass
+# Task 3.6 — STORED shared CRC pass
 # ---------------------------------------------------------------------------
 
 
-def test_stored_compressible_accepts_from_probe_without_full_crc_pass(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plaintext = (b"compressible stored text line\n" * 4000)[
-        : STORED_PROBE_MIN_MEMBER + 1024
-    ]
-    assert len(plaintext) >= STORED_PROBE_MIN_MEMBER
-    blob = build_zipcrypto_zip(
-        RIGHT, NAME.encode(), plaintext, compression=zipfile.ZIP_STORED
-    )
-    collider = find_check_byte_collision(blob, NAME, RIGHT)
-
-    crc_calls = {"n": 0}
-    original = zipcrypto.parallel_plaintext_crc32
-
-    def counting_crc(*args: Any, **kwargs: Any) -> Any:
-        crc_calls["n"] += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(zipcrypto, "parallel_plaintext_crc32", counting_crc)
-    monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting_crc)
-
-    assert _read_member(blob, [collider, RIGHT]) == plaintext
-    assert crc_calls["n"] == 0  # probe alone accepted the right password
-
-
-def test_stored_incompressible_falls_back_to_shared_crc_pass(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plaintext = os.urandom(STORED_PROBE_MIN_MEMBER + 2048)
+def test_stored_uses_shared_crc_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    plaintext = os.urandom(128 * 1024)
     blob = build_zipcrypto_zip(
         RIGHT, NAME.encode(), plaintext, compression=zipfile.ZIP_STORED
     )
@@ -376,30 +330,6 @@ def test_stored_incompressible_falls_back_to_shared_crc_pass(
 
     assert _read_member(blob, [collider, RIGHT]) == plaintext
     assert crc_calls["n"] == 1
-
-
-def test_stored_below_probe_min_skips_probe_and_uses_crc(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plaintext = b"small stored member"
-    assert len(plaintext) < STORED_PROBE_MIN_MEMBER
-    blob = build_zipcrypto_zip(
-        RIGHT, NAME.encode(), plaintext, compression=zipfile.ZIP_STORED
-    )
-    collider = find_check_byte_collision(blob, NAME, RIGHT)
-
-    probe_calls = {"n": 0}
-    original = password_confirm.compressibility_accepts
-
-    def counting_probe(data: bytes) -> bool:
-        probe_calls["n"] += 1
-        return original(data)
-
-    monkeypatch.setattr(password_confirm, "compressibility_accepts", counting_probe)
-    monkeypatch.setattr(zip_reader, "compressibility_accepts", counting_probe)
-
-    assert _read_member(blob, [collider, RIGHT]) == plaintext
-    assert probe_calls["n"] == 0
 
 
 def test_stored_crc_match_ties_resolve_by_candidate_order(
@@ -449,26 +379,30 @@ def test_stored_caller_stream_is_crc_checked() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_corruption_beyond_prefix_fails_caller_read_as_corruption() -> None:
-    """Prefix/probe confirmation accepts; trailing corruption fails the caller's CRC."""
+def test_corruption_beyond_prefix_fails_caller_read_as_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prefix confirmation accepts; trailing corruption fails the caller's CRC."""
     import struct
 
-    # STORED + compressible: probe accepts without reading the corrupt tail.
-    plaintext = (b"prefix-ok-then-corrupt\n" * 4000)[
-        : STORED_PROBE_MIN_MEMBER + 8192
-    ]
+    plaintext = (b"prefix-ok-then-corrupt\n" * 8000)
+    assert len(plaintext) > 64 * 1024
     blob = bytearray(
         build_zipcrypto_zip(
-            RIGHT, NAME.encode(), plaintext, compression=zipfile.ZIP_STORED
+            RIGHT, NAME.encode(), plaintext, compression=zipfile.ZIP_DEFLATED
         )
     )
     name_len, extra_len = struct.unpack_from("<HH", blob, 26)
     comp_size = struct.unpack_from("<I", blob, 18)[0]
     payload_start = 30 + name_len + extra_len
-    # Flip a ciphertext byte well past the probe window (header is 12 bytes).
-    late = payload_start + 12 + STORED_PROBE_CHUNK + 100
-    assert late < payload_start + comp_size
+    # Flip a late ciphertext byte (keep the ZipCrypto header intact).
+    late = payload_start + comp_size - 8
+    assert late > payload_start + 12
     blob[late] ^= 0xFF
+
+    # Tight bound so confirmation only sees the good prefix.
+    monkeypatch.setattr(password_confirm, "CONFIRM_PREFIX_BYTES", 4096)
+    monkeypatch.setattr(zip_reader, "CONFIRM_PREFIX_BYTES", 4096)
 
     with open_archive(io.BytesIO(bytes(blob)), password=[RIGHT, b"also-wrong"]) as ar:
         stream = ar.open(NAME)

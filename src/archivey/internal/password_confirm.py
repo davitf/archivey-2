@@ -2,8 +2,7 @@
 
 Used by ZIP ZipCrypto multi-candidate disambiguation today; kept free of
 ``zipfile`` / format types so a future 7z (or other) reader can reuse the same
-ladder rungs: bounded decompress-prefix discard, accept-only compressibility
-probe, and first-match CRC selection.
+ladder rungs: bounded decompress-prefix discard and first-match CRC selection.
 """
 
 from __future__ import annotations
@@ -18,29 +17,7 @@ from typing import BinaryIO, TypeVar
 # wide margin and covers typical members exactly (EOF → CRC).
 CONFIRM_PREFIX_BYTES = 1 << 20
 
-# STORED compressibility probe: chunk size equals the minimum member size that
-# uses the probe. Below this, a full CRC pass is cheaper than compressing a
-# whole-member "chunk", and compressor headers dominate tiny inputs.
-STORED_PROBE_CHUNK = 64 << 10
-STORED_PROBE_MIN_MEMBER = STORED_PROBE_CHUNK
-
-# Accept when compressed_len / raw_len <= 7/8 (at least 12.5% shrinkage).
-# Wrong-key (random) chunks never shrink under zlib level 1; text shrinks far more.
-_STORED_ACCEPT_NUM = 7
-_STORED_ACCEPT_DEN = 8
-
 _T = TypeVar("_T")
-
-
-def compressibility_accepts(plaintext: bytes) -> bool:
-    """Whether ``plaintext`` shrinks enough to treat as a STORED accept signal.
-
-    Accept-only: returning False means "no signal", never "reject this password".
-    """
-    if not plaintext:
-        return False
-    compressed = zlib.compress(plaintext, level=1)
-    return len(compressed) * _STORED_ACCEPT_DEN <= len(plaintext) * _STORED_ACCEPT_NUM
 
 
 def read_and_discard(stream: BinaryIO, bound: int, *, chunk_size: int = 65536) -> int:
@@ -59,14 +36,6 @@ def read_and_discard(stream: BinaryIO, bound: int, *, chunk_size: int = 65536) -
         total += len(chunk)
         remaining -= len(chunk)
     return total
-
-
-def unique_accepted(items: Sequence[tuple[_T, bool]]) -> _T | None:
-    """Return the sole item whose flag is True, or None if none/ambiguous."""
-    accepted = [item for item, ok in items if ok]
-    if len(accepted) == 1:
-        return accepted[0]
-    return None
 
 
 def first_crc_match(
