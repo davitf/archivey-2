@@ -70,6 +70,19 @@ def test_password_candidates_provider_attempt_increments() -> None:
     assert attempts == [1, 2, 3]
 
 
+def test_password_candidates_provider_encryption_error_propagates_unchanged() -> None:
+    provider_error = EncryptionError("password service unavailable")
+
+    def provider(request: PasswordRequest) -> str | None:
+        raise provider_error
+
+    candidates = _PasswordCandidates.from_input(provider)
+    with pytest.raises(EncryptionError) as caught:
+        candidates.attempt(None, lambda _password: b"unused")
+
+    assert caught.value is provider_error
+
+
 def test_password_candidates_provider_reuses_known_good() -> None:
     calls = 0
 
