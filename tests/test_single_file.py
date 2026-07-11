@@ -198,15 +198,20 @@ def test_xz_size_from_header(tmp_path: Path) -> None:
     path = tmp_path / "data.xz"
     with lzma.open(path, "wb") as f:
         f.write(b"x" * 1234)
-    with open_archive(path) as ar:
+    # Cheap size from the XZ index requires declared seek demand.
+    with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
         assert ar.members()[0].size == 1234
+    with open_archive(path) as ar:
+        assert ar.members()[0].size is None
 
 
 def test_lzip_size_from_trailer(tmp_path: Path) -> None:
     path = tmp_path / "data.lz"
     path.write_bytes(make_lzip_member(b"y" * 777))
-    with open_archive(path) as ar:
+    with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
         assert ar.members()[0].size == 777
+    with open_archive(path) as ar:
+        assert ar.members()[0].size is None
 
 
 # ---------------------------------------------------------------------------

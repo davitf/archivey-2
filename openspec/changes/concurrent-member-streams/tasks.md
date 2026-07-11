@@ -21,9 +21,10 @@
       `stream_members()` yields on every format; `MemberStreams.SEEKABLE` restores
       backend-provided positioning
 - [x] 1.6 Key the `use_rapidgzip`/`use_indexed_bzip2` `AUTO` resolution and native XZ/lzip
-      index parsing on declared seek demand (`MemberStreams.SEEKABLE`); undeclared
-      streams build no index, accelerator, or rewind machinery. (`open_stream` /
-      `seekable=` is deferred — not in this change.)
+      index parsing on declared seek demand (`MemberStreams.SEEKABLE` /
+      `open_stream(seekable=True)`); undeclared streams build no index, accelerator, or
+      rewind machinery. Public `open_stream(..., seekable=False)` matches the archive-side
+      rule.
 - [x] 1.7 Reject `streaming=True` combined with `MemberStreams.CONCURRENT` at
       `open_archive()` with `ArchiveyUsageError`; apply the remaining spec deltas;
       confirm neither `allow_multiple_open_streams` nor the unconditional no-flag

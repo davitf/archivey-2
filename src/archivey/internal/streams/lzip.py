@@ -236,8 +236,11 @@ class LzipDecompressorStream(SegmentedDecompressorStream[_LzipState]):
         path: str | os.PathLike[str] | BinaryIO,
         *,
         collector: DiagnosticCollector | None = None,
+        seekable: bool = True,
     ) -> None:
-        super().__init__(path, collector=collector, codec_name="lzip")
+        super().__init__(
+            path, collector=collector, codec_name="lzip", seekable=seekable
+        )
 
     def _make_decompressor(self, point: SeekPoint) -> _LzipState:
         return _LzipState()

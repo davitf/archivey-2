@@ -705,7 +705,7 @@ class XzCodec(_SizedLzmaCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        return XzDecompressorStream(source)
+        return XzDecompressorStream(source, seekable=config.seekable)
 
 
 class LzipCodec(_SizedLzmaCodec):
@@ -716,7 +716,7 @@ class LzipCodec(_SizedLzmaCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        return LzipDecompressorStream(source)
+        return LzipDecompressorStream(source, seekable=config.seekable)
 
 
 class _RawLzmaCodec(_LzmaErrorCodec):
@@ -1091,11 +1091,19 @@ def open_codec_stream(
     params: CodecParams = _DEFAULT_PARAMS,
     stamp: Callable[[ArchiveyError], None] | None = None,
     collector: "DiagnosticCollector | None" = None,
-) -> BinaryIO:
+    seekable: bool | None = None,
+) -> ArchiveStream:
     """Open a decompressing stream for ``codec`` with exceptions translated/stamped.
 
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
+
+    ``config.seekable`` gates accelerator ``AUTO`` resolution and native index construction.
+    The ArchiveStream seekability hint is separate: pass ``seekable=False`` to force a
+    forward-only public handle (as :func:`~archivey.open_stream` does by default). When
+    ``seekable`` is omitted the handle stays seekable so format backends that need
+    positioning on an outer codec stream (compressed TAR) keep working — member-stream
+    seekability is enforced by the reader wrapper instead.
     """
     if not isinstance(source, (str, os.PathLike)):
         # A seekable stream positioned mid-file gets a clean tell()==0 origin (a
@@ -1105,13 +1113,16 @@ def open_codec_stream(
         # (see the stream-position contract in ``format-detection``).
         source = fix_stream_start_position(source)
     backend = resolve_codec(codec, config)
-    # Opened eagerly (lazy=False), so ArchiveStream.seekable() reflects the real backend
-    # stream — no seekable hint needed (that only matters for a lazily-opened stream).
+    # Default True: internal/format callers may need to seek the codec stream even when
+    # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes
+    # the caller's ``seekable=`` explicitly.
+    stream_seekable = True if seekable is None else seekable
     return ArchiveStream(
         lambda: backend.open(source, params),
         translate=backend.translate,
         stamp=stamp,
         lazy=False,
-        rewind_warning=backend.rewind_warning,
+        seekable=stream_seekable,
+        rewind_warning=backend.rewind_warning if stream_seekable else None,
         collector=collector,
     )

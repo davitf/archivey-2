@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, BinaryIO, Callable
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -17,8 +17,10 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
+    UnsupportedFormatError,
     UnsupportedOperationError,
 )
+from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.extraction_types import (
@@ -38,6 +40,8 @@ from archivey.internal.registry import (
     list_known_formats,
     list_supported_formats,
 )
+from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools import (
     fix_stream_start_position,
@@ -47,7 +51,10 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.volumes import OpenSourceInput, resolve_source
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams
+from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams, StreamFormat
+
+if TYPE_CHECKING:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 __all__ = [
     "DetectionConfidence",
@@ -65,6 +72,7 @@ __all__ = [
     "list_known_formats",
     "list_supported_formats",
     "open_archive",
+    "open_stream",
     "source_name",  # re-exported from streamtools (the single implementation)
 ]
 
@@ -252,6 +260,110 @@ def open_archive(
         member_streams=member_streams,
         open_site=open_site,
     )
+
+
+def open_stream(
+    source: str | Path | BinaryIO,
+    *,
+    format: StreamFormat | ArchiveFormat | None = None,
+    seekable: bool = False,
+    config: ArchiveyConfig | None = None,
+) -> ArchiveStream:
+    """Open a single-file compressed stream and return the decompressed bytes.
+
+    This is the compressed-streams entry point for a bare ``.gz`` / ``.bz2`` / ``.xz`` /
+    … payload (no archive container). Concurrency is not a concept here — the call
+    returns exactly one stream — so seekability is a boolean, not
+    :class:`~archivey.MemberStreams` flags.
+
+    ``seekable=False`` (the default) returns a forward-only stream: ``seekable()`` is
+    ``False``, ``seek()`` raises ``io.UnsupportedOperation``, and no seek index or
+    accelerator is instantiated. Pass ``seekable=True`` to opt into the
+    seekable-decompressor-streams contract (native indexes, demand-driven accelerator
+    ``AUTO``, loud slow rewinds on the non-accelerated path).
+
+    ``format`` accepts a :class:`~archivey.StreamFormat`, a raw-stream
+    :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), or ``None`` to
+    auto-detect. A container format (ZIP, TAR, …) is rejected — use
+    :func:`open_archive` for those.
+    """
+    import archivey.internal.backends  # noqa: F401
+
+    effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
+    collector = collector_from_config(effective_config)
+
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if not path.is_file():
+            raise FileNotFoundError(f"Compressed stream not found: {path}")
+        open_source: Path | BinaryIO = path
+        source_is_seekable = True
+    else:
+        if not is_stream(source):
+            raise TypeError(
+                f"open_stream source must be a path or binary stream, got {type(source)!r}"
+            )
+        source_is_seekable = is_seekable(source)
+        if not source_is_seekable:
+            open_source = PeekableStream(source)
+        else:
+            open_source = fix_stream_start_position(source)
+
+    if seekable and not source_is_seekable:
+        raise StreamNotSeekableError(
+            "open_stream(seekable=True) requires a seekable source. Buffer the stream "
+            "to disk or a BytesIO and reopen, or open with seekable=False for a "
+            "forward-only pass."
+        )
+
+    stream_format = _resolve_stream_format(format, open_source, collector)
+    if stream_format is StreamFormat.UNCOMPRESSED:
+        raise UnsupportedFormatError(
+            "open_stream requires a compressed stream format "
+            f"(got {stream_format!r}); use open_archive for uncompressed containers."
+        )
+
+    codec = codec_for_stream_format(stream_format)
+    stream_config = stream_config_from_archivey(
+        effective_config,
+        streaming=False,
+        seekable=seekable and source_is_seekable,
+    )
+    codec_source: str | BinaryIO = (
+        str(open_source) if isinstance(open_source, Path) else open_source
+    )
+    return open_codec_stream(
+        codec,
+        codec_source,
+        config=stream_config,
+        collector=collector,
+        seekable=seekable and source_is_seekable,
+    )
+
+
+def _resolve_stream_format(
+    format: StreamFormat | ArchiveFormat | None,
+    open_source: Path | BinaryIO,
+    collector: DiagnosticCollector,
+) -> StreamFormat:
+    if isinstance(format, StreamFormat):
+        return format
+    if isinstance(format, ArchiveFormat):
+        if format.container is not ContainerFormat.RAW_STREAM:
+            raise ArchiveyUsageError(
+                f"open_stream does not accept container format {format!r}; "
+                "pass a StreamFormat or a raw-stream ArchiveFormat "
+                "(e.g. ArchiveFormat.GZ), or use open_archive."
+            )
+        return format.stream
+
+    detected = detect_format(open_source, collector=collector)
+    if detected.format.container is not ContainerFormat.RAW_STREAM:
+        raise UnsupportedFormatError(
+            f"Detected {detected.format!r}, which is not a single-file compressed "
+            "stream. Use open_archive for archive containers."
+        )
+    return detected.format.stream
 
 
 def extract(

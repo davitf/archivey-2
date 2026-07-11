@@ -170,7 +170,7 @@ def test_gzip_accelerator_off_warns_on_rewind_but_still_seeks(
     Forward consumption and forward seeks stay quiet — only a backward seek, which
     re-decompresses from the start, triggers the warning.
     """
-    config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF)
+    config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
     compressed = gzip.compress(CONTENT)
     with open_codec_stream(Codec.GZIP, io.BytesIO(compressed), config=config) as stream:
         with caplog.at_level("WARNING", logger="archivey.streams"):
@@ -189,7 +189,7 @@ def test_bzip2_accelerator_off_warns_on_rewind(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The bz2 stdlib path mirrors gzip: a rewind warns and still seeks."""
-    config = StreamConfig(use_indexed_bzip2=AcceleratorMode.OFF)
+    config = StreamConfig(use_indexed_bzip2=AcceleratorMode.OFF, seekable=True)
     compressed = bz2.compress(CONTENT)
     with open_codec_stream(Codec.BZIP2, io.BytesIO(compressed), config=config) as stream:
         assert stream.read(100) == CONTENT[:100]
@@ -205,7 +205,9 @@ def test_bzip2_accelerator_off_warns_on_rewind(
 def test_zlib_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
     """zlib has no index: a rewind warns (no accelerator to name), a forward seek doesn't."""
     compressed = zlib.compress(CONTENT)
-    with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed)) as stream:
+    with open_codec_stream(
+        Codec.ZLIB, io.BytesIO(compressed), config=StreamConfig(seekable=True)
+    ) as stream:
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.read(100) == CONTENT[:100]
             assert stream.seek(200) == 200  # forward seek: no warning
@@ -225,7 +227,9 @@ def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
     import brotli
 
     compressed = brotli.compress(CONTENT)
-    with open_codec_stream(Codec.BROTLI, io.BytesIO(compressed)) as stream:
+    with open_codec_stream(
+        Codec.BROTLI, io.BytesIO(compressed), config=StreamConfig(seekable=True)
+    ) as stream:
         assert stream.read(100) == CONTENT[:100]
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0
@@ -238,7 +242,9 @@ def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
     import lz4.frame
 
     compressed = lz4.frame.compress(CONTENT)
-    with open_codec_stream(Codec.LZ4, io.BytesIO(compressed)) as stream:
+    with open_codec_stream(
+        Codec.LZ4, io.BytesIO(compressed), config=StreamConfig(seekable=True)
+    ) as stream:
         assert stream.read(100) == CONTENT[:100]
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0
@@ -251,7 +257,9 @@ def test_zstd_rewinds_and_warns_on_backward_seek(caplog: pytest.LogCaptureFixtur
     """zstd has no index; a backward seek re-decompresses from the start and warns once."""
     zstd = zstd_backend()
     compressed = zstd.compress(CONTENT)
-    with open_codec_stream(Codec.ZSTD, io.BytesIO(compressed)) as stream:
+    with open_codec_stream(
+        Codec.ZSTD, io.BytesIO(compressed), config=StreamConfig(seekable=True)
+    ) as stream:
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.read(100) == CONTENT[:100]
             assert stream.seek(300) == 300  # forward: no rewind, no warning
