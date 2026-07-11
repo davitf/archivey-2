@@ -94,7 +94,9 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         self._seek_points: list[SeekPoint] = [SeekPoint(0, 0)]
         self._index_built = False
         self._index_build_attempted = False
-        self._decompressor: DecompressorT = self._create_decompressor(self._seek_points[0])
+        self._decompressor: DecompressorT = self._create_decompressor(
+            self._seek_points[0]
+        )
         self._buffer = bytearray()
         self._eof = False
         self._pos = 0

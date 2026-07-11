@@ -43,7 +43,9 @@ class ExtractionPolicy(Enum):
 
     STRICT = "strict"  # default; untrusted archives
     STANDARD = "standard"  # moderate trust; e.g. your own older archives
-    TRUSTED = "trusted"  # apply stored mode (and uid/gid as root); path safety still enforced
+    TRUSTED = (
+        "trusted"  # apply stored mode (and uid/gid as root); path safety still enforced
+    )
 
 
 class OverwritePolicy(Enum):
@@ -57,7 +59,9 @@ class OverwritePolicy(Enum):
 
     ERROR = "error"  # existing entry -> ExtractionError (then handled per OnError)
     SKIP = "skip"  # silently skip existing entries (records SKIPPED)
-    REPLACE = "replace"  # unlink the existing entry, then create fresh (never write-through)
+    REPLACE = (
+        "replace"  # unlink the existing entry, then create fresh (never write-through)
+    )
 
 
 class OnError(Enum):

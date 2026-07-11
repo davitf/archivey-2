@@ -107,7 +107,10 @@ def reject_deflate(data: bytes, *, max_out: int = 2 * 1024 * 1024) -> RejectionS
             consumed += len(chunk) - len(dec.unconsumed_tail)
             if produced >= max_out:
                 return RejectionSample(
-                    consumed, produced, "max_out", "hit decompressed bound without error"
+                    consumed,
+                    produced,
+                    "max_out",
+                    "hit decompressed bound without error",
                 )
             if dec.eof:
                 return RejectionSample(
@@ -144,7 +147,10 @@ def reject_bzip2(data: bytes, *, max_out: int = 2 * 1024 * 1024) -> RejectionSam
             consumed = i + len(chunk)
             if produced >= max_out:
                 return RejectionSample(
-                    consumed, produced, "max_out", "hit decompressed bound without error"
+                    consumed,
+                    produced,
+                    "max_out",
+                    "hit decompressed bound without error",
                 )
             if dec.eof:
                 return RejectionSample(
@@ -200,7 +206,10 @@ def reject_lzma_raw_zip(
             consumed = 4 + props_size + i + len(chunk) - unused
             if produced >= max_out:
                 return RejectionSample(
-                    consumed, produced, "max_out", "hit decompressed bound without error"
+                    consumed,
+                    produced,
+                    "max_out",
+                    "hit decompressed bound without error",
                 )
             if dec.eof:
                 return RejectionSample(
@@ -281,7 +290,11 @@ def run_random_trials(n: int, stream_size: int) -> None:
     ):
         samples = [fn(os.urandom(stream_size)) for _ in range(n)]
         _summarize(samples, name)
-        survivors = [s for s in samples if s.error_type in {"max_out", "eof_ok", "flush_ok", "need_more"}]
+        survivors = [
+            s
+            for s in samples
+            if s.error_type in {"max_out", "eof_ok", "flush_ok", "need_more"}
+        ]
         if survivors:
             print(f"    WARNING: {len(survivors)} streams did not error within bound")
             for s in survivors[:5]:
@@ -296,7 +309,9 @@ def run_almost_magic_bzip2(n: int, stream_size: int) -> None:
         data = b"BZh9" + os.urandom(stream_size - 4)
         samples.append(reject_bzip2(data))
     _summarize(samples, "BZIP2 almost-magic")
-    survivors = [s for s in samples if s.error_type in {"max_out", "eof_ok", "need_more"}]
+    survivors = [
+        s for s in samples if s.error_type in {"max_out", "eof_ok", "need_more"}
+    ]
     if survivors:
         print(f"    WARNING: {len(survivors)} streams survived")
         for s in survivors[:5]:
@@ -309,9 +324,9 @@ def run_wrong_key_zipfile(n_collisions: int, plaintext_size: int) -> None:
         f"(plaintext ~{plaintext_size} bytes, {n_collisions} collisions/codec) ==="
     )
     # Highly compressible so compressed members stay modest; size is decompressed.
-    plaintext = (b"The quick brown fox jumps over the lazy dog.\n" * (plaintext_size // 45 + 1))[
-        :plaintext_size
-    ]
+    plaintext = (
+        b"The quick brown fox jumps over the lazy dog.\n" * (plaintext_size // 45 + 1)
+    )[:plaintext_size]
     right = b"correct-password-for-probe"
     name = "probe.bin"
     for compression, label in (

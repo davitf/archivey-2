@@ -337,8 +337,9 @@ class TarReader(BaseArchiveReader):
                     stream: BinaryIO = ensure_binaryio(raw)
                     if self._handle_lock is not None:
                         stream = LockedStream(stream, self._handle_lock)
-                    yield member, self._wrap_member_stream(
-                        stream, member.name, size=member.size
+                    yield (
+                        member,
+                        self._wrap_member_stream(stream, member.name, size=member.size),
                     )
                 else:
                     yield member, None
@@ -419,7 +420,9 @@ class TarReader(BaseArchiveReader):
         member_type = _member_type(info)
         # TAR is a POSIX format: a backslash is a legal filename character, not a separator.
         presented = info.name
-        name = normalize_member_name(presented, member_type, backslash_is_separator=False)
+        name = normalize_member_name(
+            presented, member_type, backslash_is_separator=False
+        )
         # Re-encode the decoded name with the archive's own codec to recover the stored bytes
         # (tarfile decodes with surrogateescape, which round-trips losslessly).
         raw_name = info.name.encode(self._tar.encoding, errors="surrogateescape")
@@ -501,7 +504,9 @@ class TarReader(BaseArchiveReader):
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         info = member._raw
-        assert isinstance(info, tarfile.TarInfo), "TAR member is missing its TarInfo handle"
+        assert isinstance(info, tarfile.TarInfo), (
+            "TAR member is missing its TarInfo handle"
+        )
         # Capture under the handle lock; translate/stamp only after release so diagnostics
         # and callbacks never run while the shared-fileobj lock is held.
         raw_exc: tarfile.TarError | None = None

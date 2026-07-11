@@ -126,11 +126,17 @@ ArchiveFormat.LZIP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP
 ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
 ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
-ArchiveFormat.SEVEN_Z = ArchiveFormat(ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.SEVEN_Z = ArchiveFormat(
+    ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
+)
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
-ArchiveFormat.DIRECTORY = ArchiveFormat(ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED)
-ArchiveFormat.UNKNOWN = ArchiveFormat(ContainerFormat.UNKNOWN, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DIRECTORY = ArchiveFormat(
+    ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
+)
+ArchiveFormat.UNKNOWN = ArchiveFormat(
+    ContainerFormat.UNKNOWN, StreamFormat.UNCOMPRESSED
+)
 
 # Reverse map (instance -> attribute name) for __repr__, derived by introspecting the
 # class attributes above so the names live in exactly one place.
@@ -152,7 +158,9 @@ class MissingComponent:
 
     name: str  # e.g. "pycdlib", "[7z]", "unrar"
     install_hint: str  # e.g. "pip install archivey[iso]"
-    unlocks: tuple[str, ...] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
+    unlocks: tuple[
+        str, ...
+    ] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
 
 
 class MagicSignature(NamedTuple):
@@ -388,7 +396,9 @@ class ArchiveMember:
 
     @property
     def is_junction(self) -> bool:
-        return self.type == MemberType.SYMLINK and bool(self.extra.get(EXTRA_IS_JUNCTION))
+        return self.type == MemberType.SYMLINK and bool(
+            self.extra.get(EXTRA_IS_JUNCTION)
+        )
 
     def replace(self, **kwargs: Any) -> "ArchiveMember":
         """Return a copy with the given fields changed; never mutates self."""

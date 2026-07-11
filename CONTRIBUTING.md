@@ -18,6 +18,8 @@ uv sync                       # create/refresh the dev environment
 uv run pytest                 # run the test suite
 uv run ruff check             # lint
 uv run ruff format            # format
+uv run pre-commit install     # optional: install git hooks (ruff lint + format)
+uv run pre-commit run --all-files  # run hooks on the whole tree
 uv run pyrefly check          # type-check (Pyrefly)
 uv run ty check               # type-check (ty)
 ```

@@ -123,9 +123,7 @@ def test_bidi_control_name_warns_once(
         with open_archive(tmp_path) as reader:
             assert reader.members()[0].name == name
     warnings = [
-        record
-        for record in caplog.records
-        if "bidirectional control" in record.message
+        record for record in caplog.records if "bidirectional control" in record.message
     ]
     assert len(warnings) == 1
 

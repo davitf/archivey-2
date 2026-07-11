@@ -43,9 +43,7 @@ def test_open_stream_seekable_true_allows_seek() -> None:
 
 def test_open_stream_explicit_format() -> None:
     compressed = gzip.compress(CONTENT)
-    with open_stream(
-        io.BytesIO(compressed), format=StreamFormat.GZIP
-    ) as stream:
+    with open_stream(io.BytesIO(compressed), format=StreamFormat.GZIP) as stream:
         assert stream.read() == CONTENT
 
 

@@ -577,7 +577,9 @@ class ZipReader(BaseArchiveReader):
     ) -> BinaryIO:
         encrypted = bool(info.flag_bits & 0x1)
         if not encrypted:
-            return self._open_zipfile_member(info, password=None, member_name=member_name)
+            return self._open_zipfile_member(
+                info, password=None, member_name=member_name
+            )
 
         # ZipCrypto's one-byte open check admits ~1/256 of wrong passwords. With more
         # than one possible candidate (or a provider), confirm before accepting.

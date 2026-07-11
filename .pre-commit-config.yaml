@@ -1,0 +1,11 @@
+# Install hooks: `uv run pre-commit install`
+# Run on demand: `uv run pre-commit run --all-files`
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(src|tests|scripts)/
+      - id: ruff-format
+        files: ^(src|tests|scripts)/

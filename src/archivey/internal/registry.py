@@ -57,7 +57,9 @@ class FormatSupport(Enum):
     """Tri-state readability of a known format (see ``backend-registry``)."""
 
     FULL = "full"  # backend usable AND every optional codec/tool it can use is present
-    PARTIAL = "partial"  # opens & lists; common members decode; some optional codec missing
+    PARTIAL = (
+        "partial"  # opens & lists; common members decode; some optional codec missing
+    )
     NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
 
 
@@ -171,7 +173,9 @@ class BackendRegistry:
 
         if not self._backend_available(backend_cls):
             dep = backend_cls.OPTIONAL_DEPENDENCY
-            assert dep is not None  # _backend_available only returns False when dep is set
+            assert (
+                dep is not None
+            )  # _backend_available only returns False when dep is set
             hint = backend_cls.INSTALL_HINT or f"install {dep}"
             return FormatAvailability(
                 fmt,

@@ -93,7 +93,9 @@ def build_base_tar() -> bytes:
 # --- ZIP field mutation -----------------------------------------------------------
 
 
-def _find_zip_header(base: bytes, signature: bytes, fixed_size: int, name: bytes) -> int:
+def _find_zip_header(
+    base: bytes, signature: bytes, fixed_size: int, name: bytes
+) -> int:
     """Find the unique ZIP header with ``name`` and return its start offset."""
     matches: list[int] = []
     start = base.find(signature)
@@ -248,9 +250,7 @@ def _zip_name_case(
 ) -> Adversarial:
     raw = _padded(_HOSTILE[key], len(_NAME))
     decoded = (
-        raw.decode("utf-8" if utf8 else "cp437")
-        if open_outcome == "success"
-        else None
+        raw.decode("utf-8" if utf8 else "cp437") if open_outcome == "success" else None
     )
     return Adversarial(
         id=case_id,

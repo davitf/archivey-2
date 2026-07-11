@@ -206,7 +206,9 @@ def apply_mutation(data: bytes, desc: str) -> bytes:
     raise ValueError(f"unknown mutation description: {desc!r}")
 
 
-def _mutations_for_kind(data: bytes, seed: str, kind: str) -> Iterator[tuple[str, bytes]]:
+def _mutations_for_kind(
+    data: bytes, seed: str, kind: str
+) -> Iterator[tuple[str, bytes]]:
     """Yield ``(description, mutated_bytes)`` for one mutation kind (deduplicated)."""
     n = len(data)
 

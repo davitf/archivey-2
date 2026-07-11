@@ -86,7 +86,9 @@ class FormatInfo:
     confidence: DetectionConfidence
     detected_by: str  # "magic", "extension", "content_probe", "sfx_scan"
     encoding_hint: str | None = None
-    payload_offset: int = 0  # nonzero only for SFX archives (is-SFX == payload_offset > 0)
+    payload_offset: int = (
+        0  # nonzero only for SFX archives (is-SFX == payload_offset > 0)
+    )
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
 
 
@@ -229,7 +231,10 @@ def _resolve_single_file_or_tar(
     Otherwise the original single-file/container match stands. ``peek_more`` gives the probe
     a bounded, non-consuming view of the source to decode from.
     """
-    if fmt.container == ContainerFormat.RAW_STREAM and fmt.stream != StreamFormat.UNCOMPRESSED:
+    if (
+        fmt.container == ContainerFormat.RAW_STREAM
+        and fmt.stream != StreamFormat.UNCOMPRESSED
+    ):
         if _probe_inner_tar(fmt.stream, peek_more):
             tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
             return FormatInfo(tar_fmt, DetectionConfidence.PROBABLE, "content_probe")

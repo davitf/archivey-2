@@ -124,7 +124,9 @@ def test_magic_wins_over_conflicting_extension(
         info = detect_format(path)
     assert info.format == ArchiveFormat.SEVEN_Z
     assert info.detected_by == "magic"
-    assert any("conflict" in r.getMessage().lower() for r in caplog.records), caplog.text
+    assert any("conflict" in r.getMessage().lower() for r in caplog.records), (
+        caplog.text
+    )
 
 
 def test_no_warning_when_extension_agrees(
@@ -335,7 +337,9 @@ def test_inner_tar_probe_skipped_when_codec_missing(
     # determination to open time — without warning about the benign tar.zst/zst mismatch.
     monkeypatch.setattr(codecs_module, "_zstd", None)
     path = tmp_path / "thing.tar.zst"
-    path.write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 64)  # zstd magic, unprobeable payload
+    path.write_bytes(
+        b"\x28\xb5\x2f\xfd" + b"\x00" * 64
+    )  # zstd magic, unprobeable payload
     info = detect_format(path)
     assert info.format == ArchiveFormat.ZST
     assert info.detected_by == "magic"

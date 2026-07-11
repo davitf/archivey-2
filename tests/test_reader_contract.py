@@ -30,7 +30,9 @@ from archivey.types import (
 )
 
 
-def _info(format: ArchiveFormat, listing: ListingCost, stream: StreamCapability) -> ArchiveInfo:
+def _info(
+    format: ArchiveFormat, listing: ListingCost, stream: StreamCapability
+) -> ArchiveInfo:
     return ArchiveInfo(
         format=format,
         format_version=None,
@@ -40,7 +42,9 @@ def _info(format: ArchiveFormat, listing: ListingCost, stream: StreamCapability)
         is_encrypted=False,
         is_multivolume=False,
         cost=CostReceipt(
-            listing_cost=listing, access_cost=AccessCost.DIRECT, stream_capability=stream
+            listing_cost=listing,
+            access_cost=AccessCost.DIRECT,
+            stream_capability=stream,
         ),
     )
 
@@ -79,7 +83,9 @@ class _ForwardOnlyReader(BaseArchiveReader):
 
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(
-            ArchiveFormat.TAR, ListingCost.REQUIRES_SCANNING, StreamCapability.FORWARD_ONLY
+            ArchiveFormat.TAR,
+            ListingCost.REQUIRES_SCANNING,
+            StreamCapability.FORWARD_ONLY,
         )
 
     def _close_archive(self) -> None:
@@ -100,7 +106,10 @@ def test_open_raises_without_random_access_capability() -> None:
 
 def test_stream_members_works_without_random_access() -> None:
     reader = _ForwardOnlyReader(ArchiveFormat.TAR, False, "x.tar")
-    out = [(m.name, s.read() if s is not None else None) for m, s in reader.stream_members()]
+    out = [
+        (m.name, s.read() if s is not None else None)
+        for m, s in reader.stream_members()
+    ]
     assert out == [("a.txt", b"x")]
 
 

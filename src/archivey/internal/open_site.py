@@ -21,7 +21,9 @@ class OpenSite:
         return f"{self.filename}:{self.lineno}"
 
 
-def capture_open_site(*, skip_module_prefixes: tuple[str, ...] = ("archivey.",)) -> OpenSite:
+def capture_open_site(
+    *, skip_module_prefixes: tuple[str, ...] = ("archivey.",)
+) -> OpenSite:
     """Walk frames until the first non-archivey caller; keep the full stack."""
     stack = tuple(traceback.extract_stack()[:-1])  # drop this helper frame
     frame: FrameType | None = None
@@ -35,7 +37,9 @@ def capture_open_site(*, skip_module_prefixes: tuple[str, ...] = ("archivey.",))
     lineno = 0
     while frame is not None:
         mod = frame.f_globals.get("__name__", "")
-        if not any(mod == p.rstrip(".") or mod.startswith(p) for p in skip_module_prefixes):
+        if not any(
+            mod == p.rstrip(".") or mod.startswith(p) for p in skip_module_prefixes
+        ):
             filename = frame.f_code.co_filename
             lineno = frame.f_lineno
             break
@@ -44,9 +48,9 @@ def capture_open_site(*, skip_module_prefixes: tuple[str, ...] = ("archivey.",))
         # Fall back to the last non-archivey summary in the extracted stack.
         for summary in reversed(stack):
             # extract_stack has no module name; use path heuristics.
-            if "/archivey/" not in summary.filename.replace("\\", "/") and not summary.filename.endswith(
-                "open_site.py"
-            ):
+            if "/archivey/" not in summary.filename.replace(
+                "\\", "/"
+            ) and not summary.filename.endswith("open_site.py"):
                 filename = summary.filename
                 lineno = summary.lineno or 0
                 break

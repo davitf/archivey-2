@@ -192,7 +192,8 @@ def test_streaming_over_seekable_iso(rock_ridge_iso: Path) -> None:
     # still works and yields the members with their data.
     with open_archive(rock_ridge_iso, streaming=True) as ar:
         collected = {
-            m.name: (s.read() if s is not None else None) for m, s in ar.stream_members()
+            m.name: (s.read() if s is not None else None)
+            for m, s in ar.stream_members()
         }
         assert collected["file.txt"] == b"hello world"
         assert collected["empty.txt"] == b""
@@ -322,7 +323,9 @@ def _pycdlib_directory_cycle_image(
 ) -> bytes:
     """Flip one bit in ``/subdir``'s directory extent so pycdlib's open walk cycles."""
     data = bytearray(_build_pycdlib_cycle_fixture(rock_ridge=rock_ridge, joliet=joliet))
-    assert len(data) == expected_len, "fixture layout drifted — revisit cycle case table"
+    assert len(data) == expected_len, (
+        "fixture layout drifted — revisit cycle case table"
+    )
     assert data[bitflip_offset] == byte_before_flip
     data[bitflip_offset] ^= 0x01
     return bytes(data)
@@ -338,7 +341,14 @@ def test_corrupt_iso_raises() -> None:
 
 @pytest.mark.timeout(5)
 @pytest.mark.parametrize(
-    ("rock_ridge", "joliet", "expected_len", "bitflip_offset", "byte_before_flip", "namespace"),
+    (
+        "rock_ridge",
+        "joliet",
+        "expected_len",
+        "bitflip_offset",
+        "byte_before_flip",
+        "namespace",
+    ),
     [
         pytest.param(*case, id=case_id)
         for case, case_id in zip(

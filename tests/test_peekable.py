@@ -38,7 +38,9 @@ def test_read_all_drains_buffer_and_underlying() -> None:
 def test_peek_beyond_buffered_limit_grows() -> None:
     # Peeking more than the default window grows the buffer on demand (the ISO probe needs
     # 32 774 bytes); the same bytes are then still replayed on read.
-    data = bytes(range(256)) * 200  # 51 200 bytes, > DETECTION_LIMIT and > the ISO window
+    data = (
+        bytes(range(256)) * 200
+    )  # 51 200 bytes, > DETECTION_LIMIT and > the ISO window
     assert len(data) > DETECTION_LIMIT
     stream = PeekableStream(NonSeekableBytesIO(data))
     big = stream.peek(32774)

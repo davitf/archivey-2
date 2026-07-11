@@ -97,7 +97,9 @@ def _read_index_backwards(
     result: list[_MemberBounds] = []
     decompressed_offset = start_decompressed_offset
     for comp_start, decomp_size, comp_size in reversed(entries):
-        result.append(_MemberBounds(comp_start, decompressed_offset, comp_size, decomp_size))
+        result.append(
+            _MemberBounds(comp_start, decompressed_offset, comp_size, decomp_size)
+        )
         decompressed_offset += decomp_size
     return result
 
@@ -189,7 +191,9 @@ class _LzipState:
                 raise CorruptionError(
                     f"Not a valid lzip file: expected magic {_MAGIC!r}, got {header[:4]!r}"
                 )
-            self._finished = True  # lzip spec §7: trailing data after members is allowed
+            self._finished = (
+                True  # lzip spec §7: trailing data after members is allowed
+            )
             return False
         if header[4] != 1:
             raise CorruptionError(f"Unsupported lzip version: {header[4]}")

@@ -268,9 +268,7 @@ class SingleFileReader(BaseArchiveReader):
             )
         # Wrap so the handle carries the reader's diagnostic collector/operation id.
         # (open_codec_stream already returns an ArchiveStream; nesting is fine.)
-        return self._wrap_member_stream(
-            raw, self._member.name, size=self._member.size
-        )
+        return self._wrap_member_stream(raw, self._member.name, size=self._member.size)
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         if self._seekable:
@@ -296,7 +294,9 @@ class SingleFileReader(BaseArchiveReader):
             listing_cost=ListingCost.INDEXED,  # exactly one member, always
             access_cost=AccessCost.DIRECT,  # one member -> no solid-block dependency
             stream_capability=(
-                StreamCapability.SEEKABLE if self._seekable else StreamCapability.FORWARD_ONLY
+                StreamCapability.SEEKABLE
+                if self._seekable
+                else StreamCapability.FORWARD_ONLY
             ),
             solid_block_count=None,
         )
@@ -338,7 +338,9 @@ class SingleFileBackend(ReadBackend):
     """
 
     FORMATS: tuple[ArchiveFormat, ...] = tuple(
-        c.single_file_format for c in SINGLE_FILE_CODECS if c.single_file_format is not None
+        c.single_file_format
+        for c in SINGLE_FILE_CODECS
+        if c.single_file_format is not None
     )
     # A compressed stream decodes front-to-back, so streaming=True works on a
     # non-seekable source (except unix-compress, whose codec itself needs seek and

@@ -40,7 +40,9 @@ from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import NonSeekableBytesIO, make_lzip_member, make_unix_compress
 
 
-def _gzip_bytes(payload: bytes, *, filename: str | None = None, mtime: int = 0) -> bytes:
+def _gzip_bytes(
+    payload: bytes, *, filename: str | None = None, mtime: int = 0
+) -> bytes:
     buf = io.BytesIO()
     gz = gzip.GzipFile(filename=filename or "", mode="wb", fileobj=buf, mtime=mtime)
     gz.write(payload)
@@ -120,9 +122,7 @@ def test_inferred_bidi_control_name_warns_once(
         with open_archive(path, config=config) as archive:
             assert archive.members()[0].name == name
     warnings = [
-        record
-        for record in caplog.records
-        if "bidirectional control" in record.message
+        record for record in caplog.records if "bidirectional control" in record.message
     ]
     assert len(warnings) == 1
 
@@ -148,7 +148,9 @@ def test_gzip_stored_filename_non_ascii_is_latin1(tmp_path: Path) -> None:
     # "café.txt" as the bytes b"caf\xe9.txt"; decoding those as UTF-8 would mangle them
     # (0xE9 is not valid UTF-8), so the decoded value must use Latin-1.
     path = tmp_path / "archive.gz"
-    gz = gzip.GzipFile(filename="café.txt", mode="wb", fileobj=open(path, "wb"), mtime=0)
+    gz = gzip.GzipFile(
+        filename="café.txt", mode="wb", fileobj=open(path, "wb"), mtime=0
+    )
     gz.write(b"payload")
     gz.close()
     with open_archive(path) as ar:

@@ -96,9 +96,9 @@ def payload_classes(chunk_size: int) -> dict[str, bytes]:
     mp4ish = mp4ish[:chunk_size]
 
     # JSON / CSV-ish structured text.
-    jsonish = (b'{"id": 12345, "name": "alice", "active": true}\n' * (chunk_size // 48 + 2))[
-        :chunk_size
-    ]
+    jsonish = (
+        b'{"id": 12345, "name": "alice", "active": true}\n' * (chunk_size // 48 + 2)
+    )[:chunk_size]
 
     # Low-entropy but not text: run-length friendly bytes.
     rle = bytes([i % 16 for i in range(chunk_size)])
@@ -134,7 +134,9 @@ def measure(
             for cname, cfn in compressors:
                 comp = cfn(data)
                 samples.append(
-                    RatioSample(label, cname, size, ratio(data, comp), len(data), len(comp))
+                    RatioSample(
+                        label, cname, size, ratio(data, comp), len(data), len(comp)
+                    )
                 )
 
         # Many random trials — this is the wrong-key distribution.
@@ -189,7 +191,9 @@ def propose_thresholds(samples: list[RatioSample]) -> None:
             random_ratios = [
                 s.ratio
                 for s in samples
-                if s.compressor == cname and s.chunk_size == size and s.label == "random"
+                if s.compressor == cname
+                and s.chunk_size == size
+                and s.label == "random"
             ]
             if not random_ratios:
                 continue
@@ -206,7 +210,9 @@ def propose_thresholds(samples: list[RatioSample]) -> None:
             jpeg_ratios = [
                 s.ratio
                 for s in samples
-                if s.compressor == cname and s.chunk_size == size and s.label == "jpegish"
+                if s.compressor == cname
+                and s.chunk_size == size
+                and s.label == "jpegish"
             ]
             text_r = text_ratios[0] if text_ratios else float("nan")
             jpeg_r = jpeg_ratios[0] if jpeg_ratios else float("nan")
@@ -236,7 +242,9 @@ def header_vs_body_note(chunk_sizes: list[int]) -> None:
     for label in ("jpegish", "pngish", "mp4ish", "zipish", "text", "random"):
         row = f"  {label:<8}"
         for size in chunk_sizes:
-            data = payload_classes(size)[label] if label != "random" else os.urandom(size)
+            data = (
+                payload_classes(size)[label] if label != "random" else os.urandom(size)
+            )
             # one-shot for illustration
             cfn = compressors[0][1]
             row += f"  {size}:{ratio(data, cfn(data)):.3f}"

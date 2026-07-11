@@ -143,7 +143,10 @@ def _iso(tmp: Path) -> Path:
     return p
 
 
-_PARAMS = [pytest.param(builder, expected, id=name) for name, (builder, expected) in _CASES.items()]
+_PARAMS = [
+    pytest.param(builder, expected, id=name)
+    for name, (builder, expected) in _CASES.items()
+]
 _PARAMS.append(
     pytest.param(
         _iso,

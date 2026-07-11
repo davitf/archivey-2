@@ -74,7 +74,9 @@ if TYPE_CHECKING:
 def _optional(name: str) -> ModuleType | None:
     try:
         return importlib.import_module(name)
-    except ImportError:  # pragma: no cover - the absent path runs in the core-only CI leg
+    except (
+        ImportError
+    ):  # pragma: no cover - the absent path runs in the core-only CI leg
         return None
 
 
@@ -280,7 +282,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
         try:
             with open(self._source_path, "rb") as f:
                 size = f.seek(0, io.SEEK_END)
-                if size < 18:  # header(10) + min deflate + trailer(8): too small to trust
+                if (
+                    size < 18
+                ):  # header(10) + min deflate + trailer(8): too small to trust
                     return
                 f.seek(-4, io.SEEK_END)
                 isize = int.from_bytes(f.read(4), "little")
@@ -473,7 +477,9 @@ class StreamCodec:
         if not self.available:
             return False
         try:
-            with open_codec_stream(self.codec, io.BytesIO(prefix[:_PROBE_PREFIX])) as stream:
+            with open_codec_stream(
+                self.codec, io.BytesIO(prefix[:_PROBE_PREFIX])
+            ) as stream:
                 stream.read(_PROBE_PREFIX)
             return True
         except TruncatedError:
@@ -521,7 +527,9 @@ class GzipCodec(StreamCodec):
         # accelerator (above) gives real random access.
         if isinstance(source, (str, os.PathLike)):
             return ensure_binaryio(gzip.open(source, "rb"))
-        return ensure_binaryio(gzip.GzipFile(fileobj=ensure_bufferedio(source), mode="rb"))
+        return ensure_binaryio(
+            gzip.GzipFile(fileobj=ensure_bufferedio(source), mode="rb")
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
@@ -568,16 +576,23 @@ class GzipCodec(StreamCodec):
             # header (… Invalid gzip magic bytes)". The gzip magic matched at open, so this is
             # corruption.
             return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
-        if isinstance(exc, ValueError) and "Failed to detect a valid file format" in text:
+        if (
+            isinstance(exc, ValueError)
+            and "Failed to detect a valid file format" in text
+        ):
             # The gzip magic was present when we opened it, so a detection failure now means
             # the stream is truncated/corrupt rather than not-a-gzip.
             return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
         if isinstance(exc, ValueError) and "End of file encountered" in text:
             return TruncatedError(f"gzip stream is truncated (rapidgzip): {exc!r}")
         if isinstance(exc, ValueError) and "has no valid fileno" in text:
-            return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
+            return StreamNotSeekableError(
+                "rapidgzip does not support non-seekable streams"
+            )
         if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
-            return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
+            return StreamNotSeekableError(
+                "rapidgzip does not support non-seekable streams"
+            )
         if isinstance(exc, RuntimeError) and "std::exception" in text:
             return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
         return None
@@ -655,13 +670,22 @@ class Bzip2Codec(StreamCodec):
         """Translate the indexed_bzip2 accelerator's exceptions to the library's error types."""
         text = str(exc)
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
-            return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {exc!r}")
-        if isinstance(exc, RuntimeError) and text in ("std::exception", "Unknown exception"):
-            return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {exc!r}")
+            return CorruptionError(
+                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+            )
+        if isinstance(exc, RuntimeError) and text in (
+            "std::exception",
+            "Unknown exception",
+        ):
+            return CorruptionError(
+                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+            )
         if "[BZip2 block" in text:
             # Corrupt block data or block header (e.g. "[BZip2 block header] Invalid Huffman
             # coding group count"); surfaced as ValueError or RuntimeError depending on where.
-            return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {exc!r}")
+            return CorruptionError(
+                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+            )
         if isinstance(exc, (ValueError, RuntimeError)) and (
             "Huffman" in text
             or "magic" in text  # "Input header is not BZip2 magic string 'BZh'…"
@@ -671,11 +695,17 @@ class Bzip2Codec(StreamCodec):
             # Corrupt Huffman tables, stream/block magic, or internal state, outside a
             # "[BZip2 block]"-tagged context (e.g. "Constructing a Huffman coding … failed!"
             # or "bad optional access") — all found by the corpus mutation harness.
-            return CorruptionError(f"Error reading bzip2 stream (indexed_bzip2): {exc!r}")
+            return CorruptionError(
+                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+            )
         if isinstance(exc, ValueError) and "has no valid fileno" in text:
-            return StreamNotSeekableError("indexed_bzip2 does not support non-seekable streams")
+            return StreamNotSeekableError(
+                "indexed_bzip2 does not support non-seekable streams"
+            )
         if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
-            return StreamNotSeekableError("indexed_bzip2 does not support non-seekable streams")
+            return StreamNotSeekableError(
+                "indexed_bzip2 does not support non-seekable streams"
+            )
         return None
 
 
@@ -730,7 +760,9 @@ class _RawLzmaCodec(_LzmaErrorCodec):
                 "raw LZMA decoding requires filter properties (CodecParams.filters)"
             )
         return ensure_binaryio(
-            lzma.LZMAFile(source, mode="rb", format=lzma.FORMAT_RAW, filters=params.filters)
+            lzma.LZMAFile(
+                source, mode="rb", format=lzma.FORMAT_RAW, filters=params.filters
+            )
         )
 
 
@@ -793,7 +825,9 @@ class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD
     stream_format = StreamFormat.ZSTD
     magic = (MagicSignature(0, b"\x28\xb5\x2f\xfd", ArchiveFormat.ZST),)
-    requirement = MissingComponent("backports.zstd", "pip install archivey[zstd]", ("zstd",))
+    requirement = MissingComponent(
+        "backports.zstd", "pip install archivey[zstd]", ("zstd",)
+    )
 
     def _backend_present(self) -> bool:
         return _zstd is not None
@@ -941,7 +975,9 @@ class PpmdCodec(StreamCodec):
             )
         # The concrete PPMd stream construction (var.H parameters from the 7z coder) lands with
         # the native 7z reader in Phase 7; the resolver + missing-backend gating are complete.
-        raise NotImplementedError("PPMd decoding is implemented in Phase 7 (native 7z reader)")
+        raise NotImplementedError(
+            "PPMd decoding is implemented in Phase 7 (native 7z reader)"
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
@@ -953,7 +989,9 @@ class PpmdCodec(StreamCodec):
 
 class Deflate64Codec(StreamCodec):
     codec = Codec.DEFLATE64
-    requirement = MissingComponent("inflate64", "pip install archivey[7z]", ("deflate64",))
+    requirement = MissingComponent(
+        "inflate64", "pip install archivey[7z]", ("deflate64",)
+    )
 
     def _backend_present(self) -> bool:
         return _inflate64 is not None
@@ -1054,13 +1092,19 @@ class CodecBackend:
     config: StreamConfig
     translate: ExceptionTranslator
     rewind_warning: RewindWarning | None
-    _open: Callable[[CodecSource, CodecParams, StreamConfig], BinaryIO] = field(repr=False)
+    _open: Callable[[CodecSource, CodecParams, StreamConfig], BinaryIO] = field(
+        repr=False
+    )
 
-    def open(self, source: CodecSource, params: CodecParams = _DEFAULT_PARAMS) -> BinaryIO:
+    def open(
+        self, source: CodecSource, params: CodecParams = _DEFAULT_PARAMS
+    ) -> BinaryIO:
         return self._open(source, params, self.config)
 
 
-def resolve_codec(codec: Codec, config: StreamConfig = DEFAULT_STREAM_CONFIG) -> CodecBackend:
+def resolve_codec(
+    codec: Codec, config: StreamConfig = DEFAULT_STREAM_CONFIG
+) -> CodecBackend:
     """Resolve ``codec`` to its backend (open function + translator) without opening anything.
 
     The translator must match the *active* backend: when an accelerator

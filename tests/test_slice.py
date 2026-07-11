@@ -106,7 +106,9 @@ class TestSlicingStream:
         slice_len = len(DATA) - 5
         assert sliced.seek(-3, io.SEEK_END) == slice_len - 3
         assert sliced.read() == DATA[-3:]
-        assert sliced.seek(2, io.SEEK_END) == slice_len + 2  # past-end allowed, like BytesIO
+        assert (
+            sliced.seek(2, io.SEEK_END) == slice_len + 2
+        )  # past-end allowed, like BytesIO
         assert sliced.read(1) == b""
 
     def test_non_seekable_no_start(self) -> None:

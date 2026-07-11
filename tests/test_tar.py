@@ -122,7 +122,9 @@ def test_plain_tar_cost(plain_tar: Path) -> None:
         ("w:xz", ArchiveFormat.TAR_XZ),
     ],
 )
-def test_compressed_tar_cost_and_read(mode: str, fmt: ArchiveFormat, tmp_path: Path) -> None:
+def test_compressed_tar_cost_and_read(
+    mode: str, fmt: ArchiveFormat, tmp_path: Path
+) -> None:
     path = tmp_path / f"a.{mode.split(':')[1]}"
     path.write_bytes(_build_tar(mode))
     with open_archive(path) as ar:
@@ -349,7 +351,9 @@ def test_streaming_tar_does_not_call_getmembers() -> None:
         NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
     ) as ar:
         with mock.patch.object(
-            tarfile.TarFile, "getmembers", side_effect=AssertionError("getmembers called")
+            tarfile.TarFile,
+            "getmembers",
+            side_effect=AssertionError("getmembers called"),
         ):
             list(ar.stream_members())
 
@@ -597,7 +601,11 @@ def _build_link_tar() -> bytes:
     """dir/file + a root-level decoy `file`, and links exercising target resolution."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as t:
-        for name, data in [("file", b"ROOT"), ("dir/file", b"NESTED"), ("top.txt", b"TOP")]:
+        for name, data in [
+            ("file", b"ROOT"),
+            ("dir/file", b"NESTED"),
+            ("top.txt", b"TOP"),
+        ]:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             t.addfile(info, io.BytesIO(data))
@@ -902,7 +910,9 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
     from archivey.types import ArchiveInfo, ArchiveMember
 
     class _Reader(BaseArchiveReader):
-        def __init__(self, members: list[ArchiveMember], payloads: dict[str, bytes]) -> None:
+        def __init__(
+            self, members: list[ArchiveMember], payloads: dict[str, bytes]
+        ) -> None:
             super().__init__(ArchiveFormat.TAR, streaming=False, archive_name=None)
             self._payloads = payloads
             self._members_cache = members
@@ -930,16 +940,10 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
             return None
 
     # Hop-by-hop chain start → dup(sym) → tail → dup(file); two distinct "dup.txt" members.
-    first = ArchiveMember(
-        name="dup.txt", type=MemberType.SYMLINK, link_target="tail"
-    )
+    first = ArchiveMember(name="dup.txt", type=MemberType.SYMLINK, link_target="tail")
     second = ArchiveMember(name="dup.txt", type=MemberType.FILE)
-    tail = ArchiveMember(
-        name="tail", type=MemberType.SYMLINK, link_target="dup.txt"
-    )
-    start = ArchiveMember(
-        name="start", type=MemberType.SYMLINK, link_target="dup.txt"
-    )
+    tail = ArchiveMember(name="tail", type=MemberType.SYMLINK, link_target="dup.txt")
+    start = ArchiveMember(name="start", type=MemberType.SYMLINK, link_target="dup.txt")
     for idx, m in enumerate((first, second, tail, start)):
         m._member_id = idx
         m._archive_id = "test"

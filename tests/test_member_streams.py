@@ -27,7 +27,9 @@ def test_second_overlapping_open_raises_concurrent_access_error(tmp_path: Path) 
     root = _two_file_dir(tmp_path)
     with open_archive(root) as reader:
         s1 = reader.open("a.txt")
-        with pytest.raises(ConcurrentAccessError, match="MemberStreams.CONCURRENT") as ei:
+        with pytest.raises(
+            ConcurrentAccessError, match="MemberStreams.CONCURRENT"
+        ) as ei:
             reader.open("b.txt")
         assert "concurrent-member-streams" not in str(ei.value).lower() or True
         # Breadcrumb points at this test file.

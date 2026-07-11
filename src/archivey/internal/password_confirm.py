@@ -19,9 +19,7 @@ CONFIRM_PREFIX_BYTES = 64 * 1024
 _T = TypeVar("_T")
 
 
-def first_crc_match(
-    expected_crc: int, items: Sequence[tuple[_T, int]]
-) -> _T | None:
+def first_crc_match(expected_crc: int, items: Sequence[tuple[_T, int]]) -> _T | None:
     """Return the first item whose CRC-32 matches ``expected_crc`` (candidate order)."""
     expected = expected_crc & 0xFFFFFFFF
     for item, crc in items:

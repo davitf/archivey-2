@@ -102,7 +102,9 @@ def is_seekable(stream: Any) -> bool:
         return True
     seekable = getattr(stream, "seekable", None)
     if seekable is None:
-        logger.debug("Stream %r has no seekable() method; treating as non-seekable", stream)
+        logger.debug(
+            "Stream %r has no seekable() method; treating as non-seekable", stream
+        )
         return False
     try:
         if not seekable():
@@ -380,7 +382,9 @@ def ensure_binaryio(obj: Any) -> BinaryIO:
     """
     if is_stream(obj):
         return obj
-    logger.debug("Wrapping %r in BinaryIOWrapper to satisfy the BinaryIO interface", obj)
+    logger.debug(
+        "Wrapping %r in BinaryIOWrapper to satisfy the BinaryIO interface", obj
+    )
     return BinaryIOWrapper(obj)
 
 

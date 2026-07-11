@@ -27,7 +27,9 @@ from griffe import (
 
 
 class PropertyFieldExtension(Extension):
-    def on_class_members(self, node: Any, cls: Class, agent: Any, **kwargs: Any) -> None:
+    def on_class_members(
+        self, node: Any, cls: Class, agent: Any, **kwargs: Any
+    ) -> None:
         properties = {
             k: v for k, v in cls.attributes.items() if v.has_labels("property")
         }
@@ -100,7 +102,9 @@ class EnumMembersAsTable(Extension):
     # "Value" one. So we stash the enum members in cls.extra and override the class
     # template (docs_templates/python/material/class.html.jinja) to render them as a table.
 
-    def on_class_members(self, node: Any, cls: Class, agent: Any, **kwargs: Any) -> None:
+    def on_class_members(
+        self, node: Any, cls: Class, agent: Any, **kwargs: Any
+    ) -> None:
         if not _is_enum_class(cls):
             return
         rows: list[dict[str, Any]] = []

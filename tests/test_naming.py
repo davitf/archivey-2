@@ -22,9 +22,19 @@ from archivey.types import MemberType
         ("foo\\bar\\baz.txt", MemberType.FILE, True, "foo/bar/baz.txt"),
         ("weird\\name.txt", MemberType.FILE, False, "weird\\name.txt"),
         # Meaning-ALTERING rewrites are gone: leading "/" and ".." are retained.
-        ("/etc/passwd", MemberType.FILE, False, "/etc/passwd"),  # leading slash retained
+        (
+            "/etc/passwd",
+            MemberType.FILE,
+            False,
+            "/etc/passwd",
+        ),  # leading slash retained
         ("foo/../bar", MemberType.FILE, False, "foo/../bar"),  # internal .. retained
-        ("../../etc/passwd", MemberType.FILE, False, "../../etc/passwd"),  # escaping retained
+        (
+            "../../etc/passwd",
+            MemberType.FILE,
+            False,
+            "../../etc/passwd",
+        ),  # escaping retained
         # Meaning-PRESERVING clean-ups still apply.
         ("./foo/bar", MemberType.FILE, False, "foo/bar"),  # leading ./ stripped
         ("foo//bar", MemberType.FILE, False, "foo/bar"),  # double slash collapsed
@@ -58,9 +68,7 @@ def test_warns_when_name_changes(caplog: pytest.LogCaptureFixture) -> None:
     member = ArchiveMember(type=MemberType.FILE, name=name, raw_name=None)
     collector = DiagnosticCollector()
     with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        emit_member_name_normalized(
-            collector, member=member, presented_name=presented
-        )
+        emit_member_name_normalized(collector, member=member, presented_name=presented)
     assert any("normalized" in r.message for r in caplog.records)
     assert collector.snapshot().total_count == 1
 
@@ -68,7 +76,9 @@ def test_warns_when_name_changes(caplog: pytest.LogCaptureFixture) -> None:
 def test_no_warning_when_unchanged(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
         # A faithful name with an internal ".." is no longer rewritten, so no warning.
-        normalize_member_name("foo/../bar", MemberType.FILE, backslash_is_separator=False)
+        normalize_member_name(
+            "foo/../bar", MemberType.FILE, backslash_is_separator=False
+        )
     assert not caplog.records
 
 
