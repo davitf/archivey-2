@@ -42,7 +42,18 @@ from tests.sample_archives import (
 )
 
 # Formats where the reader reports Unix permission bits for our generated archives.
-_MODE_FORMATS = {"tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar.lz4", "tar.lz", "tar.zz", "tar.br", "zip"}
+_MODE_FORMATS = {
+    "tar",
+    "tar.gz",
+    "tar.bz2",
+    "tar.xz",
+    "tar.zst",
+    "tar.lz4",
+    "tar.lz",
+    "tar.zz",
+    "tar.br",
+    "zip",
+}
 # Single-member formats: the member name is inferred from the archive filename, so the
 # listing check differs (see format-single-file-compressors).
 _SINGLE_FILE_KEYS = {"gz", "gz-meta", "bz2", "xz", "zst", "lz4", "lz", "zz", "br"}
@@ -57,7 +68,9 @@ _PARAMS = [
 def _skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     availability = format_availability(FORMAT_KEYS[key])
     if availability.support is FormatSupport.NONE:
-        pytest.skip(f"format {key!r} not readable here: {availability.missing or 'no backend'}")
+        pytest.skip(
+            f"format {key!r} not readable here: {availability.missing or 'no backend'}"
+        )
     for package in BUILDER_PACKAGES.get(key, ()):
         if package == "_zstd_backend":
             if not _has_zstd_backend():
@@ -141,7 +154,9 @@ def _check_extraction(tmp_path: Path, source, entry: CorpusEntry, key: str) -> N
         results = ar.extract_all(
             dest,
             on_error=OnError.CONTINUE,
-            overwrite=OverwritePolicy.REPLACE if has_duplicates else OverwritePolicy.ERROR,
+            overwrite=OverwritePolicy.REPLACE
+            if has_duplicates
+            else OverwritePolicy.ERROR,
         ).results
 
     by_member_name: dict[str, list] = {}
@@ -167,7 +182,11 @@ def _check_extraction(tmp_path: Path, source, entry: CorpusEntry, key: str) -> N
     # Safe hardlinks with known terminal contents share that content on disk.
     if os.name != "nt":
         for m in entry.members:
-            if m.type is MemberType.HARDLINK and not m.unsafe and m.link_contents is not None:
+            if (
+                m.type is MemberType.HARDLINK
+                and not m.unsafe
+                and m.link_contents is not None
+            ):
                 on_disk = dest / m.name
                 assert on_disk.is_file(), f"hardlink {m.name!r} missing"
                 assert on_disk.read_bytes() == m.link_contents

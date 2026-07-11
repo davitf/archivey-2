@@ -1007,7 +1007,9 @@ def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
     # CONTINUE: records FAILED, does not raise.
     dest2 = tmp_path / "out_continue"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        results = r.extract_all(dest2, filter=drop_source, on_error=OnError.CONTINUE).results
+        results = r.extract_all(
+            dest2, filter=drop_source, on_error=OnError.CONTINUE
+        ).results
     statuses = {r.member.name: r.status for r in results}
     assert statuses["hard.txt"] is ExtractionStatus.FAILED
     assert not (dest2 / "hard.txt").exists()

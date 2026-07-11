@@ -219,15 +219,11 @@ class BaseArchiveReader(ArchiveReader):
         self._archive_name = archive_name
         self._config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
         self._diagnostics_collector = (
-            collector
-            if collector is not None
-            else collector_from_config(self._config)
+            collector if collector is not None else collector_from_config(self._config)
         )
         self._member_streams = member_streams
         self._open_site = open_site
-        self._state = ReaderState(
-            member_streams=member_streams, open_site=open_site
-        )
+        self._state = ReaderState(member_streams=member_streams, open_site=open_site)
         # A random, opaque identity token (not id(self), which the allocator can reuse
         # after a reader is garbage-collected — a member of a dead reader must never
         # pass another reader's identity check; and not a plain counter, whose small
@@ -340,7 +336,8 @@ class BaseArchiveReader(ArchiveReader):
         if the member is actually read, not merely iterated past.
         """
         members = (
-            self._begin_forward_pass() if self._streaming
+            self._begin_forward_pass()
+            if self._streaming
             else self._get_members_registered()
         )
         previous: ArchiveStream | None = None
@@ -473,7 +470,9 @@ class BaseArchiveReader(ArchiveReader):
             # exists; otherwise they only need the live-stream gate exemption.
             root = self._state.current_root()
             child = (
-                self._state.enter_child(root, "link_reads") if root is not None else None
+                self._state.enter_child(root, "link_reads")
+                if root is not None
+                else None
             )
             try:
                 with self._internal_member_opens():
@@ -882,7 +881,9 @@ class BaseArchiveReader(ArchiveReader):
             f"Got {type(member).__name__}.",
         )
 
-    def get(self, name: str, default: ArchiveMember | None = None) -> ArchiveMember | None:
+    def get(
+        self, name: str, default: ArchiveMember | None = None
+    ) -> ArchiveMember | None:
         self._require_random_access("get()")
         token = self._state.acquire_worker("get")
         try:

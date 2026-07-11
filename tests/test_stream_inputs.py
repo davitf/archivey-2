@@ -113,7 +113,9 @@ class FakeS3StreamingBody:
 class Case:
     build: Callable[[Path], BinaryIO]
     seekable: bool
-    passes_is_stream: bool  # True => is_stream() accepts it, so ensure_binaryio passes it through
+    passes_is_stream: (
+        bool  # True => is_stream() accepts it, so ensure_binaryio passes it through
+    )
 
 
 def _buffered_file(tmp_path: Path) -> BinaryIO:
@@ -159,7 +161,9 @@ def _zip_member(stored: bool) -> Callable[[Path], BinaryIO]:
 def _tar_member(compression: str) -> Callable[[Path], BinaryIO]:
     def build(_tmp_path: Path) -> BinaryIO:
         buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode=f"w:{compression}" if compression else "w") as t:
+        with tarfile.open(
+            fileobj=buf, mode=f"w:{compression}" if compression else "w"
+        ) as t:
             info = tarfile.TarInfo("m.bin")
             info.size = len(CONTENT)
             t.addfile(info, io.BytesIO(CONTENT))
@@ -172,7 +176,9 @@ def _tar_member(compression: str) -> Callable[[Path], BinaryIO]:
 
 
 def _xz_decompressor(_tmp_path: Path) -> BinaryIO:
-    return XzDecompressorStream(io.BytesIO(lzma.compress(CONTENT, format=lzma.FORMAT_XZ)))
+    return XzDecompressorStream(
+        io.BytesIO(lzma.compress(CONTENT, format=lzma.FORMAT_XZ))
+    )
 
 
 def _lzip_decompressor(_tmp_path: Path) -> BinaryIO:
@@ -308,7 +314,9 @@ CASES: dict[str, Case] = {
     "bz2": Case(_bz2_member, seekable=True, passes_is_stream=True),
     "lzma": Case(_lzma_member, seekable=True, passes_is_stream=True),
     "zip_stored": Case(_zip_member(stored=True), seekable=True, passes_is_stream=True),
-    "zip_deflated": Case(_zip_member(stored=False), seekable=True, passes_is_stream=True),
+    "zip_deflated": Case(
+        _zip_member(stored=False), seekable=True, passes_is_stream=True
+    ),
     "tar_uncompressed": Case(_tar_member(""), seekable=True, passes_is_stream=True),
     "tar_gz": Case(_tar_member("gz"), seekable=True, passes_is_stream=True),
     "xz_decompressor": Case(_xz_decompressor, seekable=True, passes_is_stream=True),
@@ -317,23 +325,32 @@ CASES: dict[str, Case] = {
     "codec_gzip": Case(_codec_gzip, seekable=True, passes_is_stream=True),
     # --- non-seekable io.IOBase streams (network / pipes) ---
     "urllib3_response": Case(_urllib3_response, seekable=False, passes_is_stream=True),
-    "http_client_response": Case(_http_client_response, seekable=False, passes_is_stream=True),
+    "http_client_response": Case(
+        _http_client_response, seekable=False, passes_is_stream=True
+    ),
     "os_pipe_reader": Case(_os_pipe_reader, seekable=False, passes_is_stream=True),
-    "non_seekable_bytesio": Case(_non_seekable_bytesio, seekable=False, passes_is_stream=True),
+    "non_seekable_bytesio": Case(
+        _non_seekable_bytesio, seekable=False, passes_is_stream=True
+    ),
     # --- fully duck-typed but NOT io.IOBase (accepted via the method-set check) ---
     "named_tempfile": Case(_named_tempfile, seekable=True, passes_is_stream=True),
     "fsspec_memory": Case(_fsspec_memory, seekable=True, passes_is_stream=True),
     # --- partial / bare objects that must be wrapped ---
     "only_read": Case(_only_read, seekable=False, passes_is_stream=False),
     "read_into": Case(_read_into, seekable=False, passes_is_stream=False),
-    "s3_streaming_body": Case(_s3_streaming_body, seekable=False, passes_is_stream=False),
+    "s3_streaming_body": Case(
+        _s3_streaming_body, seekable=False, passes_is_stream=False
+    ),
     # mmap is not an io.IOBase (so it is wrapped), but is_seekable() special-cases it as
     # seekable, and BinaryIOWrapper.seek() recovers the position via tell() (mmap.seek
     # returns None before Python 3.13).
     "mmap": Case(_mmap_source, seekable=True, passes_is_stream=False),
 }
 
-_OPTIONAL_DEP = {"urllib3_response": ("urllib3", HAVE_URLLIB3), "fsspec_memory": ("fsspec", HAVE_FSSPEC)}
+_OPTIONAL_DEP = {
+    "urllib3_response": ("urllib3", HAVE_URLLIB3),
+    "fsspec_memory": ("fsspec", HAVE_FSSPEC),
+}
 
 
 def _params() -> list:
@@ -521,7 +538,9 @@ def _probe_pipe_seek(stream: BinaryIO) -> tuple[list[str], bool | None]:
     return obs, correct
 
 
-@pytest.mark.skipif(not _WINDOWS, reason="Windows-only: characterize OS pipe seek behavior")
+@pytest.mark.skipif(
+    not _WINDOWS, reason="Windows-only: characterize OS pipe seek behavior"
+)
 def test_windows_pipe_seek_characterization() -> None:
     """Determine *exactly* how a Windows pipe responds to seeking, and lock in the contract.
 

@@ -115,7 +115,9 @@ def _parse_xz_footer(data: bytes) -> tuple[int, int]:
     if len(data) < _STREAM_FOOTER_SIZE:
         raise CorruptionError(f"XZ stream footer too short: {len(data)} bytes")
     if data[10:12] != _XZ_FOOTER_MAGIC:
-        raise CorruptionError(f"XZ stream footer magic 'YZ' not found (got {data[10:12]!r})")
+        raise CorruptionError(
+            f"XZ stream footer magic 'YZ' not found (got {data[10:12]!r})"
+        )
     stored_crc = struct.unpack_from("<I", data, 0)[0]
     backward_size_raw = struct.unpack_from("<I", data, 4)[0]
     stream_flags = data[8:10]
@@ -156,7 +158,9 @@ def _parse_xz_index(data: bytes) -> list[tuple[int, int]]:
     padded_len = _round_up_4(offset)
     for i in range(offset, padded_len):
         if i < len(data) and data[i] != 0:
-            raise CorruptionError(f"XZ index padding byte {i} is non-zero: {data[i]:#04x}")
+            raise CorruptionError(
+                f"XZ index padding byte {i} is non-zero: {data[i]:#04x}"
+            )
     return records
 
 
@@ -190,7 +194,9 @@ def _read_xz_index_backwards(
             break
 
         if compressed_end < _STREAM_FOOTER_SIZE:
-            raise CorruptionError(f"Not enough bytes for XZ footer at offset {compressed_end}")
+            raise CorruptionError(
+                f"Not enough bytes for XZ footer at offset {compressed_end}"
+            )
         stream.seek(compressed_end - _STREAM_FOOTER_SIZE)
         footer_data = stream.read(_STREAM_FOOTER_SIZE)
         if len(footer_data) < _STREAM_FOOTER_SIZE:
@@ -208,7 +214,9 @@ def _read_xz_index_backwards(
             raise CorruptionError("XZ index truncated")
 
         raw_index = index_with_crc[:-4]
-        stored_index_crc = struct.unpack_from("<I", index_with_crc, len(index_with_crc) - 4)[0]
+        stored_index_crc = struct.unpack_from(
+            "<I", index_with_crc, len(index_with_crc) - 4
+        )[0]
         computed_index_crc = zlib.crc32(raw_index) & 0xFFFFFFFF
         if stored_index_crc != computed_index_crc:
             raise CorruptionError(
@@ -304,9 +312,10 @@ class _XzState:
                 # null bytes whose length is a multiple of four (to keep streams 4-byte
                 # aligned). Strip all leading 4-byte runs in one delete.
                 padding = 0
-                while padding + 4 <= len(self._buf) and bytes(
-                    self._buf[padding : padding + 4]
-                ) == b"\x00\x00\x00\x00":
+                while (
+                    padding + 4 <= len(self._buf)
+                    and bytes(self._buf[padding : padding + 4]) == b"\x00\x00\x00\x00"
+                ):
                     padding += 4
                 if padding:
                     del self._buf[:padding]
@@ -383,7 +392,9 @@ class _XzBlockChain:
         self._block_bytes_fed = 0
         stream_flags = bytes([0x00, block.check])
         header_crc = zlib.crc32(stream_flags) & 0xFFFFFFFF
-        synthetic_header = _XZ_STREAM_MAGIC + stream_flags + struct.pack("<I", header_crc)
+        synthetic_header = (
+            _XZ_STREAM_MAGIC + stream_flags + struct.pack("<I", header_crc)
+        )
         try:
             self._dec.decompress(synthetic_header)
         except lzma.LZMAError as e:
@@ -464,9 +475,7 @@ class XzDecompressorStream(SegmentedDecompressorStream["_XzState | _XzBlockChain
         collector: DiagnosticCollector | None = None,
         seekable: bool = True,
     ) -> None:
-        super().__init__(
-            path, collector=collector, codec_name="xz", seekable=seekable
-        )
+        super().__init__(path, collector=collector, codec_name="xz", seekable=seekable)
 
     def _make_decompressor(self, point: SeekPoint) -> "_XzState | _XzBlockChain":
         if point.state is None:
@@ -475,7 +484,8 @@ class XzDecompressorStream(SegmentedDecompressorStream["_XzState | _XzBlockChain
         subsequent = [
             sp.state
             for sp in self._seek_points
-            if sp.decompressed_offset > point.decompressed_offset and sp.state is not None
+            if sp.decompressed_offset > point.decompressed_offset
+            and sp.state is not None
         ]
         return _XzBlockChain([start_block, *subsequent], self._inner)
 
@@ -496,11 +506,7 @@ class XzDecompressorStream(SegmentedDecompressorStream["_XzState | _XzBlockChain
                     [SeekPoint(stream_decomp_start, stream_comp_start, state=None)]
                 )
             stream_comp_end = stream_comp_start + compressed_size
-            if (
-                self._index_enabled
-                and not self._index_built
-                and self._inner.seekable()
-            ):
+            if self._index_enabled and not self._index_built and self._inner.seekable():
                 saved_pos = self._inner.tell()
                 try:
                     blocks = _read_xz_index_backwards(

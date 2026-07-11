@@ -439,7 +439,9 @@ def test_raise_disposition_stops_despite_continue(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.mkdir()
     policy = DiagnosticPolicy(
-        overrides={DiagnosticCode.EXTRACTION_MEMBER_REJECTED: DiagnosticDisposition.RAISE}
+        overrides={
+            DiagnosticCode.EXTRACTION_MEMBER_REJECTED: DiagnosticDisposition.RAISE
+        }
     )
     with pytest.raises(DiagnosticRaisedError) as ei:
         extract(

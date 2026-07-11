@@ -62,7 +62,9 @@ def test_raw_lzma2_backend_for_7z_folder() -> None:
     """A 7z folder's LZMA2 stream decompresses via lzma FORMAT_RAW."""
     compressed = compress_lzma2_raw(CONTENT)
     params = CodecParams(filters=lzma2_raw_filters())
-    with open_codec_stream(Codec.LZMA2, io.BytesIO(compressed), params=params) as stream:
+    with open_codec_stream(
+        Codec.LZMA2, io.BytesIO(compressed), params=params
+    ) as stream:
         assert stream.read() == CONTENT
 
 
@@ -159,7 +161,9 @@ def test_crypto_reachable_only_through_wrapper() -> None:
     assert backend.name == crypto.CRYPTO_PACKAGE
     # The concrete AES stage is deferred to Phase 7; the wrapper boundary is what's real now.
     with pytest.raises(NotImplementedError):
-        backend.aes_cbc_decrypt_stage(crypto.AesParams(key=b"\x00" * 32, iv=b"\x00" * 16))
+        backend.aes_cbc_decrypt_stage(
+            crypto.AesParams(key=b"\x00" * 32, iv=b"\x00" * 16)
+        )
 
 
 # --- exception translation -------------------------------------------------------------
@@ -168,7 +172,9 @@ def test_crypto_reachable_only_through_wrapper() -> None:
 def test_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[1] = 0x00  # break the gzip magic
-    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP) as stream:
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP
+    ) as stream:
         with pytest.raises(CorruptionError) as excinfo:
             stream.read()
     assert isinstance(excinfo.value.__cause__, gzip.BadGzipFile)
@@ -180,7 +186,9 @@ def test_mid_stream_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     # BadGzipFile. It must still be translated to CorruptionError, not leak a raw zlib.error.
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[len(corrupt) // 2] ^= 0xFF  # flip a byte well past the 10-byte header
-    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP) as stream:
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP
+    ) as stream:
         with pytest.raises(CorruptionError) as excinfo:
             stream.read()
     assert isinstance(excinfo.value.__cause__, zlib.error)
@@ -189,7 +197,9 @@ def test_mid_stream_corrupt_gzip_translates_to_corruption_with_cause() -> None:
 def test_truncated_gzip_translates_to_truncated() -> None:
     compressed = gzip.compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
-    with open_codec_stream(Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP) as stream:
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
+    ) as stream:
         with pytest.raises(TruncatedError):
             stream.read()
 
@@ -201,7 +211,9 @@ def test_accelerator_path_translates_errors_no_raw_leak() -> None:
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[1] = 0x00
     config = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
-    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=config) as stream:
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(bytes(corrupt)), config=config
+    ) as stream:
         with pytest.raises(ArchiveyError):  # never a raw rapidgzip ValueError
             stream.read()
 
@@ -210,7 +222,9 @@ def test_corrupt_lzma2_translates_to_corruption() -> None:
     corrupt = bytearray(compress_lzma2_raw(CONTENT))
     corrupt[len(corrupt) // 2] ^= 0xFF
     params = CodecParams(filters=lzma2_raw_filters())
-    with open_codec_stream(Codec.LZMA2, io.BytesIO(bytes(corrupt)), params=params) as stream:
+    with open_codec_stream(
+        Codec.LZMA2, io.BytesIO(bytes(corrupt)), params=params
+    ) as stream:
         with pytest.raises(CorruptionError):
             stream.read()
 
@@ -342,7 +356,9 @@ def test_verify_oversized_int_digest_mismatches_not_raises() -> None:
     A "crc32" int > 2**32 can't equal a 4-byte digest; normalization must not raise
     OverflowError (which would leak a non-ArchiveyError out of the stream layer).
     """
-    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) + (1 << 40)})
+    stream = VerifyingStream(
+        io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) + (1 << 40)}
+    )
     with pytest.raises(CorruptionError, match="crc32"):
         while stream.read(64):  # read to EOF; the terminal read verifies
             pass

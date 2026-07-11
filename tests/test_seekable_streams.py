@@ -79,7 +79,10 @@ def test_xz_backward_seek_uses_block_index() -> None:
         assert stream.read() == CONTENT * 3  # forward pass populates the index
         baseline = counting.bytes_read
         stream.seek(len(CONTENT) * 2 + 5)  # into the third stream
-        assert stream.read(50) == (CONTENT * 3)[len(CONTENT) * 2 + 5 : len(CONTENT) * 2 + 55]
+        assert (
+            stream.read(50)
+            == (CONTENT * 3)[len(CONTENT) * 2 + 5 : len(CONTENT) * 2 + 55]
+        )
         # Re-reading from a block start must not re-read the entire compressed file.
         assert counting.bytes_read - baseline < len(compressed)
 
@@ -191,7 +194,9 @@ def test_bzip2_accelerator_off_warns_on_rewind(
     """The bz2 stdlib path mirrors gzip: a rewind warns and still seeks."""
     config = StreamConfig(use_indexed_bzip2=AcceleratorMode.OFF, seekable=True)
     compressed = bz2.compress(CONTENT)
-    with open_codec_stream(Codec.BZIP2, io.BytesIO(compressed), config=config) as stream:
+    with open_codec_stream(
+        Codec.BZIP2, io.BytesIO(compressed), config=config
+    ) as stream:
         assert stream.read(100) == CONTENT[:100]
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0
@@ -219,7 +224,9 @@ def test_zlib_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
             assert stream.read(10) == CONTENT[:10]  # still correct
     msgs = [r.getMessage() for r in caplog.records]
     assert sum("no random-access index" in m for m in msgs) == 1
-    assert not any("seekable" in m for m in msgs)  # generic message, no accelerator named
+    assert not any(
+        "seekable" in m for m in msgs
+    )  # generic message, no accelerator named
 
 
 @requires("brotli")
@@ -253,7 +260,9 @@ def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
 
 
 @requires_zstd()
-def test_zstd_rewinds_and_warns_on_backward_seek(caplog: pytest.LogCaptureFixture) -> None:
+def test_zstd_rewinds_and_warns_on_backward_seek(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """zstd has no index; a backward seek re-decompresses from the start and warns once."""
     zstd = zstd_backend()
     compressed = zstd.compress(CONTENT)

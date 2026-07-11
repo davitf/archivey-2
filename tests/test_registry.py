@@ -38,7 +38,9 @@ class _CoreBackend(ReadBackend):
     EXTENSIONS: Mapping[str, ArchiveFormat] = {".tar": ArchiveFormat.TAR}
     MAGIC = (MagicSignature(257, b"ustar", ArchiveFormat.TAR),)
 
-    def open_read(self, source, streaming, password, encoding, archive_name):  # pragma: no cover
+    def open_read(
+        self, source, streaming, password, encoding, archive_name
+    ):  # pragma: no cover
         raise NotImplementedError
 
 
@@ -47,7 +49,9 @@ class _OptionalPresentBackend(ReadBackend):
     OPTIONAL_DEPENDENCY = "io"  # a module that always imports
     INSTALL_HINT = "pip install archivey[present]"
 
-    def open_read(self, source, streaming, password, encoding, archive_name):  # pragma: no cover
+    def open_read(
+        self, source, streaming, password, encoding, archive_name
+    ):  # pragma: no cover
         raise NotImplementedError
 
 
@@ -56,7 +60,9 @@ class _OptionalMissingBackend(ReadBackend):
     OPTIONAL_DEPENDENCY = "a_package_that_does_not_exist_xyz"
     INSTALL_HINT = "pip install archivey[iso]"
 
-    def open_read(self, source, streaming, password, encoding, archive_name):  # pragma: no cover
+    def open_read(
+        self, source, streaming, password, encoding, archive_name
+    ):  # pragma: no cover
         raise NotImplementedError
 
 
@@ -74,7 +80,9 @@ def registry() -> BackendRegistry:
 # ---------------------------------------------------------------------------
 
 
-def test_optional_missing_backend_is_known_but_unavailable(registry: BackendRegistry) -> None:
+def test_optional_missing_backend_is_known_but_unavailable(
+    registry: BackendRegistry,
+) -> None:
     # Registered regardless of its dependency: present in "known", absent from "supported".
     assert ArchiveFormat.ISO in registry.list_known_formats()
     assert ArchiveFormat.ISO not in registry.list_supported_formats()
@@ -104,7 +112,9 @@ def test_unknown_format_is_none(registry: BackendRegistry) -> None:
     assert avail.missing == ()
 
 
-def test_reader_for_missing_dependency_raises_with_hint(registry: BackendRegistry) -> None:
+def test_reader_for_missing_dependency_raises_with_hint(
+    registry: BackendRegistry,
+) -> None:
     with pytest.raises(UnsupportedFormatError) as excinfo:
         registry.reader_for_format(ArchiveFormat.ISO)
     msg = str(excinfo.value)

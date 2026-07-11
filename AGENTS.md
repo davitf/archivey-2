@@ -18,8 +18,7 @@ update script runs `uv sync --group dev --extra all`, so the everyday dev env is
 in place. Run tools with `--no-sync` to avoid a redundant re-resolve, e.g.:
 
 - Tests: `uv run --no-sync pytest`
-- Lint: `uv run --no-sync ruff check`  (note: `ruff format --check` currently reports
-  pre-existing drift in `tests/`; that is unrelated to any single change)
+- Lint: `uv run --no-sync ruff check` and `uv run --no-sync ruff format --check`
 - Type-check: `uv run --no-sync pyrefly check` and `uv run --no-sync ty check`
   (both must stay clean; mypy/pyright are intentionally not used)
 

@@ -223,7 +223,9 @@ def test_compression_method_mapping(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         by_name = {m.name: m for m in ar.members()}
         assert by_name["stored.txt"].compression[0].algo == CompressionAlgorithm.STORED
-        assert by_name["deflated.txt"].compression[0].algo == CompressionAlgorithm.DEFLATE
+        assert (
+            by_name["deflated.txt"].compression[0].algo == CompressionAlgorithm.DEFLATE
+        )
 
 
 def test_encrypted_flag() -> None:
@@ -288,7 +290,9 @@ def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
-        assert ar.get("file.txt").modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
+        assert ar.get("file.txt").modified == datetime.fromtimestamp(
+            unix_time, tz=timezone.utc
+        )
 
 
 def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
@@ -401,9 +405,7 @@ def test_concurrent_open_members_interleaved_stream_source(simple_zip: Path) -> 
     # source (_SharedFile keeps a per-open position under ZipFile's lock), so archivey
     # adds no wrap; this test locks the concurrent-open contract in for that leg too.
     data = simple_zip.read_bytes()
-    with open_archive(
-        io.BytesIO(data), member_streams=MemberStreams.CONCURRENT
-    ) as ar:
+    with open_archive(io.BytesIO(data), member_streams=MemberStreams.CONCURRENT) as ar:
         s1 = ar.open("hello.txt")
         s2 = ar.open("dir/nested.txt")
         assert s1.read(5) == b"hello"
@@ -495,19 +497,47 @@ def _overlapping_entries_zip() -> bytes:
         offsets.append(buf.tell())
         buf.write(
             struct.pack(
-                "<IHHHHHIIIHH", 0x04034B50, 20, 0, 8, 0, 0, crc, csize, usize, len(nm), 0
+                "<IHHHHHIIIHH",
+                0x04034B50,
+                20,
+                0,
+                8,
+                0,
+                0,
+                crc,
+                csize,
+                usize,
+                len(nm),
+                0,
             )
         )
         buf.write(nm)
-    buf.write(blob)  # one shared kernel; every entry's data span overruns the next header
+    buf.write(
+        blob
+    )  # one shared kernel; every entry's data span overruns the next header
 
     cd_start = buf.tell()
     for nm, off in zip(names, offsets):
         buf.write(
             struct.pack(
                 "<IHHHHHHIIIHHHHHII",
-                0x02014B50, 20, 20, 0, 8, 0, 0, crc, csize, usize,
-                len(nm), 0, 0, 0, 0, 0, off,
+                0x02014B50,
+                20,
+                20,
+                0,
+                8,
+                0,
+                0,
+                crc,
+                csize,
+                usize,
+                len(nm),
+                0,
+                0,
+                0,
+                0,
+                0,
+                off,
             )
         )
         buf.write(nm)
@@ -591,7 +621,9 @@ def test_explicit_encoding_overrides_cp437_default() -> None:
 
 def _ntfs_extra(mtime_ft: int, atime_ft: int, ctime_ft: int) -> bytes:
     """An NTFS extra field (0x000A): 4 reserved bytes, then tag 1 with three FILETIMEs."""
-    body = struct.pack("<I", 0) + struct.pack("<HHQQQ", 0x0001, 24, mtime_ft, atime_ft, ctime_ft)
+    body = struct.pack("<I", 0) + struct.pack(
+        "<HHQQQ", 0x0001, 24, mtime_ft, atime_ft, ctime_ft
+    )
     return struct.pack("<HH", 0x000A, len(body)) + body
 
 
@@ -605,7 +637,9 @@ def test_ntfs_timestamps_used_when_no_extended_timestamp(tmp_path: Path) -> None
     mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
     path = tmp_path / "ntfs.zip"
     info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
-    info.extra = _ntfs_extra(_to_filetime(mtime), _to_filetime(atime), _to_filetime(ctime))
+    info.extra = _ntfs_extra(
+        _to_filetime(mtime), _to_filetime(atime), _to_filetime(ctime)
+    )
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
@@ -620,9 +654,9 @@ def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
     # fields' order in the extra blob. Here NTFS carries all three times but the UT
     # field's mtime wins for `modified`; atime/ctime stay from NTFS (UT carries none).
     ut_mtime, nt_mtime, nt_atime = 1_600_000_000, 1_500_000_000, 1_500_000_100
-    extra = _ntfs_extra(_to_filetime(nt_mtime), _to_filetime(nt_atime), 0) + struct.pack(
-        "<HHBI", 0x5455, 5, 0x01, ut_mtime
-    )
+    extra = _ntfs_extra(
+        _to_filetime(nt_mtime), _to_filetime(nt_atime), 0
+    ) + struct.pack("<HHBI", 0x5455, 5, 0x01, ut_mtime)
     path = tmp_path / "both.zip"
     info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
     info.extra = extra

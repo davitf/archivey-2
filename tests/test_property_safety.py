@@ -281,12 +281,8 @@ def test_normalize_never_introduces_escape(
 
 @given(decoded=_pathish, member_type=_file_dir_types)
 def test_normalize_backslash_flag(decoded: str, member_type: MemberType) -> None:
-    with_sep = normalize_member_name(
-        decoded, member_type, backslash_is_separator=True
-    )
-    literal = normalize_member_name(
-        decoded, member_type, backslash_is_separator=False
-    )
+    with_sep = normalize_member_name(decoded, member_type, backslash_is_separator=True)
+    literal = normalize_member_name(decoded, member_type, backslash_is_separator=False)
     if "\\" in decoded:
         # With the flag, every backslash becomes a separator (no literal ``\\`` left
         # unless the input had a forward-slash-only path — then both match).
@@ -297,8 +293,12 @@ def test_normalize_backslash_flag(decoded: str, member_type: MemberType) -> None
             assert "\\" in literal or literal == with_sep
 
 
-@example(decoded="foo/../bar", member_type=MemberType.FILE, backslash_is_separator=False)
-@example(decoded="/etc/passwd", member_type=MemberType.FILE, backslash_is_separator=False)
+@example(
+    decoded="foo/../bar", member_type=MemberType.FILE, backslash_is_separator=False
+)
+@example(
+    decoded="/etc/passwd", member_type=MemberType.FILE, backslash_is_separator=False
+)
 @example(decoded="foo\\bar", member_type=MemberType.FILE, backslash_is_separator=True)
 @given(
     decoded=_pathish,
@@ -469,7 +469,9 @@ def test_resolve_link_never_returns_escaping_name(
 
 
 @given(
-    link_dir=st.from_regex(r"[A-Za-z0-9_]{1,8}(/[A-Za-z0-9_]{1,8}){0,2}", fullmatch=True),
+    link_dir=st.from_regex(
+        r"[A-Za-z0-9_]{1,8}(/[A-Za-z0-9_]{1,8}){0,2}", fullmatch=True
+    ),
     target=st.from_regex(r"[A-Za-z0-9_]{1,12}", fullmatch=True),
 )
 def test_resolve_symlink_joins_to_link_dir(link_dir: str, target: str) -> None:
@@ -479,7 +481,9 @@ def test_resolve_symlink_joins_to_link_dir(link_dir: str, target: str) -> None:
 
 
 @given(
-    target=st.from_regex(r"[A-Za-z0-9_]{1,12}(/[A-Za-z0-9_]{1,8}){0,2}", fullmatch=True),
+    target=st.from_regex(
+        r"[A-Za-z0-9_]{1,12}(/[A-Za-z0-9_]{1,8}){0,2}", fullmatch=True
+    ),
 )
 def test_resolve_hardlink_uses_target_as_archive_path(target: str) -> None:
     result = resolve_link_target_name("ignored/link", target, MemberType.HARDLINK)
@@ -527,7 +531,9 @@ def test_volume_part_helpers_total(name: str) -> None:
 
 @given(
     base=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,8}", fullmatch=True),
-    parts=st.lists(st.integers(min_value=1, max_value=99), min_size=2, max_size=5, unique=True),
+    parts=st.lists(
+        st.integers(min_value=1, max_value=99), min_size=2, max_size=5, unique=True
+    ),
 )
 def test_volume_part_numbers_sort_stable(base: str, parts: list[int]) -> None:
     names = [f"{base}.7z.{p:03d}" for p in parts]

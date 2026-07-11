@@ -74,7 +74,9 @@ from archivey.types import (
 def _optional(name: str) -> ModuleType | None:
     try:
         return importlib.import_module(name)
-    except ImportError:  # pragma: no cover - the absent path runs in the core-only CI leg
+    except (
+        ImportError
+    ):  # pragma: no cover - the absent path runs in the core-only CI leg
         return None
 
 
@@ -157,7 +159,9 @@ def _install_pycdlib_directory_cycle_guard() -> None:
     # setattr (not a direct assignment) so the type checkers don't flag the deliberate
     # module -> proxy substitution against pcd_module.collections's declared Module type.
     setattr(
-        pcd_module, "collections", _DequeGuardedCollections(collections, _ExtentGuardedDeque)
+        pcd_module,
+        "collections",
+        _DequeGuardedCollections(collections, _ExtentGuardedDeque),
     )
     _PYCDLIB_CYCLE_GUARD_INSTALLED = True
 
@@ -179,9 +183,8 @@ _install_pycdlib_directory_cycle_guard()
 # error-handling: "Genuine runtime and I/O errors are not reclassified"). Built defensively so
 # the module imports without pycdlib.
 _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
-    ((_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ())
-    + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
-)
+    (_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ()
+) + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
 _VERSION_SUFFIX = re.compile(r";\d+$")
@@ -230,7 +233,9 @@ class IsoReader(BaseArchiveReader):
     """Reads an ISO 9660 image via ``pycdlib`` (Rock Ridge / Joliet / plain)."""
 
     _SUPPORTS_RANDOM_ACCESS = True
-    _MEMBER_LIST_UPFRONT = True  # the directory tree is an in-header index (O(1) listing)
+    _MEMBER_LIST_UPFRONT = (
+        True  # the directory tree is an in-header index (O(1) listing)
+    )
 
     def __init__(
         self,
@@ -299,9 +304,7 @@ class IsoReader(BaseArchiveReader):
             self._path_kw = "iso_path"
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
-        if _pycdlib_exc is not None and isinstance(
-            exc, _pycdlib_exc.PyCdlibException
-        ):
+        if _pycdlib_exc is not None and isinstance(exc, _pycdlib_exc.PyCdlibException):
             return CorruptionError(f"Error reading ISO image: {exc!r}")
         # pycdlib does not wrap every parse failure in its own exception type: a truncated
         # or crafted image can raise a bare IndexError/struct.error/ValueError from deep in
@@ -310,7 +313,14 @@ class IsoReader(BaseArchiveReader):
         # rather than letting a raw IndexError escape. (Found by the corpus mutation harness.)
         if isinstance(
             exc,
-            (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError),
+            (
+                IndexError,
+                struct.error,
+                UnicodeDecodeError,
+                AttributeError,
+                KeyError,
+                ValueError,
+            ),
         ):
             # pycdlib choked on corrupt structure (see the _PYCDLIB_ERRORS note). Never a
             # genuine OSError — that is not in this set and propagates unchanged.
@@ -439,7 +449,11 @@ class IsoReader(BaseArchiveReader):
                 continue
             raw_mode = getattr(px, "posix_file_mode", None)
             mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
-            return mode, getattr(px, "posix_user_id", None), getattr(px, "posix_group_id", None)
+            return (
+                mode,
+                getattr(px, "posix_user_id", None),
+                getattr(px, "posix_group_id", None),
+            )
         return None, None, None
 
     def _symlink_target(self, member_type: MemberType, rr: Any) -> str | None:
@@ -464,9 +478,7 @@ class IsoReader(BaseArchiveReader):
                     locked: BinaryIO = LockedStream(
                         _PyCdlibStream(raw), self._handle_lock
                     )
-                return self._wrap_member_stream(
-                    locked, member.name, size=member.size
-                )
+                return self._wrap_member_stream(locked, member.name, size=member.size)
             raw = self._iso.open_file_from_iso(**{self._path_kw: ns_path})
             # Construct inside the try so any enter-time pycdlib error is translated too;
             # _PyCdlibStream enters the PyCdlibIO context in its __init__.

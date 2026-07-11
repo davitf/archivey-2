@@ -83,17 +83,27 @@ def D(name: str, **kw: object) -> Member:
     return Member(name=name, type=MemberType.DIRECTORY, **kw)  # type: ignore[arg-type]
 
 
-def S(name: str, target: str, *, link_contents: bytes | None = None, **kw: object) -> Member:
+def S(
+    name: str, target: str, *, link_contents: bytes | None = None, **kw: object
+) -> Member:
     return Member(
-        name=name, type=MemberType.SYMLINK, link_target=target,
-        link_contents=link_contents, **kw,  # type: ignore[arg-type]
+        name=name,
+        type=MemberType.SYMLINK,
+        link_target=target,
+        link_contents=link_contents,
+        **kw,  # type: ignore[arg-type]
     )
 
 
-def H(name: str, target: str, *, link_contents: bytes | None = None, **kw: object) -> Member:
+def H(
+    name: str, target: str, *, link_contents: bytes | None = None, **kw: object
+) -> Member:
     return Member(
-        name=name, type=MemberType.HARDLINK, link_target=target,
-        link_contents=link_contents, **kw,  # type: ignore[arg-type]
+        name=name,
+        type=MemberType.HARDLINK,
+        link_target=target,
+        link_contents=link_contents,
+        **kw,  # type: ignore[arg-type]
     )
 
 
@@ -154,7 +164,17 @@ FORMAT_KEYS: dict[str, ArchiveFormat] = {
     "rar": ArchiveFormat.RAR,
 }
 
-_ALL_TAR = ("tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar.lz4", "tar.lz", "tar.zz", "tar.br")
+_ALL_TAR = (
+    "tar",
+    "tar.gz",
+    "tar.bz2",
+    "tar.xz",
+    "tar.zst",
+    "tar.lz4",
+    "tar.lz",
+    "tar.zz",
+    "tar.br",
+)
 _SINGLE_FILE = ("gz", "bz2", "xz", "zst", "lz4", "lz", "zz", "br")
 
 
@@ -249,7 +269,8 @@ _DUPLICATES = (
 )
 
 _LARGE = tuple(
-    F(f"large{i}.txt", f"Large file #{i}\n".encode() + _rand(64_000, i)) for i in (1, 2, 3)
+    F(f"large{i}.txt", f"Large file #{i}\n".encode() + _rand(64_000, i))
+    for i in (1, 2, 3)
 )
 
 # Adversarial names/links: listing stays faithful; safe extraction must reject each
@@ -307,13 +328,19 @@ CORPUS: tuple[CorpusEntry, ...] = (
     CorpusEntry("adversarial", _ADVERSARIAL_COMMON, ("zip",)),
     CorpusEntry("adversarial-tar", _ADVERSARIAL_TAR, ("tar", "tar.gz")),
     # Encrypted ZIPs are built with the 7z CLI (stdlib zipfile cannot write encryption).
-    CorpusEntry("encrypted", _ENC_SINGLE, ("zip", "7z", "rar"), requires_binaries=("7z",)),
-    CorpusEntry("encrypted-mixed", _ENC_MIXED, ("zip", "7z", "rar"), requires_binaries=("7z",)),
+    CorpusEntry(
+        "encrypted", _ENC_SINGLE, ("zip", "7z", "rar"), requires_binaries=("7z",)
+    ),
+    CorpusEntry(
+        "encrypted-mixed", _ENC_MIXED, ("zip", "7z", "rar"), requires_binaries=("7z",)
+    ),
     CorpusEntry("encrypted-multi", _ENC_MULTI, ("zip",), requires_binaries=("7z",)),
     # Single-file compressors: exactly one member whose name is inferred from the
     # archive filename (see format-single-file-compressors); gz-meta stores FNAME+mtime.
     CorpusEntry("single-file", (F("payload.txt", _SINGLE_CONTENT),), _SINGLE_FILE),
-    CorpusEntry("single-file-meta", (F("stored_name.txt", _SINGLE_CONTENT),), ("gz-meta",)),
+    CorpusEntry(
+        "single-file-meta", (F("stored_name.txt", _SINGLE_CONTENT),), ("gz-meta",)
+    ),
 )
 
 
@@ -326,9 +353,15 @@ def _tar_bytes(entry: CorpusEntry) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
         for m in entry.members:
-            info = tarfile.TarInfo(m.name.rstrip("/") if m.type is MemberType.DIRECTORY else m.name)
+            info = tarfile.TarInfo(
+                m.name.rstrip("/") if m.type is MemberType.DIRECTORY else m.name
+            )
             info.mtime = m.mtime
-            info.mode = m.mode if m.mode is not None else (0o755 if m.type is MemberType.DIRECTORY else 0o644)
+            info.mode = (
+                m.mode
+                if m.mode is not None
+                else (0o755 if m.type is MemberType.DIRECTORY else 0o644)
+            )
             if m.uid is not None:
                 info.uid = m.uid
             if m.gid is not None:
@@ -396,7 +429,9 @@ def _zip_build(entry: CorpusEntry, path: Path) -> None:
             zi = zipfile.ZipInfo(date_time=(2020, 9, 13, 12, 26, 41))
             # Post-assign: ZipInfo.__init__ replaces os.sep on Windows (see zip_backslash/generate.py).
             zi.filename = m.name
-            zi.create_system = 3  # force Unix so modes/symlinks are deterministic on all OSes
+            zi.create_system = (
+                3  # force Unix so modes/symlinks are deterministic on all OSes
+            )
             if m.type is MemberType.DIRECTORY:
                 zi.external_attr = (0o40755 << 16) | 0x10
                 zf.writestr(zi, b"")
@@ -406,7 +441,9 @@ def _zip_build(entry: CorpusEntry, path: Path) -> None:
             else:
                 mode = m.mode if m.mode is not None else 0o644
                 zi.external_attr = (stat_mod.S_IFREG | mode) << 16
-                zi.compress_type = m.zip_method if m.zip_method is not None else zipfile.ZIP_DEFLATED
+                zi.compress_type = (
+                    m.zip_method if m.zip_method is not None else zipfile.ZIP_DEFLATED
+                )
                 if m.comment:
                     zi.comment = m.comment.encode()
                 zf.writestr(zi, m.contents)
@@ -464,7 +501,9 @@ def _iso_build(entry: CorpusEntry, path: Path) -> None:
             if joined and joined not in made_dirs:
                 made_dirs.add(joined)
                 iso_path = "/" + "/".join(p.upper()[:8] for p in joined.split("/"))
-                iso.add_directory(iso_path, rr_name=parts[i - 1], joliet_path="/" + joined)
+                iso.add_directory(
+                    iso_path, rr_name=parts[i - 1], joliet_path="/" + joined
+                )
 
     counter = 0
     for m in entry.members:
@@ -474,14 +513,19 @@ def _iso_build(entry: CorpusEntry, path: Path) -> None:
             if rel not in made_dirs:
                 made_dirs.add(rel)
                 iso_path = "/" + "/".join(p.upper()[:8] for p in rel.split("/"))
-                iso.add_directory(iso_path, rr_name=rel.split("/")[-1], joliet_path="/" + rel)
+                iso.add_directory(
+                    iso_path, rr_name=rel.split("/")[-1], joliet_path="/" + rel
+                )
         else:
             counter += 1
             iso_dir = "/".join(p.upper()[:8] for p in rel.split("/")[:-1])
             iso_path = ("/" + iso_dir + "/" if iso_dir else "/") + f"F{counter}.TXT;1"
             iso.add_fp(
-                io.BytesIO(m.contents), len(m.contents), iso_path,
-                rr_name=rel.split("/")[-1], joliet_path="/" + rel,
+                io.BytesIO(m.contents),
+                len(m.contents),
+                iso_path,
+                rr_name=rel.split("/")[-1],
+                joliet_path="/" + rel,
             )
     out = io.BytesIO()
     iso.write_fp(out)
@@ -548,7 +592,9 @@ def build_archive(entry: CorpusEntry, key: str, path: Path) -> None:
 # Extra *builder-side* package requirements per format key (reader-side availability is
 # gated separately via the registry). Import names, checked with importlib.
 BUILDER_PACKAGES: dict[str, tuple[str, ...]] = {
-    "tar.zst": ("_zstd_backend",),  # sentinel: either compression.zstd or backports.zstd
+    "tar.zst": (
+        "_zstd_backend",
+    ),  # sentinel: either compression.zstd or backports.zstd
     "zst": ("_zstd_backend",),
     "tar.lz4": ("lz4",),
     "lz4": ("lz4",),

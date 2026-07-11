@@ -76,14 +76,21 @@ b.read(); b.close()
 """,
 }
 
-_CRASH_MARKERS = ("malloc", "pointer being freed", "terminating", "Detected Python finalization")
+_CRASH_MARKERS = (
+    "malloc",
+    "pointer being freed",
+    "terminating",
+    "Detected Python finalization",
+)
 
 
 def _run(name: str, code: str) -> tuple[int, int, str]:
     crashes = 0
     sample = ""
     for _ in range(ITERS):
-        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=60)
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, timeout=60
+        )
         err = proc.stderr.decode("utf-8", "replace")
         crashed = proc.returncode != 0 or any(m in err for m in _CRASH_MARKERS)
         if crashed:
@@ -101,7 +108,9 @@ def main() -> int:
             m = __import__(mod)
             print(f"  {mod}: {getattr(m, '__version__', '?')}")
         except Exception as exc:  # noqa: BLE001
-            print(f"  {mod}: NOT INSTALLED ({exc}) -- install both to exercise the 'both_*' cases")
+            print(
+                f"  {mod}: NOT INSTALLED ({exc}) -- install both to exercise the 'both_*' cases"
+            )
     print("=" * 90)
     print(f"{'scenario':<20}{'runs':>6}{'crashes':>9}   sample stderr")
     print("-" * 90)
@@ -121,14 +130,26 @@ def main() -> int:
         print(f"{name:<24}{runs:>6}{crashes:>9}   {sample}{flag}")
     print("=" * 90)
     if coexist_crash and not fix_crash:
-        print("CONCLUSION: using both libraries crashes, but routing bzip2 through rapidgzip's")
-        print("bundled IndexedBzip2File (fix_both_via_rapidgzip = 0 crashes) does NOT — so the fix")
-        print("is to use rapidgzip for both gzip and bzip2 and never load indexed_bzip2.")
+        print(
+            "CONCLUSION: using both libraries crashes, but routing bzip2 through rapidgzip's"
+        )
+        print(
+            "bundled IndexedBzip2File (fix_both_via_rapidgzip = 0 crashes) does NOT — so the fix"
+        )
+        print(
+            "is to use rapidgzip for both gzip and bzip2 and never load indexed_bzip2."
+        )
     elif coexist_crash and fix_crash:
-        print("CONCLUSION: both-libraries crashes AND the rapidgzip-only fix candidate also crashed.")
-        print("The fix is insufficient on this platform; fall back to disabling accelerators.")
+        print(
+            "CONCLUSION: both-libraries crashes AND the rapidgzip-only fix candidate also crashed."
+        )
+        print(
+            "The fix is insufficient on this platform; fall back to disabling accelerators."
+        )
     else:
-        print("No coexistence crash observed in this run. The corruption is intermittent; re-run")
+        print(
+            "No coexistence crash observed in this run. The corruption is intermittent; re-run"
+        )
         print("with more iterations (e.g. `... dual_accelerator_repro.py 200`).")
     print("=" * 90)
     return 0

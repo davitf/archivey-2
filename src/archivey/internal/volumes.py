@@ -63,7 +63,9 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
                 and (part_match := _RAR_PART_RE.match(candidate.name)) is not None
                 and part_match.group("base").lower() == base.lower()
             ),
-            key=lambda candidate: _part_number_from_name(candidate.name, part_group="part"),
+            key=lambda candidate: _part_number_from_name(
+                candidate.name, part_group="part"
+            ),
         )
         return siblings if len(siblings) > 1 else None
 

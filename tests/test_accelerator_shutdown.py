@@ -127,7 +127,9 @@ def _run(fmt: str, opener: str, variant: str, cleanup: str) -> int:
     return proc.returncode
 
 
-@pytest.mark.parametrize(("fmt", "opener"), _ACCELERATORS, ids=[f for f, _ in _ACCELERATORS])
+@pytest.mark.parametrize(
+    ("fmt", "opener"), _ACCELERATORS, ids=[f for f, _ in _ACCELERATORS]
+)
 def test_accelerator_shutdown_canary(fmt: str, opener: str) -> None:
     pytest.importorskip("rapidgzip")
 

@@ -86,7 +86,9 @@ class _PasswordCandidates:
 
     def has_passwords(self) -> bool:
         with self._state_lock:
-            return bool(self._known_good or self._candidates or self._provider is not None)
+            return bool(
+                self._known_good or self._candidates or self._provider is not None
+            )
 
     def is_ambiguous(self) -> bool:
         """Whether a weak password check needs confirmation before accepting a result.
@@ -102,9 +104,7 @@ class _PasswordCandidates:
     def has_provider(self) -> bool:
         return self._provider is not None
 
-    def ask_provider(
-        self, member: ArchiveMember | None, attempt: int
-    ) -> bytes | None:
+    def ask_provider(self, member: ArchiveMember | None, attempt: int) -> bytes | None:
         """Return the provider's next answer, or ``None`` to stop.
 
         Invokes the provider with no Archivey lock held (the provider lock is released

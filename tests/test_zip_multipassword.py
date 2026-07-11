@@ -28,10 +28,7 @@ RIGHT = b"very_secret_password"
 DATA = b"This is very secret" * 8
 NAME = "very_secret.txt"
 PasswordArg = (
-    str
-    | bytes
-    | list[str | bytes]
-    | Callable[[PasswordRequest], str | bytes | None]
+    str | bytes | list[str | bytes] | Callable[[PasswordRequest], str | bytes | None]
 )
 
 COMPRESSION_METHODS = [
@@ -53,9 +50,7 @@ def _read_member(blob: bytes, password: PasswordArg) -> bytes:
 def test_wrong_candidate_false_accept_does_not_shadow_right_password(
     compression: int,
 ) -> None:
-    blob = build_zipcrypto_zip(
-        RIGHT, NAME.encode(), DATA, compression=compression
-    )
+    blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
     assert collider != RIGHT
@@ -86,7 +81,9 @@ def test_provider_continues_after_colliding_password() -> None:
     assert all(request.member is not None for request in seen)
 
 
-@pytest.mark.parametrize("passwords", [[RIGHT], [RIGHT, RIGHT]], ids=["one", "duplicate"])
+@pytest.mark.parametrize(
+    "passwords", [[RIGHT], [RIGHT, RIGHT]], ids=["one", "duplicate"]
+)
 @pytest.mark.parametrize("compression", COMPRESSION_METHODS)
 def test_single_distinct_candidate_is_not_eagerly_read(
     passwords: list[bytes], compression: int
@@ -102,9 +99,7 @@ def test_single_distinct_candidate_is_not_eagerly_read(
 
 
 def test_corrupt_encrypted_data_with_multiple_candidates_reports_ambiguity() -> None:
-    blob = corrupt_zipcrypto_payload(
-        build_zipcrypto_zip(RIGHT, NAME.encode(), DATA)
-    )
+    blob = corrupt_zipcrypto_payload(build_zipcrypto_zip(RIGHT, NAME.encode(), DATA))
 
     with open_archive(io.BytesIO(blob), password=[RIGHT, b"also-wrong"]) as ar:
         with pytest.raises(
@@ -156,9 +151,7 @@ def test_confirmed_winner_is_reopened_fresh(monkeypatch: pytest.MonkeyPatch) -> 
             force_zip64: bool = False,
         ) -> zipfile.ZipExtFile:
             tried.append(pwd)
-            return original_open(
-                name, mode=mode, pwd=pwd, force_zip64=force_zip64
-            )
+            return original_open(name, mode=mode, pwd=pwd, force_zip64=force_zip64)
 
         monkeypatch.setattr(archive, "open", tracking_open)
         assert ar.read(NAME) == DATA
@@ -252,9 +245,7 @@ def test_wrong_key_rejected_within_tight_prefix_bound(
     """Even a 4 KiB confirmation bound rejects colliding wrong keys (≪ 64 KiB)."""
     monkeypatch.setattr(password_confirm, "CONFIRM_PREFIX_BYTES", 4 * 1024)
     monkeypatch.setattr(zip_reader, "CONFIRM_PREFIX_BYTES", 4 * 1024)
-    blob = build_zipcrypto_zip(
-        RIGHT, NAME.encode(), DATA * 64, compression=compression
-    )
+    blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA * 64, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
     assert _read_member(blob, [collider, RIGHT]) == DATA * 64
 
@@ -267,7 +258,7 @@ def test_wrong_key_rejected_within_tight_prefix_bound(
 def test_large_compressed_confirmation_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plaintext = (b"bounded-confirm-payload\n" * 8000)  # well over 64 KiB when repeated
+    plaintext = b"bounded-confirm-payload\n" * 8000  # well over 64 KiB when repeated
     plaintext = plaintext * 8  # ~1.5 MiB+
     assert len(plaintext) > CONFIRM_PREFIX_BYTES
     blob = build_zipcrypto_zip(
@@ -380,7 +371,7 @@ def test_corruption_beyond_prefix_fails_caller_read_as_corruption(
     """Prefix confirmation accepts; trailing corruption fails the caller's CRC."""
     import struct
 
-    plaintext = (b"prefix-ok-then-corrupt\n" * 8000)
+    plaintext = b"prefix-ok-then-corrupt\n" * 8000
     assert len(plaintext) > 64 * 1024
     blob = bytearray(
         build_zipcrypto_zip(

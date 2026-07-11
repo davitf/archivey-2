@@ -84,13 +84,21 @@ def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
     header/trailer.
     """
     filters: list[dict] = [
-        {"id": lzma.FILTER_LZMA1, "dict_size": 1 << dict_size_bits, "lc": 3, "lp": 0, "pb": 2}
+        {
+            "id": lzma.FILTER_LZMA1,
+            "dict_size": 1 << dict_size_bits,
+            "lc": 3,
+            "lp": 0,
+            "pb": 2,
+        }
     ]
     compressed_alone = lzma.compress(data, format=lzma.FORMAT_ALONE, filters=filters)
     lzma_raw = compressed_alone[13:]
     header = b"LZIP" + bytes([1, dict_size_bits])
     member_total = len(header) + len(lzma_raw) + 20
-    trailer = struct.pack("<IQQ", zlib.crc32(data) & 0xFFFFFFFF, len(data), member_total)
+    trailer = struct.pack(
+        "<IQQ", zlib.crc32(data) & 0xFFFFFFFF, len(data), member_total
+    )
     return header + lzma_raw + trailer
 
 

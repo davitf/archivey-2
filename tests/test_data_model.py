@@ -146,7 +146,10 @@ def test_modified_utc_normalizes_mixed_timestamps() -> None:
     # comparable with the aware member's (mixed naive/aware raises TypeError directly).
     local_utc = naive.modified_utc()
     assert local_utc is not None and local_utc.tzinfo == timezone.utc
-    assert (local_utc < aware.modified_utc()) in (True, False)  # comparable, no TypeError
+    assert (local_utc < aware.modified_utc()) in (
+        True,
+        False,
+    )  # comparable, no TypeError
 
     # The stored field is untouched: provenance stays checkable.
     assert naive.modified is not None and naive.modified.tzinfo is None

@@ -127,8 +127,12 @@ def test_synthetic_descriptor_is_detectable_and_readable(
 def test_synthetic_descriptor_availability_comes_from_requirement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    requirement = MissingComponent("synthlib", "pip install archivey[synth]", ("synthetic",))
-    with _install_synthetic(monkeypatch, requirement=requirement, available=False) as fmt:
+    requirement = MissingComponent(
+        "synthlib", "pip install archivey[synth]", ("synthetic",)
+    )
+    with _install_synthetic(
+        monkeypatch, requirement=requirement, available=False
+    ) as fmt:
         # The (simulated) missing backend makes the single-codec format unreadable -> NONE,
         # with the install hint taken from the codec's requirement (no registry table).
         availability = format_availability(fmt)

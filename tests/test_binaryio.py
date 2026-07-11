@@ -428,7 +428,9 @@ def test_plain_bufferedreader_closes_source_demonstrates_why_we_detach() -> None
     inner = CountingBytesIO(DATA)
     plain = io.BufferedReader(inner)
     plain.close()
-    assert inner.closed  # plain BufferedReader took the (caller-owned) source down with it
+    assert (
+        inner.closed
+    )  # plain BufferedReader took the (caller-owned) source down with it
 
     # ensure_bufferedio over the same kind of source leaves it open — the behaviour we want.
     survivor = CountingBytesIO(DATA)
