@@ -19,6 +19,11 @@ class MemberStreams(Flag):
     Combine with ``|``::
 
         MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
+
+    ``CONCURRENT`` is **provisional** in v1: correct under cooperative use (materialize,
+    then fan out; callers synchronize their own shared streams) with the documented
+    misuse set detected. Free-threaded / adversarial hardening lands when the bit is
+    promoted to fully supported — see ``openspec/changes/concurrent-member-streams``.
     """
 
     CONCURRENT = auto()

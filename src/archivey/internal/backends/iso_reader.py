@@ -331,6 +331,10 @@ class IsoReader(BaseArchiveReader):
         return rel
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
+        # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
+        # walk()/get_record() traverse in-memory parsed catalog records and do not touch
+        # _cdfp. Only open_file_from_iso / PyCdlibIO I/O need the handle lock. If a future
+        # pycdlib version gains handle access here, lock the complete call.
         try:
             for dirpath, dirnames, filenames in self._iso.walk(**{self._path_kw: "/"}):
                 for name in dirnames:

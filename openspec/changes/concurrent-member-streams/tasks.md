@@ -41,14 +41,14 @@
 - [x] 2.3 Make the published member/name structures structurally immutable and audit
       list-returning APIs to prevent caller mutation of cache containers; retain existing
       late-bound `ArchiveMember` behavior with idempotent per-member synchronization
-- [ ] 2.4 Add unforgeable root operation-owner tokens and explicit private child scopes:
+- [x] 2.4 Add unforgeable root operation-owner tokens and explicit private child scopes:
       materialization/worker-open link reads; `extract_all` member/counter peeks and
       `stream_members` passes (including hardlink second pass); and yielded-stream I/O/close;
       never infer ownership from thread identity
-- [ ] 2.5 Make public unrelated/reentrant operations tokenless and reject conflicts without
+- [x] 2.5 Make public unrelated/reentrant operations tokenless and reject conflicts without
       disturbing the active root/children; release root/child scopes exactly once on normal
       return, exception, generator close, exhaustion, and abandonment/finalization
-- [ ] 2.6 Give random `open()` and each random-stream method a short-lived worker token; keep
+- [x] 2.6 Give random `open()` and each random-stream method a short-lived worker token; keep
       only a lifecycle lease while the stream is idle. A stream's own I/O
       (`read`/`readinto`/`seek`/`tell`/`close`) is routed around the operation-owner gate
       entirely (touching only its lease + backend), so later I/O after reader close is
@@ -69,7 +69,7 @@
 - [x] 3.2 Reserve a backend-resource lease before eager/lazy `_open_member`; transfer it to
       `ArchiveStream`; release exactly once on never-opened lazy close, initialization failure,
       ordinary close, or finalization
-- [ ] 3.3 Refactor `ArchiveStream` lazy initialization so `open_fn` and the inner close run
+- [x] 3.3 Refactor `ArchiveStream` lazy initialization so `open_fn` and the inner close run
       with **no stream-state lock held** (the essential rule: never nest stream → backend
       under teardown's backend acquisition, D13). A minimal claimed-to-open flag guarding a
       single caller into `open_fn` outside the lock is sufficient; the `UNOPENED` / `OPENING`
@@ -78,35 +78,35 @@
       teardown; reject every later reader operation/property except repeated `close()` /
       `__exit__` with `ArchiveyUsageError`, while escaped streams use pre-captured context
       and remain capability-correct
-- [ ] 3.5 Perform teardown outside lifecycle state, mark it complete even on failure, propagate
+- [x] 3.5 Perform teardown outside lifecycle state, mark it complete even on failure, propagate
       a translated failure once from an explicit final closer, never retry, and preserve
       simultaneous inner-close + teardown failures in an `ExceptionGroup`
-- [ ] 3.6 Add safety-net finalizers using the same once guards; never raise, run hooks only
+- [x] 3.6 Add safety-net finalizers using the same once guards; never raise, run hooks only
       outside locks, report via `sys.unraisablehook` where safe, and preserve rapidgzip/native
       close-before-free guarantees
-- [ ] 3.7 Track source ownership: final leases close path handles/Archivey wrappers but never a
+- [x] 3.7 Track source ownership: final leases close path handles/Archivey wrappers but never a
       caller-supplied `BinaryIO`; early external close fails later stream use with
       `ArchiveyUsageError`
-- [ ] 3.8 Ensure reader-close overlap with active worker calls is rejected at the public
+- [x] 3.8 Ensure reader-close overlap with active worker calls is rejected at the public
       operation boundary; do not promise concurrent-close linearization
 
 ## 4. Passwords, callbacks, and diagnostics
 
-- [ ] 4.1 Make static password candidates immutable; protect known-good snapshot/promotion
+- [x] 4.1 Make static password candidates immutable; protect known-good snapshot/promotion
       and per-unit tried/attempt state without lifecycle/materialization/password locks during
       decrypt/key derivation; permit a required backend/source lock around atomic validation
-- [ ] 4.2 Serialize provider resolution with a **simple lock released around the callback**
+- [x] 4.2 Serialize provider resolution with a **simple lock released around the callback**
       (invoke the provider with no Archivey lock, scope validation locks as in 4.1, publish
       promotion under the lock). Do **not** build the resolution-turn condition protocol
       (D10 simplification): concurrent first-touch may call the provider / attempt a
       candidate redundantly, which is acceptable because promotion stays synchronized and
       convergent
-- [ ] 4.3 Detect same-reader password-provider reentry into a password-requiring operation
+- [x] 4.3 Detect same-reader password-provider reentry into a password-requiring operation
       and raise `ArchiveyUsageError` rather than self-deadlocking
-- [ ] 4.4 Audit selectors, filters, progress callbacks, logging, error stamping/formatting,
+- [x] 4.4 Audit selectors, filters, progress callbacks, logging, error stamping/formatting,
       `sys.unraisablehook`, and close/finalizer hooks; no callback may execute under any
       Archivey lock
-- [ ] 4.5 Enforce nested reader-state order lifecycle/operation → materialization → password;
+- [x] 4.5 Enforce nested reader-state order lifecycle/operation → materialization → password;
       make backend/source locks leaf critical sections and stream state claim/call/publish so
       neither stream → backend nor backend → lifecycle nesting occurs
 
@@ -115,45 +115,47 @@
 - [x] 5.1 Audit directory, ZIP, single-file, and SharedSource paths for declared concurrent
       `open` and independent stream read/readinto/close plus capability-conditional seek/tell
       after materialization; unsupported positioning remains normal `io.UnsupportedOperation`
-- [ ] 5.2 Audit native 7z/RAR designs for independent logical position/state, allowing either
+- [x] 5.2 Audit native 7z/RAR designs for independent logical position/state, allowing either
       per-open decoders or synchronized bounded/spooled shared decoding; make no guarantee
       against redundant decompression, keep no unsynchronized per-open reader scratch, and
-      synchronize password/key caches
+      synchronize password/key caches.
+      **REMINDER:** readers are not implemented yet — land a design-note audit in this change;
+      code compliance waits on the native 7z/RAR reader phases.
 - [x] 5.3 Land `tar-concurrent-open` with one per-reader lock around every shared-handle
       operation, instantiated only for `CONCURRENT` readers, including archive
       initialization/failure cleanup, TAR `getmembers()` and direct EOF reads, member
       open/context entry, read/readinto, supported seek/tell, member close, and archive close
-- [ ] 5.4 Record the pinned-library audit: TAR `getmembers()` drives seek/tell/read through
+- [x] 5.4 Record the pinned-library audit: TAR `getmembers()` drives seek/tell/read through
       `_load()`/`next()`; pycdlib `walk()`/`get_record()` are in-memory catalog paths today,
       while `open_file_from_iso` shared caches and `PyCdlibIO.__enter__`/I/O touch shared state;
       add a version-regression probe and lock any path that gains handle access
-- [ ] 5.5 Confirm lock wrappers sit below buffering/error wrappers; callbacks/diagnostics stay
+- [x] 5.5 Confirm lock wrappers sit below buffering/error wrappers; callbacks/diagnostics stay
       outside, while unavoidable library/source decode may execute in the handle critical section
 - [x] 5.6 Keep streaming-mode `_iter_with_data` single-owner and outside concurrent-open
       support; advancing `stream_members()` closes/invalidates its prior yielded stream
 
 ## 6. Authoritative docs and project declarations
 
-- [ ] 6.1 Update `openspec/project.md` target environment and concurrency notes with the
+- [x] 6.1 Update `openspec/project.md` target environment and concurrency notes with the
       declared-capabilities matrix; remove the blanket one-reader-per-thread contradiction
-- [ ] 6.2 Update `SPEC.md` target environment, `ArchiveReader` lifecycle, access-pattern
+- [x] 6.2 Update `SPEC.md` target environment, `ArchiveReader` lifecycle, access-pattern
       guidance, password provider behavior, and the two exception hierarchies
       (`ArchiveyError` vs `ArchiveyUsageError`)
-- [ ] 6.3 Update `ARCHITECTURE.md` mutable-member rationale, ABC contract, cache publication,
+- [x] 6.3 Update `ARCHITECTURE.md` mutable-member rationale, ABC contract, cache publication,
       operation-owner scopes, lifecycle leases/failure/source ownership, backend compliance
       table, lazy-stream lock protocol, TAR/ISO mechanism, and the capability gate
-- [ ] 6.4 Update `PLAN.md` Phase 6 entry gate/tasks: concurrent member streams are a declared
+- [x] 6.4 Update `PLAN.md` Phase 6 entry gate/tasks: concurrent member streams are a declared
       capability with correct-by-construction machinery underneath
-- [ ] 6.5 Update `IDEAS.md` parallel-extraction entry: the declared worker seam is committed;
+- [x] 6.5 Update `IDEAS.md` parallel-extraction entry: the declared worker seam is committed;
       scheduling/throughput remains future and any speed claim needs targeted measurements
-- [ ] 6.6 Update `docs/parallel-reader.md` and `docs/threat-model.md` C4 to the
+- [x] 6.6 Update `docs/parallel-reader.md` and `docs/threat-model.md` C4 to the
       declared-capabilities stance
-- [ ] 6.7 Update public API/ABC docstrings and the user guide: the `member_streams`
+- [x] 6.7 Update public API/ABC docstrings and the user guide: the `member_streams`
       declaration (with the explicit note that solid open-order cost is NOT covered by the
       gate — see `AccessCost`/`stream_members()`), materialize-first, stream ownership after
       reader close, positioning capability, same-stream caller synchronization, caller-owned
       sources, and the usage-error hierarchy
-- [ ] 6.8 Record the directory-uniformity principle (`format-directory` delta) in the
+- [x] 6.8 Record the directory-uniformity principle (`format-directory` delta) in the
       directory reader's module docstring
 
 ## 7. Tests, CI, and measurements
@@ -166,44 +168,53 @@
 - [x] 7.2 Worker tests (declared `CONCURRENT`): after `members()`, concurrent `open` by member
       and name plus independent stream operations return exact bytes/positions; non-seekable
       streams raise normal `io.UnsupportedOperation` for unsupported positioning
-- [ ] 7.3 State tests: overlapping materialization/pass/extraction/reader-close raises
-      `ArchiveyUsageError`; token-bearing materialization/worker link reads, extraction
-      member/counter peeks and child passes, yielded-stream I/O, and hardlink recovery succeed;
-      reentrant public calls fail
-- [ ] 7.4 Lifecycle tests: escaped streams survive `reader.close`, new opens fail as usage
-      errors, resources tear down exactly once after final stream close, failed/lazy opens leak
-      no lease, teardown/dual-close failures propagate once with correct chaining/grouping,
-      finalizers do not raise, post-close matrix is exact, and caller-owned sources are not
-      closed
-- [ ] 7.5 Password tests: concurrent candidates, known-good promotion converges, provider
+- [x] 7.3 State tests (**cooperative / v1**): overlapping materialization/pass/extraction/
+      reader-close raises `ArchiveyUsageError`; token-bearing materialization/worker link
+      reads, extraction member/counter peeks and child passes, yielded-stream I/O, and
+      hardlink recovery succeed; same-thread reentrant public calls fail.
+      **REMINDER (post-v1 / D15):** multi-thread adversarial overlap & free-threaded stress
+      of this matrix lands with the `CONCURRENT` promotion, not in the provisional ship.
+- [x] 7.4 Lifecycle tests (**cooperative / v1**): escaped streams survive `reader.close`,
+      new opens fail as usage errors, resources tear down exactly once after final stream
+      close, failed/lazy opens leak no lease, teardown/dual-close failures propagate once
+      with correct chaining/grouping, finalizers do not raise, post-close matrix is exact,
+      and caller-owned sources are not closed.
+      **REMINDER (post-v1 / D15):** free-threaded teardown races and adversarial
+      finalizer/close interleaving land with the promotion.
+- [x] 7.5 Password tests: concurrent candidates, known-good promotion converges, provider
       invoked under no Archivey lock, provider reentry rejection, no callback deadlock (per
       D10 the provider is **not** guaranteed to be called at most once under concurrent
       first-touch; assert convergence and no corruption, not single-call)
-- [ ] 7.6 Lock tests: prove `ArchiveStream.open_fn`/inner close execute without stream-state
-      lock, candidate validation may use backend/source locks, and adversarial provider/logging/
-      close/finalizer hooks run with no Archivey lock and cannot invert lock order
-- [ ] 7.7 `stream_members()` tests: advance invalidates the prior stream; cross-API overlap
+- [x] 7.6 Lock tests (**cooperative / v1**): prove `ArchiveStream.open_fn`/inner close
+      execute without stream-state lock; provider/logging/close hooks are not invoked under
+      an Archivey lock on the cooperative path.
+      **REMINDER (post-v1 / D15):** adversarial lock-order inversion probes and free-threaded
+      lock stress land with the promotion.
+- [x] 7.7 `stream_members()` tests: advance invalidates the prior stream; cross-API overlap
       raises without consuming the pass; exhaustion/error/close/abandon closes the current
       stream and releases root/child ownership exactly once
-- [ ] 7.8 **[post-v1, per D15 — deferred while `CONCURRENT` is provisional]** Add required
-      Linux `free-threaded-concurrency` job to `.github/workflows/ci.yml`:
+- [ ] 7.8 **DEFERRED (post-v1, D15) — do not implement while `CONCURRENT` is provisional.**
+      Add required Linux `free-threaded-concurrency` job to `.github/workflows/ci.yml`:
       `uv python install 3.13t`, `uv sync --python 3.13t --no-dev`, then
       `uv run --python 3.13t --no-sync --with pytest --with pytest-timeout pytest -m
       concurrent_reader`; mark directory, ZIP, single-file stdlib, SharedSource,
       lifecycle/operation state, and TAR tests, and do not count skipped optional backends as
-      free-threaded support. Lands when `CONCURRENT` is promoted from provisional to supported
-- [ ] 7.9 Record a proportionate TAR/ISO lock baseline (wall and wait/hold time; seeks and
-      bytes where practical) with no pass/fail threshold; require only targeted before/after
-      metrics for later performance claims or strategy changes
+      free-threaded support. Lands when `CONCURRENT` is promoted from provisional to supported.
+- [ ] 7.9 **DEFERRED (post-v1 with TAR/ISO measurement pass) — reminder only.** Record a
+      proportionate TAR/ISO lock baseline (wall and wait/hold time; seeks and bytes where
+      practical) with no pass/fail threshold; require only targeted before/after metrics for
+      later performance claims or strategy changes. Companion: `tar-concurrent-open` §5.
 
 ## 8. Verification
 
-- [ ] 8.1 `openspec validate --strict concurrent-member-streams`
-- [ ] 8.2 `openspec validate --strict tar-concurrent-open`
-- [ ] 8.3 `uv run --no-sync ruff check` on touched paths
-- [ ] 8.4 `uv run --no-sync pyrefly check` and `uv run --no-sync ty check`
-- [ ] 8.5 Run focused and full tests plus the required `3.13t` marked job, then the three
-      dependency configurations required by `CONTRIBUTING.md`
+- [x] 8.1 `openspec validate --strict concurrent-member-streams`
+- [x] 8.2 `openspec validate --strict tar-concurrent-open`
+- [x] 8.3 `uv run --no-sync ruff check` on touched paths
+- [x] 8.4 `uv run --no-sync pyrefly check` and `uv run --no-sync ty check`
+- [x] 8.5 Run focused and full tests, then the three dependency configurations required by
+      `CONTRIBUTING.md`.
+      **REMINDER:** the required `3.13t` marked job is part of deferred task 7.8 — skip it
+      while `CONCURRENT` is provisional.
 
 ## Sequencing note
 

@@ -8,7 +8,7 @@ two orthogonal gates — the access mode (``streaming=True`` is forward-only) an
 from __future__ import annotations
 
 import io
-from typing import BinaryIO, Iterator
+from typing import Iterator
 
 import pytest
 
@@ -21,6 +21,7 @@ from archivey.cost import (
 )
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.base_reader import BaseArchiveReader
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -53,8 +54,8 @@ class _IndexedReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
-        return io.BytesIO(b"x")
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(ArchiveFormat.ZIP, ListingCost.INDEXED, StreamCapability.SEEKABLE)
@@ -73,8 +74,8 @@ class _ForwardOnlyReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
-        return io.BytesIO(b"x")
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(
@@ -153,9 +154,9 @@ class _OpenCountingReader(_IndexedReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
         yield ArchiveMember(type=MemberType.FILE, name="b.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         self.opens += 1
-        return io.BytesIO(b"x")
+        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
 
 def test_stream_members_opens_lazily() -> None:

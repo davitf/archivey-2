@@ -126,21 +126,15 @@
   match (e.g. deflate↔deflate; not deflate→zstd), so it's an opportunistic fast path with a
   decompress-recompress fallback. Pairs with the native ZIP parser (raw-deflate access) above.
 
-- **Parallel extraction / concurrent member streams** — extract independent members
-  concurrently for `AccessCost.DIRECT` archives (bounded by I/O). Also applies to
-  **solid archives with multiple independent blocks** — e.g. a 7z with several solid
-  folders can decompress folders in parallel (py7zr does this); members *within* one
-  solid block stay sequential. No benefit for a single-block solid archive.
-  **Constraint:** the concurrency model says readers are *not* thread-safe (one per
-  thread — `openspec/project.md`), so this must be designed as either N readers over
-  the same path or an explicit shared-source primitive — never silent sharing.
-  **Plumbing to consider before the native 7z/RAR/ZIP readers land (Phase 6):** a
-  `streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
-  underlying handle + a lock + a per-view position, each read seeking under the lock)
-  so multiple open member streams over one seekable source are safe by construction;
-  interleaved single-threaded streams already work that way in zipfile. Whatever isn't
-  supported must **fail loudly** (detect concurrent misuse and raise) rather than
-  silently interleave reads and produce jumbled data.
+- **Parallel extraction / concurrent member streams** — the declared worker seam
+  (`MemberStreams.CONCURRENT`) is committed and **provisional in v1** (cooperative
+  post-materialization fan-out; free-threaded promotion deferred — see
+  `openspec/changes/concurrent-member-streams` D15). Scheduling/throughput for
+  extract-independent-members remains future; any speed claim needs targeted
+  measurements. Also applies to **solid archives with multiple independent blocks** —
+  e.g. a 7z with several solid folders can decompress folders in parallel (py7zr does
+  this); members *within* one solid block stay sequential. No benefit for a single-block
+  solid archive. Misuse fails loudly (`ArchiveyUsageError` / `ConcurrentAccessError`).
 
 - **Efficient seekable zstd — probably a *native* frame-index reader, not `indexed_zstd`.**
   *(Status: **scheduled** — promoted to the rescoped Phase 8 in `PLAN.md`; the analysis

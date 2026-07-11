@@ -164,9 +164,14 @@ class TarReader(BaseArchiveReader):
         # A decompression stream we open and therefore must close (compressed tars only);
         # for a plain tar from a path, tarfile owns and closes the file handle itself.
         self._owned_stream: BinaryIO | None = None
-        # Shared-handle lock: only for CONCURRENT readers (default path takes none).
+        # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
+        # streaming readers also take a lock (exclusive / normally uncontended) so the
+        # same critical-section shape covers init, progressive walk, extractfile, EOF,
+        # and close (tar-concurrent-open 2.6).
         self._handle_lock: threading.Lock | None = (
-            threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
+            threading.Lock()
+            if MemberStreams.CONCURRENT in member_streams or streaming
+            else None
         )
 
         try:
@@ -265,6 +270,8 @@ class TarReader(BaseArchiveReader):
             yield from self._iter_members_progressive()
             return
         try:
+            # Pinned-library audit: TarFile.getmembers() drives seek/tell/read through
+            # _load()/next() on the shared fileobj — must run under the handle lock.
             if self._handle_lock is not None:
                 with self._handle_lock:
                     members = self._tar.getmembers()  # forces the full header scan
@@ -285,11 +292,23 @@ class TarReader(BaseArchiveReader):
         """Forward-only member walk — never calls ``getmembers()``.
 
         Yields bare members; the base's shared progressive pass stamps ids and resolves
-        backward links.
+        backward links. Shared-handle ops run under ``_handle_lock`` when present.
         """
         try:
-            for info in self._tar:
-                yield self._to_member(info)
+            if self._handle_lock is not None:
+                # Hold the lock only around each next() so a yielded consumer can open
+                # the current member without deadlock (streaming is single-owner).
+                tar_iter = iter(self._tar)
+                while True:
+                    with self._handle_lock:
+                        try:
+                            info = next(tar_iter)
+                        except StopIteration:
+                            break
+                    yield self._to_member(info)
+            else:
+                for info in self._tar:
+                    yield self._to_member(info)
         except tarfile.TarError as exc:
             translated = self._translate_exception(exc)
             if translated is not None:
@@ -308,11 +327,18 @@ class TarReader(BaseArchiveReader):
             for member in self._begin_forward_pass():
                 if member.is_file:
                     info = cast("tarfile.TarInfo", member._raw)
-                    raw = self._tar.extractfile(info)
+                    if self._handle_lock is not None:
+                        with self._handle_lock:
+                            raw = self._tar.extractfile(info)
+                    else:
+                        raw = self._tar.extractfile(info)
                     if raw is None:
                         raw = BytesIO(b"")
+                    stream: BinaryIO = ensure_binaryio(raw)
+                    if self._handle_lock is not None:
+                        stream = LockedStream(stream, self._handle_lock)
                     yield member, self._wrap_member_stream(
-                        ensure_binaryio(raw), member.name, size=member.size
+                        stream, member.name, size=member.size
                     )
                 else:
                     yield member, None
@@ -342,7 +368,11 @@ class TarReader(BaseArchiveReader):
         fileobj = self._tar.fileobj
         if fileobj is None:
             return
-        chunk = fileobj.read(512)
+        if self._handle_lock is not None:
+            with self._handle_lock:
+                chunk = fileobj.read(512)
+        else:
+            chunk = fileobj.read(512)
         if len(chunk) == 512 and chunk == b"\x00" * 512:
             return
         msg = (
@@ -472,19 +502,27 @@ class TarReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         info = member._raw
         assert isinstance(info, tarfile.TarInfo), "TAR member is missing its TarInfo handle"
+        # Capture under the handle lock; translate/stamp only after release so diagnostics
+        # and callbacks never run while the shared-fileobj lock is held.
+        raw_exc: tarfile.TarError | None = None
+        raw: BinaryIO | None
         try:
             if self._handle_lock is not None:
                 with self._handle_lock:
-                    raw = self._tar.extractfile(info)
+                    extracted = self._tar.extractfile(info)
             else:
-                raw = self._tar.extractfile(info)
+                extracted = self._tar.extractfile(info)
+            # tarfile stubs ``extractfile`` as ``IO[bytes] | None``; we need BinaryIO.
+            raw = cast(BinaryIO | None, extracted)
         except tarfile.TarError as exc:
-            # A genuine OSError from the source is not caught here, so it propagates unchanged.
-            translated = self._translate_exception(exc)
+            raw_exc = exc
+            raw = None
+        if raw_exc is not None:
+            translated = self._translate_exception(raw_exc)
             if translated is not None:
                 self._stamp_error_context(translated, member.name)
-                raise translated from exc
-            raise
+                raise translated from raw_exc
+            raise raw_exc
         if raw is None:
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.

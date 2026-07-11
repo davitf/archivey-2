@@ -394,3 +394,22 @@ open-site stack is retained unconditionally.)_
   drop the resolution-turn condition protocol.
 - Ship `CONCURRENT` provisional (D15): defer free-threaded/adversarial hardening and the
   required `3.13t` CI to a post-v1 promotion.
+
+**Deferred reminders (provisional `CONCURRENT` ship — do not forget at promotion):**
+
+- Task **7.8**: required Linux `3.13t` / `concurrent_reader` CI job.
+- Task **7.9** + `tar-concurrent-open` §5: TAR/ISO lock wall/wait baselines (no pass/fail
+  threshold).
+- Heavier multi-thread / free-threaded stress behind tasks **7.3 / 7.4 / 7.6** and
+  `tar-concurrent-open` §4.1 / 4.2 / 4.4 / 4.7 / 4.8.
+- Native 7z/RAR concurrent-open compliance (task **5.2**) waits on those readers.
+
+### Design note — native 7z/RAR concurrent-open (task 5.2)
+
+Until the native readers land, the compliance target is:
+
+- Independent logical position/state per open member (per-open decoders **or**
+  synchronized bounded/spooled shared decoding over `SharedSource` views).
+- No unsynchronized per-open scratch on the reader; password/key caches synchronized.
+- No guarantee against redundant solid-block decompression under concurrent opens.
+- Same public gate / lease / operation-token machinery as ZIP/directory/single-file.

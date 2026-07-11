@@ -172,9 +172,10 @@ def _open_member(self, member: ArchiveMember) -> BinaryIO: ...
 # Reentrancy (random-access backends): MUST be a function of (member, shared source) —
 # no per-open scratch on self, no shared-reader-state mutation; archivey-owned byte
 # ranges go through SharedSource.view. Streaming and single-decoder TAR (TAR-RA) are
-# exempt. A future concurrent consumer must materialize the member list before fanning
-# out opens. Full contract + audit: docs/parallel-reader.md and the archive-reading
-# "Random-access member-open is reentrant…" requirement.
+# exempt unless MemberStreams.CONCURRENT is declared (then TAR/ISO use one per-reader
+# shared-handle lock). CONCURRENT is provisional in v1: materialize, then fan out;
+# free-threaded hardening is deferred. Full contract: docs/parallel-reader.md and the
+# concurrent-member-streams change.
 
 @abstractmethod
 def _close_archive(self) -> None: ...

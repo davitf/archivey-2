@@ -9,7 +9,9 @@ or ``None`` to let it propagate), then *stamped* with format/archive/member cont
 from __future__ import annotations
 
 import io
+import sys
 import threading
+import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO, Callable, NoReturn
 
@@ -95,8 +97,52 @@ class ArchiveStream(ReadOnlyIOStream):
         self._diagnostics_watermark = (
             collector.watermark() if collector is not None else None
         )
+        self._finalizer: weakref.finalize | None = None
         if not lazy:
             self._ensure_open()
+
+    def _attach_finalizer(self) -> None:
+        """Safety-net finalizer: release the lease if the caller never closed us.
+
+        Never raises; reports via ``sys.unraisablehook`` if release fails.
+        """
+        if self._finalizer is not None:
+            return
+        on_close = self._on_close
+
+        def _finalize() -> None:
+            try:
+                if on_close is not None:
+                    on_close()
+            except Exception as exc:  # noqa: BLE001 - finalizers must not raise
+                from types import SimpleNamespace
+                from typing import cast
+
+                try:
+                    # ``sys.unraisablehook`` expects UnraisableHookArgs; SimpleNamespace
+                    # matches the runtime shape (exc_type/value/traceback/err_msg/object).
+                    hook_args = cast(
+                        sys.UnraisableHookArgs,
+                        SimpleNamespace(
+                            exc_type=type(exc),
+                            exc_value=exc,
+                            exc_traceback=exc.__traceback__,
+                            err_msg="ArchiveStream finalizer failed",
+                            object=None,
+                        ),
+                    )
+                    sys.unraisablehook(hook_args)
+                except Exception:  # noqa: BLE001 - never raise from a finalizer
+                    pass
+
+        # Hold only the close hook; do not keep the stream alive.
+        self._finalizer = weakref.finalize(self, _finalize)
+
+    def _detach_finalizer(self) -> None:
+        finalizer = self._finalizer
+        self._finalizer = None
+        if finalizer is not None:
+            finalizer.detach()
 
     @property
     def diagnostics(self) -> DiagnosticSummary:
@@ -138,16 +184,38 @@ class ArchiveStream(ReadOnlyIOStream):
             raise ValueError("I/O operation on closed file.")
         if self._inner is not None:
             return self._inner
+        # Claim the right to call open_fn under the lock, then invoke open_fn
+        # *outside* it so a backend lock acquired inside open_fn (TAR/ISO shared
+        # handle) never nests under stream-state. Publish the result under the lock.
+        open_fn: Callable[[], BinaryIO] | None
         with self._open_lock:
-            if self._inner is None:
-                open_fn = self._open_fn
-                assert open_fn is not None
+            if self._inner is not None:
+                return self._inner
+            if self._open_fn is None:
+                # Another caller claimed open and failed, or close raced us.
+                if self.closed:
+                    raise ValueError("I/O operation on closed file.")
+                raise ArchiveyUsageError(
+                    "Cannot open this member stream: lazy initialization already failed."
+                )
+            open_fn = self._open_fn
+            self._open_fn = None  # claim: only one caller proceeds to open_fn
+        try:
+            opened = open_fn()
+        except Exception as e:  # noqa: BLE001 - re-raised via the translator
+            with self._open_lock:
+                # Leave _open_fn None so a retry does not re-enter a half-open backend.
+                pass
+            self._fail(e)
+        with self._open_lock:
+            if self.closed:
                 try:
-                    self._inner = open_fn()
-                except Exception as e:  # noqa: BLE001 - re-raised via the translator
-                    self._fail(e)
-                self._open_fn = None
-        return self._inner
+                    opened.close()
+                except Exception:  # noqa: BLE001 - best-effort; stream already closing
+                    pass
+                raise ValueError("I/O operation on closed file.")
+            self._inner = opened
+            return self._inner
 
     def _fail(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""
@@ -259,21 +327,41 @@ class ArchiveStream(ReadOnlyIOStream):
         if self.closed:
             return
         # The finally ensures the wrapper is marked closed even when the inner close
-        # raises (which _fail re-raises translated): a half-open wrapper would hand out
+        # raises (which is re-raised translated): a half-open wrapper would hand out
         # further reads on a dead stream, and a retried close() would fail again
         # instead of no-opping (the guard above makes it a no-op instead).
+        # Catch ``Exception`` (not ``BaseException``): KeyboardInterrupt/SystemExit must
+        # still propagate; dual-failure grouping is for ordinary close/teardown errors.
+        close_exc: Exception | None = None
         try:
             if self._inner is not None:
                 try:
                     self._inner.close()
                 except Exception as e:  # noqa: BLE001 - re-raised via the translator
-                    self._fail(e)
+                    try:
+                        self._fail(e)
+                    except Exception as translated:  # noqa: BLE001 - may be ArchiveyError
+                        close_exc = translated
         finally:
             super().close()
+            self._detach_finalizer()
             on_close = self._on_close
             self._on_close = None
+            teardown_exc: Exception | None = None
             if on_close is not None:
-                on_close()
+                try:
+                    on_close()
+                except Exception as e:  # noqa: BLE001 - combine with close failure below
+                    teardown_exc = e
+            if close_exc is not None and teardown_exc is not None:
+                raise ExceptionGroup(
+                    "member-stream close and archive teardown both failed",
+                    [close_exc, teardown_exc],
+                )
+            if close_exc is not None:
+                raise close_exc
+            if teardown_exc is not None:
+                raise teardown_exc
 
     def __repr__(self) -> str:
         return f"<ArchiveStream inner={self._inner!r}>"

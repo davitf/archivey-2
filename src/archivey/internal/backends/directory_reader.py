@@ -1,4 +1,11 @@
-"""Directory pseudo-backend: presents a filesystem directory as an ArchiveReader."""
+"""Directory pseudo-backend: presents a filesystem directory as an ArchiveReader.
+
+Uniformity principle (`format-directory`): this reader is never more lenient than
+archive readers. Declared member-stream capabilities (`MemberStreams.CONCURRENT` /
+`SEEKABLE`) gate concurrent opens and seekability here exactly as for ZIP/TAR/ISO —
+the directory backend exists to keep archive-vs-directory code uniform, not to offer a
+more permissive escape hatch.
+"""
 
 from __future__ import annotations
 

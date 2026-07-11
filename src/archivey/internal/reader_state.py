@@ -30,10 +30,11 @@ class LifecycleState(enum.Enum):
 
 @dataclass(eq=False)
 class OperationToken:
-    """Unforgeable root or child operation-owner token (identity equality)."""
+    """Unforgeable root, child, or short-lived worker operation-owner token."""
 
     name: str
     parent: OperationToken | None = None
+    kind: str = "root"  # "root" | "child" | "worker"
     _released: bool = field(default=False, repr=False)
 
 
@@ -44,6 +45,9 @@ class ReaderState:
     and exclusive single-owner operations without shared-handle locks. Declared
     ``CONCURRENT`` activates multi-stream admission while keeping materialization and
     reader-wide ops exclusive.
+
+    Stream I/O (``read``/``seek``/``close`` on an already-open handle) does **not**
+    consult the operation-owner gate — only leases + backend (D7).
     """
 
     def __init__(
@@ -59,6 +63,7 @@ class ReaderState:
         self.lifecycle = LifecycleState.OPEN
         self._root: OperationToken | None = None
         self._children: set[OperationToken] = set()
+        self._workers: set[OperationToken] = set()
         self._live_streams: set[int] = set()
         self._lease_count = 1  # reader itself holds one lease until close
         self._teardown_claimed = False
@@ -81,6 +86,10 @@ class ReaderState:
                     f"{op} is not available after the archive reader has been closed."
                 )
 
+    def current_root(self) -> OperationToken | None:
+        with self._lock:
+            return self._root
+
     def begin_internal_opens(self) -> None:
         with self._lock:
             self._internal_open_depth += 1
@@ -96,7 +105,7 @@ class ReaderState:
         with self._lock:
             self._require_lifecycle_open_locked(name)
             if self._root is not None and self._internal_open_depth > 0:
-                child = OperationToken(name=name, parent=self._root)
+                child = OperationToken(name=name, parent=self._root, kind="child")
                 self._children.add(child)
                 return child
             if self._root is not None:
@@ -104,7 +113,12 @@ class ReaderState:
                     f"Cannot start {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
-            token = OperationToken(name=name)
+            if self._workers:
+                raise ArchiveyUsageError(
+                    f"Cannot start {name!r}: a concurrent open()/read() call is still "
+                    "in progress."
+                )
+            token = OperationToken(name=name, kind="root")
             self._root = token
             return token
 
@@ -113,7 +127,7 @@ class ReaderState:
             if token._released:
                 return
             token._released = True
-            if token.parent is not None:
+            if token.parent is not None or token.kind == "child":
                 self._children.discard(token)
                 return
             if self._root is token:
@@ -126,7 +140,7 @@ class ReaderState:
                 raise ArchiveyUsageError(
                     f"Cannot enter child scope {name!r}: root operation is not active."
                 )
-            child = OperationToken(name=name, parent=root)
+            child = OperationToken(name=name, parent=root, kind="child")
             self._children.add(child)
             return child
 
@@ -136,6 +150,40 @@ class ReaderState:
                 return
             child._released = True
             self._children.discard(child)
+
+    def acquire_worker(self, name: str) -> OperationToken:
+        """Short-lived token for random ``open()`` / ``read()`` (D7).
+
+        Rejected while a reader-wide root pass is active (unless under library-internal
+        opens). Idle open streams (leases only) do not block workers. Stream I/O after
+        this token is released does not re-check the gate.
+        """
+        with self._lock:
+            self._require_lifecycle_open_locked(name)
+            if self._root is not None and self._internal_open_depth == 0:
+                raise ArchiveyUsageError(
+                    f"Cannot call {name!r}: another reader operation "
+                    f"({self._root.name!r}) is already active."
+                )
+            # Under an internal library owner (extract_all), worker opens are admitted as
+            # children of that root.
+            if self._root is not None and self._internal_open_depth > 0:
+                token = OperationToken(name=name, parent=self._root, kind="child")
+                self._children.add(token)
+                return token
+            token = OperationToken(name=name, kind="worker")
+            self._workers.add(token)
+            return token
+
+    def release_worker(self, token: OperationToken) -> None:
+        with self._lock:
+            if token._released:
+                return
+            token._released = True
+            if token.kind == "child" or token.parent is not None:
+                self._children.discard(token)
+                return
+            self._workers.discard(token)
 
     def begin_materialization(self) -> None:
         with self._lock:
@@ -197,6 +245,11 @@ class ReaderState:
                     "Cannot close the archive reader while another reader operation "
                     f"({self._root.name!r}) is active."
                 )
+            if self._workers:
+                raise ArchiveyUsageError(
+                    "Cannot close the archive reader while an open()/read() call is "
+                    "still in progress."
+                )
             self.lifecycle = LifecycleState.READER_CLOSED
             return self._release_lease_locked()
 
@@ -220,6 +273,12 @@ class ReaderState:
             if error is not None and self._teardown_error is None:
                 self._teardown_error = error
             self.lifecycle = LifecycleState.TEARDOWN_COMPLETE
+
+    def take_teardown_error(self) -> BaseException | None:
+        with self._lock:
+            err = self._teardown_error
+            self._teardown_error = None
+            return err
 
     def _release_lease_locked(self) -> bool:
         if self._lease_count > 0:
