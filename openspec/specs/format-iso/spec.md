@@ -147,6 +147,13 @@ targeted before/after measurements; the baseline has no correctness speed thresh
 - **WHEN** two file members of an ISO image are opened and read interleaved
 - **THEN** each stream yields that member's exact bytes in order
 
+#### Scenario: multi-thread opens on ISO
+
+- **WHEN** multiple threads concurrently open and read distinct file members of an ISO
+  under `MemberStreams.CONCURRENT` after materialization
+- **THEN** each thread yields that member's exact bytes without data races on the shared
+  pycdlib handle
+
 #### Scenario: ISO open initialization shares the handle lock
 
 - **WHEN** workers concurrently call member `open()`

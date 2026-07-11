@@ -166,4 +166,5 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
+    "concurrent_reader: post-materialization MemberStreams.CONCURRENT seam (also run under free-threaded CI)",
 ]

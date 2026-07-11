@@ -143,3 +143,29 @@ jobs:
         # --no-sync so the all-lowest leg keeps its minimum-version resolution instead of
         # re-syncing back to the locked (current) versions.
         run: uv run --no-sync pytest tests/ -q
+
+  # Free-threaded correctness for the declared MemberStreams.CONCURRENT seam (core backends).
+  # Optional extras are not claimed covered here — skips do not count as free-threaded support.
+  free-threaded-concurrency:
+    name: free-threaded-concurrency / py3.13t / concurrent_reader
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install free-threaded CPython 3.13t
+        run: uv python install 3.13t
+      - name: Sync zero-dep core
+        run: uv sync --python 3.13t --no-dev
+      - name: Assert zero-dependency core
+        run: uv run --python 3.13t --no-sync python tests/check_zero_dep_core.py
+      - name: Run concurrent_reader tests
+        # Override addopts so we do not need pytest-cov in the core-only ephemeral env.
+        run: >
+          uv run --python 3.13t --no-sync
+          --with pytest --with pytest-timeout
+          pytest -m concurrent_reader -q --timeout=60 -o addopts=

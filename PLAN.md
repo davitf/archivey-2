@@ -398,10 +398,10 @@ dev-group oracles; the **shared-source stream plumbing** decided/landed — a
 `streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
 handle + a lock + per-view positions) so the native readers support multiple
 concurrently-open member streams by construction, and a decided concurrency
-contract via `MemberStreams.CONCURRENT` (provisional in v1 — cooperative
-post-materialization fan-out; free-threaded promotion deferred) — what is
+contract via `MemberStreams.CONCURRENT` (post-materialization fan-out; free-threaded
+correctness covered by the Linux `3.13t` CI job) — what is
 supported vs. what fails loudly as `ArchiveyUsageError` / `ConcurrentAccessError`,
-never silent interleaving; see `openspec/changes/concurrent-member-streams` and
+never silent interleaving; see `docs/parallel-reader.md` and
 the parallel-extraction entry in `IDEAS.md`.
 
 ### Tasks

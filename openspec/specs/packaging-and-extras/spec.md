@@ -212,6 +212,10 @@ contract. Single-owner composition uses explicit private child scopes, so extrac
 drive its own streaming pass/yielded-stream I/O without admitting unrelated public reentry.
 Writers remain not thread-safe.
 
+`MemberStreams.CONCURRENT` is a **supported** opt-in capability: the seam is correct under
+cooperative use and is exercised on free-threaded CPython by the required Linux CI job
+below.
+
 The supported reader seam SHALL be data-race-free on regular CPython and on the
 backend/runtime combinations exercised by the required Linux CPython `3.13t`
 `free-threaded-concurrency` CI job. It MUST NOT depend on incidental GIL serialization.
@@ -249,6 +253,12 @@ and Archivey makes no parallel-speed guarantee.
   close with worker member-stream operations
 - **THEN** that schedule is outside the supported seam and the later public operation is
   rejected as a usage error
+
+#### Scenario: CONCURRENT is documented as supported
+
+- **WHEN** a caller reads the public `MemberStreams.CONCURRENT` documentation
+- **THEN** it describes the supported cooperative + free-threaded-tested seam without
+  labeling the capability as provisional
 
 ---
 

@@ -206,14 +206,17 @@ Tests SHALL cover concurrent `open()` by member and by name; independent stream
 non-seekable streams; cache publication separate from lifecycle; operation-owner child
 scopes; generator abandonment; lifecycle leases/failure/finalizers/caller-owned sources;
 password candidate/provider coordination; and detected unsupported overlap. Stress tests
-MUST vary operation interleavings and assert exact bytes/state, not merely lack of exceptions.
+MUST vary operation interleavings **across threads** and assert exact bytes/state, not
+merely lack of exceptions.
 
 CI SHALL define a required Linux `free-threaded-concurrency` job that installs CPython
 `3.13t`, uses the zero-dependency core environment, and runs tests marked
 `concurrent_reader`. The marker SHALL cover directory, ZIP, single-file stdlib codecs,
 SharedSource, lifecycle/operation state, and TAR. The job MUST fail rather than skip merely
 because the GIL is disabled. An optional backend unavailable on `3.13t` is excluded from the
-free-threaded support claim until an equivalent dedicated job runs it.
+free-threaded support claim until an equivalent dedicated job runs it. ISO multi-thread
+coverage runs in the ordinary `[all]` matrix (optional `pycdlib`); it is not claimed under
+the core-only `3.13t` job until a dedicated extras job exists.
 
 The TAR/ISO correctness-lock implementation SHALL record a proportionate baseline: wall time
 and lock wait/hold time, plus seek count and bytes decompressed/read where practical. There is
@@ -234,6 +237,13 @@ that strategy can affect buffering/materialization or decompression work.
 - **WHEN** the required `free-threaded-concurrency` job runs marked tests under CPython
   `3.13t`
 - **THEN** they pass without cache, lifecycle, password, or source-position data races
+
+#### Scenario: multi-thread stress covers core backends
+
+- **WHEN** multi-thread workers concurrently open and read distinct members after
+  materialization on directory, ZIP, stdlib single-file, SharedSource, and plain TAR
+- **THEN** each worker observes exact member bytes and documented misuse still raises
+  usage/concurrent-access errors
 
 #### Scenario: baseline measurement has no arbitrary threshold
 

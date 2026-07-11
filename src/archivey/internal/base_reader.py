@@ -899,7 +899,7 @@ class BaseArchiveReader(ArchiveReader):
 
         Without ``MemberStreams.CONCURRENT``, at most one member stream may be live.
         With it, concurrent ``open`` is supported after member materialization
-        (``CONCURRENT`` is provisional in v1 — cooperative use; see MemberStreams docs).
+        (see :class:`~archivey.types.MemberStreams`).
         Positioning requires ``MemberStreams.SEEKABLE``.
         """
         # Two independent gates: the access mode (streaming=True forbids random access)
