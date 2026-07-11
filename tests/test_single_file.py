@@ -110,8 +110,12 @@ def test_inferred_bidi_control_name_warns_once(
     name = "invoice\u202ecod.exe"
     path = tmp_path / f"{name}.gz"
     path.write_bytes(gzip.compress(b"x"))
+    # rapidgzip's native path open rejects some Unicode filenames on Windows
+    # (U+202E); this test covers inferred-name presentation warnings, not the
+    # accelerator, so pin the stdlib gzip path.
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
     with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        with open_archive(path) as archive:
+        with open_archive(path, config=config) as archive:
             assert archive.members()[0].name == name
     warnings = [
         record
