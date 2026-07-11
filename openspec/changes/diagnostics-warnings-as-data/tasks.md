@@ -46,12 +46,12 @@
       escalated diagnostic; make it always-stop despite `OnError.CONTINUE`, and implement
       `strict_archive_eof=True` precedence so a missing EOF marker raises
       `TruncatedError` after policy delivery rather than `DiagnosticRaisedError`.
-- [ ] 3.2 Replace all 17 current `logger.warning` calls with central diagnostic emission
+- [x] 3.2 Replace all 17 current `logger.warning` calls with central diagnostic emission
       using the complete initial taxonomy in `design.md`; preserve logger placement and
       warning severity as projections while removing direct warning-only sources of
       truth. Emit one extraction occurrence per continued result, including one correlated
       occurrence per hardlink result affected by a shared source failure.
-      (Partial: `FORMAT_EXTENSION_CONFLICT` wired; other sites may be mid-migration.)
+      (Bidi-control advisory remains a non-taxonomy `logger.warning`.)
 
 ## 4. Verification and documentation
 
