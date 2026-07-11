@@ -78,6 +78,24 @@ class _PasswordCandidates:
         distinct = set(self._known_good) | set(self._candidates)
         return len(distinct) > 1 or self._provider is not None
 
+    def has_provider(self) -> bool:
+        return self._provider is not None
+
+    def ask_provider(
+        self, member: ArchiveMember | None, attempt: int
+    ) -> bytes | None:
+        """Return the provider's next answer, or ``None`` to stop.
+
+        Raises any ``EncryptionError`` from the provider unchanged (not wrapped as
+        candidate exhaustion).
+        """
+        if self._provider is None:
+            return None
+        raw = self._provider(PasswordRequest(member=member, attempt=attempt))
+        if raw is None:
+            return None
+        return _to_bytes(raw)
+
     def record_success(self, password: bytes) -> None:
         if password in self._known_good:
             self._known_good.remove(password)

@@ -206,12 +206,13 @@ Across chunk sizes 256 B–256 KiB and 400 random trials each:
   header bytes are negligible once the chunk is kilobytes; they do not create false
   accepts under a conservative margin.
 
-**Draft constants (pending sign-off before implementation):**
+**Finalized constants:**
 
-| Knob | Draft value | Rationale |
-|------|-------------|-----------|
-| Compressor | zlib level 1 always (zstd optional later) | Zero-dep core; separation quality matches zstd for this probe. zstd is faster but optional (`[zstd]` / `backports.zstd`). |
-| Chunk size | 64 KiB | Header overhead negligible; still cheap; text vs random widely separated. |
+| Knob | Value | Rationale |
+|------|-------|-----------|
+| Compressor | zlib level 1 (always) | Zero-dep core; separation quality matches zstd for this probe. |
+| Chunk size | 64 KiB | Header overhead negligible; text vs random widely separated. |
+| Skip probe below | 64 KiB (= chunk size) | Below one probe chunk the probe would read the whole member; CRC is cheaper. |
 | Accept when | `compressed_len <= 7/8 * raw_len` (12.5% shrinkage) | Far below random_min (~1.00); far above media-like ratios (~1.00). |
-| Skip probe below | 4 KiB member size | Full CRC pass is cheap; small chunks are header-dominated for the compressor. |
 | Asymmetry | accept-only | Incompressible correct plaintext → fall through to shared CRC pass. |
+| Compressed prefix | 1 MiB decompressed | Extremely conservative vs measured rejection (bytes–tens of bytes). |
