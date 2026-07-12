@@ -82,6 +82,15 @@ def _gzip(tmp_path: Path) -> tuple[Path, str]:
     return path, MEMBER  # single-file member name inferred from the source filename
 
 
+def _sevenzip(tmp_path: Path) -> tuple[Path, str]:
+    import py7zr
+
+    path = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(path, "w") as z:
+        z.writestr(CONTENT, MEMBER)
+    return path, MEMBER
+
+
 def _iso(tmp_path: Path) -> tuple[Path, str]:
     import pycdlib
 
@@ -102,6 +111,7 @@ def _iso(tmp_path: Path) -> tuple[Path, str]:
         pytest.param(_tar, id="tar"),
         pytest.param(_tar_gz, id="tar_gz"),
         pytest.param(_gzip, id="gzip"),
+        pytest.param(_sevenzip, id="sevenzip", marks=requires("py7zr")),
         pytest.param(_iso, id="iso", marks=requires("pycdlib")),
     ]
 )
@@ -154,8 +164,33 @@ def test_piecewise_read_then_eof(member: tuple[Path, str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Seeking (only when the member stream reports seekable)
+# Seekability capability: off by default, on (and working) with MemberStreams.SEEKABLE
 # ---------------------------------------------------------------------------
+
+
+def test_default_open_is_not_seekable(member: tuple[Path, str]) -> None:
+    # Without the SEEKABLE capability every backend hands out a forward-only stream.
+    source, name = member
+    with open_archive(source) as ar, ar.open(name) as f:
+        assert f.seekable() is False
+        with pytest.raises((io.UnsupportedOperation, ValueError)):
+            f.seek(0)
+
+
+def test_seekable_flag_enables_forward_and_backward_seek(
+    member: tuple[Path, str],
+) -> None:
+    # With the capability the stream reports seekable and seeking actually works both
+    # ways (backward seeks may re-decode from the start; the caller accepted that cost).
+    source, name = member
+    with open_archive(source, member_streams=_SEEKABLE) as ar, ar.open(name) as f:
+        assert f.seekable() is True
+        assert f.read() == CONTENT
+        f.seek(0)  # backward to the start
+        assert f.read() == CONTENT
+        f.seek(10)  # forward into the middle
+        assert f.read() == CONTENT[10:]
+        assert f.tell() == len(CONTENT)
 
 
 def test_seek_past_end_then_read_returns_empty(member: tuple[Path, str]) -> None:

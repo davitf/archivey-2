@@ -71,12 +71,13 @@ from archivey.internal.streams.crypto import (
     open_aes_decrypt_stream,
 )
 from archivey.internal.streams.streamtools import (
-    ReadOnlyIOStream,
     SharedSource,
     SlicingStream,
+    SolidBlockReader,
     is_seekable,
     is_stream,
     read_exact,
+    skip_forward,
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import (
@@ -123,47 +124,6 @@ class _MemberRaw:
     record: SevenZipFileRecord
     folder_index: int | None
     file_in_folder: int | None
-
-
-class _LimitedFolderReader(ReadOnlyIOStream):
-    """A non-owning limited view over a decoded folder stream."""
-
-    def __init__(
-        self, source: BinaryIO, length: int, *, close_source: bool = False
-    ) -> None:
-        super().__init__()
-        self._source = source
-        self._length = length
-        self._remaining = length
-        self._close_source = close_source
-
-    def read(self, n: int = -1, /) -> bytes:
-        if self._remaining <= 0:
-            return b""
-        if n < 0 or n > self._remaining:
-            n = self._remaining
-        data = self._source.read(n)
-        self._remaining -= len(data)
-        return data
-
-    def tell(self) -> int:
-        return self._length - self._remaining
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        try:
-            self.drain()
-        finally:
-            if self._close_source:
-                self._source.close()
-            super().close()
-
-    def drain(self) -> None:
-        while self._remaining > 0:
-            chunk = self.read(min(self._remaining, 1024 * 1024))
-            if not chunk:
-                break
 
 
 def _password_to_kdf_bytes(password: bytes) -> bytes:
@@ -269,6 +229,7 @@ def _open_lzma_run(
     *,
     stream_config: StreamConfig,
     collector: DiagnosticCollector | None,
+    seekable: bool,
 ) -> BinaryIO:
     has_lzma1 = any(coder.method == _METHOD_LZMA for coder in run)
     has_lzma2 = any(coder.method == _METHOD_LZMA2 for coder in run)
@@ -289,7 +250,7 @@ def _open_lzma_run(
         config=stream_config,
         params=CodecParams(filters=filters),
         collector=collector,
-        seekable=False,
+        seekable=seekable,
     )
 
 
@@ -301,6 +262,7 @@ def open_folder_pipeline(
     key_cache: SevenZipKeyCache,
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
+    seekable: bool = False,
 ) -> BinaryIO:
     """Compose a folder's coder chain into a single pull stream.
 
@@ -308,6 +270,11 @@ def open_folder_pipeline(
     graphs raise ``UnsupportedFeatureError``. Consecutive LZMA-family coders (LZMA,
     LZMA2, Delta, BCJ) collapse into one liblzma filter chain; other codecs and the AES
     stage each wrap the stream once.
+
+    ``seekable`` requests a seekable decode (backward seeks re-decode from the folder
+    start, O(n)); it is the ArchiveStream seekability hint for the codec streams. Note an
+    AES stage yields a non-seekable stream regardless, so encrypted folders stay
+    forward-only — the caller checks ``is_seekable`` on the result.
     """
     if any(
         coder.num_in_streams != 1 or coder.num_out_streams != 1
@@ -341,7 +308,11 @@ def open_folder_pipeline(
                 run.append(folder.coders[index])
                 index += 1
             stream = _open_lzma_run(
-                stream, run, stream_config=config, collector=collector
+                stream,
+                run,
+                stream_config=config,
+                collector=collector,
+                seekable=seekable,
             )
             continue
         codec = _SINGLE_STAGE_CODECS.get(coder.method)
@@ -355,7 +326,7 @@ def open_folder_pipeline(
             config=config,
             params=CodecParams(properties=coder.properties),
             collector=collector,
-            seekable=False,
+            seekable=seekable,
         )
         index += 1
     return stream
@@ -509,8 +480,11 @@ class SevenZipReader(BaseArchiveReader):
         yield from self._members
 
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        # Solid folders decode once into a single forward-only stream; SolidBlockReader
+        # slices it into consecutive members and skips a prior member's unread tail
+        # lazily when the next member is opened (see streamtools/solid.py).
         current_folder: int | None = None
-        folder_stream: BinaryIO | None = None
+        solid: SolidBlockReader | None = None
         previous: ArchiveStream | None = None
         try:
             for member in self._members:
@@ -530,19 +504,21 @@ class SevenZipReader(BaseArchiveReader):
                     yield member, stream
                     continue
                 if raw.folder_index != current_folder:
-                    if folder_stream is not None:
-                        folder_stream.close()
+                    if solid is not None:
+                        solid.close()
                     current_folder = raw.folder_index
-                    folder_stream = self._open_folder_stream(raw.folder_index, member)
-                assert folder_stream is not None
-                member_stream = self._member_stream_from_folder(folder_stream, member)
+                    solid = SolidBlockReader(
+                        self._open_folder_stream(raw.folder_index, member)
+                    )
+                assert solid is not None
+                member_stream = self._member_stream_from_solid(solid, member)
                 previous = member_stream
                 yield member, member_stream
         finally:
             if previous is not None:
                 previous.close()
-            if folder_stream is not None:
-                folder_stream.close()
+            if solid is not None:
+                solid.close()
 
     def _to_member(
         self, record: SevenZipFileRecord, *, is_current: bool
@@ -643,7 +619,11 @@ class SevenZipReader(BaseArchiveReader):
         return sum(_member_stream_size(member) for member in members)
 
     def _open_folder_stream(
-        self, folder_index: int, member: ArchiveMember | None
+        self,
+        folder_index: int,
+        member: ArchiveMember | None,
+        *,
+        seekable: bool = False,
     ) -> BinaryIO:
         folder = self._archive.folders[folder_index]
         password = self._password_for_folder(folder_index, member)
@@ -651,6 +631,7 @@ class SevenZipReader(BaseArchiveReader):
             self._folder_pack_view(folder_index),
             folder,
             password=password,
+            seekable=seekable,
         )
 
     def _password_for_folder(
@@ -728,6 +709,7 @@ class SevenZipReader(BaseArchiveReader):
         folder: SevenZipFolder,
         *,
         password: bytes | None,
+        seekable: bool = False,
     ) -> BinaryIO:
         return open_folder_pipeline(
             source,
@@ -736,47 +718,41 @@ class SevenZipReader(BaseArchiveReader):
             key_cache=self._key_cache,
             stream_config=self._stream_config,
             collector=self._diagnostics_collector,
+            seekable=seekable,
         )
 
-    def _member_stream_from_folder(
-        self,
-        folder_stream: BinaryIO,
-        member: ArchiveMember,
-        *,
-        close_folder: bool = False,
+    def _member_prefix(self, member: ArchiveMember) -> int:
+        """Cumulative decoded size of the members preceding ``member`` in its folder."""
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        if raw.folder_index is None or raw.file_in_folder is None:
+            return 0
+        prior = self._folder_members.get(raw.folder_index, [])[: raw.file_in_folder]
+        return sum(_member_stream_size(p) for p in prior)
+
+    def _wrap_folder_member(
+        self, inner: BinaryIO, member: ArchiveMember
     ) -> ArchiveStream:
-        limited: BinaryIO = _LimitedFolderReader(
-            folder_stream,
-            _member_stream_size(member),
-            close_source=close_folder,
-        )
         if member.hashes:
-            limited = VerifyingStream(
-                limited,
+            inner = VerifyingStream(
+                inner,
                 member.hashes,
                 collector=self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
             )
-        return self._wrap_member_stream(limited, member.name, size=member.size)
+        return self._wrap_member_stream(inner, member.name, size=member.size)
 
-    def _skip_folder_prefix(
-        self, folder_stream: BinaryIO, member: ArchiveMember
-    ) -> None:
-        raw = member._raw
-        assert isinstance(raw, _MemberRaw)
-        if raw.folder_index is None or raw.file_in_folder is None:
-            return
-        offset = 0
-        for prior in self._folder_members.get(raw.folder_index, [])[
-            : raw.file_in_folder
-        ]:
-            offset += _member_stream_size(prior)
-        while offset:
-            chunk = folder_stream.read(min(offset, 1024 * 1024))
-            if not chunk:
-                raise TruncatedError("7z folder ended before the requested member")
-            offset -= len(chunk)
+    def _member_stream_from_solid(
+        self, solid: SolidBlockReader, member: ArchiveMember
+    ) -> ArchiveStream:
+        try:
+            inner = solid.open_member(
+                self._member_prefix(member), _member_stream_size(member)
+            )
+        except EOFError as exc:
+            raise TruncatedError("7z folder ended before the requested member") from exc
+        return self._wrap_folder_member(inner, member)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
@@ -796,14 +772,36 @@ class SevenZipReader(BaseArchiveReader):
             return self._wrap_member_stream(
                 io.BytesIO(b""), member.name, size=member.size
             )
-        folder_stream = self._open_folder_stream(raw.folder_index, member)
+        # Random access re-decodes the folder from its start and slices out the member. The
+        # SlicingStream owns its private decoder (``own_source``) so closing the member stream
+        # closes the decoder. With MemberStreams.SEEKABLE and a seekable codec chain, hand back
+        # a seekable slice positioned at the member (backward seeks re-decode from the folder
+        # start, O(n)); otherwise skip forward and return a forward-only slice. VerifyingStream
+        # still checks the CRC on a pure forward read and disables itself once the caller seeks.
+        want_seekable = self._stream_config.seekable
+        prefix = self._member_prefix(member)
+        size = _member_stream_size(member)
+        folder_stream = self._open_folder_stream(
+            raw.folder_index, member, seekable=want_seekable
+        )
         try:
-            self._skip_folder_prefix(folder_stream, member)
-            return self._member_stream_from_folder(
-                folder_stream, member, close_folder=True
-            )
-        except Exception:
+            if want_seekable and is_seekable(folder_stream):
+                inner: BinaryIO = SlicingStream(
+                    folder_stream, start=prefix, length=size, own_source=True
+                )
+            else:
+                skip_forward(folder_stream, prefix)
+                inner = SlicingStream(folder_stream, length=size, own_source=True)
+        except EOFError as exc:
             folder_stream.close()
+            raise TruncatedError("7z folder ended before the requested member") from exc
+        except BaseException:
+            folder_stream.close()
+            raise
+        try:
+            return self._wrap_folder_member(inner, member)
+        except BaseException:
+            inner.close()
             raise
 
     def _get_archive_info(self) -> ArchiveInfo:

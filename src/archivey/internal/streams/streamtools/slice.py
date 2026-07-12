@@ -49,10 +49,12 @@ class SlicingStream(ReadOnlyIOStream):
 
     It is a :class:`ReadOnlyIOStream`, not a :class:`DelegatingStream`: every operation is
     *transformed*, not forwarded — ``read`` clamps to the slice bounds, and ``seek``/``tell``
-    are relative to the slice start, not the underlying offset. And critically it is a
-    *non-owning view*: it must NOT close the underlying stream (the container owns it), whereas
+    are relative to the slice start, not the underlying offset. And by default it is a
+    *non-owning view*: it does NOT close the underlying stream (the container owns it), whereas
     ``DelegatingStream.close`` closes its inner. So delegation would be both useless (almost
-    everything is overridden) and unsafe (the close default).
+    everything is overridden) and unsafe (the close default). The opt-in ``own_source`` flag
+    flips just the close behaviour for the case where the view is the sole owner of a private
+    underlying stream (e.g. a per-member decoder); it never applies to a ``SharedSource`` view.
 
     It also does not expose ``name``: a slice view remaps the origin, so forwarding the
     underlying path would mislead libraries that reopen or stat by ``stream.name``.
@@ -66,9 +68,15 @@ class SlicingStream(ReadOnlyIOStream):
         *,
         lock: ContextManager[object] | None = None,
         check_open: Callable[[], None] | None = None,
+        own_source: bool = False,
     ) -> None:
         super().__init__()
         self._stream = stream
+        # A view is non-owning by default (never closes the underlying — the container
+        # owns it). ``own_source=True`` is the opt-in for the case where this view is the
+        # sole owner of a private underlying stream (e.g. a per-member decoder opened just
+        # for this slice) that should be closed together with the view.
+        self._own_source = own_source
         self._seekable = is_seekable(stream)
         # Split lock into the I/O guard and the re-seek policy so the latter can later
         # be engaged without a lock (e.g. a single-consumer view that still re-seeks).
@@ -175,8 +183,11 @@ class SlicingStream(ReadOnlyIOStream):
         return self._seekable
 
     def close(self) -> None:
-        # Non-owning: mark this view closed only; never close the underlying stream.
+        # Non-owning by default: mark this view closed only. With ``own_source`` the view
+        # owns a private underlying stream and closes it too.
         if not self.closed:
+            if self._own_source:
+                self._stream.close()
             super().close()
 
     @property

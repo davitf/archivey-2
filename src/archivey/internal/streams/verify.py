@@ -7,6 +7,11 @@ digests (``ArchiveMember.hashes``) against the bytes actually read. Per the
 - Verification runs **only on a full sequential read to clean EOF**. A partial read is
   never verified (the digest of partial content is undefined), so this stage applies to
   the sequential read path, not to random-access reads.
+- The stage is transparent to seeking: it delegates ``seek``/``seekable`` to the inner
+  stream, but a seek that moves off the sequential frontier disables verification for the
+  rest of the stream's life (the running digest is then incomplete). So a member opened
+  ``MemberStreams.SEEKABLE`` is still verified if the caller only reads forward, and simply
+  skips the check once it seeks — mirroring the gzip truncation backstop in ``codecs.py``.
 - The mismatch is raised from the terminal read — the call that would return ``b""`` —
   *after* every data chunk (including the last) has already been delivered. A
   ``while chunk := f.read(n)`` consumer thus receives all bytes, then gets
@@ -36,7 +41,7 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import integrity as logger
-from archivey.internal.streams.streamtools import ReadOnlyIOStream
+from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
 
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
@@ -97,8 +102,11 @@ def _expected_as_bytes(value: int | bytes, hasher: _IncrementalHasher) -> bytes:
 class VerifyingStream(ReadOnlyIOStream):
     """Wrap ``inner`` and verify ``expected`` digests at clean end-of-stream.
 
-    Sequential-only: ``read`` hashes the bytes it returns; ``readinto``/``readall`` come from
-    :class:`ReadOnlyIOStream` (built on this ``read``, so they hash too).
+    ``read`` hashes the bytes it returns (``readinto``/``readall`` come from
+    :class:`ReadOnlyIOStream`, built on this ``read``, so they hash too) and checks the
+    digests once the stream reaches clean EOF. ``seek``/``seekable`` delegate to ``inner``;
+    a seek off the sequential frontier disables verification for the rest of the stream's
+    life, since the running digest can no longer cover the whole member.
     """
 
     def __init__(
@@ -140,6 +148,8 @@ class VerifyingStream(ReadOnlyIOStream):
             self._hashers[algorithm] = hasher
             self._expected[algorithm] = _expected_as_bytes(value, hasher)
         self._verified = False
+        self._pos = 0  # bytes read so far — the sequential verification frontier
+        self._verify_enabled = True  # cleared by a seek off the frontier
 
     def _verify(self) -> None:
         """Check every computable digest; raise on the first mismatch."""
@@ -154,15 +164,26 @@ class VerifyingStream(ReadOnlyIOStream):
     def read(self, n: int = -1, /) -> bytes:
         data = self._inner.read(n)
         if data:
-            for hasher in self._hashers.values():
-                hasher.update(data)
+            self._pos += len(data)
+            if self._verify_enabled:
+                for hasher in self._hashers.values():
+                    hasher.update(data)
             return data
-        if not self._verified:
+        if self._verify_enabled and not self._verified:
             self._verify()
         return data
 
     def seekable(self) -> bool:
-        return False
+        return is_seekable(self._inner)
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        result = self._inner.seek(offset, whence)
+        # A seek off the sequential frontier makes the running digest incomplete; give up
+        # on verification (a no-op seek to the current position keeps it armed).
+        if result != self._pos:
+            self._verify_enabled = False
+        self._pos = result
+        return result
 
     def tell(self) -> int:
         return self._inner.tell()
@@ -172,7 +193,7 @@ class VerifyingStream(ReadOnlyIOStream):
             # ``archive.read()`` often does a single ``read()`` that returns all
             # bytes without a follow-up empty read, so verify here when the inner
             # stream is already at clean EOF (partial reads still skip verification).
-            if not self._verified and not self._inner.read(1):
+            if self._verify_enabled and not self._verified and not self._inner.read(1):
                 self._verify()
             self._inner.close()
             super().close()

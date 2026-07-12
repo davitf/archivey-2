@@ -33,6 +33,10 @@ from archivey.internal.streams.streamtools.slice import (
     SlicingStream,
     fix_stream_start_position,
 )
+from archivey.internal.streams.streamtools.solid import (
+    SolidBlockReader,
+    skip_forward,
+)
 
 __all__ = [
     "BinaryIOWrapper",
@@ -42,6 +46,7 @@ __all__ = [
     "ReadableStream",
     "SharedSource",
     "SlicingStream",
+    "SolidBlockReader",
     "ensure_binaryio",
     "ensure_bufferedio",
     "fix_stream_start_position",
@@ -49,6 +54,7 @@ __all__ = [
     "is_seekable",
     "is_stream",
     "read_exact",
+    "skip_forward",
     "source_byte_size",
     "source_name",
 ]
