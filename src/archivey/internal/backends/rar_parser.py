@@ -484,14 +484,18 @@ def _parse_dos_time(stamp: int) -> datetime:
 
 def _load_unixtime(
     buf: bytes | bytearray | memoryview, pos: int
-) -> tuple[datetime, int]:
+) -> tuple[datetime | None, int]:
     secs, pos = _load_le32(buf, pos)
-    return datetime.fromtimestamp(secs, timezone.utc), pos
+    try:
+        return datetime.fromtimestamp(secs, timezone.utc), pos
+    except (ValueError, OverflowError, OSError):
+        # Hostile / out-of-range timestamps must not abort listing.
+        return None, pos
 
 
 def _load_windowstime(
     buf: bytes | bytearray | memoryview, pos: int
-) -> tuple[datetime, int]:
+) -> tuple[datetime | None, int]:
     # Windows FILETIME: 100ns since 1601-01-01.
     lo, pos = _load_le32(buf, pos)
     hi, pos = _load_le32(buf, pos)
@@ -499,10 +503,13 @@ def _load_windowstime(
     # unix epoch (1970) in 100ns units from windows epoch (1601)
     unix_ticks = ticks - 116444736000000000
     secs, rem = divmod(unix_ticks, 10_000_000)
-    dt = datetime.fromtimestamp(secs, timezone.utc)
-    if rem:
-        dt = dt.replace(microsecond=rem // 10)
-    return dt, pos
+    try:
+        dt = datetime.fromtimestamp(secs, timezone.utc)
+        if rem:
+            dt = dt.replace(microsecond=min(rem // 10, 999999))
+        return dt, pos
+    except (ValueError, OverflowError, OSError):
+        return None, pos
 
 
 def _normalize_password_utf8(password: str | bytes) -> bytes:
@@ -1472,7 +1479,10 @@ def _parse_rar5_xtime(
     if tflags & _RAR5_XTIME_UNIXTIME_NS:
         if tflags & _RAR5_XTIME_HAS_MTIME and mtime is not None:
             nsec, pos = _load_le32(xdata, pos)
-            mtime = mtime.replace(microsecond=min(nsec // 1000, 999999))
+            try:
+                mtime = mtime.replace(microsecond=min(nsec // 1000, 999999))
+            except ValueError:
+                pass
         if tflags & _RAR5_XTIME_HAS_CTIME:
             _, pos = _load_le32(xdata, pos)
         if tflags & _RAR5_XTIME_HAS_ATIME:

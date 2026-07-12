@@ -300,6 +300,17 @@ def test_rar5_hostile_packed_size_is_corruption() -> None:
         parse_rar_archive(io.BytesIO(blob))
 
 
+def test_rar5_out_of_range_windowstime_is_tolerated() -> None:
+    """Atheris: hostile FILETIME must not raise raw ValueError from fromtimestamp."""
+    from archivey.internal.backends.rar_parser import _load_windowstime
+
+    # FILETIME ticks far beyond datetime's year range.
+    buf = struct.pack("<II", 0xFFFFFFFF, 0x7FFFFFFF)
+    dt, pos = _load_windowstime(buf, 0)
+    assert dt is None
+    assert pos == 8
+
+
 def test_non_rarlab_unrar_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
