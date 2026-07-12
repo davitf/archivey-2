@@ -1,0 +1,2 @@
+reason=repro-failure
+repro=uv run --no-sync python -m tests.atheris_fuzz --target sevenzip_header --repro artifacts/atheris/sevenzip_header/crash-input.bin

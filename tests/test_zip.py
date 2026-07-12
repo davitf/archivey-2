@@ -25,6 +25,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     StreamNotSeekableError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from tests.streams_util import NonSeekableBytesIO
@@ -205,6 +206,30 @@ def test_symlink_member(tmp_path: Path) -> None:
         member = ar.get("link")
         assert member.type == MemberType.SYMLINK
         assert member.link_target == "target.txt"
+
+
+def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
+    """stdlib zipfile raises EOFError on truncated symlink data; must be ArchiveyError.
+
+    Found by the Atheris zip_tar target: listing a corrupt ZIP with a symlink whose
+    local payload is truncated escaped as a raw ``EOFError``.
+    """
+    import stat as stat_module
+
+    path = tmp_path / "trunc-link.zip"
+    info = zipfile.ZipInfo("link")
+    info.create_system = 3
+    info.external_attr = (stat_module.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"/tmp/some/long/symlink/target/path")
+    data = bytearray(path.read_bytes())
+    # Chop the file mid-payload but leave enough of the structure for zipfile to open
+    # and classify the member as a symlink (then fail while reading the target).
+    assert len(data) > 40
+    truncated = bytes(data[: max(40, len(data) // 2)])
+    with pytest.raises((TruncatedError, CorruptionError)):
+        with open_archive(io.BytesIO(truncated), format=ArchiveFormat.ZIP) as ar:
+            list(ar)
 
 
 def _symlink_zip(tmp_path: Path) -> Path:

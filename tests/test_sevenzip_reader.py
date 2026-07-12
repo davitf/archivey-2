@@ -6,6 +6,7 @@ import io
 import os
 import struct
 import subprocess
+import sys
 import zlib
 from pathlib import Path
 
@@ -29,6 +30,9 @@ _FILES = {
     "alpha.txt": b"alpha\n" * 100,
     "nested/beta.bin": bytes(range(64)) * 16,
 }
+
+# Repo root for subprocess PYTHONPATH (mirrors pyproject pythonpath = src, tests, .).
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _py7zr():
@@ -82,6 +86,73 @@ def _assert_roundtrip(
             assert archive.read(members[name]) == expected
 
 
+def _codec_roundtrip_body(
+    workdir: Path, label: str, filter_names: tuple[str, ...]
+) -> None:
+    """Build a py7zr fixture and read it back through the native reader."""
+    archive = workdir / f"{label}.7z"
+    _write_py7zr_archive(archive, _FILES, filters=_filters(*filter_names))
+    _assert_roundtrip(archive, _FILES)
+
+
+def _windows_isolated_codec_roundtrip(
+    tmp_path: Path, label: str, filter_names: tuple[str, ...]
+) -> None:
+    """Run one codec roundtrip in a fresh process.
+
+    Windows CI has shown intermittent ``STATUS_HEAP_CORRUPTION`` (``0xc0000374``) mid
+    ``test_py7zr_codec_fixtures_roundtrip``, aborting the entire pytest process. Isolating
+    each codec contains the blast radius and surfaces which label crashed (non-zero rc /
+    NTSTATUS) instead of a suite-wide fatal exception with an ambiguous stack.
+    """
+    work = tmp_path / "win-iso"
+    work.mkdir()
+    # Driver imports this module's helpers under a PYTHONPATH matching pyproject.
+    driver = work / "_driver.py"
+    driver.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "import sys",
+                "from tests.test_sevenzip_reader import _codec_roundtrip_body",
+                f"label = {label!r}",
+                f"filter_names = {filter_names!r}",
+                f"workdir = Path({str(work)!r})",
+                "_codec_roundtrip_body(workdir, label, filter_names)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [
+            str(_REPO_ROOT / "src"),
+            str(_REPO_ROOT / "tests"),
+            str(_REPO_ROOT),
+            env.get("PYTHONPATH", ""),
+        ]
+    )
+    proc = subprocess.run(
+        [sys.executable, str(driver)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+        check=False,
+    )
+    if proc.returncode != 0:
+        # Windows aborts often surface as large unsigned NTSTATUS values (e.g. 0xC0000374).
+        rc_disp = (
+            f"0x{proc.returncode & 0xFFFFFFFF:08X}"
+            if proc.returncode < 0 or proc.returncode > 255
+            else str(proc.returncode)
+        )
+        pytest.fail(
+            f"Windows-isolated codec roundtrip[{label}] failed (rc={rc_disp})\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
 @pytest.mark.parametrize(
     ("label", "filter_names"),
     [
@@ -101,10 +172,10 @@ def test_py7zr_codec_fixtures_roundtrip(
 ) -> None:
     if label == "ppmd" and _py7zr_version() < (1, 1):
         pytest.skip("py7zr < 1.1 cannot build reliable PPMd 7z fixtures")
-    archive = tmp_path / f"{label}.7z"
-    _write_py7zr_archive(archive, _FILES, filters=_filters(*filter_names))
-
-    _assert_roundtrip(archive, _FILES)
+    if sys.platform == "win32":
+        _windows_isolated_codec_roundtrip(tmp_path, label, filter_names)
+        return
+    _codec_roundtrip_body(tmp_path, label, filter_names)
 
 
 def test_solid_archive_stream_and_random_access(tmp_path: Path) -> None:
@@ -634,4 +705,39 @@ def test_next_header_size_cap_is_typed_corruption() -> None:
         raise AssertionError("decode_folder must not be reached")
 
     with pytest.raises(CorruptionError, match="next-header size"):
+        parse_sevenzip_archive(io.BytesIO(blob), decode_folder=_boom)  # type: ignore[arg-type]
+
+
+def test_archive_property_payload_size_is_bounded() -> None:
+    """Hostile ARCHIVE_PROPERTIES size must not raise OverflowError (Atheris finding)."""
+    import struct
+    import zlib
+
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import (
+        MAGIC_7Z,
+        parse_sevenzip_archive,
+    )
+
+    # Minimal next-header: HEADER + ARCHIVE_PROPERTIES + prop_id + 0xFF-encoded u64 size.
+    # Mirrors the CI crash input shape (payload claim >> remaining header bytes).
+    huge = b"\xff" + b"\xff" * 8
+    header_body = (
+        b"\x01\x02\x17" + huge + b"\x00"
+    )  # HEADER, ARCHIVE_PROPERTIES, prop, size, END
+    next_crc = zlib.crc32(header_body) & 0xFFFFFFFF
+    start_header = struct.pack("<QQI", 0, len(header_body), next_crc)
+    start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
+    blob = (
+        MAGIC_7Z
+        + bytes([0, 4])
+        + struct.pack("<I", start_crc)
+        + start_header
+        + header_body
+    )
+
+    def _boom(*_a: object, **_k: object) -> bytes:
+        raise AssertionError("decode_folder must not be reached")
+
+    with pytest.raises(CorruptionError, match="(length|Truncated|parser limit)"):
         parse_sevenzip_archive(io.BytesIO(blob), decode_folder=_boom)  # type: ignore[arg-type]
