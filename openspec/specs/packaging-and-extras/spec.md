@@ -200,19 +200,21 @@ Windows. The public API remains synchronous.
 
 Readers and writers are not generally thread-safe, but the reader contract has one
 explicit supported concurrency seam, available on readers opened with
-`MemberStreams.CONCURRENT`: concurrent first-touch materialization is coordinated
-(exactly one build; overlapping `open()` / `members()` / `get()` wait for the published
-snapshot rather than rejecting), after which workers MAY concurrently call `open()` and
-independently `read`/`readinto`/`close` different returned member streams, plus
-`seek`/`tell` under `MemberStreams.SEEKABLE` when the individual stream supports
-positioning. `reader.close()` drains in-flight worker calls then closes; escaped idle
-member streams remain governed by the lifecycle-lease contract. Without the declared
+`MemberStreams.CONCURRENT` (full contract: `reader-concurrency`): concurrent
+first-touch materialization is coordinated (exactly one build; overlapping
+`open()` / `members()` / `get()` wait for the published snapshot rather than
+rejecting), after which workers MAY concurrently call `open()` and independently
+`read`/`readinto`/`close` different returned member streams, plus `seek`/`tell`
+under `MemberStreams.SEEKABLE` when the individual stream supports positioning.
+`reader.close()` drains in-flight worker calls then closes; escaped idle member
+streams remain governed by the lifecycle-lease contract. Without the declared
 capability, one member stream may be live at a time on every format. Distinct
-reader-wide passes (`__iter__`, `stream_members`, `extract_all`) remain single-owner
-and cannot execute concurrently with each other or with active worker calls. Same-stream
-concurrent access stays the caller's responsibility. Single-owner composition uses
-explicit private child scopes, so extraction may drive its own streaming pass/yielded-stream
-I/O without admitting unrelated public reentry.
+reader-wide passes (`__iter__`, `stream_members`, `extract_all`) remain
+single-owner and cannot execute concurrently with each other or with active
+worker calls. Same-stream concurrent access stays the caller's responsibility.
+Single-owner composition uses explicit private child scopes, so extraction may
+drive its own streaming pass/yielded-stream I/O without admitting unrelated
+public reentry.
 Writers remain not thread-safe.
 
 `MemberStreams.CONCURRENT` is a **supported** opt-in capability: the seam is correct under

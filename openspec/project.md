@@ -42,14 +42,15 @@ See `openspec/schemas/library/README.md` and the `rules:` / `context:` blocks in
 | Core dependencies | None (stdlib only) |
 | Optional extras | `[7z]`, `[rar]`, `[crypto]`, `[7z-write]` (py7zr), `[iso]` (pycdlib), `[zstd]`, `[lz4]`, `[cli]`, `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]` — RAR data needs the system `unrar` binary (see `packaging-and-extras`) |
 | OS support | Linux, macOS, Windows |
-| Thread safety | The `ArchiveReader` object is not generally thread-safe. Declared `MemberStreams.CONCURRENT` coordinates first-touch materialization and draining `close()`, then unlocks concurrent `open()` / independent streams; free-threaded correctness is covered by the Linux `3.13t` `free-threaded-concurrency` CI job. Writers are not thread-safe. |
+| Thread safety | The `ArchiveReader` object is not generally thread-safe. Declared `MemberStreams.CONCURRENT` coordinates first-touch materialization and draining `close()`, then unlocks concurrent `open()` / independent streams (see `reader-concurrency`); free-threaded correctness is covered by the Linux `3.13t` `free-threaded-concurrency` CI job. Writers are not thread-safe. |
 | Concurrency model | Synchronous API only for v1 (async is a deferred follow-on). |
 
 ## Capability map
 
 | Capability | Concern |
 |------------|---------|
-| `archive-reading` | `open_archive()`, the `ArchiveReader` surface, iteration, random/sequential access, link following |
+| `archive-reading` | `open_archive()`, the caller-facing `ArchiveReader` surface, iteration, random/sequential access, link following, passwords |
+| `reader-concurrency` | `MemberStreams.CONCURRENT`, pass ownership, materialization coordination, draining close, free-threaded / backend lock invariants |
 | `archive-writing` | `create()`, the `ArchiveWriter` surface, streaming conversion |
 | `archive-data-model` | `Member`, `ArchiveInfo`, `ArchiveFormat`, `MemberType`, compression types |
 | `access-mode-and-cost` | the `streaming: bool` access mode and the `CostReceipt` cost surface |
