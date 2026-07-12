@@ -50,7 +50,7 @@ Two recurring notes:
 | xz | native `xz.py` over stdlib `lzma` | core | **yes** (block index) | yes (CRC) | yes |
 | lzip | native `lzip.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |
 | LZMA1/LZMA2 (raw) | stdlib `lzma` `FORMAT_RAW` | core | n/a (container-owned) | yes | yes |
-| Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters | core | n/a (filter stage) | yes | yes |
+| Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters; LZMA1+BCJ stages BCJ via `pybcj` | core (LZMA2+BCJ); `[7z]` (`pybcj`) for LZMA1+BCJ | n/a (filter stage) | yes | yes |
 | raw Deflate / zlib | stdlib `zlib` | core | no (rewind) | yes | yes |
 | zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[zstd]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
 | lz4 | `lz4` | `[lz4]` | no (rewind) | yes | yes |
@@ -266,8 +266,12 @@ preferred.
 ### LZMA1 / LZMA2 (raw) and the filter stages (Delta, BCJ family)
 
 Raw LZMA1/LZMA2 (7z/ZIP coder streams) use stdlib `lzma` in `FORMAT_RAW` with the coder's filter
-properties. The Delta and BCJ (x86/ARM/ARMT/PPC/SPARC/IA64) stages are stdlib `lzma` raw filters
-composed into the chain. All stdlib, zero-dep core.
+properties. Delta and BCJ-over-**LZMA2** compose into one stdlib filter chain (zero-dep core).
+**LZMA1+BCJ** is different: combining them in one liblzma `FORMAT_RAW` chain can silently
+truncate the final BCJ look-ahead bytes when LZMA1 lacks an EOS marker (common from the
+7-Zip CLI; see BPO-21872 / xz-devel). Archivey stages LZMA1 via stdlib and BCJ via
+`pybcj` (import name `bcj`) under the `[7z]` extra — the same approach py7zr uses.
+BCJ2 remains unsupported.
 
 ### raw Deflate / zlib — stdlib `zlib`
 

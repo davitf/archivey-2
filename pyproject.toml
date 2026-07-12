@@ -20,6 +20,9 @@ authors = [
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "brotli>=1.1.0",
     "cryptography>=45.0.0",
+    # LZMA1+BCJ: liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
+    # (common from the 7-Zip CLI). Stage BCJ via pybcj instead; LZMA2+BCJ stays stdlib.
+    "pybcj>=1.0.6",
 ]
 rar = [
     "cryptography>=45.0.0",

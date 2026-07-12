@@ -113,6 +113,55 @@ class PpmdDecompressorStream(DecompressorStream[Any]):
         return bool(self._decompressor.eof)
 
 
+class BcjFilterStream(DecompressorStream[Any]):
+    """Apply a ``pybcj`` BCJ branch filter to an already-decompressed byte stream.
+
+    Used for 7z **LZMA1+BCJ** folders: combining LZMA1 and BCJ in one liblzma
+    ``FORMAT_RAW`` chain can silently drop the final look-ahead bytes when LZMA1
+    lacks an end-of-stream marker (common from the 7-Zip CLI). Staging LZMA1 via
+    stdlib and BCJ via ``pybcj`` avoids that. LZMA2+BCJ stays on the stdlib path.
+
+    ``unpack_size`` is the coder's output size from the 7z folder; ``pybcj`` uses it
+    to flush look-ahead at the end of the stream. The ``bcj`` import is local — the
+    7z reader gates presence before constructing this stream.
+    """
+
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | BinaryIO,
+        *,
+        decoder_attr: str,
+        unpack_size: int,
+        seekable: bool = False,
+    ) -> None:
+        self._decoder_attr = decoder_attr
+        self._unpack_size = unpack_size
+        self._produced = 0
+        super().__init__(path, codec_name="bcj", seekable=seekable)
+
+    def _create_decompressor(self, point: SeekPoint) -> Any:
+        import bcj
+
+        del point  # BCJ has no mid-stream resume state; seekers restart from origin.
+        self._produced = 0
+        # Remaining expected output equals the full coder size when restarting from 0.
+        decoder_cls = getattr(bcj, self._decoder_attr)
+        return decoder_cls(self._unpack_size)
+
+    def _decompress_chunk(self, chunk: bytes) -> bytes:
+        out = self._decompressor.decode(chunk)
+        self._produced += len(out)
+        return out
+
+    def _flush_decompressor(self) -> bytes:
+        out = self._decompressor.decode(b"")
+        self._produced += len(out)
+        return out
+
+    def _is_decompressor_finished(self) -> bool:
+        return self._produced >= self._unpack_size
+
+
 class Deflate64DecompressorStream(DecompressorStream[Any]):
     """Decode a Deflate64 stream via ``inflate64.Inflater``.
 
