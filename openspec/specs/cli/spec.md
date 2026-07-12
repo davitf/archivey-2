@@ -2,35 +2,44 @@
 
 ## Purpose
 
-Archivey exposes an `archivey` command-line tool (a DEV feature) that allows users to inspect, verify, and extract archives directly from the shell. It supports `list`, `test`, and `extract` subcommands along with fnmatch filename patterns and optional I/O instrumentation.
+Shell interface for inspecting, verifying, and extracting archives. The `archivey`
+command exposes `list`, `test`, and `extract` subcommands, fnmatch member filters,
+and optional I/O instrumentation while keeping CLI-only dependencies out of core.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | Listing, member filtering, digest verification reads |
+| `safe-extraction` | Default safe extraction policy used by `extract` |
+| `diagnostics` | Advisory data that may be surfaced by CLI output |
+| `logging` | CLI may rely on standard logging configuration |
+| `packaging-and-extras` | `[cli]` extra supplies `tqdm`; core remains importable without it |
+| `access-mode-and-cost` | Optional I/O instrumentation/cost reporting |
 
 ## Requirements
 
-### Requirement: `archivey` command with list, test, and extract subcommands
+### Requirement: archivey command with list, test, and extract subcommands
 
-The system SHALL provide an `archivey` command that exposes at minimum the following subcommands: `list`, `test`, and `extract`. The CLI supports fnmatch filename patterns for filtering members and a `--track-io` flag for I/O instrumentation. The CLI depends on `tqdm` for progress output, which is provided via the `[cli]` optional extra; the core library itself has no hard dependency on `tqdm`.
+The system SHALL provide an `archivey` command with at minimum `list`, `test`, and
+`extract` subcommands. The command SHALL support fnmatch filename patterns for
+filtering members and a `--track-io` flag for I/O instrumentation. Progress output
+SHALL depend on `tqdm` from the `[cli]` extra; the core library MUST NOT have a hard
+dependency on `tqdm`.
 
-#### Scenario: listing archive contents
+`list` SHALL print archive members to stdout. `test` SHALL read every selected
+member fully and verify stored digests through the shared verification stage,
+including CRC32 and Blake2sp where supported. `extract` SHALL extract selected
+members to the destination directory using the library's default safe-extraction
+policy.
 
-- **WHEN** the user runs `archivey list <archive>`
-- **THEN** the command prints the members of the archive to stdout
+#### Scenario: CLI behavior matrix
 
-#### Scenario: verifying archive integrity
-
-- **WHEN** the user runs `archivey test <archive>`
-- **THEN** the command reads every member fully, verifying each stored digest (e.g. CRC32; Blake2sp for RAR5) via the shared verification stage, and reports any failures
-
-#### Scenario: extracting archive contents
-
-- **WHEN** the user runs `archivey extract <archive> [dest]`
-- **THEN** the command extracts the archive to the destination directory using the library's default safe-extraction policy
-
-#### Scenario: filtering by filename pattern
-
-- **WHEN** the user supplies an fnmatch pattern to any subcommand (e.g. `archivey list archive.zip "*.py"`)
-- **THEN** the command limits its output or operation to members whose names match the pattern
-
-#### Scenario: CLI installed without the `[cli]` extra
-
-- **WHEN** `tqdm` is not installed (the `[cli]` extra is absent)
-- **THEN** progress output is suppressed or the command emits a clear error indicating the missing extra, and the core library remains importable and functional
+| Case | Expected |
+| --- | --- |
+| `archivey list <archive>` | Prints archive members to stdout |
+| `archivey test <archive>` | Fully reads members, verifies stored digests, reports failures |
+| `archivey extract <archive> [dest]` | Extracts with default safe-extraction policy |
+| Subcommand includes fnmatch pattern, e.g. `archivey list archive.zip "*.py"` | Operation is limited to matching member names |
+| `[cli]` extra absent / `tqdm` missing | Progress output is suppressed or a clear missing-extra error is emitted; core import and library API remain functional |
+| `--track-io` supplied | Command reports the configured I/O instrumentation for the operation |
