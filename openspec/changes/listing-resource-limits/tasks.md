@@ -32,4 +32,4 @@
 
 - [x] 6.1 Targeted pytest for listing limits + updated extraction bomb error types; pyrefly + ty + ruff clean on touched files.
 - [x] 6.2 `openspec validate --strict listing-resource-limits`
-- [ ] 6.3 Three-config smoke (`[all]`, `[all-lowest]`, `[core-only]`) for the affected tests before merge.
+- [x] 6.3 Three-config smoke (`[all]`, `[all-lowest]`, `[core-only]`) for the affected tests before merge.
