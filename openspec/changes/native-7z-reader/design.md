@@ -70,6 +70,10 @@ out to share the exact scheme, promote it to a shared helper then — not preemp
   raise `UnsupportedFeatureError`, documenting it for later (py7zr uses `pybcj` for this
   path — we will not add that runtime dep here).
 
+**Limitation:** LZMA1+BCJ is intentionally unsupported in this change. A real py7zr
+fixture exercises the path and the reader raises `UnsupportedFeatureError` until a
+stdlib-only decode path is validated against an oracle.
+
 ### 6. Anti-items (`is_anti`) and superseded revisions (`is_current`)
 What anti-items are *for*: 7z records them in **differential/incremental** archives —
 an entry with a name, zero content, and the `ANTI` (`0x10`) bit means "this path was

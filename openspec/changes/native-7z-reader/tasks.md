@@ -30,11 +30,11 @@
 
 ## 5. Tests, oracles, fuzz
 
-- [ ] 5.1 Activate corpus 7z builders/sweep; native ↔ `py7zr` metadata+bytes cross-check (skip if absent)
-- [ ] 5.2 Per-codec fixtures: STORED, LZMA2, LZMA2+BCJ, LZMA2+Delta, Deflate, BZip2, Zstd, Brotli, PPMd, Deflate64, AES, solid, multi-password, header-encrypted, multi-volume
-- [ ] 5.3 LZMA1+BCJ fixture: either correct decode vs oracle or asserted `UnsupportedFeatureError` + short design note
-- [ ] 5.4 BCJ2 / unknown method rejection tests
-- [ ] 5.5 Anti-item fixtures via `7z` CLI; list + `is_current` computation; extract into a fresh dest and compare final tree vs `7z x` into a fresh dest (skip without `7z`); assert an anti-item leaves a pre-existing not-written destination untouched; do not require py7zr for these
-- [ ] 5.6 Core-only / `[7z]` / `[crypto]` gating tests (`PackageNotInstalledError` paths)
-- [ ] 5.7 Atheris (or env-gated harness) for header parser seeded from corpus + adversarial bytes
-- [ ] 5.8 `openspec validate native-7z-reader --strict`; `ruff` / `pyrefly` / `ty`; three-config pytest gate
+- [x] 5.1 Activate corpus 7z builders/sweep; native ↔ `py7zr` metadata+bytes cross-check (skip if absent)
+- [x] 5.2 Per-codec fixtures: STORED, LZMA2, LZMA2+BCJ, LZMA2+Delta, Deflate, BZip2, Zstd, Brotli, PPMd, Deflate64, AES, solid, multi-password, header-encrypted, multi-volume
+- [x] 5.3 LZMA1+BCJ fixture: either correct decode vs oracle or asserted `UnsupportedFeatureError` + short design note
+- [x] 5.4 BCJ2 / unknown method rejection tests
+- [x] 5.5 Anti-item fixtures via `7z` CLI; list + `is_current` computation; extract into a fresh dest and compare final tree vs `7z x` into a fresh dest (skip without `7z`); assert an anti-item leaves a pre-existing not-written destination untouched; do not require py7zr for these
+- [x] 5.6 Core-only / `[7z]` / `[crypto]` gating tests (`PackageNotInstalledError` paths)
+- [x] 5.7 Atheris (or env-gated harness) for header parser seeded from corpus + adversarial bytes
+- [x] 5.8 `openspec validate native-7z-reader --strict`; `ruff` / `pyrefly` / `ty`; three-config pytest gate

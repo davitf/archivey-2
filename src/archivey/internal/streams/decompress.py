@@ -97,7 +97,7 @@ class PpmdDecompressorStream(DecompressorStream[Any]):
         return pyppmd.Ppmd7Decoder(self._order, self._mem_size)
 
     def _decompress_chunk(self, chunk: bytes) -> bytes:
-        return self._decompressor.decode(chunk)
+        return self._decompressor.decode(chunk, -1)
 
     def _flush_decompressor(self) -> bytes:
         # 7z PPMd streams sometimes need a trailing NUL to finish when the decoder
@@ -106,7 +106,7 @@ class PpmdDecompressorStream(DecompressorStream[Any]):
             getattr(self._decompressor, "needs_input", False)
             and not self._decompressor.eof
         ):
-            return self._decompressor.decode(b"\0")
+            return self._decompressor.decode(b"\0", -1)
         return b""
 
     def _is_decompressor_finished(self) -> bool:

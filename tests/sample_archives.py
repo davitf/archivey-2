@@ -10,8 +10,9 @@ conformance sweep).
 The shapes are ported from the DEV declarative corpus (``archivey-dev``
 ``tests/archivey/sample_archives.py`` @ 730275b7a755f8b5b8d08d3d4d9b267b5bdadb0d),
 re-expressed in the v2 idiom; v1-API creation plumbing was deliberately not carried
-over. 7z/RAR entries are present but inactive until the Phase 6 native readers land
-(the sweep skips them via the registry's format-availability guard).
+over. RAR entries are present but inactive until the Phase 7 native reader lands
+(the sweep skips it via the registry's format-availability guard); 7z entries run
+when the native reader and py7zr fixture builder are available.
 
 Generation is on-demand with a content-keyed cache under ``ARCHIVEY_TEST_CACHE``
 (atomic ``os.replace`` writes, safe for parallel runs; no binaries are committed).
@@ -38,8 +39,8 @@ from archivey.types import ArchiveFormat, ContainerFormat, MemberType, StreamFor
 from tests.conftest import ARCHIVEY_TEST_CACHE
 
 # Bump when any builder's output changes, so cached archives regenerate.
-# v2: the ZIP builder's Windows output changed (backslash names are now preserved).
-GENERATOR_VERSION = 2
+# v3: the 7z builder now writes relative members and honors single-password fixtures.
+GENERATOR_VERSION = 3
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +159,9 @@ FORMAT_KEYS: dict[str, ArchiveFormat] = {
     "lz": ArchiveFormat.LZIP,
     "zz": ArchiveFormat.ZLIB,
     "br": ArchiveFormat.BROTLI,
-    # Inactive until the Phase 6 native readers register these formats; the sweep's
-    # registry-driven availability guard skips them automatically until then.
     "7z": ArchiveFormat.SEVEN_Z,
+    # Inactive until the Phase 7 native RAR reader registers this format; the sweep's
+    # registry-driven availability guard skips it automatically until then.
     "rar": ArchiveFormat.RAR,
 }
 
@@ -533,14 +534,20 @@ def _iso_build(entry: CorpusEntry, path: Path) -> None:
     path.write_bytes(out.getvalue())
 
 
-def _7z_build(entry: CorpusEntry, path: Path) -> None:  # pragma: no cover - Phase 6
+def _7z_build(entry: CorpusEntry, path: Path) -> None:
     import py7zr
 
+    if len(entry.passwords) > 1:
+        raise ValueError(
+            "the py7zr corpus builder supports one 7z password per archive"
+        )
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         _dir_build(entry, tmp)
-        with py7zr.SevenZipFile(path, "w") as zf:
-            zf.writeall(tmp, arcname="")
+        password = entry.passwords[0] if entry.passwords else None
+        with py7zr.SevenZipFile(path, "w", password=password) as zf:
+            for item in sorted(tmp.rglob("*")):
+                zf.write(item, arcname=item.relative_to(tmp).as_posix())
 
 
 def _rar_build(entry: CorpusEntry, path: Path) -> None:  # pragma: no cover - Phase 6

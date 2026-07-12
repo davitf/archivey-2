@@ -5,7 +5,7 @@ corpus describes, in every format it is built in, must open, list members matchi
 declared expectations, read back the declared contents (following links per the
 link-resolution contract), and extract safely — with adversarial members rejected and
 encrypted members unreadable without their password. Formats whose reader is not
-available (missing optional dependency, or the 7z/RAR readers before Phase 6) are
+available (missing optional dependency, or the RAR reader before Phase 7) are
 skipped via the registry's availability guard, so enabling a format activates its
 entries with no test changes.
 """
@@ -77,7 +77,12 @@ def _skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
                 pytest.skip("no zstd backend to build with")
         elif importlib.util.find_spec(package) is None:
             pytest.skip(f"builder needs package {package!r}")
-    for binary in (*BUILDER_BINARIES.get(key, ()), *entry.requires_binaries):
+    entry_binaries = entry.requires_binaries
+    if key == "7z":
+        # Encrypted ZIP corpus entries need the 7z CLI builder, but encrypted 7z entries
+        # are written directly by py7zr with a single archive password.
+        entry_binaries = tuple(b for b in entry_binaries if b != "7z")
+    for binary in (*BUILDER_BINARIES.get(key, ()), *entry_binaries):
         if shutil.which(binary) is None:
             pytest.skip(f"builder needs binary {binary!r}")
     if (
