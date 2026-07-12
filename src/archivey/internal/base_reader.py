@@ -996,6 +996,11 @@ class BaseArchiveReader(ArchiveReader):
                     member_name=member.name,
                 )
             return self._open_with_link_follow(target, visited)
+        if member.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
+            raise ArchiveyUsageError(
+                f"Cannot open member {member.name!r}: type is {member.type.value!r} "
+                f"(not a file)"
+            )
         return self._open_member(member)
 
     def read(self, member: str | ArchiveMember) -> bytes:

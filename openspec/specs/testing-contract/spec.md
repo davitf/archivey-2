@@ -191,6 +191,21 @@ activation MUST be demand-driven and match `seekable-decompressor-streams`.
 | Undeclared accelerator-eligible source | No seek index instantiated |
 | Declared `SEEKABLE` accelerator-eligible source | `AUTO` accelerator resolves as specified |
 
+### Requirement: Non-file open and ANTI classification tests
+
+Tests SHALL assert `ArchiveyUsageError` from `open`/`read` on directory members
+for ZIP, TAR, ISO, and the directory backend (not empty bytes / raw OS /
+ISO `CorruptionError`), and `stream_members` stream `None`. 7z anti fixtures
+SHALL assert `type == MemberType.ANTI`, `None` stream, and usage-error open/read.
+
+#### Scenario: coverage matrix
+
+| Case | Expected |
+| --- | --- |
+| ZIP/TAR/ISO/directory dir member `read` | `ArchiveyUsageError` |
+| Directory backend dir `open` | `ArchiveyUsageError` (not `IsADirectoryError`) |
+| 7z anti list + stream + open | `ANTI`; stream `None`; `ArchiveyUsageError` |
+
 ### Requirement: Concurrent member-stream correctness and free-threaded stress
 
 The test suite SHALL exercise the supported post-materialization concurrency
