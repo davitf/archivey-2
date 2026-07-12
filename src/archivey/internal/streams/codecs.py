@@ -45,6 +45,8 @@ from archivey.internal.streams.archive_stream import (
 )
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
+    Deflate64DecompressorStream,
+    PpmdDecompressorStream,
     ZlibDecompressorStream,
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
@@ -158,7 +160,7 @@ class Codec(Enum):
 
     Single-file/TAR stream formats and 7z/ZIP folder coders both resolve to these.
     Filter-only entries (Delta, the BCJ family) are not opened standalone — they compose
-    into a raw-LZMA filter chain (built by the 7z reader in Phase 7); their LZMA filter ids
+    into a raw-LZMA filter chain (built by the 7z reader); their LZMA filter ids
     are recorded in :data:`LZMA_FILTER_IDS`.
     """
 
@@ -205,9 +207,11 @@ class CodecParams:
 
     - ``filters`` — the ``lzma`` raw filter chain (required for raw LZMA1/LZMA2; this is
       where Delta/BCJ stages and the coder properties enter).
+    - ``properties`` — raw coder properties blob (e.g. 7z PPMd var.H parameters).
     """
 
     filters: list[dict] | None = None
+    properties: bytes | None = None
 
 
 _DEFAULT_PARAMS = CodecParams()
@@ -959,6 +963,23 @@ class UnixCompressCodec(StreamCodec):
         return None
 
 
+def _parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
+    """Parse 7z PPMd var.H coder properties → ``(order, mem_size)``."""
+    import struct
+
+    if properties is None:
+        raise ValueError("PPMd requires coder properties (order + mem size)")
+    if len(properties) == 5:
+        order, mem = struct.unpack("<BL", properties)
+    elif len(properties) == 7:
+        order, mem, _, _ = struct.unpack("<BLBB", properties)
+    else:
+        raise ValueError(
+            f"unsupported PPMd properties length {len(properties)} (expected 5 or 7)"
+        )
+    return int(order), int(mem)
+
+
 class PpmdCodec(StreamCodec):
     codec = Codec.PPMD
     requirement = MissingComponent("pyppmd", "pip install archivey[7z]", ("ppmd",))
@@ -973,16 +994,15 @@ class PpmdCodec(StreamCodec):
             raise PackageNotInstalledError(
                 "The 'pyppmd' package is required for PPMd streams (install the '7z' extra)."
             )
-        # The concrete PPMd stream construction (var.H parameters from the 7z coder) lands with
-        # the native 7z reader in Phase 7; the resolver + missing-backend gating are complete.
-        raise NotImplementedError(
-            "PPMd decoding is implemented in Phase 7 (native 7z reader)"
-        )
+        order, mem_size = _parse_ppmd_var_h_properties(params.properties)
+        return PpmdDecompressorStream(source, order=order, mem_size=mem_size)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
             return TruncatedError(f"PPMd stream is truncated: {exc!r}")
         if isinstance(exc, ValueError):
+            return CorruptionError(f"Error reading PPMd stream: {exc!r}")
+        if _pyppmd is not None and isinstance(exc, getattr(_pyppmd, "PpmdError", ())):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
         return None
 
@@ -1004,7 +1024,7 @@ class Deflate64Codec(StreamCodec):
                 "The 'inflate64' package is required for Deflate64 streams "
                 "(install the '7z' extra)."
             )
-        return ensure_binaryio(_inflate64.Inflate64File(ensure_bufferedio(source)))
+        return Deflate64DecompressorStream(source)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):

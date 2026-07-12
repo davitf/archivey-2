@@ -99,6 +99,20 @@ def test_equality_excludes_hashes_and_extra() -> None:
     assert a == b
 
 
+def test_anti_and_current_defaults_and_equality() -> None:
+    # Defaults: ordinary members are non-anti and current.
+    default = ArchiveMember(type=MemberType.FILE, name="a.txt")
+    assert default.is_anti is False
+    assert default.is_current is True
+
+    # Both flags participate in equality.
+    anti = ArchiveMember(type=MemberType.FILE, name="a.txt", is_anti=True)
+    assert anti != default
+    superseded = ArchiveMember(type=MemberType.FILE, name="a.txt", is_current=False)
+    assert superseded != default
+    assert anti == ArchiveMember(type=MemberType.FILE, name="a.txt", is_anti=True)
+
+
 def test_single_codec_member_compression_shape() -> None:
     m = ArchiveMember(
         type=MemberType.FILE,

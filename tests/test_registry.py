@@ -45,7 +45,7 @@ class _CoreBackend(ReadBackend):
 
 
 class _OptionalPresentBackend(ReadBackend):
-    FORMATS = (ArchiveFormat.SEVEN_Z,)
+    FORMATS = (ArchiveFormat.RAR,)
     OPTIONAL_DEPENDENCY = "io"  # a module that always imports
     INSTALL_HINT = "pip install archivey[present]"
 
@@ -95,10 +95,10 @@ def test_optional_missing_backend_is_known_but_unavailable(
 
 
 def test_optional_present_backend_is_full(registry: BackendRegistry) -> None:
-    avail = registry.format_availability(ArchiveFormat.SEVEN_Z)
+    avail = registry.format_availability(ArchiveFormat.RAR)
     assert avail.support is FormatSupport.FULL
     assert avail.missing == ()
-    assert ArchiveFormat.SEVEN_Z in registry.list_supported_formats()
+    assert ArchiveFormat.RAR in registry.list_supported_formats()
 
 
 def test_core_backend_is_full(registry: BackendRegistry) -> None:
@@ -107,7 +107,7 @@ def test_core_backend_is_full(registry: BackendRegistry) -> None:
 
 
 def test_unknown_format_is_none(registry: BackendRegistry) -> None:
-    avail = registry.format_availability(ArchiveFormat.RAR)
+    avail = registry.format_availability(ArchiveFormat.SEVEN_Z)
     assert avail.support is FormatSupport.NONE
     assert avail.missing == ()
 
@@ -124,7 +124,7 @@ def test_reader_for_missing_dependency_raises_with_hint(
 
 def test_reader_for_unknown_format_raises(registry: BackendRegistry) -> None:
     with pytest.raises(UnsupportedFormatError):
-        registry.reader_for_format(ArchiveFormat.RAR)
+        registry.reader_for_format(ArchiveFormat.SEVEN_Z)
 
 
 # ---------------------------------------------------------------------------

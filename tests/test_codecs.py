@@ -159,11 +159,37 @@ def test_crypto_reachable_only_through_wrapper() -> None:
     """With [crypto] present, the backend is reached via the wrapper (not a direct import)."""
     backend = crypto.get_crypto_backend()
     assert backend.name == crypto.CRYPTO_PACKAGE
-    # The concrete AES stage is deferred to Phase 7; the wrapper boundary is what's real now.
-    with pytest.raises(NotImplementedError):
-        backend.aes_cbc_decrypt_stage(
-            crypto.AesParams(key=b"\x00" * 32, iv=b"\x00" * 16)
-        )
+    stage = backend.aes_cbc_decrypt_stage(
+        crypto.AesParams(key=b"\x00" * 32, iv=b"\x00" * 16)
+    )
+    # Round-trip one AES block through the shared stage (format parsers never import
+    # cryptography directly — they go through this wrapper).
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    encryptor = Cipher(
+        algorithms.AES(b"\x00" * 32), modes.CBC(b"\x00" * 16)
+    ).encryptor()
+    plaintext = b"0123456789abcdef"
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+    assert stage.update(ciphertext) + stage.finalize() == plaintext
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("cryptography") is None,
+    reason="cryptography is not installed (core-only leg); the present-path cannot run",
+)
+def test_sevenzip_kdf_cache_reuses_derived_keys() -> None:
+    password = "secret".encode("utf-16le")
+    salt = b"salt"
+    cache = crypto.SevenZipKeyCache()
+    first = cache.derive(password, salt=salt, cycles=1)
+    second = cache.derive(password, salt=salt, cycles=1)
+    assert first == second
+    assert first is second  # same cached object
+    # 0x3f special case: salt+password copied into 32-byte key (no hashing).
+    special = crypto.derive_sevenzip_aes_key(password, salt=salt, cycles=0x3F)
+    assert len(special) == 32
+    assert special == bytes(bytearray(salt + password + bytes(32))[:32])
 
 
 # --- exception translation -------------------------------------------------------------
@@ -333,6 +359,14 @@ def test_verify_partial_read_is_not_verified() -> None:
     stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) ^ 0xFFFF})
     assert stream.read(10) == CONTENT[:10]
     stream.close()  # abandoned before EOF — must not raise
+
+
+def test_verify_on_close_after_full_single_read() -> None:
+    """A single read()-to-end must still verify when the stream is closed."""
+    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) ^ 0xFFFF})
+    assert stream.read() == CONTENT
+    with pytest.raises(CorruptionError, match="crc32"):
+        stream.close()
 
 
 def test_verify_unverifiable_algorithm_skipped_with_warning(
