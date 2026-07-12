@@ -198,3 +198,22 @@ class TestSlicingStreamSize:
     def test_size_none_when_underlying_unknowable(self) -> None:
         sliced = SlicingStream(NonSeekableBytesIO(DATA), length=None)
         assert sliced.size is None
+
+
+class TestSlicingStreamOwnSource:
+    class _Tracked(io.BytesIO):
+        closed_flag = False
+
+        def close(self) -> None:
+            self.closed_flag = True
+            super().close()
+
+    def test_default_is_non_owning(self) -> None:
+        underlying = self._Tracked(DATA)
+        SlicingStream(underlying, start=0, length=5).close()
+        assert underlying.closed_flag is False
+
+    def test_own_source_closes_underlying(self) -> None:
+        underlying = self._Tracked(DATA)
+        SlicingStream(underlying, start=0, length=5, own_source=True).close()
+        assert underlying.closed_flag is True
