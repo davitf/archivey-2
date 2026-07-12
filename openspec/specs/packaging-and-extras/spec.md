@@ -134,24 +134,19 @@ through an explicit documented allowlist in that guard.
 The system SHALL declare and support Python 3.11 or newer on Linux, macOS, and
 Windows. The public API remains synchronous.
 
-Readers and writers are not generally thread-safe. Readers opened with
-`MemberStreams.CONCURRENT` SHALL support the documented cooperative concurrency
-contract in `reader-concurrency`: coordinated concurrent first-touch
-materialization, concurrent post-publication `open()` calls on distinct members,
-independent operations on different returned streams, supported positioning under
-`MemberStreams.SEEKABLE`, and close/lifecycle draining. Without the declared
-capability, one member stream may be live at a time on every format as specified by
-`archive-reading`.
+Readers and writers are not generally thread-safe. The supported
+`MemberStreams.CONCURRENT` contract — what concurrent opens, materialization,
+passes, close/lifecycle, and same-stream rules mean — lives entirely in
+`reader-concurrency` (default single-live-stream rule: `archive-reading`). This
+capability SHALL NOT restate that contract.
 
-The supported reader concurrency contract SHALL be data-race-free on regular
+When that contract is declared, behavior SHALL be data-race-free on regular
 CPython and on the backend/runtime combinations exercised by the required Linux
-CPython `3.13t` `free-threaded-concurrency` CI job. It MUST NOT depend on incidental
-GIL serialization. Optional backends without a free-threaded-compatible wheel are
-not claimed covered until an equivalent dedicated job executes them. This is a
-correctness contract, not a parallel-speed guarantee. Distinct reader-wide passes
-(`__iter__`, `stream_members`, `extract_all`) SHALL remain single-owner and
-non-overlapping. Same-stream concurrent access remains the caller's responsibility.
-Writers remain not thread-safe.
+CPython `3.13t` `free-threaded-concurrency` CI job. It MUST NOT depend on
+incidental GIL serialization. Optional backends without a free-threaded-compatible
+wheel are not claimed covered until an equivalent dedicated job executes them.
+This is a packaging/CI correctness claim, not a parallel-speed guarantee. Writers
+remain not thread-safe.
 
 #### Scenario: runtime-support matrix
 
@@ -159,10 +154,9 @@ Writers remain not thread-safe.
 | --- | --- |
 | Install on Linux, macOS, or Windows under Python 3.11+ | Core and installed optional formats are supported |
 | Install on Python older than 3.11 | `requires-python >=3.11` prevents installation |
-| Required `3.13t` core-backend job runs concurrent reader tests | Same bytes/lifecycle behavior as regular CPython, without cache/password/source-position races |
+| Required `3.13t` core-backend job runs concurrent reader tests | Same bytes/lifecycle behavior as regular CPython for covered backends |
 | Optional backend unavailable in `3.13t` job | Ordinary-build coverage remains valid; free-threaded support is not claimed for that backend |
-| Caller overlaps reader-wide passes or concurrently uses one stream | Pass overlap is a usage error; same-stream correctness follows standard file semantics |
-| Public `MemberStreams.CONCURRENT` docs | Describes the supported cooperative and free-threaded-tested contract without labeling it provisional |
+| Public docs for `MemberStreams.CONCURRENT` | Point at the supported contract without labeling it provisional |
 
 ### Requirement: Version metadata exposure
 

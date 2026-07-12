@@ -187,24 +187,27 @@ an occurrence log or counter.
 
 `streaming` SHALL remain the only access-mode choice. `member_streams` SHALL
 declare stream capabilities **within** a mode (not a third mode; no
-`ArchiveyConfig` equivalent). Full concurrent ownership: `reader-concurrency`.
+`ArchiveyConfig` equivalent). Ownership, leases, materialization, and free-threaded
+rules for `MemberStreams.CONCURRENT` live in `reader-concurrency`; this
+requirement only states how those flags compose with `streaming`.
 
-| Mode | `member_streams` |
+| Mode | `member_streams` composition |
 | --- | --- |
-| `streaming=False` | With `CONCURRENT`: post-materialization concurrent `open()` + independent stream I/O. Without: one live stream. `SEEKABLE` gates positioning. Passes/close remain single-owner vs active workers. |
+| `streaming=False` | `CONCURRENT` and/or `SEEKABLE` MAY be declared; concurrent-open semantics are `reader-concurrency`. Without `CONCURRENT`, one live member stream (`archive-reading`). |
 | `streaming=True` | Random `open`/`read` still unavailable. Single progressive pass is exclusive. **`CONCURRENT` incompatible** → `ArchiveyUsageError` at open. `SEEKABLE` alone MAY be declared. |
 
-Random-access `stream_members()` is exclusive even when random `open()` is
-otherwise available. Simultaneous streams → materialize + random `open()` under
-`CONCURRENT`. Detected overlap → later op `ArchiveyUsageError`; active pass stays
-usable. Ops after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
+Random-access `stream_members()` remains exclusive even when random `open()` is
+otherwise available (simultaneous streams use materialize + random `open()` under
+`CONCURRENT` — see `reader-concurrency`). Detected pass/open/close overlap → later
+op `ArchiveyUsageError`; active pass stays usable. Ops after `reader.close()` →
+`ArchiveyUsageError` (idempotent `close`).
 
 #### Scenario: mode × capability matrix
 
 | Case | Expected |
 | --- | --- |
 | `streaming=True` + `CONCURRENT` | `ArchiveyUsageError` at open; no reader |
-| RA + `CONCURRENT`, post-materialization concurrent opens | Supported; without flag → `ConcurrentAccessError` on second overlapping open |
+| RA + `CONCURRENT` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
 | Active pass + conflicting pass/open/close | Later → `ArchiveyUsageError`; original pass usable |
 | RA `stream_members` active + `open()` | `ArchiveyUsageError` |
 | `extract_all` drives child `stream_members` | Permitted composition; unrelated public pass rejected |
@@ -213,8 +216,8 @@ usable. Ops after `reader.close()` → `ArchiveyUsageError` (idempotent `close`)
 
 `access_cost` / `solid_block_count` describe work (including under a declared
 simultaneous schedule). They SHALL NOT permit or deny capabilities —
-`member_streams` is the only gate. Solid open-*order* cost is reported here and
-steered toward `stream_members()`, not gated.
+`member_streams` is the only gate (`reader-concurrency`). Solid open-*order* cost
+is reported here and steered toward `stream_members()`, not gated.
 
 #### Scenario: cost vs capability
 
