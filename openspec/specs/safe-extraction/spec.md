@@ -2,11 +2,27 @@
 
 ## Purpose
 
-Safe extraction writes archive members to a destination directory on disk while enforcing path-safety constraints and permission transforms that prevent untrusted archives from escaping the destination root or writing hostile filesystem objects. It also enforces decompression-bomb limits and reports per-member progress and outcomes. It is the primary interface for callers who want files on disk rather than in-memory data.
+Safe extraction writes archive members to a destination directory while enforcing
+non-bypassable path safety, link safety, overwrite rules, permission transforms,
+decompression-bomb limits, progress callbacks, diagnostics, and per-member
+results. It is the caller-facing path for putting archive contents on disk.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | `open_archive()`, `ArchiveReader`, selectors, reader diagnostics, access methods |
+| `access-mode-and-cost` | `extract_all()` as a forward-pass method and streaming legality |
+| `diagnostics` | Diagnostic values, retention budgets, watermarks, extraction outcome codes |
+| `error-handling` | Exception classes and ordered diagnostic/exception behavior |
+| `format-tar` | TAR hardlink ordering, link recovery, and TAR-specific extraction constraints |
+
 ## Requirements
+
 ### Requirement: One-Shot Extraction API
 
-The top-level API SHALL return a first-class report rather than a bare result list:
+The top-level API SHALL expose one-shot extraction and return an immutable
+`ExtractionReport` on success:
 
 ```python
 archivey.extract(
@@ -25,50 +41,32 @@ archivey.extract(
 ) -> ExtractionReport
 ```
 
-The one-shot call SHALL use exactly one collector and one retention budget for the whole
-call. Because the temporary reader is opened fresh, its collector — created before format
-detection and owning detection, backend open, read, and extraction — already covers every
-phase; the one-shot report SHALL take its diagnostic summary from that reader's cumulative
-snapshot. No phase creates a second collector, seeds/copies retained occurrences, or resets
-the budget. The final report summary SHALL therefore include all events caused by the call
-exactly once.
+The call SHALL extract all members, deliberately has no `members=` selector, and
+uses the same source/password/encoding/config precedence, default `STRICT`
+policy, default `ERROR` overwrite policy, and automatic streaming mode for
+non-seekable supported sources as the reader APIs. Subset extraction goes through
+`ArchiveReader.extract_all()`.
 
-`results` SHALL be an immutable tuple. If an always-stop condition or `OnError.STOP`
-raises, no report is returned.
-The function still extracts all members and deliberately has no `members=` selector;
-subset extraction uses `ArchiveReader.extract_all()` on an already-open reader.
-`source`, `password`, `encoding`, config/limits precedence, default STRICT policy,
-default ERROR overwrite behavior, and automatic streaming mode for a non-seekable source
-retain their existing contracts.
+The call SHALL use one diagnostic collector and one retention budget for
+detection, backend open, reading, and extraction. The final report uses the
+reader collector's cumulative snapshot/range; phases do not seed, copy, merge, or
+re-retain events. If an always-stop condition or `OnError.STOP` raises, no report
+is returned.
 
-#### Scenario: successful one-shot extraction returns one report
+#### Scenario: one-shot extraction matrix
 
-- **WHEN** `archivey.extract(source, dest)` completes
-- **THEN** it returns `ExtractionReport(results=(...), diagnostics=...)`, including any detection and extraction diagnostics caused by the call
-
-#### Scenario: one-shot phases share one collector
-
-- **WHEN** detection emits one retained conflict and extraction later emits one retained failure
-- **THEN** the report uses one occurrence order and budget from before detection, with neither event copied or re-retained at a phase handoff
-
-#### Scenario: one-shot extraction from a non-seekable pipe
-
-- **WHEN** `archivey.extract(pipe, dest)` receives a non-seekable supported source
-- **THEN** it opens in streaming mode automatically and extracts in one forward pass
-
-#### Scenario: subset extraction goes through an open reader
-
-- **WHEN** a caller wants only some members
-- **THEN** they open the archive and call `reader.extract_all(dest, members=...)`; the top-level function has no selection parameter
-
-#### Scenario: one-shot extraction of a non-UTF-8-named archive
-
-- **WHEN** `archivey.extract(src, dest, encoding="cp932")` is called on a TAR whose member names are CP932-encoded
-- **THEN** the members land on disk under their correctly decoded names, identical to `open_archive(src, encoding="cp932")` + `extract_all(dest)`
+| Case | Expected |
+| --- | --- |
+| `archivey.extract(source, dest)` completes | Returns `ExtractionReport(results=(...), diagnostics=...)` with all detection/open/read/extraction diagnostics from that call |
+| Detection emits one retained conflict and extraction emits one retained failure | One occurrence order and one budget from before detection; no duplicated phase handoff events |
+| Non-seekable supported source | Opens in streaming mode automatically and extracts in one forward pass |
+| Caller wants only some members | Caller opens the archive and calls `reader.extract_all(dest, members=...)`; top-level `extract()` has no selection parameter |
+| `encoding="cp932"` for a TAR with CP932 names | Disk paths match `open_archive(..., encoding="cp932")` followed by `extract_all()` |
 
 ### Requirement: Per-Reader Extract-All Helper
 
-`ArchiveReader.extract_all()` SHALL return:
+`ArchiveReader.extract_all()` SHALL expose per-reader extraction with optional
+member selection and filtering:
 
 ```python
 def extract_all(
@@ -85,564 +83,326 @@ def extract_all(
 ) -> ExtractionReport: ...
 ```
 
-The reader records a collector watermark when the call begins. The returned report's
-diagnostic summary SHALL contain exact count/retained deltas for this extraction call only,
-while `reader.diagnostics` remains cumulative and includes earlier and later events.
-An extraction config override changes new-event policy/callback behavior but uses the
-reader's existing collector and retention maximum.
-Selection, filter ordering, one-pass selected extraction, reader-config inheritance, and
-per-call limits precedence retain their existing contracts. There is still no
-single-member `reader.extract()` method.
+The helper SHALL record a diagnostic watermark at call start and return a report
+whose summary contains exact count/retained deltas for this extraction call only.
+`reader.diagnostics` remains cumulative. A per-call config may change new-event
+policy/callback behavior but MUST use the reader's existing collector and
+retention maximum.
 
-#### Scenario: extraction report excludes prior reader events
+Selection, filter ordering, one-pass selected extraction, reader-config
+inheritance, and per-call limits precedence retain their existing contracts.
+There is no single-member `reader.extract()` method.
 
-- **WHEN** a reader emits a diagnostic before `extract_all()` and another during extraction
-- **THEN** the report summary includes only the extraction occurrence, while `reader.diagnostics` includes both
+#### Scenario: extract_all matrix
 
-#### Scenario: selected solid members extract in one pass
-
-- **WHEN** `reader.extract_all(dest, members=["a", "b"])` runs on a solid archive
-- **THEN** only those members are selected and their data is extracted in one decompression pass
-
-#### Scenario: single-file extraction via selector
-
-- **WHEN** a caller wants just one file
-- **THEN** they call `reader.extract_all(dest, members=[name])`; there is no separate single-member `extract()` method
+| Case | Expected |
+| --- | --- |
+| Reader emitted a diagnostic before `extract_all()` and another during extraction | Report summary includes only the extraction occurrence; `reader.diagnostics` includes both |
+| `reader.extract_all(dest, members=["a", "b"])` on a solid archive | Only selected members are extracted in one decompression pass |
+| Caller wants one file | Uses `reader.extract_all(dest, members=[name])`; no separate single-member API |
+| `extract_all(config=...)` overrides diagnostic policy/callback | New extraction events use the override while retention remains under the reader's original budget |
 
 ### Requirement: Extraction reads limits and strictness from the configuration object
 
-`archivey.extract()` and `ArchiveReader.extract_all()` SHALL accept
-`config: ArchiveyConfig | None` and `limits: ExtractionLimits | None`. Per-call `limits`
-takes precedence over `config.extraction_limits`, then the reader/library default.
-`ExtractionLimits.UNLIMITED` disables all four guards. Extraction policy/overwrite/error/
-progress/member-selection arguments remain keyword operational arguments outside config.
+`archivey.extract()` and `ArchiveReader.extract_all()` SHALL accept both
+`config: ArchiveyConfig | None` and `limits: ExtractionLimits | None`. Per-call
+`limits` takes precedence over `config.extraction_limits`, then the
+reader/library default. `ExtractionLimits.UNLIMITED` disables byte, ratio,
+archive-wide ratio/live-ratio, and entry-count guards. Policy, overwrite,
+`on_error`, progress, and member-selection/filter arguments remain operational
+arguments outside config.
 
-Top-level `extract()` uses the supplied config for its one collector. `extract_all()` uses
-the reader config by default; an explicit config may change new-event diagnostic policy
-and callback but SHALL use the existing collector and its original retention maximum.
+Top-level `extract()` SHALL use the supplied config for its one collector.
+`extract_all()` uses the reader config by default; an explicit config affects
+new-event policy/callback behavior but not the existing collector or retention
+maximum. Both APIs always return `ExtractionReport` with an accumulated immutable
+result tuple on success; there is no no-tracking mode.
 
-Both APIs return `ExtractionReport`, whose result tuple is always accumulated. There is no
-no-tracking mode in this capability. The report diagnostic summary is bounded by the
-collector's shared budget.
+#### Scenario: limits/config matrix
 
-#### Scenario: limits override does not split diagnostics
-
-- **WHEN** `extract_all(limits=...)` overrides bomb limits on an existing reader
-- **THEN** the limits apply to that extraction while its report remains a watermark range over the reader's existing diagnostic collector
-
-#### Scenario: limits taken from the config
-
-- **WHEN** `archivey.extract(src, dest, config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` is called
-- **THEN** the cumulative byte limit enforced is 10 GiB
-
-#### Scenario: per-call limits override the config
-
-- **WHEN** a reader opened with a custom `config` runs `extract_all(dest, limits=ExtractionLimits(max_extracted_bytes=50 * 2**20))`
-- **THEN** the 50 MiB per-call cap governs that run, overriding `config.extraction_limits`; a later `extract_all()` without `limits` reverts to the reader's config
-
-#### Scenario: UNLIMITED preset disables the guards
-
-- **WHEN** `archivey.extract(src, dest, limits=ExtractionLimits.UNLIMITED)` is called on an archive that would trip the default byte or ratio limits
-- **THEN** extraction completes with no bomb-guard error
-
-#### Scenario: extract_all inherits the reader's config
-
-- **WHEN** a reader opened with a custom `ArchiveyConfig` runs `extract_all(dest)` with no `config` argument
-- **THEN** the reader's config (including its extraction limits) governs the run
+| Case | Expected |
+| --- | --- |
+| `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; report remains a watermark range over the existing collector |
+| `extract(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` | Cumulative byte limit is 10 GiB |
+| Reader config has limits, call passes `limits=ExtractionLimits(max_extracted_bytes=50 * 2**20)` | 50 MiB governs this run; later calls without `limits` revert to reader config |
+| `limits=ExtractionLimits.UNLIMITED` | Archives that would trip default guards complete without bomb-guard error |
+| Reader opened with custom config and `extract_all(dest)` | Reader config, including extraction limits, governs the run |
 
 ### Requirement: Non-Bypassable Universal Path-Safety Constraints
 
-The system SHALL enforce the following constraints on every member before extraction
-regardless of the `ExtractionPolicy` in use, including `ExtractionPolicy.TRUSTED`. These
-checks are applied by `check_universal()` in `filters.py` as the first step of the extraction
-pipeline, before any policy transform.
+The system SHALL run universal safety checks on the faithful stored
+`member.name` before any policy transform, user filter, or filesystem write;
+`ExtractionPolicy.TRUSTED` does not bypass them. The default path-safety behavior
+is reject/raise. A future sanitize policy is outside v1 scope and is not part of
+this contract.
 
-Because `member.name` is now a **faithful** representation of the stored path (see
-`archive-data-model` — read-time normalization no longer strips a leading `/` or collapses
-`..`), these checks operate directly on `member.name`; there is no separate check against the
-verbatim `raw_name` (the interim mechanism introduced while normalization still collapsed
-traversal is removed).
-
-This is the default (`RAISE`) path-safety behavior. A future opt-in `SANITIZE` policy
-(**post-v1** — deliberately not part of the Phase 5 API freeze) would re-root/collapse an
-unsafe name to a safe in-`dest` path instead of rejecting it; there is no path-safety
-"trust" bypass. The constraints below describe `RAISE`.
-
-Three independent enforcement layers provide defense in depth:
-
-1. **String check on `member.name`** — purely string-based, before any I/O: reject an
-   absolute path (leading `/`, a Windows drive letter, or a UNC `\\`), reject **any** `..`
-   path component (split on both `/` and `\`), and reject a `\x00` null byte. A `..` is
-   rejected whether it escapes the root or is internal (`foo/../bar`): a well-formed archive
-   has no reason to carry one, so it is treated as almost-certainly-malicious.
-2. **Pre-extraction path computation** — the destination's **parent directory**,
-   `(dest / member.name).parent`, is resolved with `.resolve()` and verified to remain within
-   `dest.resolve()`. With `..` already rejected in layer 1, this layer's remaining job is to
-   catch a **symlinked intermediate component** (an earlier member's symlink that would
-   redirect a later write outside `dest`). The parent — not the full path — is resolved so a
-   pre-existing final-component symlink is handled by the `OverwritePolicy` (unlink-then-create)
-   rather than followed.
-3. **Post-symlink-creation check** — after `os.symlink()`, the created link's target is
-   re-resolved with `Path.resolve()` to detect chained symlink attacks (see *Symlink Escape
-   Re-Validated at Extraction Time*).
-
-The individual universal constraints are:
+The implementation SHALL enforce defense in depth: first a string check rejects
+absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
+and null bytes; then `(dest / member.name).parent.resolve()` must remain within
+`dest.resolve()` to catch symlinked intermediate components without following a
+final-component symlink; link targets are rechecked as described in the symlink
+and hardlink requirements.
 
 | Constraint | Violation type | Condition |
-|---|---|---|
-| Path traversal | `PathTraversalError` | Any `..` path component in `member.name` (escaping or internal) |
-| Absolute paths | `PathTraversalError` | `member.name` starts with `/`, a Windows drive letter (`C:\`), or `\\` |
-| Null bytes | `PathTraversalError` | `member.name` contains `\x00` |
-| Symlink escape | `SymlinkEscapeError` | SYMLINK member whose fully-resolved target escapes `dest` |
-| Hardlink escape | `SymlinkEscapeError` | HARDLINK member whose target path resolves outside `dest` |
-| Special files | `SpecialFileError` | `MemberType.OTHER` (device nodes, FIFOs, sockets) |
+| --- | --- | --- |
+| Path traversal | `PathTraversalError` | Any `..` component, escaping or internal |
+| Absolute path | `PathTraversalError` | Leading `/`, Windows drive path, or UNC path |
+| Null byte | `PathTraversalError` | `member.name` contains `\x00` |
+| Symlink escape | `SymlinkEscapeError` | SYMLINK whose fully resolved target escapes `dest` |
+| Hardlink escape | `SymlinkEscapeError` | HARDLINK whose target path resolves outside `dest` |
+| Special file | `SpecialFileError` | `MemberType.OTHER` device/FIFO/socket/etc. |
 
-#### Scenario: escaping traversal in member name
+#### Scenario: universal safety matrix
 
-- **WHEN** a member's `name` is `"../evil"` or `"../../etc/passwd"` (an escaping `..`)
-- **THEN** `PathTraversalError` is raised and no file is written, regardless of policy
-
-#### Scenario: internal traversal is also rejected
-
-- **WHEN** a member's `name` is `"foo/../bar"` (a `..` that would resolve within the root)
-- **THEN** `PathTraversalError` is raised under the default `RAISE`; extracting it would
-  require the future opt-in `SANITIZE` policy (post-v1, not yet available)
-
-#### Scenario: absolute path in member name
-
-- **WHEN** a member's `name` starts with `/` or a Windows drive letter
-- **THEN** `PathTraversalError` is raised and no file is written, regardless of policy
-
-#### Scenario: symlinked intermediate component is rejected
-
-- **WHEN** an earlier member created a symlink at `foo` pointing outside `dest`, and a later
-  member `foo/x` would resolve outside `dest`
-- **THEN** the pre-extraction parent resolution detects the escape and `PathTraversalError` is
-  raised for `foo/x`
-
-#### Scenario: special file rejected under all policies
-
-- **WHEN** a member's type is `MemberType.OTHER` (device node, FIFO, socket)
-- **THEN** `SpecialFileError` is raised regardless of `ExtractionPolicy`
+| Case | Expected |
+| --- | --- |
+| `"../evil"` or `"../../etc/passwd"` | `PathTraversalError`; no write; all policies |
+| `"foo/../bar"` | `PathTraversalError` under reject/raise behavior even if it would stay in root |
+| Leading `/`, Windows drive, UNC path | `PathTraversalError`; no write; all policies |
+| Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `PathTraversalError` |
+| `MemberType.OTHER` | `SpecialFileError`; all policies |
 
 ### Requirement: Symlink Escape Re-Validated at Extraction Time
 
-The system SHALL re-validate symlink targets at the moment the symlink is created on disk, not only at planning time. After `os.symlink(link_target, dest_path)` is called, the implementation SHALL resolve the created link's target with `Path.resolve()` and immediately unlink and raise `SymlinkEscapeError` if the resolved path escapes `dest`.
+The system SHALL validate a SYMLINK member after `os.symlink(link_target,
+dest_path)` creates the link on disk. It resolves the created link target with
+`Path.resolve()` and, if the resolved path escapes `dest`, immediately unlinks the
+new link and raises `SymlinkEscapeError`. Resolution failures from symlink loops
+or platform equivalents (`OSError` such as `ELOOP`, or `RuntimeError`) SHALL fail
+safe the same way: unlink the just-created link and reject the member.
 
-The resolution itself can fail when the archive contains an adversarial symlink **loop**
-(e.g. `a → b` and `b → a`): the OS rejects the cyclic resolution with `ELOOP`. The
-implementation SHALL therefore wrap the resolution in a guard that catches `OSError`
-(POSIX `ELOOP` and the Windows equivalent) and `RuntimeError` (raised by `Path.resolve()`
-on some platforms/versions for loops), and on any such failure SHALL unlink the just-created
-link and reject the member with `SymlinkEscapeError` — failing safe rather than crashing the
-extractor.
+This post-creation check SHALL catch chained symlink attacks where earlier archive
+members influence later target resolution, without allowing writes through an
+escaping link.
 
-```
-os.symlink(link_target, dest_path)
-try:
-    resolved = (dest_path.parent / link_target).resolve()
-    escaped = not resolved.is_relative_to(dest.resolve())
-except (OSError, RuntimeError):       # ELOOP / symlink loop / too many levels
-    escaped = True                    # treat an unresolvable link as an escape
-if escaped:
-    dest_path.unlink()
-    raise SymlinkEscapeError(...)
-```
+#### Scenario: symlink revalidation matrix
 
-This single-pass, post-creation check catches TOCTOU symlink attacks where earlier archive members create symlinks that could redirect later writes, and the loop guard keeps an adversarial cyclic-symlink archive from aborting extraction with an uncaught OS error.
-
-#### Scenario: symlink resolves outside dest at extraction time
-
-- **WHEN** a symlink member is written to disk and its resolved target escapes the `dest` root
-- **THEN** the symlink is immediately unlinked and `SymlinkEscapeError` is raised
-- **AND** no further data is written through that symlink
-
-#### Scenario: chained symlink attack
-
-- **WHEN** an earlier member creates a symlink that redirects a later member's write outside `dest`
-- **THEN** the post-creation `Path.resolve()` check catches the escape and raises `SymlinkEscapeError`
-
-#### Scenario: adversarial symlink loop fails safe
-
-- **WHEN** the archive contains a cyclic symlink set (e.g. `a → b`, `b → a`) and the post-creation `Path.resolve()` raises `OSError` (`ELOOP`) or `RuntimeError`
-- **THEN** the just-created link is unlinked and `SymlinkEscapeError` is raised; the extractor does not crash with an uncaught OS error
-
----
+| Case | Expected |
+| --- | --- |
+| Created symlink resolves outside `dest` | Link is unlinked; `SymlinkEscapeError`; no later data written through it |
+| Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `SymlinkEscapeError` |
+| Cyclic links (`a -> b`, `b -> a`) make `Path.resolve()` raise | Just-created link is unlinked; `SymlinkEscapeError`; no uncaught OS/runtime error |
 
 ### Requirement: Hardlink Two-Pass Extraction
 
-The system SHALL support hardlinks (as found in TAR archives) through the
-`ExtractionCoordinator` acting as a **pull-based sink** that uses `get_members_if_available()`
-(for the optional optimization) and, only on an orphan, the source's re-readability, and
-selects an extraction algorithm — rather than a push-model helper that buffers deferred
-link-creation state. The source always precedes its hardlinks in archive order.
+The system SHALL support TAR-style hardlinks through the extraction coordinator as
+a pull-based sink over reader streams. Ordinary FILE/DIR/SYMLINK members are
+written as reached; each written FILE path is recorded under its source. A
+HARDLINK whose source already has recorded paths tries `os.link()` against them
+in order; if all fail with cross-device `EXDEV`, the coordinator falls back to
+`shutil.copy2()` and records the copy for later links on that device.
 
-- **FILE / DIR / SYMLINK** members are written as they are reached; each written FILE's path is
-  recorded under a per-source **list of on-disk paths**.
-- **HARDLINK** whose source is already written: create it by trying `os.link()` against each
-  recorded path of the source in turn; the first that succeeds wins. If every attempt fails
-  cross-device (`EXDEV`), fall back to `shutil.copy2` and append the new path (so a later link
-  on that device can `os.link()` to this copy instead of copying again).
-- **HARDLINK whose source was excluded** by the `members` selector or `filter` (only possible
-  when filtering): the implementation MUST NOT materialize the excluded source at its own
-  destination path (that would leak a file the caller deliberately excluded). It SHALL instead
-  make the source's **content** available only through the selected link(s) — write the source
-  data to the **first selected link whose destination the `OverwritePolicy` allows writing**
-  (under `SKIP`, links whose destinations already exist are recorded `SKIPPED` and the content
-  moves on to the next selected link; if every link is skipped, nothing is written) and
-  `os.link()` further selected links to it (an implementation MAY equivalently stage in a
-  hidden temp inside `dest`, e.g. `dest/.archivey-tmp-<id>`). The materialized file carries the
-  **transformed metadata of the link it is written as** (mode/timestamps per the "copy supplies
-  the identity" rule below — hardlinks share one inode, so the metadata goes on the file that
-  carries the content). If no link to the source is selected either, the source's data is
-  not extracted at all.
-  A hardlink that merely *precedes* its source in archive order (the source is selected and
-  extracted later in the same pass) is NOT re-read: it SHALL be `os.link()`ed against the
-  already-extracted source file, sharing its inode, with no second read of the source's bytes
-  (and no double-counting against the bomb limits). **How** the excluded source's bytes are obtained is chosen so no pass
-  is wasted (see `format-tar`): when a member list is available for free
-  (`get_members_if_available()` — a true index or an already-materialized list) the source is
-  staged during a single planned forward pass; otherwise (plain `.tar` or compressed tar, with
-  no speculative scan) it is recovered from a seekable source in one conditional second pass;
-  on a **forward-only** source its bytes are unrecoverable and the link is a per-member failure
-  handled by the `OnError` policy (STOP raises, CONTINUE records `FAILED`).
+When a selected HARDLINK's source was excluded by `members` or `filter`, the
+system MUST NOT materialize the excluded source at its own destination. It SHALL
+make the source content available only through selected link destinations: write
+the bytes to the first selected link path allowed by `OverwritePolicy`, record
+`SKIPPED` links under `SKIP`, link further selected links to the materialized
+path, and write nothing if every selected link is skipped. The materialized file
+gets the selected link's transformed metadata. An equivalent hidden temp inside
+`dest` is permitted.
 
-#### Scenario: hardlink to already-extracted member
+The coordinator SHALL avoid wasted passes: if a free member list exists
+(`get_members_if_available()`), recovery is planned in one forward pass; otherwise
+a seekable source may use one conditional second pass; a forward-only source makes
+the orphaned link unrecoverable and therefore a per-member failure governed by
+`OnError`. A hardlink that merely precedes its selected source is linked after the
+source is written, with one read and one bomb-limit count for the source bytes.
 
-- **WHEN** a HARDLINK member is reached and its source has already been extracted in this pass
-- **THEN** the coordinator tries `os.link()` against the source's recorded on-disk paths in turn (falling back to a sibling link or `shutil.copy2` on cross-device failure)
+#### Scenario: hardlink matrix
 
-#### Scenario: unrecoverable orphaned hardlink follows OnError
-
-- **WHEN** a selected HARDLINK's source was excluded and the source is on a forward-only stream (unrecoverable in one pass)
-- **THEN** it is a per-member failure: `OnError.STOP` raises and `OnError.CONTINUE` records a `FAILED` `ExtractionResult` and proceeds
-
-#### Scenario: selected hardlink whose source was excluded (recoverable)
-
-- **WHEN** a selected HARDLINK points to a source the `members` selector / `filter` excluded, and the source is recoverable (a free member list, or a seekable stream via one second pass)
-- **THEN** the source content is written to the first selected link's path with that link's transformed mode/timestamps (further selected links are `os.link`'d to it), and the excluded source is never created at its own destination path
-
-#### Scenario: excluded source with the first link's destination skipped
-
-- **WHEN** an excluded source's selected links are materialized under `OverwritePolicy.SKIP` and the first link's destination already exists
-- **THEN** that link is recorded `SKIPPED`, the source content is written to the next selected link instead, and no error escapes; if every link's destination exists, all are `SKIPPED` and the content is not written anywhere
-
-#### Scenario: hardlink preceding its source in archive order
-
-- **WHEN** a selected HARDLINK appears before its (also selected) source member in archive order
-- **THEN** after the pass the link is `os.link`'d against the extracted source file (same inode); the source's bytes are read once and counted once against the bomb limits
+| Case | Expected |
+| --- | --- |
+| HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` |
+| Selected hardlink source was excluded but recoverable | Source content appears at selected link path(s); excluded source path is never created |
+| First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `SKIPPED`; content moves to the next allowed link; all skipped means no write |
+| Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
+| HARDLINK appears before its also-selected source | After the pass it links to the extracted source inode; source bytes read and counted once |
 
 ### Requirement: Policy-Specific Metadata Transforms
 
-The system SHALL apply policy-specific permission and ownership transforms to a **transient copy** of the `ArchiveMember` (produced via `member.replace(...)`) after universal checks pass. The transform corresponding to the active `ExtractionPolicy` is selected from `POLICY_TRANSFORMS` in `filters.py` and applied before any I/O.
-
-Per member the coordinator builds exactly one transient copy: universal checks run on the
-original, then the policy transform and then the optional user `filter` are applied to the
-copy (in that order). The copy supplies the on-disk **identity** — `name`, `mode`,
-timestamps, and therefore the destination path. The **original** `ArchiveMember` is what the
-coordinator feeds to `BombTracker.start_member()` and records in the `ExtractionResult`, so
-the ratio check and reported metadata use the accurate source values — including any
-late-bound fields (final `size`/CRC) the backend fills in place as the data streams, which a
-copy taken before reading would not have received. The copy is discarded once the member's
-file is written.
+The system SHALL apply policy-specific permission and ownership transforms to one
+transient `ArchiveMember` copy after universal checks pass and before I/O. The
+copy receives the policy transform and user `filter` in that order and supplies
+the on-disk identity (`name`, mode, timestamps, destination path). The original
+mutable member is used for `BombTracker.start_member()` and recorded in
+`ExtractionResult`, so late-bound size/CRC/source metadata remain accurate.
 
 ```python
 class ExtractionPolicy(Enum):
-    STRICT   = "strict"    # default; untrusted archives
-    STANDARD = "standard"  # moderate trust; e.g. your own older archives
-    TRUSTED  = "trusted"   # bypass permission/ownership checks; path safety still enforced
+    STRICT = "strict"
+    STANDARD = "standard"
+    TRUSTED = "trusted"
 ```
 
-**Relationship to Python's `tarfile` filters.** These policies parallel the named
-filters in `tarfile` (`data`, `tar`, `fully_trusted`) so callers can transfer that
-mental model, but the names differ deliberately because Archivey applies them uniformly
-across **all** formats, not just TAR, and the per-bit transforms are Archivey's own:
+Policies SHALL parallel Python `tarfile`'s `data` / `tar` / `fully_trusted`
+mental model while applying uniformly to all formats and retaining Archivey's
+non-bypassable safety checks.
 
-| `ExtractionPolicy` | Closest `tarfile` filter | Notable differences |
-|---|---|---|
-| `STRICT` (default) | `data` | Like `data` (blocks unsafe paths/links/special files), and additionally strips execute bits and normalizes permissions to 644/755. Archivey's default; `tarfile`'s default varies by Python version. |
-| `STANDARD` | `tar` | Like `tar` (strips setuid/setgid/sticky and group/other-write intent), but Archivey still drops uid/gid and keeps the universal path-safety checks that `tarfile`'s `tar` filter does not all guarantee. |
-| `TRUSTED` | `fully_trusted` | Applies stored mode and (as root) uid/gid. Unlike `fully_trusted`, Archivey **still enforces** the non-bypassable universal path/symlink/special-file constraints above. |
+| Behavior | `STRICT` default | `STANDARD` | `TRUSTED` |
+| --- | --- | --- | --- |
+| Path, absolute-path, link-escape, special-file rejection | Always | Always | Always |
+| Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
+| Permission normalization | Files max `0o644`; dirs `0o755`; strip file execute | Preserve ordinary execute bits | Apply as stored |
+| setuid/setgid/sticky | Strip all | Strip setuid/setgid | Preserve |
+| uid/gid | Strip | Strip | Apply only when running as root; otherwise skip silently |
 
-The transforms per policy are:
+#### Scenario: metadata policy matrix
 
-| Check | STRICT | STANDARD | TRUSTED |
-|-------|--------|----------|---------|
-| Path traversal reject | **always** | **always** | **always** |
-| Absolute path reject | **always** | **always** | **always** |
-| Symlink outside-root reject | **always** | **always** | **always** |
-| Special file (device/FIFO) reject | yes | yes | yes |
-| Executable bit strip | yes | no | no |
-| Setuid/setgid/sticky strip | yes | yes | no |
-| Ownership (uid/gid) strip | yes | no | no |
-| Permission normalize to 644/755 | yes | no | no |
-
-**STRICT** transforms:
-- Remove uid/gid (extract as current user).
-- Strip all setuid (`0o4000`), setgid (`0o2000`), sticky (`0o1000`) bits.
-- Strip execute bits on files: `mode & ~0o111`.
-- Normalize remaining permissions: files → `min(mode & 0o666, 0o644)`, dirs → `0o755`.
-- If `mode` is `None`, use `0o644` for files and `0o755` for directories.
-
-**STANDARD** transforms:
-- Remove uid/gid.
-- Strip setuid and setgid bits.
-- If `mode` is `None`, use `0o644`/`0o755`.
-- Execute bits preserved.
-
-**TRUSTED** transforms:
-- Apply `mode` as-is.
-- Apply uid/gid if running as root; otherwise skip silently.
-
-#### Scenario: STRICT strips execute and normalizes permissions
-
-- **WHEN** a FILE member with `mode=0o755` is extracted under `ExtractionPolicy.STRICT`
-- **THEN** the extracted file is written with mode `0o644` (execute stripped, normalized)
-
-#### Scenario: STANDARD preserves execute bits
-
-- **WHEN** a FILE member with `mode=0o755` is extracted under `ExtractionPolicy.STANDARD`
-- **THEN** the extracted file retains its execute bits; only setuid/setgid are stripped
-
-#### Scenario: TRUSTED applies uid/gid as root
-
-- **WHEN** a FILE member with explicit uid/gid is extracted under `ExtractionPolicy.TRUSTED` and the process runs as root
-- **THEN** uid/gid are applied to the extracted file
-
----
+| Case | Expected |
+| --- | --- |
+| FILE `mode=0o755` under `STRICT` | Written as `0o644` |
+| FILE `mode=0o755` under `STANDARD` | Execute bits preserved; setuid/setgid stripped |
+| FILE with uid/gid under `TRUSTED` as root | uid/gid applied |
+| Any policy, unsafe path/link/special file | Universal safety rejection still applies |
 
 ### Requirement: Overwrite Policy
 
-The system SHALL enforce the `OverwritePolicy` when a destination entry already exists at the
-path a member would be written to.
+The system SHALL enforce `OverwritePolicy` whenever a destination entry already
+exists at the transformed member path:
 
 ```python
 class OverwritePolicy(Enum):
-    ERROR   = "error"   # raise ExtractionError if destination entry exists
-    SKIP    = "skip"    # silently skip existing entries
-    REPLACE = "replace" # replace unconditionally (atomically, never write-through)
+    ERROR = "error"
+    SKIP = "skip"
+    REPLACE = "replace"
 ```
 
-`ERROR` raises an `ExtractionError` for the member, which is a per-member failure governed by
-the `OnError` policy (`STOP` re-raises and halts; `CONTINUE` records a `FAILED`
-`ExtractionResult` and proceeds). `SKIP` records a `SKIPPED` result regardless of `OnError`.
+`ERROR` raises a per-member `ExtractionError` governed by `OnError`; `SKIP`
+records a `SKIPPED` result and is not a failure. Existence checks SHALL use
+`lstat` semantics so dangling symlinks count as existing entries. `REPLACE` SHALL
+be atomic and never write through a symlink: FILE data streams to a temp file in
+the destination directory, metadata is applied, and `os.replace()` moves it onto
+the destination. A mid-stream failure preserves the old entry and discards only
+the temp. DIR/SYMLINK/HARDLINK replacement removes the existing entry and creates
+fresh; replacing an existing directory with a file removes the directory first.
 
-Two symlink-safety rules apply to all three policies:
+#### Scenario: overwrite matrix
 
-- **Existence is checked with `lstat` semantics** (the entry itself, never its target). A
-  *dangling* symlink at the destination path counts as an existing entry — a follow-the-link
-  existence check would report "absent" and a subsequent open-for-writing would create the
-  file at the symlink's **target**, an attacker-controllable location.
-- **`REPLACE` is atomic and never writes through a symlink.** A FILE is streamed into a temp
-  file in the destination directory, has its metadata applied, and is then moved onto the
-  destination path with `os.replace()` — a single atomic operation that overwrites an existing
-  file or **replaces an existing symlink with the fresh file** (it operates on the directory
-  entry, so bytes never follow the link to its target). Because the move is atomic and the
-  existing entry is untouched until the new file is fully written, a failure **mid-extraction**
-  (a decompression error, a bomb-limit trip, a write error) leaves the previous destination
-  intact and discards only the temp file — it never truncates or removes the old data. An
-  existing **directory** being replaced by a file is removed first (`os.replace` cannot
-  overwrite a directory with a file). DIR / SYMLINK / HARDLINK members, which carry no streamed
-  data, are still created by removing any existing entry and creating fresh.
-
-#### Scenario: ERROR raises on existing file
-
-- **WHEN** a member would write to a path that already exists on disk and `OverwritePolicy.ERROR` is active
-- **THEN** `ExtractionError` is raised and the existing file is not modified
-
-#### Scenario: SKIP silently bypasses existing files
-
-- **WHEN** a member would write to an existing path and `OverwritePolicy.SKIP` is active
-- **THEN** the member is skipped; its `ExtractionResult` carries `ExtractionStatus.SKIPPED`
-
-#### Scenario: REPLACE overwrites atomically
-
-- **WHEN** a member would write to an existing path and `OverwritePolicy.REPLACE` is active
-- **THEN** the existing entry is replaced with the member's data via a temp file + `os.replace`
-
-#### Scenario: REPLACE of an existing symlink does not write through it
-
-- **WHEN** the destination path is an existing symlink (e.g. planted by an earlier member) and `OverwritePolicy.REPLACE` is active
-- **THEN** the symlink itself is replaced by the fresh file and no bytes are ever written through the old link to its target
-
-#### Scenario: a failed REPLACE preserves the existing file
-
-- **WHEN** a member is extracted under `OverwritePolicy.REPLACE` over an existing file but extraction fails mid-stream (e.g. a bomb-limit trip or a corrupt/truncated source)
-- **THEN** the existing file is left unchanged and only the temp file is discarded; the old data is never truncated or removed
-
-#### Scenario: dangling symlink at the destination counts as existing
-
-- **WHEN** the destination path is a dangling symlink and `OverwritePolicy.ERROR` (or `SKIP`) is active
-- **THEN** the entry is treated as existing — `ExtractionError` is raised (or the member is skipped); the extractor never opens the path for writing, which would create the file at the link's target
-
----
+| Case | Expected |
+| --- | --- |
+| Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
+| Existing path under `SKIP` | `ExtractionResult.status == SKIPPED`, `path=None`, no exception |
+| Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
+| Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
+| `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
+| Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
 
 ### Requirement: Extraction as a Composable Module
 
-The system SHALL implement safe extraction in a dedicated `internal/extraction.py` module (`ExtractionCoordinator`) that is separate from the reader backends and format detection. Both `archivey.extract()` and `ArchiveReader.extract_all()` SHALL delegate to the same `ExtractionCoordinator`, which drives a single unified forward pass over the reader's `(member, stream)` pairs.
+The system SHALL implement safe extraction in a dedicated coordinator module
+separate from reader backends and format detection. Both `archivey.extract()` and
+`ArchiveReader.extract_all()` delegate to the same `ExtractionCoordinator`, which
+drives one unified forward pass over `(member, stream)` pairs in streaming and
+random-access modes.
 
-The coordinator — not the reader — is where member **transformation** lives. The reader's
-streaming generator yields the **original, mutable** `ArchiveMember` objects (so the backend
-can keep filling late-bound fields in place); the coordinator applies the `members` selector,
-the policy transform, and the user `filter` to a transient copy (per the metadata-transform
-requirement above), keeping the original for the `BombTracker` and `ExtractionResult`. This
-localization is deliberate: applying a copy-producing `filter` inside the reader's generator
-would detach the yielded copy from the backend's in-place late-bound updates.
+The coordinator SHALL own member selection, transient metadata transforms, user
+filter application, `BombTracker` calls, progress callbacks, result accumulation,
+and extraction diagnostics. Reader generators yield original mutable members so
+backend late-bound updates remain visible; copy-producing transforms/filters do
+not detach streamed members from backend updates.
 
-Decompression-bomb enforcement (see the bomb-limit requirements below) is handled by a `BombTracker` instance passed through to each member extraction during this pass. Progress callbacks and `ExtractionResult` accumulation also happen inside this single pass.
+#### Scenario: coordinator matrix
 
-#### Scenario: streaming and random-access modes use same coordinator
-
-- **WHEN** `extract_all()` is called whether the reader is in streaming or random-access mode
-- **THEN** the same `ExtractionCoordinator.run()` single forward pass is used for both paths
-
----
+| Case | Expected |
+| --- | --- |
+| `extract_all()` in random-access mode | Uses `ExtractionCoordinator.run()` forward pass |
+| `extract_all()` in streaming mode | Uses the same coordinator pass and consumes the streaming pass per `access-mode-and-cost` |
+| Backend fills late-bound fields while streaming | Original member in `ExtractionResult` and `BombTracker` sees the final source metadata |
 
 ### Requirement: Enforce Cumulative Max-Extracted-Bytes Limit
 
-The system SHALL track the total number of bytes written across all members during a single `extract()` or `extract_all()` call and SHALL raise `ExtractionError` when that cumulative total exceeds `max_extracted_bytes`. The default limit is 2 GiB (2 147 483 648 bytes). The caller MAY override this limit by passing `max_extracted_bytes` to `extract()` or `extract_all()`.
+The system SHALL track total bytes written across a single `extract()` or
+`extract_all()` call and raise `ExtractionError` at the chunk boundary where the
+total exceeds `max_extracted_bytes`. The default is 2 GiB
+(2,147,483,648 bytes). Callers override it through `ExtractionLimits`; `None` via
+`ExtractionLimits.UNLIMITED` disables this guard.
 
-The limit is tracked by a `BombTracker` instance constructed once per extraction call. The cumulative byte total spans all members in the call; the per-member ratio (next requirement) is tracked separately against each member's own output.
+The limit SHALL be tracked by one `BombTracker` per extraction call. It is a
+global resource guard: when it trips, extraction halts and no later members are
+processed regardless of `OnError`.
 
-```python
-class BombTracker:
-    def __init__(self, max_bytes: int, max_ratio: float,
-                 ratio_activation_threshold: int = 5 * 2**20):  # 5 MiB
-        self._max_bytes = max_bytes
-        self._max_ratio = max_ratio
-        self._ratio_floor = ratio_activation_threshold
-        self._total_bytes = 0          # cumulative across all members
-        self._member_bytes = 0         # output bytes for the current member
-        self._member: ArchiveMember | None = None
+#### Scenario: cumulative byte limit matrix
 
-    def start_member(self, member: ArchiveMember) -> None:
-        # Called with the ORIGINAL member (not a filter copy), so compressed_size
-        # and any late-bound fields are the accurate source values.
-        self._member = member
-        self._member_bytes = 0
-
-    def count(self, chunk_bytes: int) -> None:
-        self._total_bytes += chunk_bytes
-        self._member_bytes += chunk_bytes
-        if self._total_bytes > self._max_bytes:
-            raise ExtractionError(
-                f"Extraction limit reached: {self._total_bytes} bytes > {self._max_bytes}"
-            )
-        # The ratio is only evaluated once THIS member's output exceeds the
-        # activation threshold, so a tiny but highly-compressible legitimate file
-        # (e.g. 10 bytes -> 15 KiB = 1500:1) cannot trip a false positive.
-        cs = self._member.compressed_size if self._member else None
-        if self._member_bytes > self._ratio_floor and cs and cs > 0:
-            ratio = self._member_bytes / cs
-            if ratio > self._max_ratio:
-                raise ExtractionError(
-                    f"Decompression ratio {ratio:.0f}:1 exceeds limit {self._max_ratio:.0f}:1"
-                )
-```
-
-The default of 2 GiB is sufficient for most legitimate use cases and prevents gigabyte-class bombs.
-
-#### Scenario: cumulative limit exceeded mid-extraction
-
-- **WHEN** the running total of bytes written across all extracted members exceeds `max_extracted_bytes`
-- **THEN** `ExtractionError` is raised immediately at the chunk boundary where the limit is crossed
-- **AND** extraction halts; no further members are processed
-
-#### Scenario: caller raises the default limit
-
-- **WHEN** `archivey.extract(..., max_extracted_bytes=10 * 2**30)` is called
-- **THEN** the enforced cumulative limit is 10 GiB rather than the default 2 GiB
-
----
+| Case | Expected |
+| --- | --- |
+| Running written-byte total crosses `max_extracted_bytes` | Immediate `ExtractionError`; extraction halts |
+| `ExtractionLimits(max_extracted_bytes=10 * 2**30)` | Enforced cumulative limit is 10 GiB |
+| `ExtractionLimits.UNLIMITED` | Cumulative byte guard is disabled |
 
 ### Requirement: Enforce Per-ArchiveMember Max Decompression Ratio
 
-The system SHALL raise `ExtractionError` when the decompression ratio for a single member exceeds `max_ratio` during extraction. The default ratio limit is 1000:1. The caller MAY override this by passing `max_ratio` to `extract()` or `extract_all()`.
+The system SHALL raise `ExtractionError` when a single member's output exceeds
+`max_ratio * member.compressed_size` after that member's output crosses
+`ratio_activation_threshold`. Defaults are `max_ratio=1000.0` and threshold
+5 MiB. The ratio is per-member output, not cumulative output, and is checked only
+when `member.compressed_size` is known and greater than zero. The original member
+is used so late-bound compressed-size metadata remains accurate.
 
-The ratio for a member is computed as `bytes_written_for_member / member.compressed_size` (per-member output, **not** the cumulative total). The check is performed only when `member.compressed_size` is known and greater than zero, **and** only after that member's output has exceeded a `ratio_activation_threshold` (default 5 MiB, caller-configurable). The threshold prevents false positives on tiny but legitimately highly-compressible files: a 10-byte source expanding to 15 KiB is a 1500:1 ratio yet harmless, whereas a real bomb expands to hundreds of MiB or GiB and trips the ratio only after crossing the floor. The default of 1000:1 is otherwise deliberately generous — typical DEFLATE compresses at 3:1 to 10:1, and even pathological quine-style zip bombs produce outer-layer ratios around 391:1 — so the limit catches only pathological cases without triggering on legitimately highly-compressible data.
+This guard SHALL be independent of cumulative bytes and archive-wide ratio
+guards. A ratio violation for one member is member-scoped and may be continued
+under `OnError.CONTINUE`; global guards remain always-stop.
 
-#### Scenario: single member exceeds ratio limit
+#### Scenario: per-member ratio matrix
 
-- **WHEN** a single member decompresses to more than `max_ratio` times its compressed size **and** its output has passed the `ratio_activation_threshold`
-- **THEN** `ExtractionError` is raised while processing that member
-
-#### Scenario: tiny highly-compressible file below the activation threshold is not flagged
-
-- **WHEN** a member's output exceeds `max_ratio` times its compressed size but stays under the `ratio_activation_threshold` (default 5 MiB) — e.g. a few bytes expanding to a few KiB
-- **THEN** no `ExtractionError` is raised; the ratio check does not activate until the member's output crosses the threshold
-
-#### Scenario: ratio check skipped when compressed size is unknown
-
-- **WHEN** `member.compressed_size` is `None` or `0`
-- **THEN** the per-member ratio check is skipped; the cumulative byte limit still applies
-
-#### Scenario: caller lowers the ratio limit
-
-- **WHEN** `archivey.extract(..., max_ratio=100)` is called
-- **THEN** any member decompressing at more than 100:1 raises `ExtractionError`
-
----
+| Case | Expected |
+| --- | --- |
+| Member output exceeds ratio after threshold | `ExtractionError` while processing that member |
+| Tiny highly-compressible member stays below threshold | No ratio error; threshold prevents false positive |
+| `compressed_size is None` or `0` | Per-member ratio skipped; cumulative/global guards still apply |
+| `ExtractionLimits(max_ratio=100)` | Members over 100:1 trip this guard |
 
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
-The system SHALL apply decompression bomb limits only during `extract()` and `extract_all()`. The `read()` and `open()` methods on `ArchiveReader` return raw decompressed data without enforcing any byte or ratio limits, leaving bomb detection entirely to the caller.
+The system SHALL apply extraction bomb limits only during `archivey.extract()` and
+`ArchiveReader.extract_all()`. `ArchiveReader.read()` and `ArchiveReader.open()`
+return decompressed data/streams without byte, ratio, or entry-count enforcement;
+callers are responsible for guarding direct reads.
 
-#### Scenario: read() returns data without bomb check
+#### Scenario: bomb-scope matrix
 
-- **WHEN** `reader.read(member)` is called on a member with an extreme decompression ratio
-- **THEN** the raw decompressed bytes are returned to the caller with no `ExtractionError` raised by the library
-
-#### Scenario: open() returns a stream without bomb check
-
-- **WHEN** `reader.open(member)` is called
-- **THEN** the returned `BinaryIO` stream delivers decompressed data without enforcing any limit; the caller is responsible for guarding against excessive reads
-
----
+| Case | Expected |
+| --- | --- |
+| `reader.read(member)` on extreme-ratio data | Raw decompressed bytes returned or normal read error; no extraction bomb guard |
+| `reader.open(member)` | Stream delivers decompressed data without extraction limits |
 
 ### Requirement: Progress Reporting via on_progress Callback
 
-The system SHALL accept an optional `on_progress` callback on `archivey.extract()` and `ArchiveReader.extract_all()`. The callback, if provided, SHALL be called once per member as that member is processed, receiving an `ExtractionProgress` instance.
+The system SHALL accept optional `on_progress` callbacks on both extraction APIs
+and call the callback once per processed member with `ExtractionProgress`:
 
 ```python
 @dataclass
 class ExtractionProgress:
     member: ArchiveMember
     bytes_written: int
-    total_bytes_estimated: int | None   # None if archive has no size info
+    total_bytes_estimated: int | None
     members_done: int
     members_total: int | None
 ```
 
-`total_bytes_estimated` is `None` when the archive format does not provide uncompressed size information. `members_total` is `None` when the total member count cannot be known without a full scan.
+`bytes_written` is cumulative for the operation. `total_bytes_estimated` is
+`None` when the format lacks uncompressed size information; `members_total` is
+`None` when the attempted member count cannot be known without a scan. When a
+free member list exists and a `members` selector is provided, totals SHALL cover
+only selected members. `members_done` counts every selected member processed,
+including user-filter skips and failures, so it reaches `members_total`;
+selector-excluded members are invisible. Predicate selectors evaluated against an
+upfront index MUST be pure functions of the member.
 
-**Totals cover what the call will attempt.** When a free member list exists and a
-`members` selector is given, `members_total` and `total_bytes_estimated` count only the
-**selected** members, and `members_done` counts every selected member processed —
-including members the user `filter` skips and members that fail (the filter runs only
-during extraction and cannot be pre-applied to the totals) — so `members_done` reaches
-`members_total` at the end. Selector-excluded members are invisible to progress. A
-predicate selector is evaluated against the upfront index (the already-filtered list is
-then reused as an identity selector for the pass itself), so it MUST be a pure function
-of the member; the collection form always is.
+#### Scenario: progress matrix
 
-#### Scenario: callback invoked per member
-
-- **WHEN** `archivey.extract("archive.zip", "/dest/", on_progress=cb)` is called
-- **THEN** `cb` is invoked once for each member processed, with an `ExtractionProgress` carrying that member, cumulative `bytes_written`, and counters for members completed and total
-
-#### Scenario: total_bytes_estimated is None for formats without size info
-
-- **WHEN** the archive format cannot provide uncompressed sizes (e.g. a GZ stream)
-- **THEN** `ExtractionProgress.total_bytes_estimated` is `None` for every callback invocation
-
----
+| Case | Expected |
+| --- | --- |
+| `extract(..., on_progress=cb)` | `cb` called once per processed member with cumulative bytes and counters |
+| Format cannot provide uncompressed sizes | `total_bytes_estimated is None` |
+| Free list + selector | Totals cover selected members only; filter skips/failures still advance `members_done` |
 
 ### Requirement: Per-ArchiveMember ExtractionResult with Status
 
-`ExtractionReport.results` SHALL contain one `ExtractionResult` for every selected member
-the extraction coordinator processes when the operation completes. This includes a member
-rejected by universal/policy safety checks before the user filter runs. Selector-excluded
-members are outside the operation and SHALL have no result.
+`ExtractionReport.results` SHALL contain one `ExtractionResult` for every
+selected member the coordinator processes when the operation completes, including
+members rejected by universal/policy checks before the user filter. Selector
+exclusions are outside the operation and have no result.
 
 ```python
 @dataclass(frozen=True)
@@ -659,120 +419,62 @@ class ExtractionStatus(str, Enum):
     FAILED = "failed"
 ```
 
-Statuses SHALL mean:
+Statuses SHALL mean: `EXTRACTED` created an entry (`path` set, `error=None`);
+`SKIPPED` intentionally bypassed writing because the user filter returned `None`
+or `OverwritePolicy.SKIP` found an existing destination (`path=None`,
+`error=None`); `REJECTED` is a continued `FilterRejectionError`; `FAILED` is a
+continued non-rejection per-member `ArchiveyError` or permitted filesystem
+`OSError`. `SKIPPED` is not a failure and emits no diagnostic.
 
-- `EXTRACTED`: an entry was successfully created; `path` is that path and `error=None`.
-- `SKIPPED`: writing was intentionally bypassed because the user filter returned `None`
-  or `OverwritePolicy.SKIP` found an existing destination; `path=None`, `error=None`.
-- `REJECTED`: a `FilterRejectionError` blocked the member under
-  `OnError.CONTINUE`; `path=None`, `error` is that rejection.
-- `FAILED`: another per-member `ArchiveyError` or permitted filesystem `OSError` failed
-  under `OnError.CONTINUE`; `path=None`, `error` is that failure.
+Continued `REJECTED`/`FAILED` results SHALL emit exactly one matching
+`EXTRACTION_MEMBER_REJECTED` / `EXTRACTION_MEMBER_FAILED` occurrence per result.
+`ExtractionResult` has no diagnostics field; `status` and `error` are the
+per-result outcome while diagnostics live in the report/reader aggregate. If one
+failed hardlink source causes `N` hardlink failures under `IGNORE` or `COLLECT`,
+the coordinator emits `N` ordered `EXTRACTION_MEMBER_FAILED` occurrences with
+shared `failure_group_id` and `failure_group_size=N`; under `RAISE`, the first
+ordered occurrence escalates immediately and no completed report/count guarantee
+applies.
 
-`SKIPPED` is not a failure and SHALL NOT itself emit a diagnostic. A continued rejection
-or failure SHALL emit `EXTRACTION_MEMBER_REJECTED` or
-`EXTRACTION_MEMBER_FAILED`. Those occurrences live only in the extraction/reader
-aggregate. `ExtractionResult` deliberately has no diagnostics field: `status` and `error`
-are the complete per-result outcome, independent of detail-retention budget.
+#### Scenario: result/status matrix
 
-Each continued `REJECTED` or `FAILED` result SHALL produce exactly one occurrence of its
-matching code. Thus exact extraction code counts equal result counts under `IGNORE` or
-`COLLECT`. If one failed hardlink source causes `N` hardlink results to fail under
-`IGNORE` or `COLLECT`, the coordinator SHALL emit `N` ordered
-`EXTRACTION_MEMBER_FAILED` occurrences, one naming each result member. Their contexts
-SHALL share `failure_group_id` and `failure_group_size=N`. Under `RAISE`, the first
-occurrence in result order escalates immediately; no completed report or `N`-occurrence
-guarantee applies.
-
-#### Scenario: user-filter skip is represented
-
-- **WHEN** a selected member's user filter returns `None`
-- **THEN** the report includes that member with `SKIPPED`, `path=None`, `error=None`, and no skip diagnostic
-
-#### Scenario: selector exclusion is not a skip result
-
-- **WHEN** a selector excludes a member before extraction
-- **THEN** that member has no `ExtractionResult` and does not affect report result counts
-
-#### Scenario: rejection and failure are distinct
-
-- **WHEN** one member is blocked by `PathTraversalError` and another encounters a write `OSError`, both under `OnError.CONTINUE`
-- **THEN** their results are respectively `REJECTED` and `FAILED`, with matching errors and diagnostic codes
-
-#### Scenario: group hardlink failure counts results
-
-- **WHEN** one failed source causes three hardlink members to receive `FAILED` results under `OnError.CONTINUE`
-- **THEN** the report count for `EXTRACTION_MEMBER_FAILED` increases by three and the three retained contexts, if budget permits, share one failure-group id and size three
-
-#### Scenario: successfully extracted member
-
-- **WHEN** a member is written to disk without error
-- **THEN** its `ExtractionResult` has `status=ExtractionStatus.EXTRACTED` and `path` pointing to the file on disk
-
-#### Scenario: skipped member due to OverwritePolicy.SKIP
-
-- **WHEN** a member's destination path already exists and `OverwritePolicy.SKIP` is active
-- **THEN** the member's `ExtractionResult` has `status=ExtractionStatus.SKIPPED` and `path=None`
+| Case | Expected |
+| --- | --- |
+| User filter returns `None` | Result is `SKIPPED`, `path=None`, `error=None`, no skip diagnostic |
+| Selector excludes member | No `ExtractionResult`; no result-count impact |
+| Member blocked by `PathTraversalError` under `CONTINUE` | Result is `REJECTED` with matching error and diagnostic |
+| Member write raises `OSError` under `CONTINUE` | Result is `FAILED` with matching error and diagnostic |
+| Member written successfully | Result is `EXTRACTED`, `path` points to created entry |
+| Existing destination under `OverwritePolicy.SKIP` | Result is `SKIPPED`, `path=None` |
+| One failed source causes three hardlink results to fail | Failed count increases by three; retained contexts, if budget permits, share one failure group id/size |
 
 ### Requirement: Error Policy (OnError) for extraction failures
 
-`OnError.STOP` and `CONTINUE` SHALL retain their per-member meanings, but diagnostic
-disposition composes as follows:
+`OnError.STOP` and `OnError.CONTINUE` SHALL govern per-member failures only.
+Under `CONTINUE`, a member-scoped `FilterRejectionError`, other member-scoped
+`ArchiveyError`, permitted read/write `OSError`, or per-member ratio violation
+records `REJECTED`/`FAILED`, removes partial output, emits the matching diagnostic
+under the active diagnostic policy, and proceeds.
 
-- Under `IGNORE` or `COLLECT`, `CONTINUE` records `REJECTED`/`FAILED` and proceeds.
-- Under `RAISE`, emission raises `DiagnosticRaisedError`; this is an always-stop control
-  exception and SHALL NOT be caught, converted to `REJECTED`/`FAILED`, or suppressed by
-  `OnError.CONTINUE`.
-- A diagnostic logging-handler or callback exception likewise propagates unchanged and is
-  always-stop.
-- Existing global resource guards, `KeyboardInterrupt`, `MemoryError`, and unexpected
-  programming exceptions remain always-stop.
+Diagnostic disposition SHALL still be authoritative: `RAISE` emits
+`DiagnosticRaisedError` and halts immediately even under `OnError.CONTINUE`;
+logging-handler and diagnostic-callback exceptions propagate unchanged. Under
+`STOP`, the genuine rejection/failure raises immediately and is not converted to
+an extraction advisory. Global resource guards, `KeyboardInterrupt`,
+`MemoryError`, and unexpected programming exceptions are always-stop and are not
+swallowed.
 
-Under `OnError.STOP`, the original rejection/failure raises immediately. It SHALL not also
-be converted to an extraction advisory, because the operation did not continue; genuine
-exceptions remain the source of truth for fatal failures.
+#### Scenario: OnError matrix
 
-A per-member failure remains a `FilterRejectionError`, another member-scoped
-`ArchiveyError`, or a filesystem `OSError` raised while reading/writing that member.
-Under `CONTINUE`, partial output is removed before recording the result. A per-member
-ratio violation remains continuable; cumulative bytes, archive-wide/live ratio, and
-entry-count guards remain global always-stop limits. Exceptions outside the documented
-`ArchiveyError` / per-member `OSError` set are never swallowed.
-
-#### Scenario: collected continued failure returns in report
-
-- **WHEN** a corrupt member fails under `OnError.CONTINUE` and default diagnostic policy
-- **THEN** extraction logs/collects `EXTRACTION_MEMBER_FAILED`, records a `FAILED` result, and continues
-
-#### Scenario: raised diagnostic defeats CONTINUE
-
-- **WHEN** `EXTRACTION_MEMBER_FAILED` resolves to `RAISE` under `OnError.CONTINUE`
-- **THEN** `DiagnosticRaisedError` carrying that occurrence halts extraction immediately and no report is returned
-
-#### Scenario: STOP raises the genuine failure without advisory duplication
-
-- **WHEN** a member raises `CorruptionError` under `OnError.STOP`
-- **THEN** that `CorruptionError` propagates immediately and no continued-failure diagnostic is emitted
-
-#### Scenario: filesystem error remains a continued member failure
-
-- **WHEN** writing one member raises `OSError` under `OnError.CONTINUE`
-- **THEN** partial output is removed, a `FAILED` result and `EXTRACTION_MEMBER_FAILED` occurrence are recorded, and extraction proceeds
-
-#### Scenario: global resource guard still halts
-
-- **WHEN** cumulative extracted bytes exceed their limit under `OnError.CONTINUE`
-- **THEN** `ExtractionError` propagates immediately and no later member is processed
-
-#### Scenario: STOP halts on the first failure
-
-- **WHEN** a member fails mid-extraction under the default `OnError.STOP`
-- **THEN** the exception is raised immediately, the failing member's partial file is removed, and no later members are processed (earlier ones stay on disk)
-
-#### Scenario: CONTINUE extracts the good members and reports the rest
-
-- **WHEN** an archive with some corrupt members is extracted under `OnError.CONTINUE`
-- **THEN** every extractable member is written, and the returned report contains `EXTRACTED` entries plus `FAILED`/`REJECTED` entries (each with its `error`); no exception is raised for the per-member failures
+| Case | Expected |
+| --- | --- |
+| Corrupt member under `CONTINUE` and default diagnostics | Partial output removed; `FAILED` result; `EXTRACTION_MEMBER_FAILED`; later members continue |
+| Extraction diagnostic resolves to `RAISE` under `CONTINUE` | `DiagnosticRaisedError` halts; no report returned |
+| `CorruptionError` under `STOP` | Original `CorruptionError` propagates; no continued-failure diagnostic |
+| Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result/diagnostic; extraction proceeds |
+| Cumulative bytes/live ratio/max entries exceed limit under `CONTINUE` | `ExtractionError` propagates and halts; no later member processed |
+| Default `STOP` member failure | Exception raises immediately; failing partial file removed; earlier outputs remain |
+| Mixed good/corrupt archive under `CONTINUE` | Extractable members are written; report includes `EXTRACTED` plus `FAILED`/`REJECTED`; no per-member exception escapes |
 
 ### Requirement: ExtractionReport is an immutable operation result
 
@@ -785,269 +487,113 @@ class ExtractionReport:
     diagnostics: DiagnosticSummary
 ```
 
-The summary SHALL preserve exact operation counts after detail retention is exhausted.
-The report SHALL not duplicate the cumulative reader collector or retain diagnostics
-beyond the configured shared budget.
+The report SHALL preserve fixed result outcomes and a point-in-time diagnostic
+summary with exact operation counts after retention is exhausted. It does not
+duplicate the cumulative reader collector or retain beyond the shared budget.
+Immutability is structural, not deep: `ExtractionResult.member` is the original
+mutable, caller-read-only `ArchiveMember`, whose documented late-bound metadata
+and diagnostics may still change; `error` may be an ordinary exception object.
 
-The report and each `ExtractionResult` freeze their structure, but this is not a deep
-freeze. `ExtractionResult.member` is the original mutable, caller-read-only
-`ArchiveMember`; its documented late-bound metadata and diagnostics MAY still change in
-place. `error` may likewise refer to an ordinary exception object. The fixed result
-outcomes and point-in-time `DiagnosticSummary` SHALL not change.
+#### Scenario: report immutability matrix
 
-#### Scenario: report remains a point-in-time value
-
-- **WHEN** a caller retains an extraction report and the reader later performs more work
-- **THEN** the result tuple/outcome fields and diagnostic summary remain unchanged, although a referenced member may receive documented late-bound metadata
+| Case | Expected |
+| --- | --- |
+| Caller keeps a report and reader later does more work | Result tuple/outcomes and diagnostic summary stay unchanged; referenced member may receive documented late-bound updates |
 
 ### Requirement: Archive-wide decompression ratio for solid containers
 
-The system SHALL evaluate an archive-wide decompression ratio during `extract()` /
-`extract_all()` when a member's `compressed_size` is unknown or zero but the reader exposes a
-known outer `compressed_source_size` (the byte size of the archive's source, generalized
-and **cheap-only** — it never reads or decompresses data to answer: a path source is
-`stat`-ed; an integer `size` attribute is trusted (the fsspec convention, which archivey's
-own member/codec stream wrappers also expose from archive metadata or a cheap
-index/trailer scan — so a *nested* archive opened from a member stream gets its source
-size for free); a `try_get_size()` method (archivey's decompressor streams) is the final
-answer for streams whose end-seek would decompress; and a `SEEK_END`/restore probe runs
-only for provably O(1) types (real files, `BytesIO`, `mmap`). Anything else — notably any
-foreign decompressor stream like `gzip.GzipFile`, whose end-seek decodes the whole
-payload — yields `None`. For zip/7z/rar/compressed-tar this *is* the compressed size; for
-an uncompressed container the resulting ~1:1 ratio never trips the guard, which is why
-reporting it for every source is safe), computed as:
+The system SHALL evaluate a static archive-wide ratio during extraction when a
+member's `compressed_size` is unknown/zero and the reader exposes a cheap
+`compressed_source_size`. The denominator is the archive source byte size: path
+`stat`, trusted integer `size`, `try_get_size()` from Archivey streams, or an
+O(1)-safe `SEEK_END`/restore probe for real files, `BytesIO`, and `mmap`.
+Anything that would decompress or scan payload to answer (for example foreign
+decompressor streams) yields `None`. For compressed containers this is compressed
+size; for uncompressed containers the resulting ratio is about 1:1 and harmless.
 
-```
-cumulative_bytes_written / compressed_source_size
-```
+The ratio SHALL be `cumulative_bytes_written / compressed_source_size`, checked
+in `BombTracker.count()` using the same `max_ratio` and cumulative
+`ratio_activation_threshold` as other ratio guards. If `compressed_source_size`
+is absent, the static archive-wide check is skipped. Per-member and archive-wide
+ratios are independent; either may trip first.
 
-using the same `max_ratio` limit and `ratio_activation_threshold` (default 5 MiB) as the
-per-member ratio check. The check SHALL run in `BombTracker.count()` alongside the
-cumulative `max_extracted_bytes` guard. Unlike the per-member ratio (which activates on the
-**current member's** output), the archive-wide ratio activates on the **cumulative** output
-across the call: it is evaluated only once `_total_bytes` exceeds `ratio_activation_threshold`.
-When `compressed_source_size` is `None` (a source whose size is not cheaply knowable),
-the archive-wide ratio check is skipped.
+#### Scenario: static archive-wide ratio matrix
 
-The `compressed_source_size` is supplied to the `BombTracker` once per extraction call (the
-coordinator reads it from the reader and passes it to the constructor):
-
-```python
-class BombTracker:
-    def __init__(self, max_bytes: int, max_ratio: float,
-                 ratio_activation_threshold: int = 5 * 2**20,  # 5 MiB
-                 compressed_source_size: int | None = None,
-                 max_entries: int = 1_048_576):   # entry-count guard (see below)
-        ...
-        self._compressed_source_size = compressed_source_size
-        self._max_entries = max_entries
-        self._entry_count = 0
-
-    def start_member(self, member: ArchiveMember) -> None:
-        # ... (records the ORIGINAL member as before), plus the entry-count guard:
-        self._entry_count += 1
-        if self._entry_count > self._max_entries:
-            raise ExtractionError(
-                f"Entry-count limit reached: {self._entry_count} > {self._max_entries}"
-            )
-
-    def count(self, chunk_bytes: int) -> None:
-        self._total_bytes += chunk_bytes
-        self._member_bytes += chunk_bytes
-        if self._total_bytes > self._max_bytes:
-            raise ExtractionError(...)                 # cumulative byte guard (unchanged)
-        # Per-member ratio: activates on the current member's output (unchanged).
-        cs = self._member.compressed_size if self._member else None
-        if self._member_bytes > self._ratio_floor and cs and cs > 0:
-            if self._member_bytes / cs > self._max_ratio:
-                raise ExtractionError(...)
-        # Archive-wide ratio: activates on the cumulative output; only when the outer
-        # compressed size is known. Independent of the per-member guard above.
-        css = self._compressed_source_size
-        if self._total_bytes > self._ratio_floor and css and css > 0:
-            if self._total_bytes / css > self._max_ratio:
-                raise ExtractionError(...)
-```
-
-Per-member ratio (when `member.compressed_size` is known and greater than zero) and
-archive-wide ratio are independent guards; either may trip first.
-
-#### Scenario: compressed tar extract trips archive-wide ratio
-
-- **WHEN** a small `.tar.gz` (known file size) is extracted and cumulative output exceeds
-  `max_ratio` times the file size after crossing the activation threshold
-- **THEN** `ExtractionError` is raised during extraction
-
-#### Scenario: archive-wide ratio skipped when outer size unknown
-
-- **WHEN** a compressed tar is extracted from a non-seekable pipe with unknown total size
-- **THEN** the archive-wide ratio check is not applied
-- **AND** the cumulative `max_extracted_bytes` limit still applies
-
-#### Scenario: plain tar has no archive-wide ratio
-
-- **WHEN** a plain `.tar` is extracted
-- **THEN** the archive-wide ratio check is not applied (no compressed outer stream)
-
-#### Scenario: ZIP keeps per-member ratio
-
-- **WHEN** a ZIP member with known `compressed_size` is extracted
-- **THEN** the per-member ratio check applies as today
-- **AND** the archive-wide ratio is not used in place of per-member `compressed_size`
-
----
+| Case | Expected |
+| --- | --- |
+| Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ExtractionError` during extraction |
+| Compressed tar from non-seekable pipe with unknown size | Static archive-wide ratio skipped; cumulative byte limit still applies |
+| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip |
+| ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
+| Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator |
 
 ### Requirement: Enforce Maximum Entry Count
 
-The system SHALL track the number of archive members **written to disk** during a single
-`extract()` / `extract_all()` call and SHALL raise `ExtractionError` when it exceeds
-`max_entries`. This guards against an **entry-count / inode-exhaustion bomb** — an archive
-packing an enormous number of tiny (often zero-byte) files or directories that overwhelms
-the filesystem (inodes, per-directory entries, per-file syscall overhead) *without*
-tripping `max_extracted_bytes` (there is little data) or the decompression ratio (each
-entry compresses normally).
+The system SHALL count members actually written to disk during one extraction call
+and raise `ExtractionError` once the count exceeds `max_entries`. The default is
+`1_048_576`; callers override through `ExtractionLimits`, and `None` disables the
+guard. The counter protects against inode/per-directory/syscall bombs made of many
+tiny entries and is independent of byte and ratio limits.
 
-Only members that will actually be written count toward the limit: a member excluded by
-the `members` selector or skipped by the user `filter` (returning `None`) or dropped by
-the policy transform creates nothing on disk and SHALL NOT increment the counter. The
-extraction coordinator calls `BombTracker.start_member()` only after the selector and
-filter have accepted a member and immediately before writing begins. Every written member
-type counts (FILE, DIR, SYMLINK, HARDLINK).
+Only members that will create disk entries SHALL count: selector exclusions, user
+filter skips, and members dropped before writing do not increment the counter.
+Every written FILE, DIR, SYMLINK, and HARDLINK counts. This is a global resource
+guard and halts even under `OnError.CONTINUE`.
 
-Like the cumulative `max_extracted_bytes` limit, this is a global resource guard, so
-exceeding it halts extraction **even under `OnError.CONTINUE`** (continuing would defeat
-the guard). The caller supplies the limit via `config.extraction_limits.max_entries` or
-the per-call `limits` override (see the configuration requirement above). The default is
-`1_048_576` (2²⁰) entries — generous enough for large legitimate archives (a Linux
-source tarball or a `node_modules` bundle can hold hundreds of thousands of files) while
-still bounding a pathological many-entries bomb. This limit is independent of the byte
-and ratio guards; any of them may trip first.
+#### Scenario: entry-count matrix
 
-#### Scenario: archive with too many written entries is rejected
-
-- **WHEN** an archive containing more than `max_entries` members is extracted in full
-- **THEN** `ExtractionError` is raised once the count of written members crosses the limit, and extraction halts even under `OnError.CONTINUE`
-
-#### Scenario: caller overrides the entry-count limit
-
-- **WHEN** `archivey.extract(src, dest, limits=ExtractionLimits(max_entries=100))` is called on an archive with more than 100 members
-- **THEN** `ExtractionError` is raised after the 100th member is written
-
-#### Scenario: selector and filter skips do not count
-
-- **WHEN** `reader.extract_all(dest, members=["one.txt"], limits=ExtractionLimits(max_entries=1))` is called on an archive with millions of members
-- **THEN** extraction completes without tripping the entry-count guard, because only the selected member is written
-
-#### Scenario: entry count is independent of byte and ratio limits
-
-- **WHEN** an archive of many tiny files stays well under `max_extracted_bytes` and never trips the decompression ratio but more than `max_entries` members are written
-- **THEN** `ExtractionError` is still raised on the entry-count guard
-
----
+| Case | Expected |
+| --- | --- |
+| More than `max_entries` members are written | `ExtractionError` once the count crosses the limit; extraction halts under any `OnError` |
+| `ExtractionLimits(max_entries=100)` | Error after the 100th written member when the 101st would be written |
+| Selector chooses one member from millions | Extraction can complete with `max_entries=1` because only selected written entries count |
+| Many tiny files stay below byte/ratio limits but exceed entry count | Entry-count guard still raises |
 
 ### Requirement: Symlink extraction is target-independent and fails safe on unsupported filesystems
 
-The system SHALL create SYMLINK members as symbolic references via `os.symlink()` without
-requiring the link's target to exist or to be among the extracted members. Unlike a hardlink
-(which needs a real inode and therefore its source materialized), a symlink is a stored path
-string, so a symlink whose target was filtered out, appears later in the archive, or lies
-outside the archive is created as-is and MAY dangle — the only constraint is the universal
-symlink-escape check (the resolved target must remain within `dest`; see *Symlink Escape
-Re-Validated at Extraction Time*). No copy of the target is made.
+The system SHALL create SYMLINK members as symbolic references via
+`os.symlink()` without requiring the target to exist, to be selected, or to be
+inside the archive. A symlink may dangle and no target data is copied; the
+universal resolved-target escape check remains the only safety constraint on the
+link target.
 
-When the destination filesystem or platform cannot create a symlink (`os.symlink` raises
-`OSError`/`NotImplementedError` — e.g. FAT, or Windows without the symlink privilege), the
-member is a per-member failure handled by the `OnError` policy (STOP raises, CONTINUE records
-`FAILED`). The system SHALL NOT silently fall back to copying the target's data.
+If the platform or destination filesystem cannot create symlinks and
+`os.symlink()` raises `OSError` or `NotImplementedError`, the member SHALL be a
+per-member failure governed by `OnError`. Archivey does not silently copy target
+data as Python `tarfile` may do on symlink-unsupported platforms.
 
-**Deliberate deviation from `tarfile`.** Python's `tarfile`, on a symlink-unsupported
-platform, silently copies the in-archive target's data into a regular file at the link path
-(raising `ExtractError` only if the target isn't in the archive). Archivey does **not**: that
-converts a symbolic reference into a materialized file and bypasses the symlink-escape
-guarantees, so a failure is surfaced via `OnError` instead. A future opt-in policy may offer a
-`tarfile`-style copy fallback (tracked in `IDEAS.md`), but the safe behavior is the default.
+#### Scenario: symlink extraction matrix
 
-#### Scenario: symlink to a filtered-out member is created dangling
-
-- **WHEN** a SYMLINK member whose target is another member excluded by the `members` selector / `filter` is extracted, and its resolved target stays within `dest`
-- **THEN** the symlink is created pointing at the (absent) target and may dangle; no copy of the target is made and no error is raised
-
-#### Scenario: symlink on a filesystem without symlink support follows OnError
-
-- **WHEN** `os.symlink` raises `OSError`/`NotImplementedError` because the destination filesystem or platform cannot create symlinks
-- **THEN** it is a per-member failure: `OnError.STOP` raises and `OnError.CONTINUE` records a `FAILED` `ExtractionResult` and proceeds; the target's data is not copied in its place
-
----
+| Case | Expected |
+| --- | --- |
+| SYMLINK target member is excluded by selector/filter and resolved target stays in `dest` | Symlink is created and may dangle; target data is not copied |
+| SYMLINK target appears later or outside the archive but stays in `dest` | Symlink is created as stored; no target materialization |
+| `os.symlink` unsupported raises `OSError`/`NotImplementedError` | `STOP` raises; `CONTINUE` records `FAILED`; no copy fallback |
 
 ### Requirement: Live archive-wide decompression ratio for unknown-size streams
 
-The system SHALL evaluate a **live** archive-wide decompression ratio during `extract()` /
-`extract_all()` when neither a per-member `compressed_size` nor a cheap outer
-`compressed_source_size` is available to serve as a denominator — a compressed archive (e.g. a
-`.tar.gz`) read from a non-seekable pipe, **or from a seekable stream whose size is not cheaply
-knowable** (not a whitelisted O(1)-seek type, no `size` attribute, no `try_get_size()`), where
-otherwise only the cumulative `max_extracted_bytes` cap would apply. A compressed backend
-therefore wraps any stream source whose `source_byte_size()` is `None` in the counting reader —
-the exact complement of the static denominator, so one of the two is always available.
+The system SHALL evaluate a live archive-wide ratio during extraction when no
+per-member `compressed_size` and no cheap static `compressed_source_size` is
+available, but the compressed backend can expose `compressed_bytes_consumed`.
+This covers compressed archives from non-seekable pipes and seekable opaque
+streams whose size is not cheaply knowable. Backends wrap the stream source in
+the counting reader exactly when the static denominator is absent.
 
-The live ratio is computed as:
+The ratio SHALL be `cumulative_bytes_written / compressed_bytes_consumed`, checked
+after cumulative output crosses `ratio_activation_threshold` using the same
+`max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
+under `OnError.CONTINUE`. The live path complements static checks and is not used
+when member compressed sizes or a cheap outer source size provide a denominator;
+whichever available guard trips first wins. Codec-layer seeks may re-read counted
+bytes, inflating the denominator and weakening the guard, but never causing a
+false positive.
 
-```
-cumulative_bytes_written / compressed_bytes_consumed
-```
+#### Scenario: live archive-wide ratio matrix
 
-where `compressed_bytes_consumed` is the running count of compressed bytes pulled from the
-archive's outer source (see the `compressed-streams` capability). `BombTracker` SHALL raise
-`ExtractionError` once this ratio exceeds `max_ratio`, evaluated only after the cumulative
-output (`_total_bytes`) passes `ratio_activation_threshold` (default 5 MiB) — the same limit and
-floor as the static ratio checks.
-
-Because compressed bytes cannot be attributed to a single member in a solid or streamed
-container, the live ratio is a **cumulative / archive-wide** guard: it extends the existing
-archive-wide ratio with a live denominator. It is a global resource guard, so like the
-cumulative `max_extracted_bytes` and `max_entries` limits it halts extraction **even under
-`OnError.CONTINUE`**.
-
-This guard **complements** the static checks and does not replace them:
-
-- When `member.compressed_size` is known (ZIP), the per-member ratio still applies.
-- When `compressed_source_size` is known (a size-probeable compressed archive), the static
-  archive-wide ratio applies and the live path is **not** used (no double-counting).
-- The live path engages only when both static denominators are absent and a
-  `compressed_bytes_consumed` count is available.
-
-Whichever guard has a usable denominator may trip first.
-
-#### Scenario: streaming tar.gz bomb from a pipe is caught by the live ratio
-
-- **WHEN** a highly compressible `.tar.gz` is extracted from a non-seekable pipe (so
-  `compressed_source_size` is `None` and TAR members have no `compressed_size`) and its output
-  exceeds `max_ratio` times the compressed bytes consumed after crossing the activation threshold
-- **THEN** `ExtractionError` is raised during extraction, before the absolute `max_extracted_bytes`
-  cap is reached
-
-#### Scenario: live ratio halts even under OnError.CONTINUE
-
-- **WHEN** the live archive-wide ratio is exceeded during a `CONTINUE` extraction
-- **THEN** `ExtractionError` is raised and extraction halts regardless of `on_error`
-
-#### Scenario: uncompressed stream does not trip the live ratio
-
-- **WHEN** a plain (uncompressed) `.tar` is extracted from a pipe, so consumed ≈ written (~1:1)
-- **THEN** the live ratio never trips; the cumulative `max_extracted_bytes` limit still applies
-
-#### Scenario: known outer size keeps the static archive-wide ratio
-
-- **WHEN** a `.tar.gz` with a cheaply knowable `compressed_source_size` is extracted
-- **THEN** the static archive-wide ratio is used and the live path is not engaged (the ratio is
-  not counted twice)
-
-#### Scenario: seekable stream with no cheap size still gets the live ratio
-
-- **WHEN** a compressed archive is extracted from a *seekable* stream whose size is not cheaply
-  knowable (an opaque stream type: not whitelisted for `SEEK_END`, no `size` attribute, no
-  `try_get_size()`), so `compressed_source_size` is `None`
-- **THEN** the source is wrapped in the counting reader and the live archive-wide ratio applies —
-  the archive is not left with only the `max_extracted_bytes` cap. (Codec-layer seeks may re-read
-  counted bytes; that only inflates the denominator, weakening the guard, never a false positive.)
-
+| Case | Expected |
+| --- | --- |
+| Highly compressible `.tar.gz` from non-seekable pipe has no static denominator | Live ratio raises `ExtractionError` after threshold before absolute byte cap |
+| Live ratio exceeded under `OnError.CONTINUE` | `ExtractionError` propagates and extraction halts |
+| Plain uncompressed `.tar` from a pipe | Consumed and written bytes stay about 1:1; live ratio does not trip; byte limit still applies |
+| `.tar.gz` has cheap `compressed_source_size` | Static archive-wide ratio is used; live path is not engaged/double-counted |
+| Seekable opaque compressed stream has no cheap size/`size`/`try_get_size()`/O(1) end seek | Source is counted live; archive is not left with only the byte cap |
