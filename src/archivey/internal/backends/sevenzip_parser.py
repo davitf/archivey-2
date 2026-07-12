@@ -976,7 +976,35 @@ def _read_real_uint64(buffer: BinaryIO) -> int:
 
 
 def _read_exact(buffer: BinaryIO, length: int, context: str) -> bytes:
-    data = read_exact(buffer, length)
+    """Read ``length`` bytes, or raise a typed error for hostile/truncated claims.
+
+    Hostile headers often advertise a multi-EiB property payload via a 7z UINT64. Asking
+    ``BytesIO.read`` for a value that does not fit in a C ``ssize_t`` raises a raw
+    ``OverflowError``; even a "merely" multi-GiB claim would OOM. Bound against the
+    remaining buffer (when seekable) and a hard ceiling before calling into the stream.
+    """
+    if length < 0:
+        raise CorruptionError(f"Negative length for {context}: {length}")
+    if length > _MAX_NEXT_HEADER_SIZE:
+        raise CorruptionError(
+            f"Claimed {context} length {length} exceeds the "
+            f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
+        )
+    try:
+        remaining = _buffer_len(buffer) - buffer.tell()
+    except (OSError, OverflowError, ValueError):
+        remaining = None
+    if remaining is not None and length > remaining:
+        raise CorruptionError(
+            f"Truncated {context}: claimed {length} bytes, only {remaining} remain"
+        )
+    try:
+        data = read_exact(buffer, length)
+    except OverflowError as exc:
+        # Belt-and-suspenders: some stream types still reject large ``n`` as OverflowError.
+        raise CorruptionError(
+            f"Claimed {context} length {length} is not representable as a read size"
+        ) from exc
     if len(data) != length:
         raise CorruptionError(f"Truncated {context}: expected {length} bytes")
     return data

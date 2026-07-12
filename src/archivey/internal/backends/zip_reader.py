@@ -39,6 +39,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     StreamNotSeekableError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
@@ -134,6 +135,10 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     UnicodeDecodeError,
     ValueError,
     OSError,
+    # stdlib zipfile raises bare EOFError when a member's local data is truncated
+    # mid-read (e.g. a corrupt symlink target during listing). Must be translated
+    # like the other member-read errors — otherwise it escapes as a raw exception.
+    EOFError,
 )
 
 
@@ -408,6 +413,9 @@ class ZipReader(BaseArchiveReader):
             # when opening a member; a corrupt local header with non-UTF-8 name bytes
             # raises this. It is a bad-archive signal, not a caller/runtime error.
             return CorruptionError(f"Corrupt ZIP entry name in local header: {exc!r}")
+        if isinstance(exc, EOFError):
+            # Truncated member body (stdlib zipfile._ZipDecrypter / ZipExtFile._read2).
+            return TruncatedError(f"Truncated ZIP member data: {exc!r}")
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:

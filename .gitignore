@@ -10,3 +10,6 @@ coverage.xml
 # MkDocs build output / Material cache
 site/
 .cache/
+
+# Local Atheris crash / corpus output (CI uploads these as job artifacts)
+artifacts/

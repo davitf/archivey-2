@@ -139,3 +139,23 @@ longer load-bearing and the wrapper could be simplified.
   records each accelerator stream's creation stack, and reports any left un-closed at shutdown.
 - `scripts/macos_accelerator_debug.py` — characterises the finalization behaviour (Bug 1) across
   raw vs. guarded × cleanup strategies, each in its own subprocess.
+
+## Windows intermittent heap corruption in 7z codec roundtrips (mitigated)
+
+**Status: mitigated in tests; root cause not pinned.** On `windows-latest` / Python 3.14 the
+full suite has occasionally aborted mid
+`tests/test_sevenzip_reader.py::test_py7zr_codec_fixtures_roundtrip` with
+`Windows fatal exception: code 0xc0000374` (`STATUS_HEAP_CORRUPTION`). The same matrix is green
+on Windows/py3.11 and on Linux/macOS; re-runs of identical commits often pass. The crash stack
+points at `_assert_roundtrip` / native codec reads (py7zr-built fixtures: LZMA2, BCJ, PPMd,
+brotli, …), but heap corruption is typically detected *after* the guilty native call, so the
+exact codec/library is not reliably identified from one failure.
+
+**Mitigation:** on `win32`, each codec parametrization of that test runs in its own subprocess
+with faulthandler enabled and flushed phase breadcrumbs (`phase.txt`: build → open → list →
+per-member read). A native abort then fails only that label; the pytest failure message includes
+NTSTATUS (named when known), last phase, native-lib versions/paths, and child stdout/stderr —
+so the next occurrence should name the codec and the step that died. Not a product-runtime
+change. If a specific codec starts failing consistently under isolation, treat that as a
+reproducible lead against the corresponding native wheel (`pyppmd` / `brotli` / `pybcj` / …).
+
