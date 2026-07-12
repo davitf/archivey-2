@@ -4,6 +4,23 @@
 > codec and why — including why `rapidgzip` is the single accelerator library (the issue below)
 > and why an `indexed_zstd` zstd accelerator would face the same constraint.
 
+## Importing the ISO backend patches pycdlib process-globally (by design)
+
+`import archivey` eagerly imports the ISO backend to register it, and that import installs a
+directory-cycle guard **into pycdlib's own namespace**: `iso_reader._install_pycdlib_directory_cycle_guard()`
+replaces `pycdlib.pycdlib.collections` with a proxy whose `deque` subclass drops a directory
+record whose extent it has already scheduled. Without it, a corrupt/crafted ISO whose directory
+records close a cycle (a child extent pointing back at an ancestor) loops forever in pycdlib's
+plain-`deque` tree walk — the mutation harness found a Joliet case (see
+`test_pycdlib_directory_cycle_does_not_hang`).
+
+The guard is confined to pycdlib (not a global `collections.deque` swap), installed once and
+permanently, and is transparent on well-formed images (valid trees never revisit an extent). The
+one thing to be aware of: a program that **also uses pycdlib directly** in the same process will
+see archivey's guarded `deque` in pycdlib's namespace too. That is a deliberate trade — hang-safety
+on hostile input over leaving another library's pycdlib untouched — and the guard is a strict
+superset of pycdlib's own behaviour on valid trees, so it does not change correct results.
+
 ## Random-access accelerators on macOS (resolved)
 
 **Status:** resolved. archivey uses a single accelerator library — `rapidgzip` — for both gzip

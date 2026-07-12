@@ -18,6 +18,15 @@ compressed ``.iso.xz`` is a single-file compressor wrapping the image, not mount
 needs the archive to start at ``tell() == 0`` — which ``open_archive`` guarantees by
 wrapping any mid-positioned seekable stream in a zero-origin view before handing it to
 a backend (the stream-position contract in ``format-detection``).
+
+**Process-global side effect.** Importing this module (which ``import archivey`` does
+eagerly, to register backends) installs a directory-cycle guard *into pycdlib's own
+namespace* by replacing ``pycdlib.pycdlib.collections`` with a proxy whose ``deque``
+tracks visited extents — see :func:`_install_pycdlib_directory_cycle_guard`. It is
+confined to pycdlib and transparent on well-formed images, but a program that also uses
+pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
+is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
+``docs/internal/known-issues.md``.
 """
 
 from __future__ import annotations
