@@ -168,19 +168,14 @@ class TarReader(BaseArchiveReader):
         # streaming readers also take a lock (exclusive / normally uncontended) so the
         # same critical-section shape covers init, progressive walk, extractfile, EOF,
         # and close (tar-concurrent-open 2.6).
-        self._handle_lock: threading.Lock | None = (
+        self._handle_lock = (
             threading.Lock()
             if MemberStreams.CONCURRENT in member_streams or streaming
             else None
         )
 
         try:
-            if self._handle_lock is not None:
-                with self._handle_lock:
-                    self._tar = self._open_tarfile(
-                        source, format, streaming, member_streams=member_streams
-                    )
-            else:
+            with self._handle_guard():
                 self._tar = self._open_tarfile(
                     source, format, streaming, member_streams=member_streams
                 )
@@ -272,10 +267,7 @@ class TarReader(BaseArchiveReader):
         try:
             # Pinned-library audit: TarFile.getmembers() drives seek/tell/read through
             # _load()/next() on the shared fileobj — must run under the handle lock.
-            if self._handle_lock is not None:
-                with self._handle_lock:
-                    members = self._tar.getmembers()  # forces the full header scan
-            else:
+            with self._handle_guard():
                 members = self._tar.getmembers()  # forces the full header scan
         except tarfile.TarError as exc:
             # A genuine OSError from the source is not caught here, so it propagates unchanged.
@@ -327,10 +319,7 @@ class TarReader(BaseArchiveReader):
             for member in self._begin_forward_pass():
                 if member.is_file:
                     info = cast("tarfile.TarInfo", member._raw)
-                    if self._handle_lock is not None:
-                        with self._handle_lock:
-                            raw = self._tar.extractfile(info)
-                    else:
+                    with self._handle_guard():
                         raw = self._tar.extractfile(info)
                     if raw is None:
                         raw = BytesIO(b"")
@@ -369,10 +358,7 @@ class TarReader(BaseArchiveReader):
         fileobj = self._tar.fileobj
         if fileobj is None:
             return
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                chunk = fileobj.read(512)
-        else:
+        with self._handle_guard():
             chunk = fileobj.read(512)
         if len(chunk) == 512 and chunk == b"\x00" * 512:
             return
@@ -512,10 +498,7 @@ class TarReader(BaseArchiveReader):
         raw_exc: tarfile.TarError | None = None
         raw: BinaryIO | None
         try:
-            if self._handle_lock is not None:
-                with self._handle_lock:
-                    extracted = self._tar.extractfile(info)
-            else:
+            with self._handle_guard():
                 extracted = self._tar.extractfile(info)
             # tarfile stubs ``extractfile`` as ``IO[bytes] | None``; we need BinaryIO.
             raw = cast(BinaryIO | None, extracted)
@@ -565,20 +548,14 @@ class TarReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                self._tar.close()
-                if self._owned_stream is not None:
-                    self._owned_stream.close()
-                    self._owned_stream = None
-            return
-        self._tar.close()
-        # tarfile never closes an external fileobj, so close the decompression stream we
-        # opened ourselves (which in turn closes a path source it owns). A plain-tar path is
-        # opened by tarfile via name= and closed by tar.close() above.
-        if self._owned_stream is not None:
-            self._owned_stream.close()
-            self._owned_stream = None
+        with self._handle_guard():
+            self._tar.close()
+            # tarfile never closes an external fileobj, so close the decompression stream we
+            # opened ourselves (which in turn closes a path source it owns). A plain-tar path
+            # is opened by tarfile via name= and closed by tar.close() above.
+            if self._owned_stream is not None:
+                self._owned_stream.close()
+                self._owned_stream = None
 
 
 class TarReadBackend(ReadBackend):

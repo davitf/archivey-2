@@ -1,7 +1,8 @@
-"""Capture the ``open_archive()`` caller stack for capability-error breadcrumbs."""
+"""Capture the ``open_archive()`` caller location for capability-error breadcrumbs."""
 
 from __future__ import annotations
 
+import sys
 import traceback
 from dataclasses import dataclass
 from types import FrameType
@@ -9,12 +10,18 @@ from types import FrameType
 
 @dataclass(frozen=True)
 class OpenSite:
-    """Where the caller invoked ``open_archive`` (outside archivey frames)."""
+    """Where the caller invoked ``open_archive`` (outside archivey frames).
+
+    Only the ``file:line`` is captured — that is all any consumer reads (the
+    ``ConcurrentAccessError`` breadcrumb). We deliberately do NOT retain a full
+    ``traceback.extract_stack()`` snapshot: it cost an unconditional stack format on
+    every ``open_archive`` and held ``FrameSummary`` objects for the reader's whole
+    lifetime, which the founding "open millions of archives" dedupe workload pays for
+    with nothing reading it back.
+    """
 
     filename: str
     lineno: int
-    # Full stack snapshot retained for diagnostics (unconditional; open-time cost only).
-    stack: tuple[traceback.FrameSummary, ...]
 
     @property
     def location(self) -> str:
@@ -24,12 +31,11 @@ class OpenSite:
 def capture_open_site(
     *, skip_module_prefixes: tuple[str, ...] = ("archivey.",)
 ) -> OpenSite:
-    """Walk frames until the first non-archivey caller; keep the full stack."""
-    stack = tuple(traceback.extract_stack()[:-1])  # drop this helper frame
+    """Return the first non-archivey caller's ``file:line`` (cheap frame walk only)."""
     frame: FrameType | None = None
     try:
         # Start from the caller of this function.
-        frame = __import__("sys")._getframe(1)
+        frame = sys._getframe(1)
     except ValueError:
         frame = None
 
@@ -45,8 +51,9 @@ def capture_open_site(
             break
         frame = frame.f_back
     else:
-        # Fall back to the last non-archivey summary in the extracted stack.
-        for summary in reversed(stack):
+        # Frame introspection is unavailable (e.g. a Python without sys._getframe): fall
+        # back to the more expensive extracted stack, taken only on this rare path.
+        for summary in reversed(traceback.extract_stack()[:-1]):
             # extract_stack has no module name; use path heuristics.
             if "/archivey/" not in summary.filename.replace(
                 "\\", "/"
@@ -55,4 +62,4 @@ def capture_open_site(
                 lineno = summary.lineno or 0
                 break
 
-    return OpenSite(filename=filename, lineno=lineno, stack=stack)
+    return OpenSite(filename=filename, lineno=lineno)

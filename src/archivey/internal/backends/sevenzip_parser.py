@@ -567,8 +567,29 @@ def _read_substreams_info(
     return num_unpackstreams_folders, unpack_sizes, digests
 
 
+def _buffer_len(buffer: BinaryIO) -> int:
+    """Total byte length of a seekable in-memory buffer (the parser always feeds BytesIO)."""
+    pos = buffer.tell()
+    end = buffer.seek(0, io.SEEK_END)
+    buffer.seek(pos)
+    return end
+
+
 def _read_files_info(buffer: BinaryIO) -> tuple[list[SevenZipFileRecord], str | None]:
     num_files = _read_uint64(buffer)
+    # Bound the file count against the header size before pre-allocating one object per
+    # claimed file. Every real file must be described by at least one byte of header
+    # somewhere (a name, an empty-stream/anti/empty-file bit, or a mapped substream), so a
+    # count larger than the whole (already CRC-checked, size-bounded) header buffer is a
+    # crafted metadata bomb — a 5-byte field could otherwise request 2**40 allocations and
+    # OOM the process at open. See threat-model O1 / review L1. The CRC does NOT make the
+    # header trustworthy: an attacker crafting the archive computes a matching CRC.
+    header_size = _buffer_len(buffer)
+    if num_files > header_size:
+        raise CorruptionError(
+            f"7z file count {num_files} exceeds the {header_size}-byte header "
+            f"(each file needs at least one byte of metadata)"
+        )
     files = [_FileProps() for _ in range(num_files)]
     num_empty_streams = 0
     comment: str | None = None

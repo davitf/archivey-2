@@ -18,10 +18,9 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator, Mapping, cast
+from typing import Any, BinaryIO, Iterator, Mapping, NoReturn, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -64,6 +63,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     read_exact,
 )
+from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.zipcrypto import (
     parallel_plaintext_crc32,
     password_matches_check_byte,
@@ -120,6 +120,23 @@ _BACKSLASH_SEPARATOR_SYSTEMS: frozenset[CreateSystem] = frozenset(
 )
 
 
+# Raw exceptions a ZIP member open/read can raise that _translate_exception maps to typed
+# ArchiveyErrors. Declared once so the catch sites (member open, compressed-confirm decrypt,
+# symlink-target read) cannot drift apart — they previously did (one omitted
+# io.UnsupportedOperation), exactly the bug this constant prevents.
+_ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
+    zipfile.BadZipFile,
+    RuntimeError,
+    io.UnsupportedOperation,
+    NotImplementedError,
+    zlib.error,
+    lzma.LZMAError,
+    UnicodeDecodeError,
+    ValueError,
+    OSError,
+)
+
+
 def _decode_with_fallback(data: bytes) -> str:
     for encoding in _ZIP_ENCODINGS:
         try:
@@ -140,38 +157,11 @@ def _is_candidate_integrity_failure(exc: Exception) -> bool:
     )
 
 
-# Seconds between the NTFS FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
-_NTFS_EPOCH_OFFSET = 11_644_473_600
-
-
-@dataclass(frozen=True)
-class _TimestampIssue:
-    field: str
-    source: str
-    value_repr: str
-    message: str
-
-
-def _filetime_to_datetime(
-    value: int, filename: str, *, field: str
-) -> tuple[datetime | None, _TimestampIssue | None]:
-    """An NTFS FILETIME (100 ns ticks since 1601, UTC) as a datetime; 0 means "not set"."""
-    if value == 0:
-        return None, None
-    try:
-        return (
-            datetime.fromtimestamp(
-                value / 10_000_000 - _NTFS_EPOCH_OFFSET, tz=timezone.utc
-            ),
-            None,
-        )
-    except (ValueError, OverflowError, OSError):
-        return None, _TimestampIssue(
-            field=field,
-            source="ntfs",
-            value_repr=repr(value),
-            message=f"Invalid NTFS timestamp for {filename!r}: {value!r}",
-        )
+# NTFS FILETIME conversion + the shared TimestampIssue type live in internal.timestamps
+# (also used by the native 7z reader, and RAR later). Local aliases keep this module's
+# call sites — including the DOS date_time issue below — unchanged.
+_TimestampIssue = TimestampIssue
+_filetime_to_datetime = filetime_to_datetime
 
 
 def _zip_timestamps(
@@ -469,6 +459,16 @@ class ZipReader(BaseArchiveReader):
         )
 
         modified, accessed, created, ts_issues = _zip_timestamps(info)
+        # Surface the central-directory CRC-32 as a stored digest (archive-data-model spec:
+        # "ZIP CRC32 … stored under the 'crc32' int key"), so a dedupe pass can key on it
+        # without decompressing (VISION "hashes without decompression"). Only for FILE and
+        # SYMLINK members, which have data: a directory's stored CRC is a meaningless 0.
+        # zipfile still runs its own CRC check on read; this only exposes the datum.
+        hashes: dict[str, int] = (
+            {"crc32": info.CRC & 0xFFFFFFFF}
+            if member_type in (MemberType.FILE, MemberType.SYMLINK)
+            else {}
+        )
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -483,6 +483,7 @@ class ZipReader(BaseArchiveReader):
             is_encrypted=bool(info.flag_bits & 0x1),
             comment=_decode_with_fallback(info.comment) if info.comment else None,
             create_system=create_system,
+            hashes=hashes,
             extra={"zip.compress_type": info.compress_type},
             _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )
@@ -613,40 +614,34 @@ class ZipReader(BaseArchiveReader):
             if self._handle_lock is not None:
                 return CloseLockedStream(raw, self._handle_lock)
             return raw
-        except (
-            zipfile.BadZipFile,
-            RuntimeError,
-            io.UnsupportedOperation,
-            NotImplementedError,
-            zlib.error,
-            lzma.LZMAError,
-            UnicodeDecodeError,
-            ValueError,
-            OSError,
-        ) as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                if isinstance(translated, EncryptionError):
-                    raise translated from exc
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise_member_error(exc, member_name)
+
+    def _reraise_member_error(self, exc: Exception, member_name: str) -> NoReturn:
+        """Translate a raw member-read error, stamp it with member context, and raise.
+
+        An unrecognized exception (``_translate_exception`` returns ``None``) is re-raised
+        unchanged. An ``EncryptionError`` is raised without member stamping (it carries its
+        own message and must not be reclassified). Shared by the member-open and
+        compressed-confirm decrypt paths so their translate/stamp/raise tail stays identical.
+        """
+        translated = self._translate_exception(exc)
+        if translated is not None:
+            if not isinstance(translated, EncryptionError):
                 self._stamp_error_context(translated, member_name)
-                raise translated from exc
-            raise
+            raise translated from exc
+        raise
 
     def _zip_open_raw(
         self, info: zipfile.ZipInfo, *, password: bytes | None
     ) -> BinaryIO:
         """``ZipFile.open`` under the CONCURRENT handle lock when present."""
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                return cast("BinaryIO", self._archive.open(info, pwd=password))
-        return cast("BinaryIO", self._archive.open(info, pwd=password))
+        with self._handle_guard():
+            return cast("BinaryIO", self._archive.open(info, pwd=password))
 
     def _zip_close_raw(self, stream: BinaryIO) -> None:
         """Close a raw zip member stream under the CONCURRENT handle lock when present."""
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                stream.close()
-        else:
+        with self._handle_guard():
             stream.close()
 
     def _open_encrypted_lazy(
@@ -685,17 +680,7 @@ class ZipReader(BaseArchiveReader):
                 return self._open_zipfile_member(
                     info, password=password, member_name=member_name
                 )
-            except (
-                zipfile.BadZipFile,
-                RuntimeError,
-                io.UnsupportedOperation,
-                NotImplementedError,
-                zlib.error,
-                lzma.LZMAError,
-                UnicodeDecodeError,
-                ValueError,
-                OSError,
-            ) as exc:
+            except _ZIP_MEMBER_READ_ERRORS as exc:
                 if _is_candidate_integrity_failure(exc):
                     failure = EncryptionError(
                         f"Password candidate failed integrity validation for ZIP "
@@ -704,13 +689,7 @@ class ZipReader(BaseArchiveReader):
                     if not ambiguous_holder:
                         ambiguous_holder.append(failure)
                     raise failure from exc
-                translated = self._translate_exception(exc)
-                if translated is not None:
-                    if isinstance(translated, EncryptionError):
-                        raise translated from exc
-                    self._stamp_error_context(translated, member_name)
-                    raise translated from exc
-                raise
+                self._reraise_member_error(exc, member_name)
             finally:
                 if stream is not None:
                     self._zip_close_raw(stream)
@@ -729,7 +708,21 @@ class ZipReader(BaseArchiveReader):
         *,
         member_name: str,
     ) -> BinaryIO:
-        """STORED ZipCrypto: one shared CRC pass over surviving weak-check candidates."""
+        """Resolve the password for a STORED ZipCrypto member, in four phases.
+
+        A STORED member has no decompressor to reject a wrong key, and ZipCrypto's 1-byte
+        header check admits ~1/256 of wrong passwords, so a full CRC pass over the member's
+        plaintext is the only way to disambiguate. To keep that pass single and bounded:
+
+        1. **Collect survivors** — run every static candidate through the cheap 1-byte
+           check; keep the ~1/256 that pass.
+        2. **Disambiguate** — one shared ciphertext pass computes every survivor's plaintext
+           CRC-32 in constant memory; the first CRC match wins.
+        3. **Provider fallback** — if no static candidate won, ask the provider one password
+           at a time (cheap check, then a per-candidate CRC pass), until one wins or it stops.
+        4. **Resolve outcome** — a winner is re-opened fresh; otherwise raise the most
+           specific error (integrity-ambiguous / password-required / wrong-password).
+        """
         ambiguous_failure: EncryptionError | None = None
         check_byte = self._zipcrypto_check_byte(info)
         expected_crc = info.CRC & 0xFFFFFFFF
@@ -764,6 +757,7 @@ class ZipReader(BaseArchiveReader):
                     ambiguous_failure = failure
             return winner
 
+        # Phase 1 — collect the static candidates that pass the cheap 1-byte check.
         tried: set[bytes] = set()
         survivors: list[bytes] = []
         for password in self._passwords.iter_candidates():
@@ -771,8 +765,10 @@ class ZipReader(BaseArchiveReader):
             if weak_ok(password):
                 survivors.append(password)
 
+        # Phase 2 — one shared CRC pass over the survivors.
         winner = disambiguate(survivors)
 
+        # Phase 3 — provider fallback: ask, cheap-check, per-candidate CRC pass, repeat.
         attempt = 1
         while winner is None and self._passwords.has_provider():
             try:
@@ -789,6 +785,7 @@ class ZipReader(BaseArchiveReader):
                 winner = disambiguate([password])
             attempt += 1
 
+        # Phase 4 — resolve the outcome (winner, else the most specific error).
         if winner is not None:
             self._passwords.record_success(winner)
             return self._open_zipfile_member(
@@ -875,24 +872,12 @@ class ZipReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=logger,
             )
-        except (
-            zipfile.BadZipFile,
-            RuntimeError,
-            zlib.error,
-            lzma.LZMAError,
-            OSError,
-            ValueError,
-            NotImplementedError,
-            UnicodeDecodeError,
-        ) as exc:
+        except _ZIP_MEMBER_READ_ERRORS as exc:
             # Reading the symlink's target data (raw zipfile stream, not ArchiveStream-wrapped)
             # can raise any of the member-read errors on a corrupt entry; translate them the
-            # same way rather than letting a raw codec exception escape the listing.
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated, info.filename)
-                raise translated from exc
-            raise
+            # same way rather than letting a raw codec exception escape the listing. (An
+            # EncryptionError is handled by the separate except above and never reaches here.)
+            self._reraise_member_error(exc, info.filename)
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map
@@ -924,10 +909,7 @@ class ZipReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                self._archive.close()
-        else:
+        with self._handle_guard():
             self._archive.close()
 
 

@@ -2,8 +2,8 @@
 
 ## Purpose
 
-A filesystem directory is exposed as a zero-cost pseudo-archive through the
-unified `ArchiveReader` API so conversion pipelines and callers can treat a live
+A filesystem directory is exposed as a pseudo-archive through the unified
+`ArchiveReader` API so conversion pipelines and callers can treat a live
 directory like any other readable archive.
 
 ## Related specs
@@ -28,9 +28,10 @@ The directory reader SHALL expose these properties:
 
 | Property | Value |
 | --- | --- |
-| Listing cost | `ListingCost.INDEXED` — filesystem directory listing |
+| Listing cost | `ListingCost.REQUIRES_SCANNING` — enumeration walks the tree (`os.scandir` recursion); there is no O(1) index |
 | Access cost | `AccessCost.DIRECT` — each file is independently addressable |
 | Stream capability | `StreamCapability.SEEKABLE` |
+| Member list upfront | No — `get_members_if_available()` returns `None` (the walk is a scan, run once under materialization, not on every peek) |
 | Write support | No |
 | Seek requirement | No archive source seek needed; files open directly |
 
@@ -41,7 +42,8 @@ The directory reader SHALL expose these properties:
 | `archivey.open_archive(some_directory_path)` | Reader format is `ArchiveFormat.DIRECTORY` |
 | Iterate reader | One `ArchiveMember` per file/subdirectory found under the root |
 | Inspect member metadata | Mode, timestamps, uid/gid, uname/gname reflect filesystem state |
-| Inspect `cost` | `INDEXED`, `DIRECT`, `SEEKABLE` |
+| Inspect `cost` | `REQUIRES_SCANNING`, `DIRECT`, `SEEKABLE` |
+| `get_members_if_available()` before any pass | `None` (no upfront index; the walk is a scan) |
 
 ### Requirement: Treat scan races as diagnostics and genuine errors as errors
 

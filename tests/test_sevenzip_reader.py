@@ -570,3 +570,17 @@ def test_filetime_conversion_and_invalid_timestamp_issue() -> None:
     dt, issue = _filetime_to_datetime(0xFFFFFFFFFFFFFFFF, "a.txt", field="created")
     assert dt is None
     assert issue is not None and issue.field == "created"
+
+
+def test_files_info_count_is_bounded_against_header_size() -> None:
+    # A crafted 7z header can declare an absurd file count in a few bytes; the parser must
+    # reject it against the header size instead of pre-allocating one object per claimed
+    # file and OOM-ing the process (threat-model O1 / review L1). Encode num_files = 2**40
+    # in the 7z uint64 form (0xFF marker + 8 LE bytes) and feed it straight to the reader.
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import _read_files_info
+
+    huge = (1 << 40).to_bytes(8, "little")
+    buffer = io.BytesIO(b"\xff" + huge)  # a 9-byte "header" claiming 2**40 files
+    with pytest.raises(CorruptionError, match="exceeds the .* header"):
+        _read_files_info(buffer)

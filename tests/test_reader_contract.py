@@ -248,3 +248,35 @@ def test_scan_members_equals_members_in_random_mode() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
     assert reader.scan_members() == reader.members()
     assert [m.name for m in reader] == ["a.txt"]
+
+
+# --- BaseException during materialization must not wedge the reader (review C1/Q1) --
+
+
+class _FlakyReader(_IndexedReader):
+    """An indexed reader whose first materialization attempt is interrupted.
+
+    Simulates a KeyboardInterrupt/MemoryError raised mid-scan: the first
+    ``_iter_members`` raises BaseException, later ones succeed.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self._raised = False
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        if not self._raised:
+            self._raised = True
+            raise KeyboardInterrupt("interrupted mid-scan")
+        yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
+
+
+def test_baseexception_during_materialization_does_not_wedge_reader() -> None:
+    reader = _FlakyReader(ArchiveFormat.ZIP, False, "x.zip")
+    # The interrupt propagates unchanged (BaseException, not reclassified).
+    with pytest.raises(KeyboardInterrupt):
+        reader.members()
+    # The reader must remain usable: the failed election was rolled back to
+    # UNMATERIALIZED, so a retry re-elects and succeeds instead of raising a
+    # misleading "materialization already in progress".
+    assert [m.name for m in reader.members()] == ["a.txt"]
