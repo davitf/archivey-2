@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import bisect
+import io
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, TypeGuard
 
+from archivey.exceptions import TruncatedError
 from archivey.internal.streams.streamtools import is_stream, source_name
 
 SourceItem = str | Path | BinaryIO
@@ -117,6 +121,123 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     return None
 
 
+class ConcatenatedFile(io.RawIOBase, BinaryIO):
+    """Seekable read-only concatenation of volume streams."""
+
+    def __init__(self, sources: Sequence[Path | BinaryIO]) -> None:
+        super().__init__()
+        if not sources:
+            raise ValueError("at least one volume is required")
+        self._streams: list[BinaryIO] = []
+        self._owned: list[BinaryIO] = []
+        offsets = [0]
+        total = 0
+        for source in sources:
+            if isinstance(source, Path):
+                stream = open(source, "rb")
+                self._owned.append(stream)
+            else:
+                stream = source
+            try:
+                pos = stream.tell()
+                size = stream.seek(0, os.SEEK_END)
+                stream.seek(pos)
+            except (OSError, AttributeError, io.UnsupportedOperation) as exc:
+                raise ValueError("all volume streams must be seekable") from exc
+            self._streams.append(stream)
+            total += size
+            offsets.append(total)
+        self._offsets = offsets
+        self._size = total
+        self._pos = 0
+        self.volume_count = len(sources)
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._pos
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        if whence == os.SEEK_SET:
+            new_pos = offset
+        elif whence == os.SEEK_CUR:
+            new_pos = self._pos + offset
+        elif whence == os.SEEK_END:
+            new_pos = self._size + offset
+        else:
+            raise ValueError(f"Invalid whence: {whence}")
+        if new_pos < 0:
+            raise ValueError("Negative seek position")
+        self._pos = new_pos
+        return self._pos
+
+    def read(self, n: int = -1) -> bytes:
+        if self._pos >= self._size:
+            return b""
+        if n is None or n < 0:
+            n = self._size - self._pos
+        else:
+            n = min(n, self._size - self._pos)
+        out = bytearray()
+        while n > 0 and self._pos < self._size:
+            index = bisect.bisect_right(self._offsets, self._pos) - 1
+            stream = self._streams[index]
+            volume_offset = self._pos - self._offsets[index]
+            available = self._offsets[index + 1] - self._pos
+            to_read = min(n, available)
+            stream.seek(volume_offset)
+            chunk = stream.read(to_read)
+            if not chunk:
+                break
+            out.extend(chunk)
+            self._pos += len(chunk)
+            n -= len(chunk)
+        return bytes(out)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            for stream in self._owned:
+                stream.close()
+        finally:
+            super().close()
+
+
+def _validate_7z_volume_sequence(paths: Sequence[Path]) -> None:
+    numbered: list[int] = []
+    for path in paths:
+        match = _7Z_VOLUME_RE.match(path.name)
+        if match is None:
+            return
+        numbered.append(int(match.group("part")))
+    expected = list(range(1, len(numbered) + 1))
+    if numbered != expected:
+        raise TruncatedError(
+            f"Incomplete 7z multi-volume set: expected parts {expected}, got {numbered}"
+        )
+
+
+def join_volumes(paths: Sequence[Path]) -> BinaryIO:
+    """Concatenate an ordered volume set into one seekable file-like object."""
+
+    if not paths:
+        raise ValueError("volume path sequence must not be empty")
+    _validate_7z_volume_sequence(paths)
+    return ConcatenatedFile(paths)
+
+
 OpenSourceInput = SourceItem | SourceSequence
 
 
@@ -152,7 +273,10 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
         if len(items) == 1:
             return _resolve_single(items[0])
         first = items[0]
-        return ResolvedSource(first, source_name(first), len(items))
+        if all(isinstance(item, Path) for item in items):
+            paths = [item for item in items if isinstance(item, Path)]
+            return ResolvedSource(join_volumes(paths), source_name(first), len(paths))
+        return ResolvedSource(ConcatenatedFile(items), source_name(first), len(items))
     if isinstance(source, str):
         return _resolve_single(Path(source))
     if isinstance(source, Path):
@@ -168,6 +292,10 @@ def _resolve_single(source: Path | BinaryIO) -> ResolvedSource:
             return ResolvedSource(source, str(source), 1)
         siblings = discover_volume_siblings(source)
         if siblings is not None:
+            if _7Z_VOLUME_RE.match(siblings[0].name):
+                return ResolvedSource(
+                    join_volumes(siblings), source_name(siblings[0]), len(siblings)
+                )
             return ResolvedSource(siblings[0], source_name(siblings[0]), len(siblings))
         return ResolvedSource(source, source_name(source), 1)
     return ResolvedSource(source, source_name(source), 1)

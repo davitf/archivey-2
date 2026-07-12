@@ -166,7 +166,9 @@ def test_crypto_reachable_only_through_wrapper() -> None:
     # cryptography directly — they go through this wrapper).
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    encryptor = Cipher(algorithms.AES(b"\x00" * 32), modes.CBC(b"\x00" * 16)).encryptor()
+    encryptor = Cipher(
+        algorithms.AES(b"\x00" * 32), modes.CBC(b"\x00" * 16)
+    ).encryptor()
     plaintext = b"0123456789abcdef"
     ciphertext = encryptor.update(plaintext) + encryptor.finalize()
     assert stage.update(ciphertext) + stage.finalize() == plaintext

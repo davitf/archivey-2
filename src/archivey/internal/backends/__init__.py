@@ -8,6 +8,9 @@ from archivey.internal.backends import (
 )
 from archivey.internal.backends import iso_reader as _iso_reader  # noqa: F401
 from archivey.internal.backends import (
+    sevenzip_reader as _sevenzip_reader,  # noqa: F401
+)
+from archivey.internal.backends import (
     single_file_reader as _single_file_reader,  # noqa: F401
 )
 from archivey.internal.backends import tar_reader as _tar_reader  # noqa: F401

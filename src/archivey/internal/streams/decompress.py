@@ -102,7 +102,10 @@ class PpmdDecompressorStream(DecompressorStream[Any]):
     def _flush_decompressor(self) -> bytes:
         # 7z PPMd streams sometimes need a trailing NUL to finish when the decoder
         # still reports needs_input at EOF (mirrors py7zr's PpmdDecompressor).
-        if getattr(self._decompressor, "needs_input", False) and not self._decompressor.eof:
+        if (
+            getattr(self._decompressor, "needs_input", False)
+            and not self._decompressor.eof
+        ):
             return self._decompressor.decode(b"\0")
         return b""
 

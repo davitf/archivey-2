@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from archivey import extract, open_archive
-from archivey.exceptions import UnsupportedFeatureError
-from archivey.internal.volumes import discover_volume_siblings
+from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
+from archivey.internal.volumes import discover_volume_siblings, join_volumes
 from archivey.types import ArchiveFormat
 
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
@@ -55,11 +55,21 @@ def test_discover_rnn_without_first_volume_is_not_a_set(tmp_path: Path) -> None:
     assert discover_volume_siblings(tmp_path / "archive.r01") is None
 
 
-def test_multi_volume_7z_raises_phase7_message(tmp_path: Path) -> None:
+def test_multi_volume_7z_is_joined_before_parse(tmp_path: Path) -> None:
     for name in ("vol.7z.001", "vol.7z.002"):
         (tmp_path / name).write_bytes(_7Z_MAGIC)
-    with pytest.raises(UnsupportedFeatureError, match="Phase 7"):
+    with pytest.raises(CorruptionError, match="signature header"):
         open_archive(tmp_path / "vol.7z.002", format=ArchiveFormat.SEVEN_Z)
+
+
+def test_join_7z_volumes_rejects_numbering_gaps(tmp_path: Path) -> None:
+    paths = []
+    for name in ("vol.7z.001", "vol.7z.003"):
+        path = tmp_path / name
+        path.write_bytes(b"")
+        paths.append(path)
+    with pytest.raises(TruncatedError, match="Incomplete 7z multi-volume set"):
+        join_volumes(paths)
 
 
 def test_multi_volume_rar_raises_phase7_message(tmp_path: Path) -> None:

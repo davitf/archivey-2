@@ -25,6 +25,7 @@ import errno
 import logging
 import os
 import shutil
+import stat
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -279,13 +280,38 @@ class ExtractionCoordinator:
         results: list[ExtractionResult] = []
         # source member_id -> list of on-disk paths holding that source's content.
         source_paths: dict[int, list[Path]] = {}
+        written_paths: set[Path] = set()
         orphans: list[_Orphan] = []
         members_done = 0
 
         for original, stream in reader.stream_members(stream_selector):
             try:
+                if not original.is_current:
+                    results.append(
+                        ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
+                    )
+                    continue
                 transformed = self._transform(original, dest_root)
                 if transformed is not None:
+                    result_index = len(results)
+                    results.append(
+                        ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+                    )
+                    if original.is_anti:
+                        results[result_index] = self._write_member(
+                            original,
+                            transformed,
+                            stream,
+                            dest,
+                            dest_root,
+                            tracker,
+                            source_paths,
+                            written_paths,
+                            orphans,
+                            forward_only,
+                            result_index,
+                        )
+                        continue
                     # Entry-count guard + ratio bookkeeping. Counted only once the
                     # selector and user filter have accepted the member (and the
                     # universal check inside _transform has passed), immediately before
@@ -294,10 +320,6 @@ class ExtractionCoordinator:
                     # (resolved 2026-07 decision).
                     tracker.start_member(original)
 
-                    result_index = len(results)
-                    results.append(
-                        ExtractionResult(original, None, ExtractionStatus.FAILED, None)
-                    )
                     results[result_index] = self._write_member(
                         original,
                         transformed,
@@ -306,6 +328,7 @@ class ExtractionCoordinator:
                         dest_root,
                         tracker,
                         source_paths,
+                        written_paths,
                         orphans,
                         forward_only,
                         result_index,
@@ -410,26 +433,36 @@ class ExtractionCoordinator:
         dest_root: Path,
         tracker: BombTracker,
         source_paths: dict[int, list[Path]],
+        written_paths: set[Path],
         orphans: list[_Orphan],
         forward_only: bool,
         result_index: int,
     ) -> ExtractionResult:
         dest_path = dest / transformed.name
 
+        if original.is_anti:
+            return self._apply_anti_item(original, dest_path, written_paths)
+
         if transformed.type == MemberType.DIRECTORY:
+            existed = os.path.lexists(dest_path)
             if not self._prepare_destination(transformed, dest_path):
                 return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
             os.makedirs(dest_path, exist_ok=True)
             self._apply_metadata(dest_path, transformed)
+            if not existed:
+                written_paths.add(dest_path)
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
 
         if transformed.type == MemberType.SYMLINK:
-            return self._write_symlink(original, transformed, dest_root, dest_path)
+            result = self._write_symlink(original, transformed, dest_root, dest_path)
+            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
+                written_paths.add(result.path)
+            return result
 
         if transformed.type == MemberType.HARDLINK:
-            return self._write_hardlink(
+            result = self._write_hardlink(
                 original,
                 transformed,
                 dest_path,
@@ -438,16 +471,46 @@ class ExtractionCoordinator:
                 forward_only,
                 result_index,
             )
+            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
+                written_paths.add(result.path)
+            return result
 
         if transformed.type == MemberType.FILE:
-            return self._write_file(
+            result = self._write_file(
                 original, transformed, stream, dest_path, tracker, source_paths
             )
+            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
+                written_paths.add(result.path)
+            return result
 
         # MemberType.OTHER is rejected by check_universal; nothing else should reach here.
         raise ExtractionError(
             f"Unsupported member type {transformed.type!r} for {transformed.name!r}"
         )
+
+    def _apply_anti_item(
+        self,
+        original: ArchiveMember,
+        dest_path: Path,
+        written_paths: set[Path],
+    ) -> ExtractionResult:
+        if dest_path not in written_paths:
+            return ExtractionResult(
+                original, dest_path, ExtractionStatus.EXTRACTED, None
+            )
+        try:
+            st = os.lstat(dest_path)
+        except FileNotFoundError:
+            written_paths.discard(dest_path)
+            return ExtractionResult(
+                original, dest_path, ExtractionStatus.EXTRACTED, None
+            )
+        if stat.S_ISDIR(st.st_mode):
+            os.rmdir(dest_path)
+        else:
+            os.unlink(dest_path)
+        written_paths.discard(dest_path)
+        return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
 
     def _write_file(
         self,

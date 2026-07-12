@@ -161,6 +161,9 @@ class VerifyingStream(ReadOnlyIOStream):
     def seekable(self) -> bool:
         return False
 
+    def tell(self) -> int:
+        return self._inner.tell()
+
     def close(self) -> None:
         if not self.closed:
             self._inner.close()

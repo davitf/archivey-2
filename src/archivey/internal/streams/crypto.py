@@ -143,7 +143,9 @@ class AesDecryptStream(ReadOnlyIOStream):
         if size == 0:
             return b""
         while not self._eof and (size < 0 or len(self._buf) < size):
-            chunk = self._source.read(65536 if size < 0 else max(size - len(self._buf), 1))
+            chunk = self._source.read(
+                65536 if size < 0 else max(size - len(self._buf), 1)
+            )
             if not chunk:
                 self._buf.extend(self._stage.finalize())
                 self._eof = True
@@ -171,9 +173,7 @@ def open_aes_decrypt_stream(source: BinaryIO, params: AesParams) -> BinaryIO:
 # --- 7z-local KDF (not on the generic CryptoBackend surface) ---------------------------
 
 
-def derive_sevenzip_aes_key(
-    password: bytes, *, salt: bytes, cycles: int
-) -> bytes:
+def derive_sevenzip_aes_key(password: bytes, *, salt: bytes, cycles: int) -> bytes:
     """Derive a 32-byte AES-256 key with the 7z SHA-256 scheme.
 
     ``password`` is the raw password bytes already encoded as UTF-16LE (callers that

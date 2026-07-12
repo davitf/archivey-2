@@ -80,7 +80,7 @@ __all__ = [
 def _raise_multi_volume_not_supported(
     fmt: ArchiveFormat, archive_name: str | None
 ) -> None:
-    if fmt.container in (ContainerFormat.SEVEN_Z, ContainerFormat.RAR):
+    if fmt.container == ContainerFormat.RAR:
         raise UnsupportedFeatureError(
             f"Multi-volume {fmt.container.value} archives are not supported yet "
             f"(lands in Phase 7).",
@@ -196,7 +196,7 @@ def open_archive(
         detected = detect_format(open_source, collector=collector)
         format = detected.format
 
-    if resolved.volume_count > 1:
+    if resolved.volume_count > 1 and format.container != ContainerFormat.SEVEN_Z:
         _raise_multi_volume_not_supported(format, archive_name)
 
     registry = get_registry()

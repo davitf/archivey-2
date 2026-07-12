@@ -832,6 +832,10 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_pass(token)
 
+    def get_members(self) -> list[ArchiveMember]:
+        """Compatibility alias for callers expecting the v1-style member-list method."""
+        return self.members()
+
     def scan_members(self) -> list[ArchiveMember]:
         self._state.require_open("scan_members()")
         token = self._state.acquire_pass("scan_members")

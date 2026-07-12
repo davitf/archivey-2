@@ -84,6 +84,12 @@ class FormatAvailability:
 # This table describes the intended post-Phase-7 composition, where the codec layer is
 # wired into ZIP member reads (see ``format-zip`` / ``compressed-streams``).
 _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
+    ContainerFormat.SEVEN_Z: (
+        Codec.PPMD,
+        Codec.DEFLATE64,
+        Codec.ZSTD,
+        Codec.BROTLI,
+    ),
     ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
 }
 
