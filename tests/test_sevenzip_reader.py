@@ -168,6 +168,7 @@ def test_7z_cli_deflate64_fixture_roundtrip(tmp_path: Path) -> None:
 
 
 @requires_binary("7z")
+@requires("cryptography")
 def test_7z_cli_multi_password_archive_roundtrip(tmp_path: Path) -> None:
     first = tmp_path / "first.txt"
     second = tmp_path / "second.txt"

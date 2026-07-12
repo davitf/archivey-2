@@ -86,9 +86,9 @@ def _skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
         if shutil.which(binary) is None:
             pytest.skip(f"builder needs binary {binary!r}")
     if (
-        key == "dir"
-        and os.name == "nt"
+        os.name == "nt"
         and any(m.type is MemberType.SYMLINK for m in entry.members)
+        and key in ("dir", "7z")
     ):
         pytest.skip("creating symlinks on Windows needs privileges")
 
