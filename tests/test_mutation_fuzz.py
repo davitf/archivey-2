@@ -7,7 +7,7 @@ header/trailer-biased random cuts, bit flips, zeroed blocks, garbage prefixes/su
 raises a raw third-party/codec exception, never hangs (each parametrized case carries its
 own ``pytest-timeout`` budget), never aborts the process, and a successful extraction must
 leave the destination root a directory (replacing it with a file is a path-safety failure). This is the pre-native-parser
-layer of the fuzzing program (``docs/threat-model.md`` O5): the corpus doubles as the seed
+layer of the fuzzing program (``docs/internal/threat-model.md`` O5): the corpus doubles as the seed
 set, and the same seeds feed the Phase-6 Atheris harnesses later.
 
 Tests are parametrized by ``(archive, format, mutation kind)`` so a hang or failure names a
@@ -48,7 +48,7 @@ zero-dependency parsing and its exception-translation contract — the surface a
 controls. Those C++ accelerators can *busy-loop* on crafted input (a hang no Python-level
 translator can convert into an ``ArchiveyError``); fuzzing that native code needs a
 resource-limited subprocess sandbox and belongs with the Phase-6 Atheris work, tracked as
-a separate gap (``docs/threat-model.md`` O5 / C-accelerators).
+a separate gap (``docs/internal/threat-model.md`` O5 / C-accelerators).
 """
 
 from __future__ import annotations

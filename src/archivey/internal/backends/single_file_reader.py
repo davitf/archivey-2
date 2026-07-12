@@ -319,7 +319,7 @@ class SingleFileReader(BaseArchiveReader):
         # else (ZIP, path sources), and, over the rapidgzip accelerator, ABORT the
         # process if their source dies underneath them (rapidgzip 0.16 raises C++
         # std::invalid_argument through terminate() when a Python-file callback raises —
-        # on read, close, and the GC-time guard alike; see docs/known-issues.md). Reads
+        # on read, close, and the GC-time guard alike; see docs/internal/known-issues.md). Reads
         # after the *caller* closes their source surface as a typed error via the
         # ArchiveStream closed-handle mapping (stdlib codec paths).
         if self._pending_stream is not None:

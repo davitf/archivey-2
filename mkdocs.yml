@@ -4,10 +4,38 @@ site_url: https://davitf.github.io/archivey/
 
 nav:
   - Home: index.md
+  - Philosophy: philosophy.md
+  - Basic usage: usage.md
+  - Access costs and pitfalls: costs.md
+  - Formats and extras: formats.md
+  - Safe extraction: safe-extraction.md
   - API reference: api.md
-  - Compression-library analysis: library-analysis.md
-  - Known issues: known-issues.md
-  - Parallel-reader exploration: parallel-reader.md
+  - Decisions:
+      - Overview: decisions/index.md
+      - Native 7z (not py7zr): decisions/0001-native-7z-not-py7zr.md
+      - Native RAR + unrar: decisions/0002-native-rar-metadata-unrar-data.md
+      - MemberStreams opt-in: decisions/0003-member-streams-opt-in.md
+      - streaming bool: decisions/0004-streaming-bool-not-intent-enum.md
+      - Sync-only v1: decisions/0005-sync-only-v1.md
+      - Stdlib zipfile: decisions/0006-stdlib-zipfile.md
+      - Mutable ArchiveMember: decisions/0007-mutable-archive-member.md
+      - Single accelerator: decisions/0008-single-accelerator-rapidgzip.md
+      - Zstd backend: decisions/0009-zstd-stdlib-backports.md
+      - No silent buffer: decisions/0010-no-silent-buffer-nonseekable.md
+      - Zero-dep core: decisions/0011-zero-dependency-core.md
+      - Usage errors: decisions/0012-usage-errors-outside-archiveyerror.md
+  - Internal:
+      - Overview: internal/index.md
+      - Threat model: internal/threat-model.md
+      - Compression-library analysis: internal/library-analysis.md
+      - Known issues: internal/known-issues.md
+  - Grab-bag:
+      - Overview: grab-bag/index.md
+      - SPEC (historical): grab-bag/SPEC.md
+      - ARCHITECTURE (historical): grab-bag/ARCHITECTURE.md
+      - COMPARISON (historical): grab-bag/COMPARISON.md
+      - ASYNC exploration: grab-bag/ASYNC.md
+      - Parallel-reader notes: grab-bag/parallel-reader.md
 
 plugins:
   - search

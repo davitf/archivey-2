@@ -2,13 +2,13 @@
 
 ## Why
 
-The compression-library evaluation (`docs/library-analysis.md`) decided to move zstd decoding
+The compression-library evaluation (`docs/internal/library-analysis.md`) decided to move zstd decoding
 off `zstandard` to the standard-library line — **stdlib `compression.zstd` on Python 3.14+,
 `backports.zstd` on 3.11–3.13** (the same `compression.zstd` API; `pyzstd >= 0.19` pulls
 `backports.zstd` transitively, so an env with `pyzstd` also satisfies it). That evaluation
 recorded the decision and its rationale but **deferred the swap** to this change.
 
-Measured on a 200 KB incompressible zstd frame (full table in `docs/library-analysis.md`),
+Measured on a 200 KB incompressible zstd frame (full table in `docs/internal/library-analysis.md`),
 `zstandard` has two warts the stdlib line fixes:
 
 - **Truncation is silent** — `zstandard` returns a short read with no error; `compression.zstd`

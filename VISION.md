@@ -1,9 +1,10 @@
 # Archivey — Vision
 
 > What this project is trying to become, why it should exist, and the priorities that
-> follow. `SPEC.md` / `ARCHITECTURE.md` / `openspec/specs/` define *what the library
-> does*; this document defines *what it is for* and how to make trade-offs when they
-> conflict. (Recorded 2026-07 from maintainer + review discussions.)
+> follow. `openspec/specs/` defines *what the library does* (historical prose in
+> `docs/grab-bag/`); this document defines *what it is for* and how to make trade-offs
+> when they conflict. End-user distill: `docs/philosophy.md`. (Recorded 2026-07 from
+> maintainer + review discussions.)
 
 ## The one-sentence pitch
 
@@ -24,7 +25,7 @@ feels like stdlib**.
 
 1. **Safe by default.** Extraction cannot be zip-slipped, symlink-escaped, or
    decompression-bombed unless the caller explicitly opts out. Safety is a *contract*
-   (specced, tested, threat-modeled — see `docs/threat-model.md`), not a feature flag.
+   (specced, tested, threat-modeled — see `docs/internal/threat-model.md`), not a feature flag.
 2. **Memory-safe parsing of hostile input.** The native-first strategy for 7z/RAR (and
    eventually ZIP) is not purity for its own sake: pure-Python parsers can be *wrong*
    but they cannot be *corrupted*. C archive parsers (libarchive et al.) have a long

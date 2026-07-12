@@ -1,9 +1,10 @@
 # Archivey — Project Context
 
 > Cross-cutting context shared by all capability specs in `openspec/specs/`.
-> Source of truth for the prose design is `SPEC.md`, `ARCHITECTURE.md`, and
-> `COMPARISON.md` at the repo root; these specs reorganize that material into
-> OpenSpec capabilities and will be refined over time.
+> Authoritative contracts are the capability specs in this tree. Historical prose
+> (`SPEC` / `ARCHITECTURE` / `COMPARISON`) lives under `docs/grab-bag/` and may
+> drift; end-user docs are under `docs/`, decision rationales under
+> `docs/decisions/`.
 
 ## What this is
 

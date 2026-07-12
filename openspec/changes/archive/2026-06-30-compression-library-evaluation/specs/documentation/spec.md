@@ -5,7 +5,7 @@
 ### Requirement: Per-format compression-library choices are documented
 
 The documentation SHALL include a per-format compression-library analysis
-(`docs/library-analysis.md`) that, for each codec the library reads, names the chosen
+(`docs/internal/library-analysis.md`) that, for each codec the library reads, names the chosen
 library, the alternatives considered, and the criteria behind the decision (non-seekable
 support, efficient seeking, corruption detection, truncation detection, error-reporting
 fidelity, install/availability, maintenance). Each decision SHALL be documented **in full**
@@ -16,7 +16,7 @@ SHALL NOT be a substitute for the recorded rationale.
 
 #### Scenario: every read codec has a recorded rationale
 
-- **WHEN** a contributor reads `docs/library-analysis.md`
+- **WHEN** a contributor reads `docs/internal/library-analysis.md`
 - **THEN** for each codec (gzip, bzip2, xz/lzma, lzip, zstd, lz4, brotli, unix-compress, deflate64, ppmd) they find the chosen library, the rejected alternatives, and the reason
 
 #### Scenario: a decision is documented in full, not merely cited

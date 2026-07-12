@@ -68,7 +68,7 @@ _(none)_
 - Specs: `format-tar`, `format-iso` deltas. `archive-reading` / ABC docstring owned by
   `concurrent-member-streams`.
 - Depends on: `concurrent-member-streams`.
-- Docs: `docs/parallel-reader.md` TAR-RA and ISO audit rows.
+- Docs: `docs/grab-bag/parallel-reader.md` TAR-RA and ISO audit rows.
 - Tests: interleaved and threaded opens for plain/compressed TAR-RA and ISO; capability-
   conditional seek/tell/close races; `getmembers()`/EOF and pycdlib catalog audits; sparse
   TAR regression; sequential extract regression; callback and lazy-stream lock probes.

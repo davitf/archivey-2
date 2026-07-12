@@ -25,7 +25,7 @@
 
 - [x] 3.1 Add a non-gating TAR/ISO lock baseline recipe/script (wall + wait/hold where
       practical; seek/byte counters when cheap) under `benchmarks/` or documented in
-      `docs/parallel-reader.md`
+      `docs/grab-bag/parallel-reader.md`
 - [x] 3.2 Record a dated sample run in the docs or script output comments (no pass/fail
       threshold)
 
@@ -33,7 +33,7 @@
 
 - [x] 4.1 Update `MemberStreams` / reader docstrings to describe the supported seam
 - [x] 4.2 Update `openspec/project.md`, `SPEC.md`, `ARCHITECTURE.md`, `IDEAS.md`,
-      `docs/parallel-reader.md`, and threat-model C4 accordingly
+      `docs/grab-bag/parallel-reader.md`, and threat-model C4 accordingly
 - [x] 4.3 Sync delta specs into main `openspec/specs/` for the four modified capabilities
 
 ## 5. Verification

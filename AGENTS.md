@@ -1,7 +1,9 @@
 # Agent Guide
 
 For repo orientation, specs, and workflow, see `CLAUDE.md` and `CONTRIBUTING.md`
-(coding/testing standards, the "Before pushing…" three-config test rule).
+(coding/testing standards, the "Before pushing…" three-config test rule). End-user
+docs live under `docs/`; design “why” in `docs/decisions/`; historical prose in
+`docs/grab-bag/`.
 
 ## Cursor Cloud specific instructions
 
