@@ -6,7 +6,8 @@ the *design* lives elsewhere and is authoritative:
 - `SPEC.md`, `ARCHITECTURE.md`, `COMPARISON.md`, `PLAN.md` — prose design + roadmap.
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs.
 - `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
-  edit shipped specs ad hoc).
+  edit shipped specs ad hoc). Default schema is `library` (compact library-style
+  deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.
 - `CLAUDE.md` — orientation for AI agents working in this repo.
 
 ## Getting started

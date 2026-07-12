@@ -1,27 +1,23 @@
-## ADDED User Stories
+## ADDED Requirements
 
-### User Story: <capability or behavior>
-As a <role>, I want <capability>, so that <benefit>.
+### Requirement: <!-- short name -->
+The system SHALL <!-- normative rule -->.
 
-#### Acceptance Criteria
-- **Given** <context>
-- **When** <condition>
-- **Then** <expected outcome>
+#### Scenario: <!-- prefer a matrix over many tiny scenarios -->
 
-## MODIFIED User Stories
+| Case | Expected |
+| --- | --- |
+| <!-- … --> | <!-- … --> |
 
-### User Story: <existing capability or behavior>
-As a <role>, I want <updated capability>, so that <updated benefit>.
+## MODIFIED Requirements
 
-#### Acceptance Criteria
-- **Given** <context>
-- **When** <updated condition>
-- **Then** <updated expected outcome>
+### Requirement: <!-- exact existing name -->
+<!-- Paste the FULL existing requirement block, then edit. -->
 
-## REMOVED User Stories
+#### Scenario: <!-- keep or compress -->
 
-### User Story: <removed capability or behavior>
-As a <role>, I wanted <removed capability>, so that <previous benefit>.
+## REMOVED Requirements
 
-#### Removal Rationale
-Explain why this user story is removed.
+### Requirement: <!-- name -->
+**Reason**: <!-- why -->
+**Migration**: <!-- how -->

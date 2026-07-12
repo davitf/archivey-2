@@ -1,18 +1,41 @@
 name: minimalist
 version: 1
-description: Lightweight schema for well-scoped, low-risk changes
+description: >
+  Tiny-change workflow (specs → tasks) for well-scoped, low-risk library deltas.
+  Uses the same Requirement/Scenario headers as validate expects — not user stories.
 artifacts:
   - id: specs
     generates: specs/**/*.md
-    description: Specifications authored as user stories with Given/When/Then acceptance criteria
+    description: Compact delta specs (Requirement/Scenario headers, dense bodies)
     template: specs/spec.md
+    instruction: |
+      Create delta spec files for the change. Skip proposal/design — this schema
+      is for small, obvious library deltas only.
+
+      Delta headers (exact): ## ADDED / MODIFIED / REMOVED / RENAMED Requirements
+
+      Structural rules (openspec validate):
+      - ### Requirement: <name> with SHALL/MUST in the body
+      - ≥1 #### Scenario: <name> per requirement (exactly four #)
+      - MODIFIED: full existing block, then edit
+
+      Density (Archivey):
+      - No user stories / Given-When-Then as the primary form
+      - Prefer signatures + matrices inside scenarios
+      - One scenario per axis; tables beat WHEN/THEN farms
+      - Do not restate type hints in prose
     requires: []
+
   - id: tasks
     generates: tasks.md
     description: Implementation checklist with trackable tasks
     template: tasks.md
+    instruction: |
+      Create a short task list. Use `- [ ] X.Y` checkboxes under ## headings.
+      End with `openspec validate --strict <change-id>`.
     requires:
       - specs
+
 apply:
   requires:
     - tasks

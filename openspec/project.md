@@ -18,6 +18,23 @@ When a format quirk cannot be cleanly mapped to the unified model, the library
 surfaces the inconsistency as an explicit, documented field value (`None` or an
 `Unknown` sentinel) — never as a silent guess, default, or exception.
 
+## OpenSpec authoring
+
+Default change schema is **`library`** (`openspec/config.yaml`): proposal →
+compact specs → tasks. Use `--schema spec-driven` when a change needs
+`design.md` before tasks; `--schema minimalist` for tiny deltas that skip the
+proposal.
+
+Specs keep OpenSpec’s structural headers (`### Requirement:` / `#### Scenario:`)
+so `openspec validate` works, but bodies should stay dense:
+
+- Prefer Python signatures and markdown matrices over WHEN/THEN scenario farms
+- Do not restate what type hints already declare; no user stories
+- One scenario per behavioral axis; related cases go in a table inside it
+
+See `openspec/schemas/library/README.md` and the `rules:` / `context:` blocks in
+`openspec/config.yaml`.
+
 ## Target environment
 
 | Item | Constraint |
