@@ -15,7 +15,8 @@ ZIP/TAR/ISO; defer `SECURITY.md` / OSS-Fuzz / accelerator sandbox.
 
 **Goals:**
 
-- Shared Atheris infra with seeds, budgets, crash artifacts, repro commands.
+- Shared Atheris infra with seeds, budgets, crash artifacts, repro commands,
+  and CRC fixup for checksum-gated parsers.
 - Partitioned main-push job that deep-stresses 7z headers and also exercises
   detection + leaf open/list paths.
 - RAR target scaffold that skips cleanly until the backend registers.
@@ -53,6 +54,19 @@ Explore preferred a `[fuzz]` extra. `packaging-and-extras` requires user-facing
 extras to map to `src/` runtime imports and parks test-only deps in PEP 735
 groups. **Atheris is never imported from `src/`**, so a runtime extra would
 violate that contract (and risk leaking into `[all]`).
+
+### CRC barriers vs coverage guidance
+
+Archive headers often gate parsing on CRC/checksum equality (7z
+`next_header_crc`, ZIP CD/local CRCs, …). Random mutation almost always fails
+the check, so the fuzzer spends its budget on the reject edge and rarely
+reaches post-CRC logic — the same blind spot that let review L1
+(`num_files` OOM behind a valid CRC) slip past the mutation harness.
+
+libFuzzer CMP/value-profile feedback can help with small magic constants but
+does **not** reliably synthesize a correct CRC32 over a mutated header body
+within short (or even overnight) budgets. Coverage alone does not teach “write
+`crc32(body)` into offset *k*.”
 
 ## Decisions
 
@@ -110,6 +124,21 @@ Hypothesis remains the property layer (`testing-contract` already specs it).
 
 Disclosure docs are release packaging, not required to land the harness.
 
+### 8. CRC/checksum fixup for CRC-gated targets
+
+For targets whose interesting logic sits behind a header CRC (7z header parse
+first; ZIP/RAR where applicable), the harness SHALL **mutate then fix up**:
+recompute the relevant CRC(s) and patch them into the blob before calling the
+parser. Default inputs therefore exercise post-CRC paths. A configurable
+minority of iterations (or a tiny dedicated slice) MUST feed **broken-CRC**
+blobs so the reject path remains covered.
+
+Implementation preference: Python-side fixup in the test one-liner / wrapper
+(simple with Atheris). Custom libFuzzer mutators are optional later.
+
+**Rejected:** relying on unaided Atheris/CMP feedback to discover valid CRCs;
+stripping CRC checks only in fuzz builds (diverges from production).
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
@@ -119,6 +148,8 @@ Disclosure docs are release packaging, not required to land the harness.
 | Atheris / libFuzzer platform friction | Linux `ubuntu-latest` only for the fuzz workflow |
 | Budget starvation of 7z headers | Fixed partition; headers get the largest slice |
 | Packaging confusion (`[fuzz]` vs group) | Spec + CONTRIBUTING one-liner |
+| CRC gate hides post-check bugs (L1 class) | Mutate-then-fixup + sampled broken-CRC inputs |
+| Fixup bugs mask real CRC handling | Keep broken-CRC samples; fixup only known field layouts |
 
 ## Open Questions
 

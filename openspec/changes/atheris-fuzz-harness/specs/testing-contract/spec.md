@@ -9,6 +9,14 @@ success as: within each time budget, only typed `ArchiveyError` subclasses or
 clean returns — never an uncaught non-`ArchiveyError` exception, process abort,
 or hang past the slice timeout.
 
+For CRC/checksum-gated targets (native 7z header parse at minimum; other
+formats when their interesting paths sit behind a header CRC), the harness
+SHALL apply a **mutate-then-fixup** step that recomputes and patches valid
+CRC fields before invoking the parser, so coverage guidance reaches post-CRC
+logic. It MUST NOT rely on unaided libFuzzer CMP feedback to solve CRC32. A
+minority of inputs (or a small dedicated budget) SHALL retain broken CRCs so
+the reject path stays exercised.
+
 The default main-branch run SHALL partition a wall-clock budget of approximately
 120 seconds across these targets (exact seconds MAY be env-overridable):
 
@@ -44,4 +52,6 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 | Pull request (default matrix) | Atheris job not required |
 | RAR backend absent | RAR target skipped; other targets still run |
 | Fuzzer finds a crashing input | Job fails; repro bytes uploaded; re-run command printed |
+| 7z header target with fixup enabled | Most iterations present a matching header CRC and enter post-CRC parse |
+| Broken-CRC sample / minority path | Typed CRC/corruption failure; reject path still hit |
 | Mutation harness / `ARCHIVEY_FUZZ` | Still available and unchanged in role |

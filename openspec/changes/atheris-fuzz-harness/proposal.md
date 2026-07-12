@@ -13,6 +13,11 @@ fuzz should fire when `main` moves.
   crash artifact upload, one-line repro) behind a CI-only `fuzz` dependency
   group (not a runtime extra — packaging forbids test-only packages in
   user-facing extras).
+- **CRC/checksum fixup** after mutation for CRC-gated targets (especially 7z
+  headers): recompute and patch valid CRCs so coverage guidance reaches
+  post-check parser paths; keep a minority of deliberately broken-CRC inputs
+  so the reject path stays covered. Do not rely on libFuzzer CMP feedback to
+  solve CRC32.
 - Main-push workflow (~120s partitioned) + `workflow_dispatch` (longer budgets
   via env). No always-on nightly.
 - Targets: 7z header parse (deep); 7z open+members; `detect_format` prefixes;
@@ -32,7 +37,7 @@ None.
 ### Modified Capabilities
 
 - `testing-contract`: coverage-guided Atheris entry gate; target matrix;
-  CI trigger/budget contract; relationship to mutation/Hypothesis harnesses.
+  CRC fixup contract; CI trigger/budget; relationship to mutation/Hypothesis.
 - `packaging-and-extras`: document the CI-only `fuzz` dependency group
   (atheris); confirm it is absent from `[all]` / `[recommended*]` / runtime
   extras.

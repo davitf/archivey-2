@@ -9,15 +9,16 @@
 - [ ] 2.1 Implement shared Atheris runner: seed corpus from declarative/adversarial fixtures, accelerators off, per-slice timeouts, typed-error success contract.
 - [ ] 2.2 On failure: persist crashing input, upload CI artifact, print one-line repro command.
 - [ ] 2.3 Env overrides for per-target budgets (main defaults ≈ partitioned 120s).
+- [ ] 2.4 CRC/checksum fixup helpers: mutate-then-patch valid CRCs for gated layouts; configurable minority broken-CRC inputs; unit-test fixup against known-good headers.
 
 ## 3. Targets
 
-- [ ] 3.1 7z header-parse target (largest budget slice).
-- [ ] 3.2 7z `open_archive` + members/materialize target.
+- [ ] 3.1 7z header-parse target (largest budget slice) **with next_header CRC fixup** by default.
+- [ ] 3.2 7z `open_archive` + members/materialize target (fixup where the path still CRC-gates listing).
 - [ ] 3.3 `detect_format` prefix target.
-- [ ] 3.4 ZIP + TAR open+members shallow targets.
+- [ ] 3.4 ZIP + TAR open+members shallow targets; apply ZIP CRC fixup only where needed to reach wrapper logic behind checks.
 - [ ] 3.5 ISO open+members target with hard wall-clock kill.
-- [ ] 3.6 RAR scaffold target that skips until backend registered.
+- [ ] 3.6 RAR scaffold target that skips until backend registered (plan CRC/header fixup when enabling).
 
 ## 4. CI workflow
 
@@ -27,6 +28,6 @@
 
 ## 5. Verify
 
-- [ ] 5.1 Local smoke: each target runs briefly under Atheris without raw exceptions on seed corpus.
+- [ ] 5.1 Local smoke: each target runs briefly under Atheris without raw exceptions on seed corpus; 7z header target with fixup enters post-CRC parse on fixed-up seeds; broken-CRC minority still rejects.
 - [ ] 5.2 `openspec validate --strict atheris-fuzz-harness`
 - [ ] 5.3 Packaging audit / extras guard still green with `fuzz` group present.
