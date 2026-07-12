@@ -2,7 +2,19 @@
 
 ## Purpose
 
-Archivey can identify the archive format of a source (file path or binary stream) without fully opening it. Detection returns a `FormatInfo` dataclass carrying the detected format, a confidence level, and an encoding hint. Detection never consumes or discards bytes from the source.
+Identify archive format of a path or binary stream without fully opening it.
+Returns frozen `FormatInfo` (format, confidence, encoding hint, optional SFX
+offset, detection diagnostics). Detection never discards bytes the opener still
+needs.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | Auto-detect inside `open_archive`; caller sees events on `reader.diagnostics` |
+| `diagnostics` | Collector/budget/policy; this spec owns the open handoff |
+| `backend-registry` | Container `MAGIC` / `EXTENSIONS` / `CONTENT_PROBES` |
+| `compressed-streams` | Codec descriptors supply stream-codec magic/probes |
 
 ## Requirements
 
@@ -17,9 +29,6 @@ archivey.detect_format(
     config: ArchiveyConfig | None = None,
 ) -> FormatInfo
 ```
-
-`config=None` selects the immutable library default. `FormatInfo` remains frozen and SHALL
-add the final bounded summary for this detection operation:
 
 ```python
 class DetectionConfidence(Enum):
@@ -37,380 +46,208 @@ class FormatInfo:
     diagnostics: DiagnosticSummary = DiagnosticSummary.empty()
 ```
 
-`confidence` retains its discrete exact-magic / structural-probe / extension-guess
-meaning. `encoding_hint` remains format-signal-only (never a member scan), and
-`payload_offset > 0` remains the SFX indicator.
+`config=None` → library default. `confidence` = magic / structural probe /
+extension-guess. `encoding_hint` is format-signal only (never a member scan).
+`payload_offset > 0` marks an SFX payload start.
 
-Standalone detection creates one finite collector and applies the configured policy,
-callback, logging, and retention budget. When detection runs inside
-`open_archive(config=...)`, open creates one prospective-reader collector and a detection
-watermark first, then passes that collector into the internal detection routine. On
-success, the reader assumes ownership of that exact collector. The implementation SHALL
-NOT seed, merge, replay, or copy detection occurrences into another collector, and SHALL
-charge each retained occurrence against the one budget exactly once.
+**Collectors:**
 
-The internal `FormatInfo.diagnostics` is the immutable point-in-time detection-range
-snapshot needed by detection consumers. Since `open_archive()` returns only the reader,
-the library SHALL not retain that internal snapshot after handoff; the same events remain
-available through the reader's cumulative collector.
+| Path | Behavior |
+| --- | --- |
+| Standalone `detect_format` | One finite collector; policy/callback/logging/budget; final summary on `FormatInfo.diagnostics` |
+| Inside `open_archive` | Open creates prospective-reader collector + detection watermark, passes that collector into detection. On success the reader owns it — no seed/merge/replay/copy; each retained occurrence charged once. Internal detection-range `FormatInfo.diagnostics` is not retained after handoff; same events remain on the reader's cumulative summary |
 
-#### Scenario: standalone detection returns its final summary
+#### Scenario: detect / handoff matrix
 
-- **WHEN** `detect_format(path)` completes with a magic/extension conflict
-- **THEN** the returned `FormatInfo.diagnostics` contains the exact conflict count and its retained detail under the default budget
-
-#### Scenario: open detection transfers rather than seeds
-
-- **WHEN** automatic detection inside `open_archive()` emits and retains a conflict before backend construction succeeds
-- **THEN** the reader continues the same collector, occurrence order, and budget, with no copied aggregate reference
-
-#### Scenario: magic byte match
-
-- **WHEN** the source's leading bytes match a known magic pattern
-- **THEN** `detect_format()` returns `FormatInfo` with `confidence=CERTAIN` and `detected_by="magic"`
-
-#### Scenario: extension-only fallback
-
-- **WHEN** a path has no recognized content signature but has a known extension
-- **THEN** `detect_format()` returns `FormatInfo` with `confidence=GUESS` and `detected_by="extension"`
-
-#### Scenario: detect_format honors explicit policy
-
-- **WHEN** `detect_format(path, config=ArchiveyConfig(diagnostic_policy=...))` encounters a conflict
-- **THEN** the configured IGNORE/COLLECT/RAISE behavior applies to that finite detection operation
+| Case | Expected |
+| --- | --- |
+| Standalone detect with magic/extension conflict | `FormatInfo.diagnostics` has exact conflict count + retained detail under default budget |
+| Auto-detect inside `open_archive` retains conflict, open succeeds | Reader continues same collector/order/budget; no copied aggregate |
+| Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
+| Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
+| Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 
 ### Requirement: Magic-first detection with extension fallback and confidence scoring
 
-The system SHALL execute format detection using the following algorithm:
+The system SHALL execute format detection with this algorithm:
 
-1. Read up to `DETECTION_LIMIT` bytes (default 4 096 bytes) from the source.
-2. Match the bytes against the magic-byte table (exact offsets, no heuristics).
-3. On a match: return `FormatInfo(confidence=DetectionConfidence.CERTAIN, detected_by="magic")`.
-4. On no match: attempt extension-based guess if source is a `Path`; return `confidence=DetectionConfidence.GUESS, detected_by="extension"`.
+1. Read up to `DETECTION_LIMIT` bytes (default 4096) from the source.
+2. Match against the magic-byte table (exact offsets).
+3. Match → `CERTAIN` / `detected_by="magic"`.
+4. Else, if `Path` with known extension → `GUESS` / `detected_by="extension"`.
+5. Else → content probes, then fail (`FormatDetectionError` when nothing matches).
 
-#### Scenario: unrecognised bytes with no path available
+#### Scenario: unrecognised bytes, no path
 
-- **WHEN** a non-seekable `BinaryIO` with no associated filename is supplied and the peeked bytes match no magic pattern
-- **THEN** `detect_format()` raises `FormatDetectionError`
-
----
+| Case | Expected |
+| --- | --- |
+| Non-seekable `BinaryIO`, no filename, no magic | `FormatDetectionError` |
 
 ### Requirement: Conflict resolution — magic wins and warning is emitted
 
-The system SHALL prefer the magic/content result over the extension result whenever the
-existing detection precedence rules select it. A genuine mismatch SHALL emit
-`FORMAT_EXTENSION_CONFLICT` with typed context containing the source display name and the
-extension-suggested and content-detected format strings. The occurrence SHALL be counted
-on and, under `COLLECT`/`RAISE` and available budget, retained by
-`FormatInfo.diagnostics`. It SHALL be logged through `archivey.detection` according to
-diagnostic policy.
+Magic/content result wins per existing precedence. A genuine mismatch SHALL emit
+`FORMAT_EXTENSION_CONFLICT` with typed context (source display name, extension
+format, content format). Counted on `FormatInfo.diagnostics`; under
+`COLLECT`/`RAISE` + budget, retained; logged via `archivey.detection` per policy.
+SHALL NOT attach to `ArchiveInfo`. If a reader is created, the occurrence already
+belongs to the transferred collector.
 
-The occurrence SHALL NOT be attached to `ArchiveInfo`. If detection creates a reader, it
-SHALL already belong to the collector transferred to that reader.
+#### Scenario: conflict matrix
 
-#### Scenario: mismatched extension and magic
-
-- **WHEN** a file named `archive.tar.gz` has 7-Zip magic
-- **THEN** detection selects `ArchiveFormat.SEVEN_Z`, emits `FORMAT_EXTENSION_CONFLICT` on `FormatInfo`, and default policy logs it through `archivey.detection`
-
-#### Scenario: conflict escalation prevents open
-
-- **WHEN** `open_archive()` uses a policy that raises `FORMAT_EXTENSION_CONFLICT`
-- **THEN** `DiagnosticRaisedError` is raised during detection and no reader is returned
-
-#### Scenario: explicit format override has no detection event
-
-- **WHEN** `open_archive(source, format=ArchiveFormat.ZIP)` bypasses automatic detection
-- **THEN** no format-conflict diagnostic is emitted into the reader's collector
+| Case | Expected |
+| --- | --- |
+| `archive.tar.gz` with 7z magic | `SEVEN_Z` + `FORMAT_EXTENSION_CONFLICT` on `FormatInfo`; default policy logs on `archivey.detection` |
+| `open_archive` policy raises on conflict | `DiagnosticRaisedError` during detection; no reader |
+| `open_archive(..., format=ZIP)` | No format-conflict diagnostic |
 
 ### Requirement: Magic/extension/probe tables are aggregated from backends and codec descriptors
 
-The detector SHALL build its magic, extension, and content-probe tables from two data
-sources — the container format backends (`ReadBackend.MAGIC` / `EXTENSIONS` /
-`CONTENT_PROBES`) and the stream-codec descriptors — with no per-format `detect()` logic in
-either. The stream-codec magic, extension, and content-probe rows that were previously
-declared on `SingleFileBackend` SHALL be sourced from the descriptors instead. A
-content probe SHALL be a per-format function (the codec descriptor's `content_probe`)
-rather than a generic detector routine keyed by format, so each codec owns its own
-recognition logic. Detection results (the formats detected, their confidence, and
-`detected_by`) MUST be unchanged.
+Detector tables SHALL come from container backends (`ReadBackend.MAGIC` /
+`EXTENSIONS` / `CONTENT_PROBES`) and stream-codec descriptors — no per-format
+`detect()` logic. Stream-codec rows come from descriptors (not hand-listed on
+`SingleFileBackend`). A content probe is the codec's `content_probe` function.
+Detected formats/confidence/`detected_by` MUST match prior behavior.
 
-#### Scenario: stream-codec magic comes from the descriptors
+#### Scenario: table sources matrix
 
-- **WHEN** `detect_format()` runs after the refactor on a `.gz` / `.zst` source
-- **THEN** the format, confidence, and `detected_by` are identical to before, with the magic rows now drawn from the codec descriptors rather than hand-listed on `SingleFileBackend`
-
-#### Scenario: content probes come from the descriptors as functions
-
-- **WHEN** `detect_format()` runs on a zlib or Brotli source after the refactor
-- **THEN** the result is identical to before (`ArchiveFormat.ZLIB` / `ArchiveFormat.BROTLI`, `PROBABLE`, `content_probe`), with the probe supplied by the codec descriptor's `content_probe` function rather than a generic detector routine
-
-#### Scenario: container magic still comes from the format backends
-
-- **WHEN** a ZIP / TAR / ISO source is detected
-- **THEN** the match is driven by the container backend's `MAGIC` (unchanged), merged into the same aggregated table as the codec-descriptor rows
-
----
+| Case | Expected |
+| --- | --- |
+| `.gz` / `.zst` | Same result as before; magic from codec descriptors |
+| zlib / Brotli | `PROBABLE` / `content_probe` from descriptor functions |
+| ZIP / TAR / ISO | Container backend `MAGIC`, merged into the same table |
 
 ### Requirement: Magic-byte table
 
-The system SHALL recognise formats by inspecting bytes at specified offsets. All matches
-are exact; no fuzzy, heuristic, or "weak" matching is performed. The recognised exact-magic
-formats are: ZIP (`50 4B 03 04` / `50 4B 07 08` / `50 4B 05 06`), GZip (`1F 8B`), BZip2
-(`42 5A 68`), XZ (`FD 37 7A 58 5A 00`), Zstandard (`28 B5 2F FD`), 7-Zip
-(`37 7A BC AF 27 1C`), RAR 4.x (`52 61 72 21 1A 07 00`), RAR 5.x
-(`52 61 72 21 1A 07 01 00`), ISO 9660 (`CD001` at 32 769), TAR (`ustar` at 257), LZ4
-(`04 22 4D 18`), lzip (`LZIP`), and unix-compress (`1F 9D`).
+Exact matches only (no fuzzy/weak magic). Recognised:
 
-Formats whose leading bytes are **not** a reliable exact magic SHALL NOT appear in this
-table; they are recognised by a content probe instead (see the content-probe requirement).
-In particular, **zlib** (whose 2-byte CMF/FLG header is not a true magic — the same prefix
-begins many raw-deflate streams and can occur in arbitrary data) is detected by a content
-probe, not by a magic-table entry.
+| Format | Signature (summary) |
+| --- | --- |
+| ZIP | `50 4B 03 04` / `07 08` / `05 06` |
+| GZip | `1F 8B` |
+| BZip2 | `42 5A 68` |
+| XZ | `FD 37 7A 58 5A 00` |
+| Zstandard | `28 B5 2F FD` |
+| 7-Zip | `37 7A BC AF 27 1C` |
+| RAR 4.x / 5.x | `52 61 72 21 1A 07 00` / `… 01 00` |
+| ISO 9660 | `CD001` at 32769 |
+| TAR | `ustar` at 257 |
+| LZ4 | `04 22 4D 18` |
+| lzip | `LZIP` |
+| unix-compress | `1F 9D` |
 
-#### Scenario: ZIP standard local file header
+Formats without reliable exact magic (notably **zlib**) SHALL NOT appear here —
+content probe only.
 
-- **WHEN** the source begins with bytes `50 4B 03 04`
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.ZIP, confidence=DetectionConfidence.CERTAIN, detected_by="magic")`
+#### Scenario: magic matrix
 
-#### Scenario: zlib is not an exact-magic entry
-
-- **WHEN** the magic-byte table is consulted
-- **THEN** it contains no zlib entry; a `78 9C` (or other CMF/FLG) prefix is resolved by the zlib content probe, not by an exact or "weak" magic match
-
-#### Scenario: TAR with ustar signature
-
-- **WHEN** the source has bytes `75 73 74 61 72` at offset 257 and the stream is at least 512 bytes long
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.TAR, confidence=DetectionConfidence.CERTAIN, detected_by="magic")`
-
----
+| Case | Expected |
+| --- | --- |
+| Starts `50 4B 03 04` | ZIP, `CERTAIN`, `magic` |
+| Magic table consulted for zlib | No zlib entry; CMF/FLG → zlib probe |
+| `ustar` at 257, ≥512 bytes | TAR, `CERTAIN`, `magic` |
 
 ### Requirement: Magic-less formats are detected by a content probe
 
-When the magic-byte table yields no match, the system SHALL run each registered content
-probe — a per-format function that inspects the peeked prefix and returns whether it
-matches. This covers single-file compressors not identified by an exact magic: Brotli
-(no signature at all) and zlib (a 2-byte header too unspecific to trust on its own). A
-probe match SHALL report `confidence=DetectionConfidence.PROBABLE` and
-`detected_by="content_probe"` (a structural test, weaker than an exact magic match).
-Content probes run only after all magic-byte matching has failed, and each probe MUST
-operate on the already-peeked bytes so it consumes nothing from the source.
+When the magic-byte table yields no match, the system SHALL run each registered
+content probe on the peeked prefix (consumes nothing). This covers Brotli (no
+signature) and zlib (too-unspecific CMF/FLG). Match → `PROBABLE` /
+`detected_by="content_probe"`. Probes typically decode a bounded prefix; MAY gate
+on cheap structural bytes first. Skip when the decompressor backend is missing
+(fall through to extension). Extension MAY override a disagreeing probe
+(false-positive risk on short/adversarial input).
 
-A probe typically decodes a bounded prefix through the codec and treats "decompresses
-without error" as a match; a probe MAY first gate on cheap structural bytes (zlib's probe
-checks its CMF/FLG header before attempting the decode, failing fast on non-zlib data). A
-probe is **skipped** (returns no match) when its decompression backend is unavailable
-(e.g. Brotli when the `[7z]` extra is not installed); detection then falls through to the
-extension guess rather than failing. Because a content probe can have false positives on
-short or adversarial inputs, an extension that disagrees with a probe result MAY override
-it.
+#### Scenario: content-probe matrix
 
-#### Scenario: standalone Brotli detected by content probe
-
-- **WHEN** a source matches no magic pattern and a bounded prefix decompresses cleanly through the Brotli decompressor
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.BROTLI, confidence=DetectionConfidence.PROBABLE, detected_by="content_probe")`
-
-#### Scenario: zlib detected by its content probe
-
-- **WHEN** a source begins with a zlib CMF/FLG header and a bounded prefix decompresses cleanly through the zlib decompressor
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.ZLIB, confidence=DetectionConfidence.PROBABLE, detected_by="content_probe")`
-
-#### Scenario: zlib header on non-zlib data falls through
-
-- **WHEN** a source begins with a zlib CMF/FLG header but the prefix does not decode as zlib
-- **THEN** the zlib probe reports no match and detection falls through to the extension guess (or fails if no extension is usable), never claiming zlib on the header alone
-
-#### Scenario: probe skipped when the backend is missing
-
-- **WHEN** a `.br` path matches no magic pattern and the Brotli backend is not installed
-- **THEN** the content probe is skipped and detection falls back to the extension guess (`ArchiveFormat.BROTLI`, `confidence=DetectionConfidence.GUESS`, `detected_by="extension"`)
-
----
+| Case | Expected |
+| --- | --- |
+| No magic; bounded prefix decompresses as Brotli | `BROTLI`, `PROBABLE`, `content_probe` |
+| zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` |
+| zlib-looking header, decode fails | No zlib claim; fall through to extension / fail |
+| `.br`, Brotli extra missing | Probe skipped; extension guess `BROTLI`/`GUESS` |
 
 ### Requirement: Compressed streams are probed for an inner TAR
 
-Detection SHALL probe a single-file compressor (gzip, bzip2, xz, zstd, lz4, lzip, zlib,
-brotli, unix-compress) for an inner TAR by decompressing a bounded amount of its *content*
-and testing for the TAR `ustar` signature at offset 257, so a tarball is reported as the
-combined format (`TAR_GZ` / `TAR_BZ2` / `TAR_XZ` / `TAR_ZST` / `TAR_LZ4`, and likewise
-the TAR + lzip/zlib/brotli combination) rather than a bare single-file compressor. The
-probe SHALL decompress only enough to reach the TAR header region (≥ 512 decompressed
-bytes).
+For single-file compressors (gzip, bzip2, xz, zstd, lz4, lzip, zlib, brotli,
+unix-compress), detection SHALL decompress a bounded amount of *content* and look
+for TAR `ustar` at offset 257, reporting combined formats (`TAR_GZ`, …) when
+present. Need ≥512 decompressed bytes.
 
-Reaching the header region requires different amounts of *compressed* input by codec, so the
-probe decodes through a **bounded, non-consuming view of the source** that supplies compressed
-bytes on demand, up to one maximum block (`_INNER_TAR_MAX_PROBE_BYTES`, ≥ the largest bzip2
-block's compressed size, so a full first block is always available). The codec pulls only as
-much as it needs:
+Compressed input is supplied via a **bounded, non-consuming view** (up to
+`_INNER_TAR_MAX_PROBE_BYTES`, ≥ largest bzip2 first-block compressed size):
 
-- A **stream-oriented** codec (gzip, xz, zstd, lz4, lzip, zlib, brotli, unix-compress) emits
-  decompressed output incrementally and reaches the header region from the first few KiB.
-- A **block-transform** codec (bzip2) emits nothing until an entire block has been read (a
-  bzip2 block holds up to 900 KB uncompressed), so it pulls up to a full first block before any
-  header bytes appear.
+- Stream codecs pull incrementally (first few KiB usually enough).
+- Block-transform (bzip2) may pull a full first block before any output.
 
-Reading through this view MUST NOT consume the source, exactly like the prefix peek: a seekable
-source is read and restored to its starting position, a path is opened and closed, and a
-non-seekable source is buffered in its `PeekableStream` so the bytes replay to the backend. The
-probe SHALL use the sequential decompression backend, so a random-access accelerator (e.g.
-rapidgzip) that rejects a bounded, non-seekable view is not engaged.
+Seekable: read + restore position. Path: open/close. Non-seekable: buffer in
+`PeekableStream` for replay. Use sequential decompression (not random-access
+accelerators that reject bounded non-seekable views). Missing decompressor → bare
+compressor format; open may refine. No TAR header within the bound → bare
+compressor.
 
-If the compressor's decompression backend is unavailable, detection reports the bare
-compressor format and defers the inner-TAR determination to open time. If, after reading up
-to the maximum block, the decoded output still carries no TAR header (or the stream is
-genuinely truncated), detection reports the bare compressor format.
+#### Scenario: inner-TAR matrix
 
-#### Scenario: gzip wrapping a tar
-
-- **WHEN** a `.gz` stream decompresses to bytes carrying `ustar` at offset 257
-- **THEN** `detect_format()` returns `ArchiveFormat.TAR_GZ` (not bare `GZIP`)
-
-#### Scenario: gzip wrapping a single file
-
-- **WHEN** a `.gz` stream decompresses to content with no TAR signature
-- **THEN** `detect_format()` returns `ArchiveFormat.GZIP` (a one-member single-file compressor)
-
-#### Scenario: bzip2 wrapping a tar whose first block exceeds the detection prefix
-
-- **WHEN** a `.tar.bz2` stream's first bzip2 block compresses to more than the peeked
-  detection prefix (e.g. a leading member of incompressible data), so the prefix alone yields
-  no decompressed output
-- **THEN** the probe reads up to one maximum block from the source, decodes the TAR header
-  region, and `detect_format()` returns `ArchiveFormat.TAR_BZ2` — not bare `BZ2`
-
-#### Scenario: large-block bzip2 that is not a tar stays bare
-
-- **WHEN** a bare `.bz2` stream with a large first block decompresses to content with no TAR
-  signature
-- **THEN** the probe reads up to one maximum block, finds no `ustar`, and `detect_format()`
-  returns `ArchiveFormat.BZ2` (no false promotion; the read stays bounded)
-
-#### Scenario: inner-tar probe over a non-seekable source is not consumed
-
-- **WHEN** a `.tar.bz2` is detected from a non-seekable source wrapped in a `PeekableStream`
-  and the probe must read a full block to reach the header region
-- **THEN** the block is buffered in the `PeekableStream`, `detect_format()` returns
-  `ArchiveFormat.TAR_BZ2`, and the backend can still read the whole archive afterwards
-
----
+| Case | Expected |
+| --- | --- |
+| `.gz` → content with `ustar`@257 | `TAR_GZ` (not bare `GZIP`) |
+| `.gz` → non-TAR content | `GZIP` |
+| `.tar.bz2` with large first block (> peek prefix) | Read up to max block; `TAR_BZ2` |
+| Large-block bare `.bz2`, no `ustar` | Bounded read; `BZ2` (no false promotion) |
+| Non-seekable `.tar.bz2` needing full block | Buffered in `PeekableStream`; `TAR_BZ2`; backend can still read all |
 
 ### Requirement: Self-extracting (SFX) archives are detected behind an executable stub
 
-The system SHALL detect self-extracting (SFX) RAR and 7z archives distributed as
-executables: an EXE stub precedes the archive payload. When the leading bytes look like an executable
-(the DOS/PE `MZ` header `4D 5A`, or ELF `7F 45 4C 46`) rather than a known archive
-magic, detection SHALL scan for an embedded archive signature — the RAR
-(`52 61 72 21 1A 07`) or 7z (`37 7A BC AF 27 1C`) magic — within a bounded forward
-window, and/or near the end of the file where SFX payloads commonly sit. On a match
-it SHALL report the embedded format with `payload_offset` set to the byte offset of
-the payload; when no embedded signature is found it falls through (extension, else
-`FormatDetectionError`). The native RAR and 7z parsers SHALL accept a start offset so
-an SFX payload is read in place without copying. (This is a known gap in the DEV
-detector, which carried partial SFX-handling code.)
+SFX RAR/7z: EXE stub precedes payload. If leading bytes look like executable
+(`MZ` / ELF) rather than archive magic, scan for RAR (`52 61 72 21 1A 07`) or 7z
+(`37 7A BC AF 27 1C`) magic within a bounded forward window and/or near EOF. Match
+→ embedded format with `payload_offset` = payload start. No match → fall through
+(extension / `FormatDetectionError`). Native RAR/7z parsers SHALL accept a start
+offset (read in place, no copy).
 
-#### Scenario: 7z payload behind a PE stub
+#### Scenario: SFX matrix
 
-- **WHEN** a file begins with `4D 5A` and the 7z magic `37 7A BC AF 27 1C` appears at offset `N`
-- **THEN** `detect_format()` returns `ArchiveFormat.SEVEN_Z` with `payload_offset == N`, and the backend opens the archive starting at `N`
-
-#### Scenario: executable with no embedded archive
-
-- **WHEN** a file begins with an executable header but contains no RAR/7z signature in the scanned window
-- **THEN** detection reports no SFX match and falls through to extension or `FormatDetectionError`
-
----
+| Case | Expected |
+| --- | --- |
+| `MZ` + 7z magic at offset N | `SEVEN_Z`, `payload_offset == N`; backend opens at N |
+| Executable header, no RAR/7z in window | No SFX match; extension or `FormatDetectionError` |
 
 ### Requirement: ISO 9660 requires an extended peek window
 
-The system SHALL raise the peek window to 32 774 bytes when the source has a `.iso` extension or when ISO detection is being attempted, because the ISO 9660 primary volume descriptor begins at byte offset 32 769.
+The system SHALL raise the peek window to 32774 bytes when `.iso` or ISO
+detection is attempted (PVD at 32769). A stream shorter than that SHALL rule out
+ISO and continue (other magic / extension) — never reject solely for being too
+short for ISO. Long enough but no `CD001`@32769 → no ISO match, fall through.
+`FormatDetectionError` only when **no** format matches.
 
-A stream shorter than 32 774 bytes simply cannot be an ISO. The system SHALL treat a
-too-short stream as "not an ISO" and continue with the remaining detection steps
-(other magic patterns, then extension) — it MUST NOT reject the source just because
-it is too short for the ISO probe, since many other formats produce valid archives
-far smaller than 32 KiB. Likewise, if the stream is long enough but the magic
-`43 44 30 30 31` ("CD001") is not found at offset 32 769, the system SHALL record no
-ISO match and fall through. `FormatDetectionError` is raised only when **no** format
-matches at all, per the general detection algorithm.
+#### Scenario: ISO peek matrix
 
-#### Scenario: ISO file detected via extended peek
-
-- **WHEN** the source is a path with extension `.iso` and the stream is at least 32 774 bytes
-- **AND** the bytes `43 44 30 30 31` appear at offset 32 769
-- **THEN** `detect_format()` returns `FormatInfo(format=ArchiveFormat.ISO, confidence=DetectionConfidence.CERTAIN, detected_by="magic")`
-
-#### Scenario: stream too short for ISO is ruled out, not rejected
-
-- **WHEN** a stream shorter than 32 774 bytes is examined
-- **THEN** ISO is ruled out and detection falls through to the other magic patterns and extension
-- **AND** `detect_format()` raises `FormatDetectionError` only if no other format matches — never solely because the stream was too short for the ISO probe
-
-#### Scenario: a small archive of another format is still detected
-
-- **WHEN** a 2 KiB file begins with the ZIP magic `50 4B 03 04`
-- **THEN** `detect_format()` returns `ArchiveFormat.ZIP` even though the stream is far shorter than the ISO probe window
-
----
+| Case | Expected |
+| --- | --- |
+| `.iso`, ≥32774 bytes, `CD001`@32769 | ISO, `CERTAIN`, `magic` |
+| Stream < 32774 bytes | ISO ruled out; fall through; error only if nothing else matches |
+| 2 KiB file with ZIP magic | ZIP (despite short of ISO window) |
 
 ### Requirement: Detection never consumes or discards bytes
 
-The bytes read during detection MUST remain available to the backend that
-subsequently opens the archive. Wrapping a non-seekable source is the **opener's**
-responsibility, not `detect_format()`'s, so that one wrapper is shared by detection
-and the backend rather than detection consuming bytes the caller can no longer reach:
+Bytes inspected during detection MUST remain available to the backend. Wrapping
+non-seekable sources is the **opener's** job so one wrapper is shared:
 
-- For **paths and seekable streams**: detection reads via `peek`/`read` and restores
-  the stream's **starting position** (its `tell()` on entry) afterwards; no wrapper is
-  needed for detection itself. The archive is taken to begin wherever the caller
-  positioned the stream, so an archive embedded mid-file detects against the right
-  bytes. `open_archive()` then normalizes the origin for the backend: a seekable
-  stream positioned mid-file is wrapped in a zero-origin view (`SlicingStream`) so
-  every backend — including those that address the source with absolute offsets, like
-  ISO via `pycdlib` — sees the archive begin at `tell() == 0`.
-- For **non-seekable streams**: `open_archive()` SHALL wrap the source in a
-  `PeekableStream` **before** running detection and pass that same `PeekableStream`
-  to both detection and the backend. Detection inspects bytes through
-  `PeekableStream.peek(n)` and consumes nothing.
+| Source | Behavior |
+| --- | --- |
+| Path / seekable stream | Peek/read then restore entry `tell()`. Archive begins where the caller positioned. `open_archive` may wrap a mid-file seekable stream in a zero-origin view (`SlicingStream`) so absolute-offset backends (e.g. ISO/`pycdlib`) see origin 0. |
+| Non-seekable | `open_archive` wraps in `PeekableStream` **before** detection and passes the **same** wrapper to detection and backend. Detection uses `peek(n)` only. |
 
-Because `detect_format()` returns a `FormatInfo` only (it does not return a stream),
-the standalone function is non-consuming for paths and seekable streams; for a raw
-non-seekable stream the caller MUST pass a `PeekableStream` (or other
-peekable/seekable wrapper) if it intends to keep reading the source afterwards — an
-unwrapped non-seekable stream would lose the peeked prefix. `open_archive()` does
-this wrapping internally, so callers of the high-level API never wrap by hand.
+Standalone `detect_format` is non-consuming for paths/seekable streams. For a raw
+non-seekable stream the caller must pass a `PeekableStream` (or equivalent) if it
+will keep reading — otherwise the peeked prefix is lost. `open_archive` wraps
+internally.
 
-`PeekableStream` behaviour:
+`PeekableStream`: buffers first `DETECTION_LIMIT` bytes (32774 when ISO triggered);
+`.peek(n)` without consume; `BinaryIO` to backend (drain buffer, then underlying).
 
-- Buffers the first `DETECTION_LIMIT` bytes (4 096 bytes by default; 32 774 bytes when ISO detection is triggered) in memory.
-- Exposes a `.peek(n)` method that returns buffered bytes without consuming them.
-- Presents itself as a `BinaryIO`-compatible object to the backend. Reads drain from the buffer first, then fall through to the underlying stream once the buffer is exhausted.
-- Constructed by the opener for non-seekable sources. The backend receives the `PeekableStream` object and does not need to know whether the original source was seekable.
+#### Scenario: non-consuming matrix
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  PeekableStream                                              │
-│  ┌─────────────────────┐    ┌────────────────────────────┐  │
-│  │ buffer: bytearray   │    │ underlying: RawIO (socket) │  │
-│  │ (first LIMIT bytes) │    │                            │  │
-│  └─────────────────────┘    └────────────────────────────┘  │
-│   └──► replayed on first read    └──► then transparently    │
-│         by backend                     passed through        │
-└──────────────────────────────────────────────────────────────┘
-```
-
-#### Scenario: seekable stream position is preserved
-
-- **WHEN** `detect_format()` is called with a seekable `BinaryIO` at any position N
-- **THEN** after detection completes the stream position SHALL again be N
-- **AND** the backend can read the full archive from that origin without any data loss
-
-#### Scenario: non-seekable source wrapped once by the opener and shared
-
-- **WHEN** `open_archive()` is called with a non-seekable `BinaryIO` (e.g. a socket or pipe)
-- **THEN** the opener wraps it in a `PeekableStream` before detection, runs detection via `peek()`, and hands the *same* `PeekableStream` to the backend
-- **AND** the backend reads the peeked bytes first from the buffer, then continues from the underlying stream, with no bytes dropped
-
-#### Scenario: standalone detect_format on a raw non-seekable stream
-
-- **WHEN** `detect_format()` is called directly on a raw, unwrapped non-seekable stream that the caller intends to keep reading
-- **THEN** the caller must pass a `PeekableStream` so the peeked prefix is replayed afterwards; a raw non-seekable stream would otherwise lose the bytes detection consumed
+| Case | Expected |
+| --- | --- |
+| Seekable `BinaryIO` at position N | After detect, position is N again; backend can read full archive |
+| `open_archive` on non-seekable | One `PeekableStream` for detect + backend; peeked bytes replay then fall through |
+| Standalone detect on raw non-seekable the caller will reread | Caller must supply `PeekableStream` |
