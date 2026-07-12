@@ -357,6 +357,7 @@ def test_rar_reader_masks_hostile_unix_mode() -> None:
     assert member_win.mode is None
     assert member_win.windows_attrs == 0x20
 
+
 def test_non_rarlab_unrar_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
