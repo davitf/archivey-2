@@ -274,13 +274,7 @@ class IsoReader(BaseArchiveReader):
 
         self._iso = pycdlib.PyCdlib()
         try:
-            if self._handle_lock is not None:
-                with self._handle_lock:
-                    if isinstance(source, Path):
-                        self._iso.open(str(source))
-                    else:
-                        self._iso.open_fp(source)
-            else:
+            with self._handle_guard():
                 if isinstance(source, Path):
                     self._iso.open(str(source))
                 else:
@@ -514,11 +508,8 @@ class IsoReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                self._iso.close()
-            return
-        self._iso.close()
+        with self._handle_guard():
+            self._iso.close()
 
 
 class IsoReadBackend(ReadBackend):

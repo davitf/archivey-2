@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, BinaryIO, Callable, ContextManager, Iterator, Mapping
 
 if TYPE_CHECKING:
     from archivey.internal.password import _PasswordCandidates
@@ -243,6 +245,21 @@ class BaseArchiveReader(ArchiveReader):
         self._pass_scanned: list[ArchiveMember] = []
         self._pass_by_name_lists: dict[str, list[ArchiveMember]] = {}
         self._closed = False
+        # A backend that shares one underlying handle across member streams (zipfile fp,
+        # tarfile fileobj, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
+        # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
+        # when present, no-op otherwise" branch lives in one place. ``None`` = no shared
+        # handle to serialize (default readers, path-per-open backends).
+        self._handle_lock: threading.Lock | None = None
+
+    def _handle_guard(self) -> ContextManager[object]:
+        """Hold the backend's shared-handle lock if one is set, else a no-op context.
+
+        Collapses the repeated ``if self._handle_lock is not None: with lock: … else: …``
+        branch that every shared-handle backend otherwise copy-pastes (and can forget to
+        keep in sync on one arm).
+        """
+        return self._handle_lock if self._handle_lock is not None else nullcontext()
 
     @property
     def member_streams(self) -> MemberStreams:

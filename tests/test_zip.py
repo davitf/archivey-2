@@ -6,8 +6,8 @@ from __future__ import annotations
 import contextlib
 import io
 import struct
-import zlib
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -176,7 +176,9 @@ def test_directory_member_has_no_crc32(tmp_path: Path) -> None:
         by_name = {m.name: m for m in ar.members()}
         # A directory's stored CRC is a meaningless 0; do not present it as a digest.
         assert "crc32" not in by_name["adir/"].hashes
-        assert by_name["adir/file.txt"].hashes["crc32"] == zlib.crc32(b"data") & 0xFFFFFFFF
+        assert (
+            by_name["adir/file.txt"].hashes["crc32"] == zlib.crc32(b"data") & 0xFFFFFFFF
+        )
 
 
 def test_explicit_directory_entry(tmp_path: Path) -> None:

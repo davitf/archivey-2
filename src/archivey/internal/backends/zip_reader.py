@@ -647,17 +647,12 @@ class ZipReader(BaseArchiveReader):
         self, info: zipfile.ZipInfo, *, password: bytes | None
     ) -> BinaryIO:
         """``ZipFile.open`` under the CONCURRENT handle lock when present."""
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                return cast("BinaryIO", self._archive.open(info, pwd=password))
-        return cast("BinaryIO", self._archive.open(info, pwd=password))
+        with self._handle_guard():
+            return cast("BinaryIO", self._archive.open(info, pwd=password))
 
     def _zip_close_raw(self, stream: BinaryIO) -> None:
         """Close a raw zip member stream under the CONCURRENT handle lock when present."""
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                stream.close()
-        else:
+        with self._handle_guard():
             stream.close()
 
     def _open_encrypted_lazy(
@@ -935,10 +930,7 @@ class ZipReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        if self._handle_lock is not None:
-            with self._handle_lock:
-                self._archive.close()
-        else:
+        with self._handle_guard():
             self._archive.close()
 
 
