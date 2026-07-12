@@ -27,11 +27,19 @@ _SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
 _MAX_UTF16_CHARS = 65536
 _MAX_NUM_STREAMS = 65536
+# 7z coder method IDs. Single source of truth: the reader imports these.
 _METHOD_COPY = b"\x00"
 _METHOD_LZMA = b"\x03\x01\x01"
 _METHOD_LZMA2 = b"\x21"
 _METHOD_AES = b"\x06\xf1\x07\x01"
 _METHOD_BCJ2 = b"\x03\x03\x01\x1b"
+_METHOD_DELTA = b"\x03"
+_METHOD_DEFLATE = b"\x04\x01\x08"
+_METHOD_DEFLATE64 = b"\x04\x01\x09"
+_METHOD_BZIP2 = b"\x04\x02\x02"
+_METHOD_ZSTD = b"\x04\xf7\x11\x01"
+_METHOD_BROTLI = b"\x04\xf7\x11\x02"
+_METHOD_PPMD = b"\x03\x04\x01"
 
 
 class _Property(IntEnum):
@@ -949,7 +957,7 @@ _METHOD_ALGORITHMS: dict[bytes, CompressionAlgorithm] = {
     _METHOD_COPY: CompressionAlgorithm.STORED,
     _METHOD_LZMA: CompressionAlgorithm.LZMA,
     _METHOD_LZMA2: CompressionAlgorithm.LZMA2,
-    b"\x03": CompressionAlgorithm.DELTA,
+    _METHOD_DELTA: CompressionAlgorithm.DELTA,
     b"\x04": CompressionAlgorithm.BCJ,
     b"\x03\x03\x01\x03": CompressionAlgorithm.BCJ,
     b"\x03\x03\x02\x05": CompressionAlgorithm.BCJ,
@@ -958,11 +966,11 @@ _METHOD_ALGORITHMS: dict[bytes, CompressionAlgorithm] = {
     b"\x03\x03\x07\x01": CompressionAlgorithm.BCJ,
     b"\x03\x03\x08\x05": CompressionAlgorithm.BCJ,
     _METHOD_BCJ2: CompressionAlgorithm.BCJ2,
-    b"\x04\x01\x08": CompressionAlgorithm.DEFLATE,
-    b"\x04\x01\x09": CompressionAlgorithm.DEFLATE64,
-    b"\x04\x02\x02": CompressionAlgorithm.BZIP2,
-    b"\x04\xf7\x11\x01": CompressionAlgorithm.ZSTD,
-    b"\x04\xf7\x11\x02": CompressionAlgorithm.BROTLI,
-    b"\x03\x04\x01": CompressionAlgorithm.PPMD,
+    _METHOD_DEFLATE: CompressionAlgorithm.DEFLATE,
+    _METHOD_DEFLATE64: CompressionAlgorithm.DEFLATE64,
+    _METHOD_BZIP2: CompressionAlgorithm.BZIP2,
+    _METHOD_ZSTD: CompressionAlgorithm.ZSTD,
+    _METHOD_BROTLI: CompressionAlgorithm.BROTLI,
+    _METHOD_PPMD: CompressionAlgorithm.PPMD,
     _METHOD_AES: CompressionAlgorithm.UNKNOWN,
 }
