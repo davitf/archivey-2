@@ -14,6 +14,7 @@ from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -52,6 +53,7 @@ from archivey.internal.config import (
     stream_config_from_archivey,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.logs import backends as logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
@@ -133,16 +135,34 @@ def _password_to_kdf_bytes(password: bytes) -> bytes:
         return password
 
 
-def _filetime_to_datetime(value: int | None) -> datetime | None:
+@dataclass(frozen=True)
+class _TimestampIssue:
+    field: str
+    value_repr: str
+    message: str
+
+
+def _filetime_to_datetime(
+    value: int | None, filename: str, *, field: str
+) -> tuple[datetime | None, _TimestampIssue | None]:
+    """An NTFS FILETIME (100 ns ticks since 1601 UTC) as a datetime; 0/None means "unset"."""
     if value is None or value == 0:
-        return None
+        return None, None
     try:
-        return datetime.fromtimestamp(
-            value / 10_000_000 - _NTFS_EPOCH_OFFSET,
-            tz=timezone.utc,
+        return (
+            datetime.fromtimestamp(
+                value / 10_000_000 - _NTFS_EPOCH_OFFSET, tz=timezone.utc
+            ),
+            None,
         )
     except (ValueError, OverflowError, OSError):
-        return None
+        # fromtimestamp rejects out-of-range values with ValueError/OverflowError, and on
+        # some platforms (notably Windows) with OSError for negative/huge inputs.
+        return None, _TimestampIssue(
+            field=field,
+            value_repr=repr(value),
+            message=f"Invalid NTFS timestamp for {filename!r}: {value!r}",
+        )
 
 
 def _is_lzma_family(coder: SevenZipCoder) -> bool:
@@ -550,15 +570,27 @@ class SevenZipReader(BaseArchiveReader):
             extra["7z.folder_index"] = record.folder_index
         if record.file_in_folder is not None:
             extra["7z.file_in_folder"] = record.file_in_folder
+        ts_issues: list[_TimestampIssue] = []
+        timestamps: dict[str, datetime | None] = {}
+        for field, value in (
+            ("modified", record.last_write_time),
+            ("accessed", record.last_access_time),
+            ("created", record.creation_time),
+        ):
+            timestamps[field], issue = _filetime_to_datetime(
+                value, record.filename, field=field
+            )
+            if issue is not None:
+                ts_issues.append(issue)
         member = ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
             size=record.uncompressed_size,
             compressed_size=record.compressed_size,
-            modified=_filetime_to_datetime(record.last_write_time),
-            accessed=_filetime_to_datetime(record.last_access_time),
-            created=_filetime_to_datetime(record.creation_time),
+            modified=timestamps["modified"],
+            accessed=timestamps["accessed"],
+            created=timestamps["created"],
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,
@@ -578,6 +610,22 @@ class SevenZipReader(BaseArchiveReader):
             presented_name=record.filename,
             archive_name=self._archive_name,
         )
+        for issue in ts_issues:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+                message=issue.message,
+                context=MemberTimestampContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    field=issue.field,
+                    source="ntfs",
+                    value_repr=issue.value_repr,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
         return member
 
     def _member_type(self, record: SevenZipFileRecord) -> MemberType:
