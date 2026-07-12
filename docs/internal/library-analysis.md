@@ -60,7 +60,7 @@ Two recurring notes:
 | PPMd (var.H) | `pyppmd` | `[7z]` | no | yes | yes |
 
 ¹ gzip truncation: stdlib raises `EOFError`; the `rapidgzip` accelerator does **not** reliably
-report it, so Archivey adds an ISIZE backstop on a seekable path (see `docs/known-issues.md`
+report it, so Archivey adds an ISIZE backstop on a seekable path (see `known-issues.md`
 and `seekable-decompressor-streams`).
 ² brotli has no length/CRC trailer, so a truncated stream is detected only when the
 decompressor never reports "finished" at EOF (surfaced as `TruncatedError`), not by a stored
@@ -154,7 +154,7 @@ rewinding seek"). The candidates were:
   **Deferred, and possibly unnecessary:** it is a Cython/C++17 extension "based on
   `indexed_bzip2`" that statically bundles a C++ core, carrying the *same class* of macOS
   dual-load symbol-collision risk that forced Archivey onto a single accelerator library
-  (`docs/known-issues.md`). And frame-granularity seeking is *exactly* what Archivey's own
+  (`known-issues.md`). And frame-granularity seeking is *exactly* what Archivey's own
   `_SegmentedDecompressorStream` already provides for xz and lzip — so a small **native zstd
   frame-index reader** reusing that infrastructure would likely give the same seeking with no
   heavy dependency and no macOS risk. The note is no help for the common **single-frame** `.zst`
@@ -243,7 +243,7 @@ does not use it — so the `python-xz` pin that lingered in `[all]` was entirely
 Default decode is stdlib `gzip` (zero-dep core). For **random access**, the optional
 `rapidgzip` (`[seekable]`) builds an index for true seeking; without it, stdlib `gzip` seeks by
 re-decompressing from the start (rewind warning). `rapidgzip` is the single accelerator library
-for both gzip and bzip2 — see bzip2 below and `docs/known-issues.md` for why the standalone
+for both gzip and bzip2 — see bzip2 below and `known-issues.md` for why the standalone
 `indexed_gzip`/`indexed_bzip2` are not used. Truncation: stdlib raises `EOFError`; `rapidgzip`
 needs the ISIZE backstop (`seekable-decompressor-streams`).
 
@@ -254,7 +254,7 @@ Default decode is stdlib `bz2`. Random access uses **`rapidgzip`'s bundled `Inde
 one process corrupts the heap and aborts on macOS (overlapping statically-linked C++ symbols
 coalesced by dyld). Routing both gzip and bzip2 through `rapidgzip` keeps a single accelerator
 library in the process. This is the **single-accelerator macOS constraint** documented in full in
-[`docs/known-issues.md`](known-issues.md) and matches the rapidgzip author's own guidance.
+[`known-issues.md`](known-issues.md) and matches the rapidgzip author's own guidance.
 
 ### lzip — native `lzip.py` over stdlib `lzma`
 

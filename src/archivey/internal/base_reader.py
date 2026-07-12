@@ -404,7 +404,7 @@ class BaseArchiveReader(ArchiveReader):
         Concurrent ``open`` is supported when the reader was opened with
         ``MemberStreams.CONCURRENT``: first-touch materialization is coordinated
         (wait/share), and after the snapshot is published workers may fan out. Forward-only
-        / streaming passes remain single-owner. See ``docs/parallel-reader.md``.
+        / streaming passes remain single-owner. See ``docs/grab-bag/parallel-reader.md``.
         """
         ...
 

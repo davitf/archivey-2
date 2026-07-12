@@ -3,7 +3,7 @@
 The packaging contract (``packaging-and-extras``) is that an optional **extra** lists only
 libraries some ``src/`` code path actually imports for that capability — never a dead or
 test-only dependency. This test enforces it mechanically so a stray pin can't slip back in
-(as ``python-xz`` and ``pyzstd`` once had — see ``docs/library-analysis.md``).
+(as ``python-xz`` and ``pyzstd`` once had — see ``docs/internal/library-analysis.md``).
 
 It parses ``[project.optional-dependencies]`` from ``pyproject.toml``, expands the bundle
 extras (``archivey[...]`` self-references) down to leaf third-party packages, and asserts each
@@ -88,7 +88,7 @@ def test_every_extra_package_is_used_by_src() -> None:
         f"src/ code path: {unused}. Either wire the dependency into src/, move it to the "
         "dev dependency group (if it is test-only), or remove it. If it is pinned ahead of "
         "its implementation phase, add it to _PENDING_IMPLEMENTATION with a justification. "
-        "See docs/library-analysis.md and the packaging-and-extras spec."
+        "See docs/internal/library-analysis.md and the packaging-and-extras spec."
     )
 
 
@@ -115,7 +115,7 @@ def test_pyzstd_and_python_xz_are_not_in_any_extra() -> None:
     for dropped in ("pyzstd", "python-xz"):
         assert dropped not in leaves, (
             f"{dropped} was removed from the extras by the compression-library evaluation "
-            "(see docs/library-analysis.md); it must not be pinned in a user-facing extra."
+            "(see docs/internal/library-analysis.md); it must not be pinned in a user-facing extra."
         )
 
 

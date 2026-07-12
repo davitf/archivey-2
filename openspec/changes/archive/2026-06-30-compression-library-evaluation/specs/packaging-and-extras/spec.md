@@ -10,7 +10,7 @@ no `src/` code path uses. Libraries needed **only by the test suite** — decode
 (`rarfile`, `py7zr`) and fixture generators (`ncompress`, and `pyzstd` while it is only used
 to *write* zstd fixtures) — SHALL live in the `dev` dependency group, never in a user-facing
 extra. The per-codec library choice and its rationale SHALL be recorded in
-`docs/library-analysis.md`, the source of truth for why each library is used or rejected.
+`docs/internal/library-analysis.md`, the source of truth for why each library is used or rejected.
 
 Applying this now: `python-xz` (imported nowhere — not `src/`, not the tests) SHALL be
 removed from `[all]`; `pyzstd` (used only by the dev test oracle to generate fixtures) SHALL
@@ -30,5 +30,5 @@ move from `[all]` to the `dev` group — unless the zstd evaluation promotes it 
 #### Scenario: the zstd extra matches the chosen backend
 
 - **WHEN** the evaluation selects the zstd decode backend
-- **THEN** the `[zstd]` extra pins exactly that package (plus any adopted seekable-zstd backend), and `docs/library-analysis.md` records the choice
+- **THEN** the `[zstd]` extra pins exactly that package (plus any adopted seekable-zstd backend), and `docs/internal/library-analysis.md` records the choice
 

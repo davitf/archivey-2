@@ -29,7 +29,7 @@
 - [ ] 3.1 Implement the decision from §2 in `_open_gzip` / the gzip codec path.
 - [ ] 3.2 Tests: truncation at representative offsets for single- and multi-member gzip; assert
       `TruncatedError`/`CorruptionError` and that valid files (incl. multi-member) never raise.
-- [ ] 3.3 Update `seekable-decompressor-streams` (sync the delta) and `docs/known-issues.md`.
+- [ ] 3.3 Update `seekable-decompressor-streams` (sync the delta) and `docs/internal/known-issues.md`.
 
 ## Already done (interim, in PR #14)
 

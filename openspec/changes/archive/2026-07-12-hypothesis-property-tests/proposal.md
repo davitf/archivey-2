@@ -2,7 +2,7 @@
 
 ## Why
 
-`docs/threat-model.md` O5 defines the fuzzing scaffold that must be standing before the
+`docs/internal/threat-model.md` O5 defines the fuzzing scaffold that must be standing before the
 native 7z/RAR parsers ship (they parse untrusted binary headers in Python). O5 has three
 staged parts:
 
@@ -52,7 +52,7 @@ This change closes part 2, which is one of the two named pre-Phase-6 entry gates
 - Extend `testing-contract` with a requirement covering the property-test layer.
 
 **Non-goals.** No Atheris / coverage-guided fuzzing (Phase 6, with the parsers). No fuzzing
-of the accelerator C-extensions (`docs/threat-model.md` O5 keeps that in a resource-limited
+of the accelerator C-extensions (`docs/internal/threat-model.md` O5 keeps that in a resource-limited
 subprocess sandbox, deferred). No behavior change to any runtime code — this is test-only,
 though a counterexample that reveals a real bug is fixed as part of the change (as the
 mutation harness did).

@@ -54,7 +54,7 @@ cli = [
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
 # separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into
 # one process corrupts the heap and aborts on macOS (overlapping statically-linked C++ symbols).
-# >=0.16.0 is the floor known to expose IndexedBzip2File. See docs/known-issues.md.
+# >=0.16.0 is the floor known to expose IndexedBzip2File. See docs/internal/known-issues.md.
 seekable = [
     "rapidgzip>=0.16.0",
 ]
@@ -65,7 +65,7 @@ recommended = [
     "archivey[recommended-lite,seekable]",
 ]
 # [all] is the "everything" alias. It currently equals [recommended]: after the
-# compression-library evaluation (docs/library-analysis.md) the two dead alternative
+# compression-library evaluation (docs/internal/library-analysis.md) the two dead alternative
 # backends that used to live here were dropped — python-xz (v2 reads XZ with its own
 # native xz.py over stdlib lzma; archivey-dev#214 — never imported) and pyzstd (the zstd
 # decode decision is stdlib compression.zstd / backports.zstd, not pyzstd; it was only a

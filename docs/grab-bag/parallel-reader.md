@@ -1,3 +1,5 @@
+> **Grab-bag / exploration.** Much of this was superseded by `MemberStreams` / `reader-concurrency`. Index: [grab-bag/index.md](index.md).
+
 # Parallel-safe reader — exploration notes
 
 > **Current status (2026-07-11):** `concurrent-member-streams` supersedes
@@ -126,7 +128,7 @@ make no throughput claim.
   in §3 and §5.
 - **C++ accelerator caveat:** `rapidgzip` (and similar) spawn `std::thread`s
   invisible to Python's threading. Free-threading does not remove the
-  close-before-finalize requirement (`docs/known-issues.md` Bugs 1–3). A parallel
+  close-before-finalize requirement (`docs/internal/known-issues.md` Bugs 1–3). A parallel
   consumer must still never kill a source under a live accelerator stream, and
   must not assume more accelerator objects ⇒ linear speedup (FD / memory / thread
   pressure). Lifecycle leases therefore keep backend resources alive until all member

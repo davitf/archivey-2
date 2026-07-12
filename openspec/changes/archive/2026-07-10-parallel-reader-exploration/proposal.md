@@ -49,7 +49,7 @@ finished spec:
   the win is C-codec decode (`lzma`/`bz2`/`zlib` release the GIL) and I/O overlap.
   `VISION.md` requires a benchmark before any perf claim — decide with numbers, per the
   cross-cutting benchmark gate.
-- **Free-threaded Python (3.13t)** — `docs/threat-model.md` C4 flags this as needing a
+- **Free-threaded Python (3.13t)** — `docs/internal/threat-model.md` C4 flags this as needing a
   position statement; it changes the payoff math and the accelerator-thread story.
 - **Solid formats partition work unevenly** — 7z members *within one folder* share
   decompressor state (sequential); only *separate folders* are independent. RAR solid blocks
@@ -77,8 +77,8 @@ precondition). Anything larger is recorded, not built.
   `shared-source-streams`**; ISO's "leave alone + design note" disposition lives there too —
   this change only records that so the two don't fight.
 - **Explored, not committed (written analysis, lives in this change's `design.md` and a seed
-  `docs/parallel-reader.md`):** the benchmark design (wall time, bytes-decompressed, seek
-  counts, across GIL and 3.13t), the free-threading position (`docs/threat-model.md` C4), the
+  `docs/grab-bag/parallel-reader.md`):** the benchmark design (wall time, bytes-decompressed, seek
+  counts, across GIL and 3.13t), the free-threading position (`docs/internal/threat-model.md` C4), the
   solid-format work partitioning, the member-cache one-time-build safety, and the "N readers vs.
   shared source" decision — feeding a **future** parallel-extraction change. If the analysis
   finds the ABC needs *more* than this invariant to avoid a retrofit, that becomes an explicit

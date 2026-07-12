@@ -10,7 +10,7 @@
 > invariant) plus a written analysis feeding a future parallel-extraction change. Run tools
 > through uv. Reference: `src/archivey/internal/base_reader.py` (reader state),
 > `openspec/changes/shared-source-streams` (the shared-source primitive this builds on),
-> `docs/threat-model.md` C4 (free-threading), `VISION.md` (benchmark-before-claims),
+> `docs/internal/threat-model.md` C4 (free-threading), `VISION.md` (benchmark-before-claims),
 > `openspec/project.md` (parallel extraction is a v1-deferred feature).
 
 ## 0. Framing / decisions
@@ -32,7 +32,7 @@
       `_open_member` against the invariant; record compliance. Known: directory/ZIP largely
       comply; `single_file._first_stream` scratch is the archivey-owned gap; TAR-RA is exempt
       (single shared decoder); ISO is out of SharedSource scope (`pycdlib` owns addressing —
-      not listed as non-compliant). → Recorded in `docs/parallel-reader.md` §1 (single-file
+      not listed as non-compliant). → Recorded in `docs/grab-bag/parallel-reader.md` §1 (single-file
       gap closed by `shared-source-streams`).
 - [x] 1.3 **Fix ownership is explicit, no overlap:** the `single_file` scratch fix is owned by
       **`shared-source-streams`**. ISO's disposition (leave alone; pycdlib-owned; design note
@@ -44,7 +44,7 @@
 
 ## 2. Explored (written analysis; NO feature code)
 
-> Home for the write-up: this change's `design.md` (decisions) + a seed `docs/parallel-reader.md`
+> Home for the write-up: this change's `design.md` (decisions) + a seed `docs/grab-bag/parallel-reader.md`
 > (the durable analysis the future `parallel-extraction` change starts from). No runtime code in
 > this section.
 
@@ -54,7 +54,7 @@
 - [x] 2.2 **Benchmark design** — define the workloads and metrics for deciding the feature:
       wall time, bytes-decompressed, seek counts; DIRECT (non-solid) archives vs. multi-folder
       solid 7z; C-codec vs. pure-Python decode; GIL build vs. 3.13t. Home: `benchmarks/`.
-- [x] 2.3 **Free-threading position** — draft the stance for `docs/threat-model.md` C4: what
+- [x] 2.3 **Free-threading position** — draft the stance for `docs/internal/threat-model.md` C4: what
       parallel decode/extract looks like under 3.13t, and the C++-accelerator-thread caveat.
 - [x] 2.4 **Work-partitioning per format** — document the parallelizable unit (7z: folder;
       RAR: solid block; ZIP/DIRECT: per-member) so a future coordinator knows the granularity.

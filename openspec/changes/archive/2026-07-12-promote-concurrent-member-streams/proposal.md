@@ -19,7 +19,7 @@ matches the synced `packaging-and-extras` / `testing-contract` requirements.
 - Record a proportionate TAR/ISO lock baseline (wall + wait/hold; no pass/fail threshold)
   — deferred tasks 7.9 / tar §5.1.
 - Remove "provisional" wording from public docs/docstrings (`MemberStreams`,
-  `project.md`, `SPEC.md`, `ARCHITECTURE.md`, `IDEAS.md`, `docs/parallel-reader.md`,
+  `project.md`, `SPEC.md`, `ARCHITECTURE.md`, `IDEAS.md`, `docs/grab-bag/parallel-reader.md`,
   threat-model C4) so the supported cooperative + free-threaded-tested seam is stated
   honestly.
 - Keep 7z/RAR concurrent-open code compliance deferred until those readers exist

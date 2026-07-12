@@ -11,7 +11,7 @@ runtime dependency is needed), replacing the previous `zstandard` pin. The `[7z]
 dependency SHALL follow the same backend. `zstandard` SHALL NOT be pinned in a runtime extra
 once the swap lands (it may return to `[all]` later as an alternative backend behind its own
 extra). Test-only oracles and fixture generators remain in the `dev` group. The per-codec choice
-and rationale are recorded in `docs/library-analysis.md`.
+and rationale are recorded in `docs/internal/library-analysis.md`.
 
 #### Scenario: the zstd extra pins the stdlib-line backend
 

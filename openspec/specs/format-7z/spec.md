@@ -188,10 +188,13 @@ Passwords SHALL use the `archive-reading` candidate model: known-good successes
 for this reader, remaining static candidates, then provider requests. Header
 requests use `member is None`; folder/member requests identify the member being
 decrypted where possible. Members in different encrypted folders MAY use different
-passwords in one open or one `stream_members()` pass. Because 7z has no password
-check value, the reader SHALL cache derived keys by `(password, salt, cycles)`,
-try known-good passwords first, and surface wrong passwords as
-`EncryptionError`/`CorruptionError`, never silent bytes.
+passwords in one open or one `stream_members()` pass. Key derivation SHALL use the
+7z SHA-256 scheme (UTF-16LE password, salt, `1 << NumCyclesPower` rounds with the
+documented `0x3f` special case) via a 7z-local helper that feeds `AesParams` into
+the shared crypto stage — not a generic crypto-surface KDF. Because 7z has no
+password check value, the reader SHALL cache derived keys by
+`(password, salt, cycles)`, try known-good passwords first, and surface wrong
+passwords as `EncryptionError`/`CorruptionError`, never silent bytes.
 
 #### Scenario: encryption matrix
 

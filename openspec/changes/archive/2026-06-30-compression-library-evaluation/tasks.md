@@ -22,7 +22,7 @@
       support (likely none/limited), error reporting, the "prefer stdlib when present" angle.
 - [x] 2.4 `indexed_zstd` (martinellimarco; used by ratarmount): efficient seeking, non-seekable
       behavior, availability, and the same-process-as-rapidgzip concern (does it bundle a C++
-      core that could collide like indexed_bzip2 — see `docs/known-issues.md`?).
+      core that could collide like indexed_bzip2 — see `docs/internal/known-issues.md`?).
 - [x] 2.5 Decide: primary decode backend (validate/revise the `zstandard`→`pyzstd` intent) +
       the seekable-zstd story (indexed_zstd / SeekableZstdFile / none). Record the rationale.
 
@@ -39,12 +39,12 @@
 
 - [x] 4.1 Document the chosen library + rejected alternatives + reason for gzip, bzip2, lzip,
       lz4, brotli, unix-compress, deflate64, ppmd. Cross-link the rapidgzip/indexed_bzip2
-      single-accelerator macOS constraint already in `docs/known-issues.md`.
+      single-accelerator macOS constraint already in `docs/internal/known-issues.md`.
 
 ## 5. Write the doc + clean up deps
 
-- [x] 5.1 Add `docs/library-analysis.md` with the filled matrix + per-codec decisions; add a
-      nav entry in `mkdocs.yml`; cross-link from `docs/known-issues.md` / `COMPARISON.md`.
+- [x] 5.1 Add `docs/internal/library-analysis.md` with the filled matrix + per-codec decisions; add a
+      nav entry in `mkdocs.yml`; cross-link from `docs/internal/known-issues.md` / `COMPARISON.md`.
 - [x] 5.2 Audit `pyproject.toml` against `src/` imports and sort each dep into the right
       bucket: **remove** `python-xz` from `[all]` (imported nowhere); **move** `pyzstd` from
       `[all]` to the `dev` group (test-only fixture generator) unless the evaluation promotes
