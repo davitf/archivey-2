@@ -138,16 +138,20 @@ this contract.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
-and null bytes; then `(dest / member.name).parent.resolve()` must remain within
+null bytes, and names/link targets the platform filesystem encoding cannot
+represent; then `(dest / member.name).parent.resolve()` must remain within
 `dest.resolve()` to catch symlinked intermediate components without following a
 final-component symlink; link targets are rechecked as described in the symlink
-and hardlink requirements.
+and hardlink requirements. These string checks SHALL raise typed
+`FilterRejectionError` subclasses, never a raw `UnicodeEncodeError`/`ValueError`.
 
 | Constraint | Violation type | Condition |
 | --- | --- | --- |
 | Path traversal | `PathTraversalError` | Any `..` component, escaping or internal |
 | Absolute path | `PathTraversalError` | Leading `/`, Windows drive path, or UNC path |
 | Null byte | `PathTraversalError` | `member.name` contains `\x00` |
+| Unrepresentable name | `PathTraversalError` | `member.name` cannot be encoded by the platform filesystem encoding |
+| Link-target NUL / unrepresentable | `SymlinkEscapeError` | SYMLINK/HARDLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
 | Symlink escape | `SymlinkEscapeError` | SYMLINK whose fully resolved target escapes `dest` |
 | Hardlink escape | `SymlinkEscapeError` | HARDLINK whose target path resolves outside `dest` |
 | Special file | `SpecialFileError` | `MemberType.OTHER` device/FIFO/socket/etc. |
@@ -160,6 +164,9 @@ and hardlink requirements.
 | `"foo/../bar"` | `PathTraversalError` under reject/raise behavior even if it would stay in root |
 | Leading `/`, Windows drive, UNC path | `PathTraversalError`; no write; all policies |
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `PathTraversalError` |
+| Name with lone surrogate unencodable by the platform filesystem encoding | `PathTraversalError` before path resolution; never raw `UnicodeEncodeError` |
+| SYMLINK/HARDLINK `link_target` with `\x00` or unencodable surrogate | `SymlinkEscapeError`; never raw `ValueError`/`UnicodeEncodeError` |
+| Name using only `surrogateescape` round-trip low surrogates (`\udc80`–`\udcff`) | Accepted when otherwise safe (representable on disk) |
 | `MemberType.OTHER` | `SpecialFileError`; all policies |
 
 ### Requirement: Skip non-current members by default

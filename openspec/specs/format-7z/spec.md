@@ -93,7 +93,7 @@ verification stage as data is read.
 | STORED | `0x00` | pass-through | core |
 | LZMA1 / LZMA2 | `0x030101` / `0x21` | `lzma` `FORMAT_RAW` | core |
 | Delta | `0x03` | `lzma.FILTER_DELTA` | core |
-| BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`-`0x09`, `0x03030103`... | `lzma` BCJ filters | core |
+| BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`-`0x09`, `0x03030103`... | `lzma` BCJ filters | core (BCJ+LZMA2; see unsupported-codec rule for LZMA1+BCJ) |
 | Deflate | `0x040108` | raw `zlib` | core |
 | BZip2 | `0x040202` | `bz2` | core |
 | Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | core on 3.14+; otherwise `[7z]` |
@@ -119,10 +119,13 @@ stdlib zstd, Brotli, and AES support in one install.
 
 The system SHALL raise `UnsupportedFeatureError` naming the codec or method ID
 when a folder uses a coder with no available backend. This includes BCJ2, newer
-branch filters absent from installed liblzma, and unrecognized method IDs. The
-reader MUST NOT return garbage and MUST NOT fall back to `py7zr` or another
-third-party reader. PPMd and Deflate64 are optional-supported codecs, and
-multi-volume 7z is supported by volume joining.
+branch filters absent from installed liblzma, unrecognized method IDs, and coder
+combinations that cannot be decoded correctly with the available stdlib/optional
+backends without custom non-stdlib filter code — in particular **LZMA1+BCJ** when
+no validated stdlib-only composition exists (BCJ+LZMA2 remains the supported
+core path). The reader MUST NOT return garbage and MUST NOT fall back to `py7zr`
+or another third-party reader. PPMd and Deflate64 are optional-supported codecs,
+and multi-volume 7z is supported by volume joining.
 
 #### Scenario: unsupported-codec matrix
 
@@ -130,6 +133,7 @@ multi-volume 7z is supported by volume joining.
 | --- | --- |
 | Folder uses BCJ2 | `UnsupportedFeatureError` names BCJ2; no output bytes |
 | Folder uses unknown method ID | `UnsupportedFeatureError` names the method ID |
+| Folder uses LZMA1+BCJ without a validated stdlib path | `UnsupportedFeatureError` names the combination; no garbage; no `pybcj` pull-in solely for this path |
 | Folder uses PPMd with `[7z]` installed | Member is decoded, not rejected |
 
 ### Requirement: Support multi-volume 7z by ordered concatenation
@@ -161,10 +165,13 @@ Passwords SHALL use the `archive-reading` candidate model: known-good successes
 for this reader, remaining static candidates, then provider requests. Header
 requests use `member is None`; folder/member requests identify the member being
 decrypted where possible. Members in different encrypted folders MAY use different
-passwords in one open or one `stream_members()` pass. Because 7z has no password
-check value, the reader SHALL cache derived keys by `(password, salt, cycles)`,
-try known-good passwords first, and surface wrong passwords as
-`EncryptionError`/`CorruptionError`, never silent bytes.
+passwords in one open or one `stream_members()` pass. Key derivation SHALL use the
+7z SHA-256 scheme (UTF-16LE password, salt, `1 << NumCyclesPower` rounds with the
+documented `0x3f` special case) via a 7z-local helper that feeds `AesParams` into
+the shared crypto stage — not a generic crypto-surface KDF. Because 7z has no
+password check value, the reader SHALL cache derived keys by
+`(password, salt, cycles)`, try known-good passwords first, and surface wrong
+passwords as `EncryptionError`/`CorruptionError`, never silent bytes.
 
 #### Scenario: encryption matrix
 
