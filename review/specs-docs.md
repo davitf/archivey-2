@@ -1,5 +1,7 @@
 # Theme 3 — Specs & docs vs. the code
 
+> **Post-review status (PR #73):** S1 FIXED (ZIP crc32 populated + test). S2/S3 FIXED (directory is REQUIRES_SCANNING / _MEMBER_LIST_UPFRONT=False; spec + cost docstring updated). S4 was already correct.
+
 The spec discipline here is real: `openspec/specs/` is dense and mostly matches the code. The
 findings below are where they diverge or contradict each other. Two doc-only fixes I already
 applied are logged in FIXES.md; the rest need a decision because the *spec* (not the code) is the

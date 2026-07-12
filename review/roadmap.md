@@ -65,3 +65,27 @@ a wedge). This is where I'd push back or add.
 - **An explicit free-threading support statement.** The `3.13t` job exists but runs core-only.
   Either commit to "free-threaded support = the core backends, ISO/accelerators GIL-only" as a
   documented matrix, or extend the job. Right now the support boundary is implicit in a CI flag.
+
+## Replies to the maintainer's questions
+
+- **"Should we support free-threading with the external backends?"** Split by backend kind:
+  - **ISO / pure-Python optional libs (pycdlib):** very likely already correct under free-threading
+    — it's pure Python, and archivey already serializes the shared `_cdfp` via `LockedStream` and
+    the handle lock, plus the deque cycle-guard is per-instance. The cheap next step is *empirical*:
+    add an `[iso]`-installed leg to the `3.13t` job running `-m concurrent_reader`, and see what
+    passes. That's low-cost and would let you make a real support claim instead of a guess. I'd do
+    this.
+  - **Accelerators (rapidgzip):** these are C/C++ extensions that spawn their own worker threads and
+    make GIL assumptions; free-threaded safety is upstream's to guarantee, not something archivey's
+    locking can retrofit. archivey serializes them anyway (single-live-stream / handle lock), so the
+    realistic position is "accelerators are GIL-only" — test to confirm, don't promise. So: test ISO
+    (probably works), keep accelerators out of the free-threaded claim, and document the resulting
+    matrix rather than leaving it implicit in a CI flag.
+- **"Check if the single-file reader exposes each format's stored hashes."** Checked: it exposes
+  decompressed *size* (xz/lzip) but **no stored digest**. gzip and lzip both store a CRC-32 of the
+  decompressed content in their trailer, cheaply readable from a seekable/path source — directly
+  useful for the dedupe use case. Implementing it well needs a small design (extend `MetadataContext`
+  with a trailer peek; handle multi-member gzip, where the trailer CRC covers only the last member,
+  the same caveat the gzip truncation backstop already handles). Left as a focused follow-up rather
+  than bolted into this PR. **Recommend** adding it as its own change — it's the single-file half of
+  the "hashes without decompression" story that the ZIP CRC-32 fix (Q3) started.

@@ -1,5 +1,7 @@
 # Theme 4 — Tests (scenario gaps, not line coverage)
 
+> **Post-review status (PR #73):** T2 partly addressed (BaseException-in-materialization test added). A directory get_members_if_available test was added. T1/T3/T4/T5/T6/T7 remain proposed harnesses.
+
 The suite is strong where the project decided to invest: a declarative corpus + conformance
 sweep, a corpus mutation harness (`test_mutation_fuzz.py`), Hypothesis property tests
 (`test_property_safety.py`), barrier-synchronized multithread tests, and a dedicated

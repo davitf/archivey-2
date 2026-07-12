@@ -35,6 +35,23 @@ immutable-view helper, or at least a doc example of the "read it when you need i
 across passes" rule, would help. (Related: `member_id`/`archive_id` raise `AttributeError` before
 registration — a caller touching them on a hand-built member gets a surprise.)
 
+**Reply to the maintainer's question ("allow hashing via the immutable fields?"): keep it
+unhashable; add an explicit identity key instead.** The blocker is the hash/eq contract, not just
+mutability: `ArchiveMember.__eq__` is the dataclass field comparison (name/type/size/… — it
+*excludes* `hashes`/`extra`/`link_target_member`). Python requires `a == b ⇒ hash(a) == hash(b)`.
+So a hash derived from the *identity* fields (`archive_id`, `member_id`) would be **inconsistent**
+with that value-based `__eq__`: two distinct members with identical metadata are `__eq__`-equal but
+would hash differently — a latent "vanishes from a set" bug. The only ways to make hashing sound are
+(a) redefine `__eq__` to identity — breaking the useful value-equality — or (b) hash the mutable
+fields — the classic mutable-key trap the class already avoids. Both are worse than unhashable.
+
+Recommendation: leave `__hash__` raising, and give callers the key the library itself uses
+(`selection.py` keys by `(archive_id, member_id)`): a public `member.key` property returning
+`(archive_id, member_id)` (raising the same clear error before registration), plus a docs example
+of `by_name[m.name]` / `seen.add(m.key)`. That gives set/dict use without any of the contract
+hazards. (Not implemented here — it's a public-API addition worth its own small change, and it
+wasn't among the approved fixes.)
+
 ## O-4 — The diagnostics collector's escalate-under-IGNORE path (SUSPECTED, low)
 
 `diagnostics_collector.py:219-234`: when disposition is `IGNORE`, `should_deliver` is False, so

@@ -1,5 +1,7 @@
 # Theme 7 — Latent bugs & tech debt (prioritized)
 
+> **Post-review status (PR #73):** L1 FIXED (7z num_files bounded + test). L2 FIXED (BaseException). L3 FIXED (ZIP crc32). L4 FIXED (directory REQUIRES_SCANNING). D1 FIXED (fail-loud lzma binding). D2 FIXED (lazy open_site). D3 FIXED (X1–X4). D4 unchanged (noted).
+
 Ranked by severity × likelihood. Cross-references to the other reports where a finding was first
 raised. VERIFIED = I traced it to the failing path; SUSPECTED = needs a repro to confirm.
 

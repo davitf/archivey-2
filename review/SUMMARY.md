@@ -10,6 +10,16 @@ cleanly factored, and the safety posture matches the marketing (no eval/pickle/s
 defense-in-depth in extraction). The findings below are the exceptions, and most are edge cases or
 gaps rather than live bugs. Two doc fixes applied; four decisions requested in QUESTIONS.md.
 
+## Post-review status (PR #73, round 2)
+
+The maintainer approved the fixes on the PR and asked me to implement them. **Done** — all of the
+top findings and the approved cleanups are now fixed with tests, across all three dependency configs
+and both type checkers. See `FIXES.md` for the per-change table and the replies to the open
+questions. Fixed: findings **1–4, 6, 7** below (and 9, 10) plus complexity X1–X5 and latent-bugs
+D1–D2. Finding **5** (benchmark gate) and **8** (case-insensitive FS, threat-model O2) remain
+roadmap/backlog items, as does the single-file trailer-CRC follow-up. The table's "Status" column
+reflects this.
+
 ## Top 10 findings by impact
 
 | # | Sev | Finding | Where | Status |

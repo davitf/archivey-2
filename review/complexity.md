@@ -1,5 +1,7 @@
 # Theme 2 — Complexity & duplication
 
+> **Post-review status (PR #73):** X1–X5 all FIXED (handle-guard helper; shared timestamps module; ZIP exception constant + reraise helper; STORED-password phase docs; no-op tail → comment).
+
 The codebase is, on the whole, well-factored: the `streamtools` base hierarchy
 (`ReadOnlyIOStream`/`DelegatingStream`), the codec-descriptor table, and the
 `SegmentedDecompressorStream` scaffolding all pull real weight and read cleanly. The

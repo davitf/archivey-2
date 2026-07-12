@@ -1,5 +1,7 @@
 # Theme 6 — Unknown unknowns
 
+> **Post-review status (PR #73):** U1 FIXED (7z count bound). E1 FIXED (ZIP crc32 surfaced). U2/U4/U5/U6 remain as noted (case-insensitive FS is threat-model O2 backlog). E2/E3 remain micro-opts.
+
 Assumptions about formats, filesystems, Python internals, and the OS that are either wrong, or
 true-and-unexploited. Grounded in the code; marked VERIFIED / SUSPECTED.
 

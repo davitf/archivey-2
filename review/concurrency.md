@@ -1,5 +1,7 @@
 # Theme 1 — Concurrency
 
+> **Post-review status (PR #73):** C1 FIXED (BaseException in materialization + test). C2/C3 FIXED via the directory REQUIRES_SCANNING change (get_members_if_available no longer walks, so the cache race is gone). C4 unchanged (noted, no action).
+
 The concurrency design here is unusually disciplined for a Python library: opt-in via
 `MemberStreams.CONCURRENT`, a single `RLock` per reader, explicit token ownership, and a
 free-threaded CI job (`3.13t`). Most of what I looked for isn't here to find. The findings
