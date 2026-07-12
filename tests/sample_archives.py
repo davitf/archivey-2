@@ -10,8 +10,8 @@ conformance sweep).
 The shapes are ported from the DEV declarative corpus (``archivey-dev``
 ``tests/archivey/sample_archives.py`` @ 730275b7a755f8b5b8d08d3d4d9b267b5bdadb0d),
 re-expressed in the v2 idiom; v1-API creation plumbing was deliberately not carried
-over. RAR entries are present but inactive until the Phase 7 native reader lands
-(the sweep skips it via the registry's format-availability guard); 7z entries run
+over. RAR entries are active with the Phase 6 native reader (registry-registered);
+builders still need the ``rar`` binary and skip cleanly when it is absent. 7z entries run
 when the native reader and py7zr fixture builder are available.
 
 Generation is on-demand with a content-keyed cache under ``ARCHIVEY_TEST_CACHE``
@@ -39,8 +39,8 @@ from archivey.types import ArchiveFormat, ContainerFormat, MemberType, StreamFor
 from tests.conftest import ARCHIVEY_TEST_CACHE
 
 # Bump when any builder's output changes, so cached archives regenerate.
-# v3: the 7z builder now writes relative members and honors single-password fixtures.
-GENERATOR_VERSION = 3
+# v7: RAR builder encrypts per-member password groups (-pPWD).
+GENERATOR_VERSION = 7
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +160,7 @@ FORMAT_KEYS: dict[str, ArchiveFormat] = {
     "zz": ArchiveFormat.ZLIB,
     "br": ArchiveFormat.BROTLI,
     "7z": ArchiveFormat.SEVEN_Z,
-    # Inactive until the Phase 7 native RAR reader registers this format; the sweep's
-    # registry-driven availability guard skips it automatically until then.
+    # Phase 6 native RAR reader is registered; corpus builders still need the ``rar`` CLI.
     "rar": ArchiveFormat.RAR,
 }
 
@@ -481,6 +480,10 @@ def _dir_build(entry: CorpusEntry, path: Path) -> None:
         elif m.type is MemberType.SYMLINK:
             target.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(m.link_target or "", target)
+        elif m.type is MemberType.HARDLINK:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = path / (m.link_target or "")
+            os.link(source, target)
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(m.contents)
@@ -550,13 +553,29 @@ def _7z_build(entry: CorpusEntry, path: Path) -> None:
                 zf.write(item, arcname=item.relative_to(tmp).as_posix())
 
 
-def _rar_build(entry: CorpusEntry, path: Path) -> None:  # pragma: no cover - Phase 6
+def _rar_build(entry: CorpusEntry, path: Path) -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         _dir_build(entry, tmp)
-        subprocess.run(
-            ["rar", "a", "-r", str(path), "."], cwd=tmp, check=True, capture_output=True
-        )
+        # Add members in corpus order so hardlink primaries match expected names
+        # (a recursive ``rar a .`` walk can pick the wrong inode name as the FILE).
+        # -ol / -oh: store symlink/hardlink as the link, matching corpus expectations.
+        # Password groups are added separately so mixed archives keep plain members
+        # readable without a password.
+        groups: dict[str | None, list[str]] = {}
+        for member in entry.members:
+            rel = member.name.rstrip("/")
+            if (tmp / rel).exists() or (tmp / rel).is_symlink():
+                groups.setdefault(member.password, []).append(rel)
+        # Plain members first, then each password group (stable insertion order).
+        ordered_passwords = [None] if None in groups else []
+        ordered_passwords.extend(p for p in groups if p is not None)
+        for password in ordered_passwords:
+            names = groups[password]
+            cmd = ["rar", "a", "-ol", "-oh", str(path), *names]
+            if password is not None:
+                cmd.insert(2, f"-p{password}")
+            subprocess.run(cmd, cwd=tmp, check=True, capture_output=True)
 
 
 def _single_file_build(entry: CorpusEntry, path: Path, key: str) -> None:

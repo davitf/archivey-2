@@ -18,20 +18,20 @@
 
 ## 3. Volumes + packaging docs
 
-- [ ] 3.1 Multi-volume join via existing discovery; parse across volumes; point `unrar` at volume 1 for path sources
-- [ ] 3.2 Stream/in-memory volume sets: materialize ordered volumes for `unrar`; clean up on close; incomplete/out-of-order → typed error
-- [ ] 3.3 Close threat-model C1 as won’t-do (RARLAB-only); note extract-hack deferred in ADR/design comments as needed
+- [x] 3.1 Multi-volume join via existing discovery; parse across volumes; point `unrar` at volume 1 for path sources
+- [x] 3.2 Stream/in-memory volume sets: materialize ordered volumes for `unrar`; clean up on close; incomplete/out-of-order → typed error
+- [x] 3.3 Close threat-model C1 as won’t-do (RARLAB-only); note extract-hack deferred in ADR/design comments as needed
 
 ## 4. Tests, oracles, fuzz
 
-- [ ] 4.1 Activate corpus RAR builders/sweep; native ↔ `rarfile`/`unrar` metadata+bytes cross-check (skip if absent)
-- [ ] 4.2 Solid+symlink and solid+hardlink demux tests (pipe alignment + resolved `link_target`)
-- [ ] 4.3 Header-encrypted RAR5, Blake2sp-only, stored M0, multi-volume, RAR2 rejection, non-RARLAB `unrar` rejection
-- [ ] 4.4 Atheris (or env-gated) harness for RAR header parser seeded from corpus + adversarial bytes
-- [ ] 4.5 Core-only / `[rar]` / `[crypto]` gating tests
+- [x] 4.1 Activate corpus RAR builders/sweep; native ↔ `rarfile`/`unrar` metadata+bytes cross-check (skip if absent)
+- [x] 4.2 Solid+symlink and solid+hardlink demux tests (pipe alignment + resolved `link_target`)
+- [x] 4.3 Header-encrypted RAR5, Blake2sp-only, stored M0, multi-volume, RAR2 rejection, non-RARLAB `unrar` rejection
+- [x] 4.4 Atheris (or env-gated) harness for RAR header parser seeded from corpus + adversarial bytes
+- [x] 4.5 Core-only / `[rar]` / `[crypto]` gating tests
 
 ## 5. Verify
 
-- [ ] 5.1 Targeted pytest for RAR reader + solid demux + volumes
-- [ ] 5.2 `openspec validate --strict native-rar-reader`
-- [ ] 5.3 `ruff` / `pyrefly` / `ty`; three-config pytest gate per `CONTRIBUTING.md`
+- [x] 5.1 Targeted pytest for RAR reader + solid demux + volumes
+- [x] 5.2 `openspec validate --strict native-rar-reader`
+- [x] 5.3 `ruff` / `pyrefly` / `ty`; three-config pytest gate per `CONTRIBUTING.md`

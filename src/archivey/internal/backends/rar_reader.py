@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import BinaryIO
 
@@ -23,6 +24,7 @@ from archivey.internal.backends.rar_parser import (
     RarArchive,
     RarMemberInfo,
     parse_rar_archive,
+    parse_rar_volumes,
 )
 from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
@@ -47,6 +49,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
 )
 from archivey.internal.streams.verify import VerifyingStream
+from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     ArchiveFormat,
@@ -114,6 +117,16 @@ def _member_hashes(info: RarMemberInfo) -> dict[str, int | bytes]:
     return hashes
 
 
+def _copy_stream_to_path(source: BinaryIO, dest: Path) -> None:
+    pos = source.tell()
+    source.seek(0)
+    try:
+        with dest.open("wb") as out:
+            shutil.copyfileobj(source, out)
+    finally:
+        source.seek(pos)
+
+
 class _UnrarOwnedStream(DelegatingStream):
     """Stdout wrapper that terminates the owning ``unrar`` process on close."""
 
@@ -127,9 +140,20 @@ class _UnrarOwnedStream(DelegatingStream):
         try:
             self._inner.close()
         finally:
-            terminate_unrar(self._proc)
+            if self._proc.poll() is None:
+                terminate_unrar(self._proc)
+            else:
+                # Drain wait status if the process already exited on EOF.
+                try:
+                    self._proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    terminate_unrar(self._proc)
+            rc = self._proc.returncode
             # Mark closed without relying on DelegatingStream (already closed inner).
             super(DelegatingStream, self).close()
+            # unrar exit 11 = bad password (RARLAB).
+            if rc == 11:
+                raise EncryptionError("Incorrect RAR password or encrypted member")
 
 
 class RarReader(BaseArchiveReader):
@@ -166,7 +190,10 @@ class RarReader(BaseArchiveReader):
         self._passwords = passwords or _PasswordCandidates()
         self._volume_count = getattr(source, "volume_count", volume_count)
         self._temp_path: Path | None = None
-        self._archive_path: Path | None = source if isinstance(source, Path) else None
+        self._temp_dir: Path | None = None
+        self._owned_concat: ConcatenatedFile | None = None
+        self._archive_path: Path | None = None
+        self._volume_paths: list[Path] = []
         self._live_unrar: subprocess.Popen[bytes] | None = None
 
         if is_stream(source) and not is_seekable(source):
@@ -177,20 +204,106 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
             )
 
-        self._shared = SharedSource(source)
+        self._shared = self._open_shared_source(source)
         self._archive, self._unrar_password = self._parse_archive()
+        if self._archive.is_volume or self._volume_count > 1:
+            self._volume_count = max(self._volume_count, len(self._volume_paths) or 1)
         self._members = [self._to_member(info) for info in self._archive.members]
 
-    def _parse_archive(self) -> tuple[RarArchive, str | None]:
-        view = self._shared.view(0)
+    def _open_shared_source(self, source: Path | BinaryIO) -> SharedSource:
+        """Build SharedSource, discovering/materializing volumes as needed."""
+        if isinstance(source, Path):
+            siblings = discover_volume_siblings(source)
+            if siblings is not None and len(siblings) > 1:
+                self._volume_paths = siblings
+                self._volume_count = len(siblings)
+                self._archive_path = siblings[0]
+                concat = ConcatenatedFile(siblings)
+                self._owned_concat = concat
+                return SharedSource(concat)
+            self._volume_paths = [source]
+            self._archive_path = source
+            return SharedSource(source)
 
+        if isinstance(source, ConcatenatedFile):
+            paths = source.volume_paths
+            if paths:
+                # Path volumes: prefer real sibling files for unrar.
+                self._volume_paths = paths
+                self._volume_count = len(paths)
+                self._archive_path = paths[0]
+                return SharedSource(source)
+            # Stream volumes: materialize for unrar; parse from originals.
+            items = source.volume_items
+            self._volume_count = len(items)
+            self._materialize_stream_volumes(items)
+            return SharedSource(source)
+
+        # Single non-path stream — materialize later when unrar is needed.
+        return SharedSource(source)
+
+    def _materialize_stream_volumes(self, items: Sequence[Path | BinaryIO]) -> None:
+        """Write ordered volumes into a temp dir with ``name.partN.rar`` names."""
+        temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
+        self._temp_dir = temp_dir
+        stem = "archive"
+        if self._archive_name:
+            stem = Path(self._archive_name).stem or stem
+        paths: list[Path] = []
+        try:
+            for index, item in enumerate(items, start=1):
+                dest = temp_dir / f"{stem}.part{index}.rar"
+                if isinstance(item, Path):
+                    shutil.copy2(item, dest)
+                else:
+                    _copy_stream_to_path(item, dest)
+                paths.append(dest)
+        except BaseException:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self._temp_dir = None
+            raise
+        self._volume_paths = paths
+        self._archive_path = paths[0]
+
+    def _parse_archive(self) -> tuple[RarArchive, str | None]:
         def parse(password: bytes | None) -> RarArchive:
-            view.seek(0)
-            return parse_rar_archive(view, password=password)
+            if len(self._volume_paths) > 1:
+                handles: list[BinaryIO] = []
+                try:
+                    for path in self._volume_paths:
+                        handles.append(path.open("rb"))
+                    return parse_rar_volumes(handles, password=password)
+                finally:
+                    for handle in handles:
+                        handle.close()
+
+            # Single volume — may still be a ConcatenatedFile of streams that we
+            # already materialized into _volume_paths of length 1, or a lone file.
+            if self._volume_paths:
+                with self._volume_paths[0].open("rb") as handle:
+                    return parse_rar_archive(handle, password=password)
+
+            view = self._shared.view(0)
+            try:
+                view.seek(0)
+                archive = parse_rar_archive(view, password=password)
+                if archive.needs_next_volume or archive.is_volume:
+                    raise TruncatedError(
+                        "Incomplete RAR multi-volume set: additional volumes required"
+                    )
+                return archive
+            finally:
+                view.close()
 
         try:
             try:
                 archive = parse(None)
+                # Incomplete set opened as a lone volume-1 path with no siblings.
+                if archive.needs_next_volume and len(self._volume_paths) <= 1:
+                    raise TruncatedError(
+                        "Incomplete RAR multi-volume set: end of archive expects "
+                        "another volume"
+                    )
                 return archive, self._first_candidate_str()
             except EncryptionError:
                 if not self._passwords.has_passwords():
@@ -200,7 +313,11 @@ class RarReader(BaseArchiveReader):
                     return parse(password)
 
                 archive = self._passwords.attempt(None, confirm)
-                # attempt() promotes the winning password to known-good (first).
+                if archive.needs_next_volume and len(self._volume_paths) <= 1:
+                    raise TruncatedError(
+                        "Incomplete RAR multi-volume set: end of archive expects "
+                        "another volume"
+                    )
                 return archive, self._first_candidate_str()
         except _PasswordCandidatesExhausted as exc:
             message = (
@@ -209,8 +326,6 @@ class RarReader(BaseArchiveReader):
                 else "Password required to decrypt RAR headers"
             )
             raise EncryptionError(message) from exc
-        finally:
-            view.close()
 
     def _first_candidate_str(self) -> str | None:
         for password in self._passwords.iter_candidates():
@@ -221,6 +336,7 @@ class RarReader(BaseArchiveReader):
         """Return a filesystem path ``unrar`` can open (materialize streams once)."""
         if self._archive_path is not None:
             return self._archive_path
+        # Single stream source: write one temp .rar for unrar.
         fd, name = tempfile.mkstemp(suffix=".rar")
         path = Path(name)
         try:
@@ -369,6 +485,9 @@ class RarReader(BaseArchiveReader):
             info.compress_type == _RAR_METHOD_STORED
             and not info.is_encrypted
             and not info.file_solid
+            and not info.split_after
+            and not info.split_before
+            and not info.spanned_volumes
         )
 
     def _direct_view(self, info: RarMemberInfo, length: int | None = None) -> BinaryIO:
@@ -388,6 +507,8 @@ class RarReader(BaseArchiveReader):
             raw.compress_type == _RAR_METHOD_STORED
             and not raw.is_encrypted
             and raw.file_size > 0
+            and not raw.split_before
+            and not raw.split_after
         ):
             view = self._shared.view(raw.data_offset, raw.file_size)
             try:
@@ -405,8 +526,6 @@ class RarReader(BaseArchiveReader):
 
         if self._can_direct_read(raw):
             inner: BinaryIO = self._direct_view(raw)
-            # SharedSource views are non-owning; wrap length via SlicingStream ownership
-            # only when we need an owning close — view already bounds length.
             return self._wrap_payload_stream(inner, member)
 
         path = self._ensure_archive_path()
@@ -437,6 +556,11 @@ class RarReader(BaseArchiveReader):
             solid_block_count=None,
         )
         any_encrypted = any(m.is_encrypted for m in self._archive.members)
+        is_multivolume = (
+            self._archive.is_volume
+            or self._volume_count > 1
+            or len(self._volume_paths) > 1
+        )
         return ArchiveInfo(
             format=ArchiveFormat.RAR,
             format_version=str(self._archive.version),
@@ -444,21 +568,32 @@ class RarReader(BaseArchiveReader):
             member_count=len(self._members),
             comment=self._archive.comment,
             is_encrypted=self._archive.has_header_encryption or any_encrypted,
-            is_multivolume=self._archive.is_volume or self._volume_count > 1,
+            is_multivolume=is_multivolume,
             cost=cost,
-            extra={"rar.volume_count": self._volume_count},
+            extra={
+                "rar.volume_count": max(self._volume_count, len(self._volume_paths))
+            },
         )
 
     def _close_archive(self) -> None:
         terminate_unrar(self._live_unrar)
         self._live_unrar = None
         self._shared.close()
+        if self._owned_concat is not None:
+            try:
+                self._owned_concat.close()
+            except OSError:
+                pass
+            self._owned_concat = None
         if self._temp_path is not None:
             try:
                 self._temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
             self._temp_path = None
+        if self._temp_dir is not None:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+            self._temp_dir = None
 
 
 class RarReadBackend(ReadBackend):

@@ -135,6 +135,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         self._volume_paths: list[Path] = [
             source for source in sources if isinstance(source, Path)
         ]
+        self._volume_items: list[Path | BinaryIO] = list(sources)
         offsets = [0]
         total = 0
         for source in sources:
@@ -163,6 +164,11 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         if len(self._volume_paths) != self.volume_count:
             return []
         return list(self._volume_paths)
+
+    @property
+    def volume_items(self) -> list[Path | BinaryIO]:
+        """Original volume sources in order (paths and/or streams)."""
+        return list(self._volume_items)
 
     @property
     def size(self) -> int:

@@ -21,3 +21,5 @@ via the RARLAB `unrar` binary (process boundary). Decrypt encrypted headers nati
 - Listing works without `unrar`; reading compressed members requires it on `PATH`.
 - Solid `stream_members()` uses one `unrar p` pipe, not one process per member.
 - Refuse silent fallbacks to `unrar-free` / `unar`.
+- The spec’s optional “extract-hack” (single-member temp RAR for tiny random opens) is
+  **deferred** — allowed by `format-rar` but not implemented in the native reader change.

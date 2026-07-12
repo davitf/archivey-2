@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import struct
 import zlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import pbkdf2_hmac
@@ -19,6 +20,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
@@ -123,6 +125,10 @@ _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 _RAR5_XREDIR_HARD_LINK = 4
 _RAR5_XREDIR_FILE_COPY = 5
 
+_RAR5_ENDARC_NEXT_VOLUME = 0x01
+
+_RAR3_ENDARC_NEXT_VOLUME = 0x0001
+
 _RAR5_OS_WINDOWS = 0
 _RAR5_OS_UNIX = 1
 
@@ -177,6 +183,7 @@ class RarMemberInfo:
     split_before: bool
     split_after: bool
     comment: str | None = None
+    spanned_volumes: bool = False
 
     def needs_password(self) -> bool:
         return self.is_encrypted
@@ -195,6 +202,7 @@ class RarArchive:
     members: list[RarMemberInfo]
     sfx_offset: int
     is_volume: bool
+    needs_next_volume: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -208,12 +216,125 @@ def parse_rar_archive(
     password: str | bytes | None = None,
 ) -> RarArchive:
     """Parse from current position (archive start). Source must be seekable."""
+    return _parse_rar_one(
+        source, password=password, volume_index=0, allow_continuation=False
+    )
+
+
+def parse_rar_volumes(
+    volumes: Sequence[BinaryIO],
+    *,
+    password: str | bytes | None = None,
+) -> RarArchive:
+    """Parse an ordered multi-volume RAR set, merging split members across volumes.
+
+    Each volume is an independent seekable stream positioned at its start. Member
+    ``header_offset`` / ``data_offset`` values are adjusted to a concatenated byte
+    space (volume 0 at 0, volume 1 after volume 0's size, …) so a
+    :class:`~archivey.internal.volumes.ConcatenatedFile` can serve stored reads.
+    """
+    if not volumes:
+        raise ValueError("at least one RAR volume is required")
+
+    merged: RarArchive | None = None
+    base_offset = 0
+    for index, volume in enumerate(volumes):
+        part = _parse_rar_one(
+            volume,
+            password=password,
+            volume_index=index,
+            allow_continuation=index > 0,
+        )
+        # Reject sets that do not start at volume 1.
+        if index == 0 and (
+            (part.members and part.members[0].split_before)
+            or any(m.split_before and m.volume_index == 0 for m in part.members)
+        ):
+            raise UnsupportedFeatureError(
+                "Need first volume of multi-volume RAR archive"
+            )
+
+        for member in part.members:
+            member.header_offset += base_offset
+            member.data_offset += base_offset
+
+        if merged is None:
+            merged = part
+        else:
+            if part.version != merged.version:
+                raise CorruptionError(
+                    f"RAR volume version mismatch: {merged.version} vs {part.version}"
+                )
+            merged.is_solid = merged.is_solid or part.is_solid
+            merged.has_header_encryption = (
+                merged.has_header_encryption or part.has_header_encryption
+            )
+            if part.comment and not merged.comment:
+                merged.comment = part.comment
+            merged.is_volume = True
+            for member in part.members:
+                if member.split_before and merged.members:
+                    _merge_split_member(merged.members[-1], member)
+                else:
+                    merged.members.append(member)
+
+        # Size of this volume for absolute offset adjustment.
+        pos = volume.tell()
+        end = volume.seek(0, 2)
+        volume.seek(pos)
+        base_offset += end
+
+        if part.needs_next_volume:
+            if index + 1 >= len(volumes):
+                raise TruncatedError(
+                    "Incomplete RAR multi-volume set: end of archive expects another volume"
+                )
+            continue
+
+        # Archive is complete; ignore trailing unused volume paths if any were listed.
+        merged.needs_next_volume = False
+        return merged
+
+    assert merged is not None
+    if merged.needs_next_volume:
+        raise TruncatedError(
+            "Incomplete RAR multi-volume set: end of archive expects another volume"
+        )
+    return merged
+
+
+def _parse_rar_one(
+    source: BinaryIO,
+    *,
+    password: str | bytes | None,
+    volume_index: int,
+    allow_continuation: bool,
+) -> RarArchive:
     start = source.tell()
     version, sfx_offset = _find_sfx_header(source, start)
     source.seek(start + sfx_offset)
     if version == 5:
-        return _parse_rar5(source, password=password, sfx_offset=sfx_offset)
-    return _parse_rar3(source, password=password, sfx_offset=sfx_offset)
+        archive = _parse_rar5(
+            source,
+            password=password,
+            sfx_offset=sfx_offset,
+            volume_index=volume_index,
+        )
+    else:
+        archive = _parse_rar3(
+            source,
+            password=password,
+            sfx_offset=sfx_offset,
+            volume_index=volume_index,
+        )
+    if (
+        not allow_continuation
+        and archive.members
+        and archive.members[0].split_before
+        and volume_index == 0
+    ):
+        raise UnsupportedFeatureError("Need first volume of multi-volume RAR archive")
+    return archive
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +515,7 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     if new.blake2sp_hash is not None:
         old.blake2sp_hash = new.blake2sp_hash
     old.split_after = new.split_after
+    old.spanned_volumes = True
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +718,7 @@ def _parse_rar3(
     *,
     password: str | bytes | None,
     sfx_offset: int,
+    volume_index: int = 0,
 ) -> RarArchive:
     _require_exact(source, len(RAR_ID), "RAR3 signature")
 
@@ -605,7 +728,7 @@ def _parse_rar3(
     comment: str | None = None
     members: list[RarMemberInfo] = []
     enc_state: _Rar3EncState | None = None
-    volume_index = 0
+    needs_next_volume = False
 
     while True:
         header_fd: _Readable = source
@@ -683,6 +806,7 @@ def _parse_rar3(
             calc = _crc32(hdata[2:header_size]) & 0xFFFF
             if header_crc != calc:
                 raise CorruptionError("RAR3 ENDARC header CRC mismatch")
+            needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
             break
 
         if block_type in (_RAR3_FILE, _RAR3_SUB):
@@ -720,8 +844,13 @@ def _parse_rar3(
                     if member.split_before:
                         if members:
                             _merge_split_member(members[-1], member)
+                        else:
+                            # Continuation without a prior part in this volume.
+                            members.append(member)
                     else:
                         members.append(member)
+                    if member.split_after:
+                        needs_next_volume = True
             elif (
                 block_type == _RAR3_SUB
                 and member.filename == "CMT"
@@ -753,6 +882,7 @@ def _parse_rar3(
         members=members,
         sfx_offset=sfx_offset,
         is_volume=is_volume,
+        needs_next_volume=needs_next_volume,
     )
 
 
@@ -943,6 +1073,7 @@ def _parse_rar5(
     *,
     password: str | bytes | None,
     sfx_offset: int,
+    volume_index: int = 0,
 ) -> RarArchive:
     _require_exact(source, len(RAR5_ID), "RAR5 signature")
 
@@ -952,7 +1083,7 @@ def _parse_rar5(
     comment: str | None = None
     members: list[RarMemberInfo] = []
     hdr_enc: _Rar5HdrEnc | None = None
-    volume_index = 0
+    needs_next_volume = False
 
     while True:
         header_fd: _Readable = source
@@ -989,7 +1120,23 @@ def _parse_rar5(
         if block_type == _RAR5_MAIN:
             main_flags, pos = _load_vint(hdata, pos)
             if main_flags & _RAR5_MAIN_HAS_VOLNR:
-                _volnr, pos = _load_vint(hdata, pos)
+                volnr, pos = _load_vint(hdata, pos)
+                # RAR5: first volume omits the field (implicit 0); later volumes
+                # store 1 for the second volume, 2 for the third, …
+                if volume_index == 0 and volnr != 0:
+                    raise UnsupportedFeatureError(
+                        "Need first volume of multi-volume RAR archive"
+                    )
+                if volume_index > 0 and volnr != volume_index:
+                    raise TruncatedError(
+                        f"Out-of-order RAR volume: expected volume index "
+                        f"{volume_index}, got {volnr}"
+                    )
+            elif volume_index > 0:
+                raise TruncatedError(
+                    f"Out-of-order RAR volume: expected volume index {volume_index}, "
+                    f"got first-volume header"
+                )
             is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
             is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
             source.seek(data_offset + add_size)
@@ -1025,6 +1172,8 @@ def _parse_rar5(
             continue
 
         if block_type == _RAR5_ENDARC:
+            endarc_flags, _ = _load_vint(hdata, pos)
+            needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             break
 
         if block_type in (_RAR5_FILE, _RAR5_SERVICE):
@@ -1043,8 +1192,12 @@ def _parse_rar5(
                 if member.split_before:
                     if members:
                         _merge_split_member(members[-1], member)
+                    else:
+                        members.append(member)
                 else:
                     members.append(member)
+                if member.split_after:
+                    needs_next_volume = True
             elif (
                 block_type == _RAR5_SERVICE
                 and member.filename == "CMT"
@@ -1071,6 +1224,7 @@ def _parse_rar5(
         members=members,
         sfx_offset=sfx_offset,
         is_volume=is_volume,
+        needs_next_volume=needs_next_volume,
     )
 
 
