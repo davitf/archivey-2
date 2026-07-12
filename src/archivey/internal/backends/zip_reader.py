@@ -708,7 +708,21 @@ class ZipReader(BaseArchiveReader):
         *,
         member_name: str,
     ) -> BinaryIO:
-        """STORED ZipCrypto: one shared CRC pass over surviving weak-check candidates."""
+        """Resolve the password for a STORED ZipCrypto member, in four phases.
+
+        A STORED member has no decompressor to reject a wrong key, and ZipCrypto's 1-byte
+        header check admits ~1/256 of wrong passwords, so a full CRC pass over the member's
+        plaintext is the only way to disambiguate. To keep that pass single and bounded:
+
+        1. **Collect survivors** — run every static candidate through the cheap 1-byte
+           check; keep the ~1/256 that pass.
+        2. **Disambiguate** — one shared ciphertext pass computes every survivor's plaintext
+           CRC-32 in constant memory; the first CRC match wins.
+        3. **Provider fallback** — if no static candidate won, ask the provider one password
+           at a time (cheap check, then a per-candidate CRC pass), until one wins or it stops.
+        4. **Resolve outcome** — a winner is re-opened fresh; otherwise raise the most
+           specific error (integrity-ambiguous / password-required / wrong-password).
+        """
         ambiguous_failure: EncryptionError | None = None
         check_byte = self._zipcrypto_check_byte(info)
         expected_crc = info.CRC & 0xFFFFFFFF
@@ -743,6 +757,7 @@ class ZipReader(BaseArchiveReader):
                     ambiguous_failure = failure
             return winner
 
+        # Phase 1 — collect the static candidates that pass the cheap 1-byte check.
         tried: set[bytes] = set()
         survivors: list[bytes] = []
         for password in self._passwords.iter_candidates():
@@ -750,8 +765,10 @@ class ZipReader(BaseArchiveReader):
             if weak_ok(password):
                 survivors.append(password)
 
+        # Phase 2 — one shared CRC pass over the survivors.
         winner = disambiguate(survivors)
 
+        # Phase 3 — provider fallback: ask, cheap-check, per-candidate CRC pass, repeat.
         attempt = 1
         while winner is None and self._passwords.has_provider():
             try:
@@ -768,6 +785,7 @@ class ZipReader(BaseArchiveReader):
                 winner = disambiguate([password])
             attempt += 1
 
+        # Phase 4 — resolve the outcome (winner, else the most specific error).
         if winner is not None:
             self._passwords.record_success(winner)
             return self._open_zipfile_member(
