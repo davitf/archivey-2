@@ -8,23 +8,15 @@ not import or delegate to ``py7zr``.
 from __future__ import annotations
 
 import io
-import lzma
 import zlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import BinaryIO, cast
+from typing import BinaryIO
 
 from archivey.exceptions import (
     CorruptionError,
-    EncryptionError,
-    PackageNotInstalledError,
     UnsupportedFeatureError,
-)
-from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.crypto import (
-    SevenZipKeyCache,
-    open_aes_decrypt_stream,
 )
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
 from archivey.types import CompressionAlgorithm, CompressionMethod
@@ -129,15 +121,13 @@ class SevenZipArchive:
     has_encrypted_folders: bool
 
 
-PasswordInput = (
-    str
-    | bytes
-    | Iterable[str | bytes]
-    | Callable[[], str | bytes | Iterable[str | bytes] | None]
-)
-DecodeFolder = Callable[
-    [BinaryIO, SevenZipFolder, int, int, tuple[bytes, ...], SevenZipKeyCache], bytes
-]
+DecodeFolder = Callable[[BinaryIO, SevenZipFolder, int, int], bytes]
+"""Materialize an (encoded) header folder to bytes.
+
+``(source, folder, compressed_size, uncompressed_size) -> decoded``, where ``source`` is
+positioned at the start of the folder's packed data. The reader supplies the shared
+codec/crypto pipeline (``sevenzip_reader.decode_folder_to_bytes``); the parser never
+decodes folders itself."""
 
 
 @dataclass
@@ -181,11 +171,14 @@ class _FileProps:
 def parse_sevenzip_archive(
     fp: BinaryIO,
     *,
-    passwords: PasswordInput | None = None,
-    key_cache: SevenZipKeyCache | None = None,
-    decode_folder: DecodeFolder | None = None,
+    decode_folder: DecodeFolder,
 ) -> SevenZipArchive:
-    """Parse a 7z signature header and main header."""
+    """Parse a 7z signature header and main header.
+
+    ``decode_folder`` materializes an encoded header's folder to bytes (including any
+    password prompting/decryption); the parser only walks structure and never opens a
+    codec or crypto stream itself.
+    """
 
     fp.seek(0)
     signature = _read_exact(fp, _SIGNATURE_HEADER_SIZE, "7z signature header")
@@ -209,13 +202,10 @@ def parse_sevenzip_archive(
     if _crc32(header_data) != next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")
 
-    password_candidates = _password_candidates(passwords)
     parsed = _parse_header(
         fp,
         io.BytesIO(header_data),
         after_header=after_header,
-        passwords=password_candidates,
-        key_cache=key_cache or SevenZipKeyCache(),
         decode_folder=decode_folder,
     )
 
@@ -291,9 +281,7 @@ def _parse_header(
     buffer: BinaryIO,
     *,
     after_header: int,
-    passwords: tuple[bytes, ...],
-    key_cache: SevenZipKeyCache,
-    decode_folder: DecodeFolder | None,
+    decode_folder: DecodeFolder,
 ) -> _ParsedHeader:
     prop = _read_property(buffer, "7z header")
     if prop == _Property.END:
@@ -311,16 +299,12 @@ def _parse_header(
         archive_fp,
         encoded_streams,
         after_header=after_header,
-        passwords=passwords,
-        key_cache=key_cache,
         decode_folder=decode_folder,
     )
     parsed = _parse_header(
         archive_fp,
         io.BytesIO(decoded),
         after_header=after_header,
-        passwords=passwords,
-        key_cache=key_cache,
         decode_folder=decode_folder,
     )
     parsed.is_header_encrypted = any(folder_is_encrypted(f) for f in encoded_folders)
@@ -699,9 +683,7 @@ def _decode_encoded_header(
     streams: _StreamsInfo,
     *,
     after_header: int,
-    passwords: tuple[bytes, ...],
-    key_cache: SevenZipKeyCache,
-    decode_folder: DecodeFolder | None,
+    decode_folder: DecodeFolder,
 ) -> bytes:
     folders = streams.folders or []
     pack_sizes = streams.pack_sizes or []
@@ -724,170 +706,13 @@ def _decode_encoded_header(
             after_header + streams.pack_pos + pack_positions[pack_stream_index]
         )
         source = SlicingStream(archive_fp, absolute_offset, compressed_size)
-        if decode_folder is not None:
-            folder_data = decode_folder(
-                source,
-                folder,
-                compressed_size,
-                uncompressed_size,
-                passwords,
-                key_cache,
-            )
-        else:
-            folder_data = _decode_simple_folder(
-                source,
-                folder,
-                compressed_size=compressed_size,
-                uncompressed_size=uncompressed_size,
-                passwords=passwords,
-                key_cache=key_cache,
-            )
-        if folder.digest_defined and _crc32(folder_data) != folder.crc:
-            raise CorruptionError("Encoded 7z header CRC mismatch")
-        decoded.extend(folder_data)
+        # ``decode_folder`` owns codec/crypto handling and CRC-checks its own output.
+        decoded.extend(
+            decode_folder(source, folder, compressed_size, uncompressed_size)
+        )
         pack_stream_index += pack_count
 
     return bytes(decoded)
-
-
-def _decode_simple_folder(
-    source: BinaryIO,
-    folder: SevenZipFolder,
-    *,
-    compressed_size: int,
-    uncompressed_size: int,
-    passwords: tuple[bytes, ...],
-    key_cache: SevenZipKeyCache,
-) -> bytes:
-    if any(
-        coder.num_in_streams != 1 or coder.num_out_streams != 1
-        for coder in folder.coders
-    ):
-        raise UnsupportedFeatureError(
-            "Encoded 7z headers with complex coder graphs are not supported"
-        )
-
-    if folder_is_encrypted(folder):
-        if not passwords:
-            raise EncryptionError("Password required to decrypt the 7z header")
-        return _try_decode_encrypted_header(
-            source,
-            folder,
-            compressed_size=compressed_size,
-            uncompressed_size=uncompressed_size,
-            passwords=passwords,
-            key_cache=key_cache,
-        )
-
-    return _decode_simple_folder_with_password(
-        source,
-        folder,
-        compressed_size=compressed_size,
-        uncompressed_size=uncompressed_size,
-        password=None,
-        key_cache=key_cache,
-    )
-
-
-def _try_decode_encrypted_header(
-    source: BinaryIO,
-    folder: SevenZipFolder,
-    *,
-    compressed_size: int,
-    uncompressed_size: int,
-    passwords: tuple[bytes, ...],
-    key_cache: SevenZipKeyCache,
-) -> bytes:
-    last_error: Exception | None = None
-    for password in passwords:
-        source.seek(0)
-        try:
-            return _decode_simple_folder_with_password(
-                source,
-                folder,
-                compressed_size=compressed_size,
-                uncompressed_size=uncompressed_size,
-                password=password,
-                key_cache=key_cache,
-            )
-        except (CorruptionError, EncryptionError) as exc:
-            last_error = exc
-
-    raise EncryptionError(
-        "No supplied password could decrypt the 7z header"
-    ) from last_error
-
-
-def _decode_simple_folder_with_password(
-    source: BinaryIO,
-    folder: SevenZipFolder,
-    *,
-    compressed_size: int,
-    uncompressed_size: int,
-    password: bytes | None,
-    key_cache: SevenZipKeyCache,
-) -> bytes:
-    stream: BinaryIO = SlicingStream(source, 0, compressed_size)
-    owned_streams: list[BinaryIO] = [stream]
-    try:
-        for coder in folder.coders:
-            stream = _open_coder_stream(
-                stream, coder, password=password, key_cache=key_cache
-            )
-            owned_streams.append(stream)
-        decoded = _read_exact(stream, uncompressed_size, "decoded 7z header")
-        if len(decoded) != uncompressed_size:
-            raise CorruptionError("Encoded 7z header is truncated after decoding")
-        return decoded
-    finally:
-        for opened in reversed(owned_streams):
-            opened.close()
-
-
-def _open_coder_stream(
-    source: BinaryIO,
-    coder: SevenZipCoder,
-    *,
-    password: bytes | None,
-    key_cache: SevenZipKeyCache,
-) -> BinaryIO:
-    if coder.method == _METHOD_COPY:
-        return source
-    if coder.method == _METHOD_AES:
-        if password is None:
-            raise EncryptionError("Password required to decrypt the 7z header")
-        if coder.properties is None:
-            raise CorruptionError("7z AES coder is missing properties")
-        try:
-            params = key_cache.aes_params_from_properties(password, coder.properties)
-        except ValueError as exc:
-            raise CorruptionError(f"Malformed 7z AES properties: {exc}") from exc
-        try:
-            return open_aes_decrypt_stream(source, params)
-        except PackageNotInstalledError:
-            raise
-    if coder.method in (_METHOD_LZMA, _METHOD_LZMA2):
-        codec = Codec.LZMA if coder.method == _METHOD_LZMA else Codec.LZMA2
-        params = CodecParams(filters=[_lzma_filter(coder)])
-        return open_codec_stream(codec, source, params=params, seekable=False)
-    if coder.method == _METHOD_BCJ2:
-        raise UnsupportedFeatureError("BCJ2-compressed 7z headers are not supported")
-    raise UnsupportedFeatureError(
-        f"Unsupported 7z header coder method {_method_hex(coder.method)}"
-    )
-
-
-def _lzma_filter(coder: SevenZipCoder) -> dict:
-    filter_id = lzma.FILTER_LZMA1 if coder.method == _METHOD_LZMA else lzma.FILTER_LZMA2
-    if coder.properties is None:
-        return {"id": filter_id}
-    try:
-        decode_properties = getattr(lzma, "_decode_filter_properties")
-        return decode_properties(filter_id, coder.properties)
-    except (AttributeError, lzma.LZMAError, ValueError) as exc:
-        raise CorruptionError(
-            f"Malformed 7z LZMA coder properties for {_method_hex(coder.method)}"
-        ) from exc
 
 
 def _read_names(buffer: BinaryIO, files: list[_FileProps]) -> None:
@@ -1021,32 +846,6 @@ def _pack_positions(pack_sizes: list[int]) -> list[int]:
         total += size
         positions.append(total)
     return positions
-
-
-def _password_candidates(passwords: PasswordInput | None) -> tuple[bytes, ...]:
-    if passwords is None:
-        return ()
-    raw: str | bytes | Iterable[str | bytes] | None
-    if isinstance(passwords, str | bytes):
-        raw = passwords
-    elif callable(passwords):
-        provider = cast(
-            Callable[[], str | bytes | Iterable[str | bytes] | None], passwords
-        )
-        raw = provider()
-    else:
-        raw = passwords
-    if raw is None:
-        return ()
-    if isinstance(raw, (str, bytes)):
-        values: Iterable[str | bytes] = (raw,)
-    else:
-        values = raw
-    return tuple(_password_to_kdf_bytes(password) for password in values)
-
-
-def _password_to_kdf_bytes(password: str | bytes) -> bytes:
-    return password.encode("utf-16le") if isinstance(password, str) else password
 
 
 def _read_boolean(
