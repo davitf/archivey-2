@@ -4,6 +4,21 @@
 > codec and why — including why `rapidgzip` is the single accelerator library (the issue below)
 > and why an `indexed_zstd` zstd accelerator would face the same constraint.
 
+## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive
+
+`tarfile.TarFile.next()` re-raises `InvalidHeaderError` only when it occurs at offset 0;
+a corrupt member header anywhere later is swallowed and iteration simply ends — so
+mid-archive corruption produces a **silently shortened listing**, never a
+`CorruptionError`. Confirmed against a corrupted-checksum fixture and a corrupted
+`.tar.gz` whose garbage decode parses as an invalid header (deep review W1). Archivey's
+backstop is the end-of-archive marker check in `TarReader._verify_tar_eof`: a
+corruption-shortened listing almost never sits on a valid two-block null trailer, so it
+fires `ARCHIVE_EOF_MARKER_MISSING` (WARNING by default; `strict_archive_eof=True`
+escalates to `TruncatedError`). The diagnostic message names both possibilities. A
+native TAR header walker (the 7z/RAR strategy applied to TAR) would make this
+archivey's own decision instead of tarfile's; until then the leniency is documented in
+`docs/formats.md`.
+
 ## Importing the ISO backend patches pycdlib process-globally (by design)
 
 `import archivey` eagerly imports the ISO backend to register it, and that import installs a

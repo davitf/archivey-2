@@ -1,5 +1,12 @@
 # Deep pass 2 — Structural simplification
 
+> **Post-review status (this PR, round 2):** **S1 is APPLIED** (`_raise_translated` +
+> `_translated_errors` on `BaseArchiveReader`; the 10 hand-rolled sites in TAR/ISO/ZIP
+> converted; ZIP's `_reraise_member_error` now delegates). **S2/S3 deliberately deferred**:
+> they restructure exactly the code the N1/N2 point-fixes just touched, and are better done
+> as their own change once this lands (S2 would subsume the N1/N2 fixes structurally).
+> S4 remains flagged for a decision, as written.
+
 Question posed: not "where is code duplicated" (the first pass's X1–X5, all fixed) but
 "which abstraction, if adopted, deletes a *category* of code — and is the half-size,
 strictly-no-weaker version of this library real?"

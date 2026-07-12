@@ -256,19 +256,38 @@ def _zip_timestamps(
     if ut_field is not None:
         flags = ut_field[0]
         cursor = 1
-        for bit in (0x01, 0x02, 0x04):  # mtime, atime, ctime, in order
+        for bit, ut_name in ((0x01, "mtime"), (0x02, "atime"), (0x04, "ctime")):
             if flags & bit and cursor + 4 <= len(ut_field):
                 ts = int.from_bytes(
                     ut_field[cursor : cursor + 4], "little", signed=True
                 )
-                when = datetime.fromtimestamp(ts, tz=timezone.utc)
+                cursor += 4
+                try:
+                    when = datetime.fromtimestamp(ts, tz=timezone.utc)
+                except (ValueError, OverflowError, OSError):
+                    # Same out-of-range guard as the DOS/NTFS fields above: on Windows
+                    # even tz-aware fromtimestamp routes through gmtime(), which raises
+                    # OSError for pre-1970 values — a signed field an archive (hostile
+                    # or merely old) can legitimately carry. Degrade to an issue, never
+                    # sink the listing with a raw platform error.
+                    issues.append(
+                        _TimestampIssue(
+                            field=ut_name,
+                            source="extended",
+                            value_repr=repr(ts),
+                            message=(
+                                f"Invalid ZIP extended timestamp for "
+                                f"{info.filename!r}: {ts!r}"
+                            ),
+                        )
+                    )
+                    continue
                 if bit == 0x01:
                     modified = when
                 elif bit == 0x02:
                     accessed = when
                 else:
                     created = when
-                cursor += 4
 
     return modified, accessed, created, issues
 
@@ -515,8 +534,19 @@ class ZipReader(BaseArchiveReader):
         if info.flag_bits & _ZIP_MASK_USE_DATA_DESCRIPTOR:
             # zipfile stores the DOS time in the private ``_raw_time`` attribute and uses
             # its high byte as the ZipCrypto check byte when a data descriptor is present.
-            raw_time = int(getattr(info, "_raw_time", 0))
-            return (raw_time >> 8) & 0xFF
+            # Fail LOUD if a future Python drops the attribute: a silent 0 fallback would
+            # make every candidate fail the 1-byte check, misreporting correct passwords
+            # as wrong for data-descriptor members (same policy as the loud import-time
+            # bind of lzma._decode_filter_properties in the 7z reader).
+            raw_time = getattr(info, "_raw_time", None)
+            if raw_time is None:
+                raise RuntimeError(
+                    "This Python's `zipfile` no longer exposes `ZipInfo._raw_time`, "
+                    "which archivey needs to verify ZipCrypto passwords for "
+                    "data-descriptor members. Please report this to archivey "
+                    "(with your Python version)."
+                )
+            return (int(raw_time) >> 8) & 0xFF
         return (info.CRC >> 24) & 0xFF
 
     def _zipfile_lock(self) -> Any:
@@ -620,17 +650,12 @@ class ZipReader(BaseArchiveReader):
     def _reraise_member_error(self, exc: Exception, member_name: str) -> NoReturn:
         """Translate a raw member-read error, stamp it with member context, and raise.
 
-        An unrecognized exception (``_translate_exception`` returns ``None``) is re-raised
-        unchanged. An ``EncryptionError`` is raised without member stamping (it carries its
-        own message and must not be reclassified). Shared by the member-open and
-        compressed-confirm decrypt paths so their translate/stamp/raise tail stays identical.
+        Thin wrapper over the shared base boundary: an ``EncryptionError`` is raised
+        without member stamping (it carries its own message and must not be
+        reclassified). Shared by the member-open and compressed-confirm decrypt paths
+        so their translate/stamp/raise tail stays identical.
         """
-        translated = self._translate_exception(exc)
-        if translated is not None:
-            if not isinstance(translated, EncryptionError):
-                self._stamp_error_context(translated, member_name)
-            raise translated from exc
-        raise
+        self._raise_translated(exc, member_name, stamp_encryption=False)
 
     def _zip_open_raw(
         self, info: zipfile.ZipInfo, *, password: bytes | None
@@ -727,14 +752,8 @@ class ZipReader(BaseArchiveReader):
         check_byte = self._zipcrypto_check_byte(info)
         expected_crc = info.CRC & 0xFFFFFFFF
 
-        try:
+        with self._translated_errors(member_name):
             header = self._read_zipcrypto_header(info)
-        except zipfile.BadZipFile as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated, member_name)
-                raise translated from exc
-            raise
 
         def weak_ok(password: bytes) -> bool:
             return password_matches_check_byte(password, header, check_byte)

@@ -41,6 +41,14 @@ Recommended installs: `archivey[recommended]` or `archivey[recommended-lite]` (n
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
   pass.
 - `MemberStreams.CONCURRENT` uses a per-reader shared-handle lock (same shape as ISO).
+- **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
+  corrupt member header *after the first* as a clean end of archive — no exception is
+  raised; iteration just stops early. Archivey backstops this with its end-of-archive
+  marker check: a listing cut short by corruption almost never lands on a valid
+  two-block null trailer, so it surfaces as the `ARCHIVE_EOF_MARKER_MISSING` diagnostic
+  (a warning by default). When a provably complete listing matters (inventory/dedupe
+  sweeps), set `ArchiveyConfig(strict_archive_eof=True)` to escalate that diagnostic to
+  `TruncatedError`.
 
 ## 7z
 

@@ -1,5 +1,12 @@
 # Deep pass 1 — Concurrency correctness
 
+> **Post-review status (this PR, round 2):** maintainer approved implementing the fixes.
+> **N1, N2, N3, N4, N6, N7 are FIXED** on this branch, with regression tests
+> (N1: contract + end-to-end TAR repro; N3: ReaderState unit + foreign-thread-during-
+> extract_all; N4: both callback-re-entry deadlocks now raise `ArchiveyUsageError`).
+> N5 is documented in `_attach_finalizer`'s docstring (accepted risk). The R-inventory
+> items are documentation of reliances, not defects — unchanged.
+
 Second-pass review on branch `claude/deep-review-concurrency-structure-ldkxms`, HEAD `7786fda`
 (post-PR-#73, so C1/C2/C3 fixes are in the tree — confirmed: `base_reader.py:519-528` catches
 `BaseException`, `directory_reader.py:63` sets `_MEMBER_LIST_UPFRONT = False`).
@@ -86,8 +93,9 @@ Concrete execution, plain GIL build, **no CONCURRENT declared**:
 The exemption is meant for the coordinator's *own* opens (hardlink recovery through public
 `open()`, link-target reads), and those all run on the owning thread. Scoping the exemption
 to the thread that called `begin_internal_opens()` (store `threading.get_ident()`; exempt
-only matching threads) closes the hole without changing any supported behavior. I did not
-apply this (maintainer rule: concurrency mechanisms get a decision first).
+only matching threads) closes the hole without changing any supported behavior. **Applied
+in this PR** after maintainer approval: `_internal_open_threads` is a per-thread depth map
+and both exemption checks go through `_internal_opens_active_locked()`.
 
 **Where the guarantee otherwise holds:** every admission decision and token release runs
 under the single `self._lock`; release is idempotent via `token._released`

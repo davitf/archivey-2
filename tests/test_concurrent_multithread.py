@@ -432,3 +432,78 @@ def test_concurrent_double_close_exception_group_on_dual_failure(
     with pytest.raises(ExceptionGroup) as exc_info:
         stream.close()
     assert "member-stream close and archive teardown both failed" in str(exc_info.value)
+
+
+# --- Internal-open exemption is thread-scoped (deep N3) ---------------------------------
+
+
+def test_internal_open_exemption_is_thread_scoped() -> None:
+    """extract_all's internal-open window admits the owning thread's opens as children
+    of its root pass; a FOREIGN thread's open must still be rejected (pre-fix it was
+    silently admitted, and unlocked shared handles then served wrong bytes)."""
+    from archivey.internal.reader_state import ReaderState
+
+    state = ReaderState(member_streams=MemberStreams(0), open_site=None)
+    root = state.acquire_pass("extract_all")
+    state.begin_internal_opens()
+    try:
+        # Owning thread: admitted as a child of the root.
+        token = state.acquire_worker("open")
+        assert token.parent is root
+        state.release_worker(token)
+
+        # Foreign thread: rejected like during any active root pass.
+        outcome: list[object] = []
+
+        def foreign() -> None:
+            try:
+                outcome.append(state.acquire_worker("open"))
+            except ArchiveyUsageError as exc:
+                outcome.append(exc)
+
+        thread = threading.Thread(target=foreign)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError)
+    finally:
+        state.end_internal_opens()
+        state.release_pass(root)
+
+
+@pytest.mark.concurrent_reader
+def test_foreign_thread_open_rejected_during_extract_all(tmp_path: Path) -> None:
+    """End-to-end N3: while extract_all runs on thread A (no CONCURRENT declared), a
+    second thread's reader.open() must raise instead of being silently admitted under
+    extract_all's internal-open exemption."""
+    archive = _make_tar(tmp_path / "a.tar")
+    dest = tmp_path / "out"
+    with open_archive(archive) as reader:
+        in_extract = threading.Event()
+        proceed = threading.Event()
+        outcome: list[str] = []
+
+        def on_progress(progress: object) -> None:
+            if not in_extract.is_set():
+                in_extract.set()
+                # Hold the extraction mid-pass until the foreign open has resolved.
+                assert proceed.wait(timeout=30)
+
+        def foreign_open() -> None:
+            try:
+                assert in_extract.wait(timeout=30)
+                try:
+                    with reader.open("f0.txt") as stream:
+                        stream.read()
+                    outcome.append("admitted")
+                except ArchiveyUsageError:
+                    outcome.append("rejected")
+            finally:
+                proceed.set()
+
+        thread = threading.Thread(target=foreign_open)
+        thread.start()
+        reader.extract_all(dest, on_progress=on_progress)
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+        assert outcome == ["rejected"]

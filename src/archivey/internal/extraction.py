@@ -64,6 +64,13 @@ logger = logging.getLogger("archivey.extraction")
 
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 
+# Prefix of the temp files atomic FILE writes stage in the destination directory
+# (mkstemp appends a random suffix). Python-level failures always unlink them, but a
+# hard kill (SIGKILL, power loss) cannot: leftover ``.archivey-tmp-*`` files in an
+# extraction destination are archivey's and are safe to delete. Documented in
+# docs/safe-extraction.md; keep the value and that doc in sync.
+_TMP_PREFIX = ".archivey-tmp-"
+
 # Defaults (see the safe-extraction spec); callers override via extract()/extract_all().
 DEFAULT_MAX_EXTRACTED_BYTES = 2 * 2**30  # 2 GiB
 DEFAULT_MAX_RATIO = 1000.0
@@ -891,7 +898,7 @@ class ExtractionCoordinator:
         when materializing an orphaned hardlink source's content (it applies no metadata; the
         links each carry their own)."""
         # mkstemp hands back an already-open fd; write straight into it (no close+reopen).
-        fd, tmp_name = tempfile.mkstemp(dir=dest_path.parent, prefix=".archivey-tmp-")
+        fd, tmp_name = tempfile.mkstemp(dir=dest_path.parent, prefix=_TMP_PREFIX)
         tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as dst:

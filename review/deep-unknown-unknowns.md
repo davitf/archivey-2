@@ -1,5 +1,15 @@
 # Deep pass 3 — Unknown unknowns, round two
 
+> **Post-review status (this PR, round 2):** **W1** documented (`docs/formats.md`,
+> `docs/internal/known-issues.md`) + the EOF diagnostic message now names the
+> corrupt-header cause; the `strict_archive_eof` default is unchanged (behavior change —
+> flag it separately if wanted). **W2 FIXED** (ZIP UT field guarded + `TimestampIssue`,
+> directory `_stat_datetime` guard; tests incl. a simulated-Windows monkeypatch).
+> **W3 FIXED** (`_raw_time` raises loud; test). **W4** documented in the
+> `_iter_members` contract. **W5** documented (`_TMP_PREFIX` constant +
+> `docs/safe-extraction.md`). **W7/W8 deferred** — perf changes the report itself gates
+> on benchmarks. W6/W9 are inventory, no action.
+
 Assumption per the brief: the first pass (`unknown-unknowns.md`, U1–U6) found the obvious
 ones. This pass hunted in four places: stdlib *leniency* (not just stdlib errors), platform
 divergence in timestamp/paths, private-API reliance beyond the one already fixed, and

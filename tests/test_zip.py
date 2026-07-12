@@ -768,3 +768,80 @@ def test_backslash_kept_literal_for_unix_entry() -> None:
     with open_archive(_ZIP_BACKSLASH_DIR / "unix_backslash.zip") as ar:
         names = [m.name for m in ar.members()]
     assert names == ["weird\\name.txt"]
+
+
+# ---------------------------------------------------------------------------
+# Extended Timestamp out-of-range guard (deep W2)
+# ---------------------------------------------------------------------------
+
+
+def test_extended_timestamp_pre_epoch(tmp_path: Path) -> None:
+    # A signed pre-1970 Extended Timestamp is legitimate data. On POSIX it converts
+    # cleanly; on Windows the conversion raises OSError and must degrade to an issue
+    # (covered by the forced test below) — never crash the listing either way.
+    extra = struct.pack("<HHBi", 0x5455, 5, 0x01, -1)
+    path = tmp_path / "pre-epoch.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member is not None
+        expected = datetime.fromtimestamp(-1, tz=timezone.utc)
+        assert member.modified in (expected, None)  # None only where the OS rejects it
+
+
+def test_extended_timestamp_out_of_range_degrades_to_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulate Windows, where even tz-aware fromtimestamp routes through gmtime() and
+    # raises OSError for pre-1970 values: the member must list with modified=None and a
+    # MEMBER_TIMESTAMP_INVALID diagnostic, not crash with a raw OSError.
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.internal.backends import zip_reader as zip_reader_module
+
+    class _WindowsLikeDatetime(datetime):
+        @classmethod
+        def fromtimestamp(cls, ts: float, tz: object = None) -> datetime:
+            if ts < 0:
+                raise OSError(22, "Invalid argument (simulated Windows gmtime)")
+            return datetime.fromtimestamp(ts, tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(zip_reader_module, "datetime", _WindowsLikeDatetime)
+
+    extra = struct.pack("<HHBi", 0x5455, 5, 0x01, -(2**31))
+    path = tmp_path / "neg-ts.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member is not None
+        # DOS date survives; the bad extended field only loses its own override.
+        assert member.modified == datetime(1990, 1, 1, 0, 0, 0)
+        assert (
+            ar.diagnostics.counts.get(DiagnosticCode.MEMBER_TIMESTAMP_INVALID, 0) >= 1
+        )
+
+
+# ---------------------------------------------------------------------------
+# ZipInfo._raw_time must fail loud if stdlib drops it (deep W3)
+# ---------------------------------------------------------------------------
+
+
+def test_zipcrypto_check_byte_fails_loud_without_raw_time(tmp_path: Path) -> None:
+    # A silent 0 fallback would make every candidate fail the ZipCrypto 1-byte check
+    # and misreport correct passwords as wrong for data-descriptor members.
+    path = tmp_path / "plain.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("a.txt", b"data")
+    with open_archive(path) as ar:
+        info = zipfile.ZipInfo("x")
+        info.flag_bits = 0x8  # data descriptor: check byte comes from _raw_time
+        assert not hasattr(info, "_raw_time")
+        with pytest.raises(RuntimeError, match="_raw_time"):
+            ar._zipcrypto_check_byte(info)  # type: ignore[attr-defined]
+        info._raw_time = 0xABCD
+        assert ar._zipcrypto_check_byte(info) == 0xAB  # type: ignore[attr-defined]
