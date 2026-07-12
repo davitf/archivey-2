@@ -506,3 +506,21 @@ def test_anti_item_fresh_extract_matches_7z_cli(tmp_path: Path) -> None:
     ).read_bytes()
     assert not (archivey_dest / "gone.txt").exists()
     assert not (cli_dest / "gone.txt").exists()
+
+
+def test_filetime_conversion_and_invalid_timestamp_issue() -> None:
+    from archivey.internal.backends.sevenzip_reader import _filetime_to_datetime
+
+    # A normal FILETIME converts with no issue; 0/None mean "unset" (no value, no issue).
+    dt, issue = _filetime_to_datetime(
+        132_000_000_000_000_000, "a.txt", field="modified"
+    )
+    assert dt is not None and issue is None
+    assert _filetime_to_datetime(0, "a.txt", field="modified") == (None, None)
+    assert _filetime_to_datetime(None, "a.txt", field="modified") == (None, None)
+
+    # An out-of-range value yields no datetime and a reported issue (surfaced as a
+    # MEMBER_TIMESTAMP_INVALID diagnostic rather than being swallowed silently).
+    dt, issue = _filetime_to_datetime(0xFFFFFFFFFFFFFFFF, "a.txt", field="created")
+    assert dt is None
+    assert issue is not None and issue.field == "created"

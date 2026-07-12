@@ -8,6 +8,7 @@ not import or delegate to ``py7zr``.
 from __future__ import annotations
 
 import io
+import struct
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -114,7 +115,6 @@ class SevenZipFileRecord:
 class SevenZipArchive:
     major_version: int
     minor_version: int
-    after_header: int
     pack_pos: int
     pack_sizes: list[int]
     pack_positions: list[int]
@@ -200,12 +200,13 @@ def parse_sevenzip_archive(
     if _crc32(start_header) != start_header_crc:
         raise CorruptionError("7z signature header CRC mismatch")
 
-    next_header_offset = int.from_bytes(start_header[0:8], "little")
-    next_header_size = int.from_bytes(start_header[8:16], "little")
-    next_header_crc = int.from_bytes(start_header[16:20], "little")
-    after_header = _SIGNATURE_HEADER_SIZE
+    # start_header is 20 bytes: nextHeaderOffset (u64), nextHeaderSize (u64), CRC (u32).
+    next_header_offset, next_header_size, next_header_crc = struct.unpack(
+        "<QQI", start_header
+    )
 
-    fp.seek(after_header + next_header_offset)
+    # Offsets in the header are relative to the end of the 32-byte signature header.
+    fp.seek(_SIGNATURE_HEADER_SIZE + next_header_offset)
     header_data = _read_exact(fp, next_header_size, "7z next header")
     if _crc32(header_data) != next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")
@@ -213,7 +214,6 @@ def parse_sevenzip_archive(
     parsed = _parse_header(
         fp,
         io.BytesIO(header_data),
-        after_header=after_header,
         decode_folder=decode_folder,
     )
 
@@ -224,7 +224,7 @@ def parse_sevenzip_archive(
     num_unpackstreams_folders = streams.num_unpackstreams_folders or []
     unpack_sizes = streams.unpack_sizes or []
     digests = streams.digests or []
-    pack_pos = after_header + streams.pack_pos
+    pack_pos = _SIGNATURE_HEADER_SIZE + streams.pack_pos
 
     files = _map_files_to_folders(
         parsed.files,
@@ -238,7 +238,6 @@ def parse_sevenzip_archive(
     return SevenZipArchive(
         major_version=major_version,
         minor_version=minor_version,
-        after_header=after_header,
         pack_pos=pack_pos,
         pack_sizes=pack_sizes,
         pack_positions=pack_positions,
@@ -288,7 +287,6 @@ def _parse_header(
     archive_fp: BinaryIO,
     buffer: BinaryIO,
     *,
-    after_header: int,
     decode_folder: DecodeFolder,
 ) -> _ParsedHeader:
     prop = _read_property(buffer, "7z header")
@@ -306,13 +304,11 @@ def _parse_header(
     decoded = _decode_encoded_header(
         archive_fp,
         encoded_streams,
-        after_header=after_header,
         decode_folder=decode_folder,
     )
     parsed = _parse_header(
         archive_fp,
         io.BytesIO(decoded),
-        after_header=after_header,
         decode_folder=decode_folder,
     )
     parsed.is_header_encrypted = any(folder_is_encrypted(f) for f in encoded_folders)
@@ -690,7 +686,6 @@ def _decode_encoded_header(
     archive_fp: BinaryIO,
     streams: _StreamsInfo,
     *,
-    after_header: int,
     decode_folder: DecodeFolder,
 ) -> bytes:
     folders = streams.folders or []
@@ -711,7 +706,9 @@ def _decode_encoded_header(
         compressed_size = pack_sizes[pack_stream_index]
         uncompressed_size = _folder_unpack_size(folder)
         absolute_offset = (
-            after_header + streams.pack_pos + pack_positions[pack_stream_index]
+            _SIGNATURE_HEADER_SIZE
+            + streams.pack_pos
+            + pack_positions[pack_stream_index]
         )
         source = SlicingStream(archive_fp, absolute_offset, compressed_size)
         # ``decode_folder`` owns codec/crypto handling and CRC-checks its own output.
