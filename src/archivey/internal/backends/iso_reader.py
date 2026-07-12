@@ -282,18 +282,14 @@ class IsoReader(BaseArchiveReader):
             )
 
         self._iso = pycdlib.PyCdlib()
-        try:
+        # Boundary outside the guard; an exception the translator does not recognize
+        # (a genuine OSError from the handle) propagates unchanged.
+        with self._translated_errors():
             with self._handle_guard():
                 if isinstance(source, Path):
                     self._iso.open(str(source))
                 else:
                     self._iso.open_fp(source)
-        except _PYCDLIB_ERRORS as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated)
-                raise translated from exc
-            raise
 
         # Auto-select the richest namespace: Rock Ridge > Joliet > plain ISO 9660.
         if self._iso.has_rock_ridge():
@@ -348,18 +344,12 @@ class IsoReader(BaseArchiveReader):
         # walk()/get_record() traverse in-memory parsed catalog records and do not touch
         # _cdfp. Only open_file_from_iso / PyCdlibIO I/O need the handle lock. If a future
         # pycdlib version gains handle access here, lock the complete call.
-        try:
+        with self._translated_errors():
             for dirpath, dirnames, filenames in self._iso.walk(**{self._path_kw: "/"}):
                 for name in dirnames:
                     yield self._make_member(self._join(dirpath, name))
                 for name in filenames:
                     yield self._make_member(self._join(dirpath, name))
-        except _PYCDLIB_ERRORS as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated)
-                raise translated from exc
-            raise
 
     def _make_member(self, ns_path: str) -> ArchiveMember:
         record: Any = self._iso.get_record(**{self._path_kw: ns_path})
@@ -473,7 +463,9 @@ class IsoReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         ns_path = member._raw
         assert isinstance(ns_path, str), "ISO member is missing its namespace path"
-        try:
+        # Boundary outside the lock; _PyCdlibStream construction stays inside it so any
+        # enter-time pycdlib seek/error is covered by both.
+        with self._translated_errors(member.name):
             if self._handle_lock is not None:
                 with self._handle_lock:
                     raw = self._iso.open_file_from_iso(**{self._path_kw: ns_path})
@@ -483,15 +475,8 @@ class IsoReader(BaseArchiveReader):
                     )
                 return self._wrap_member_stream(locked, member.name, size=member.size)
             raw = self._iso.open_file_from_iso(**{self._path_kw: ns_path})
-            # Construct inside the try so any enter-time pycdlib error is translated too;
             # _PyCdlibStream enters the PyCdlibIO context in its __init__.
             stream = _PyCdlibStream(raw)
-        except _PYCDLIB_ERRORS as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated, member.name)
-                raise translated from exc
-            raise
         return self._wrap_member_stream(stream, member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:

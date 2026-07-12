@@ -264,18 +264,14 @@ class TarReader(BaseArchiveReader):
         if self._streaming:
             yield from self._iter_members_progressive()
             return
-        try:
+        # The error boundary sits OUTSIDE the handle guard, so translation/stamping
+        # never run under the shared-fileobj lock. An exception the translator does
+        # not recognize (a genuine OSError from the source) propagates unchanged.
+        with self._translated_errors():
             # Pinned-library audit: TarFile.getmembers() drives seek/tell/read through
             # _load()/next() on the shared fileobj — must run under the handle lock.
             with self._handle_guard():
                 members = self._tar.getmembers()  # forces the full header scan
-        except tarfile.TarError as exc:
-            # A genuine OSError from the source is not caught here, so it propagates unchanged.
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated)
-                raise translated from exc
-            raise
         for info in members:
             yield self._to_member(info)
         self._verify_tar_eof()
@@ -286,7 +282,7 @@ class TarReader(BaseArchiveReader):
         Yields bare members; the base's shared progressive pass stamps ids and resolves
         backward links. Shared-handle ops run under ``_handle_lock`` when present.
         """
-        try:
+        with self._translated_errors():
             if self._handle_lock is not None:
                 # Hold the lock only around each next() so a yielded consumer can open
                 # the current member without deadlock (streaming is single-owner).
@@ -301,12 +297,6 @@ class TarReader(BaseArchiveReader):
             else:
                 for info in self._tar:
                     yield self._to_member(info)
-        except tarfile.TarError as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated)
-                raise translated from exc
-            raise
         self._verify_tar_eof()
 
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
@@ -315,7 +305,7 @@ class TarReader(BaseArchiveReader):
             return
         # Pull from the shared instance-held progressive pass so __iter__,
         # stream_members, and scan_members share one cursor and finalization.
-        try:
+        with self._translated_errors():
             for member in self._begin_forward_pass():
                 if member.is_file:
                     info = cast("tarfile.TarInfo", member._raw)
@@ -332,12 +322,6 @@ class TarReader(BaseArchiveReader):
                     )
                 else:
                     yield member, None
-        except tarfile.TarError as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated)
-                raise translated from exc
-            raise
 
     def _verify_tar_eof(self) -> None:
         """Verify the two-block null end-of-archive marker.
@@ -363,8 +347,10 @@ class TarReader(BaseArchiveReader):
         if len(chunk) == 512 and chunk == b"\x00" * 512:
             return
         msg = (
-            "TAR archive may be truncated: missing or invalid "
-            "end-of-archive marker block(s)"
+            "TAR archive may be truncated or corrupt: missing or invalid "
+            "end-of-archive marker block(s). Note that stdlib tarfile treats a "
+            "corrupt member header after the first as a clean end of archive, so a "
+            "silently shortened listing can also surface only here."
         )
         if len(chunk) == 0:
             observed_kind: Literal["absent", "short", "nonzero"] = "absent"
@@ -493,24 +479,13 @@ class TarReader(BaseArchiveReader):
         assert isinstance(info, tarfile.TarInfo), (
             "TAR member is missing its TarInfo handle"
         )
-        # Capture under the handle lock; translate/stamp only after release so diagnostics
-        # and callbacks never run while the shared-fileobj lock is held.
-        raw_exc: tarfile.TarError | None = None
-        raw: BinaryIO | None
-        try:
+        # Boundary outside the guard: translation/stamping never run while the
+        # shared-fileobj lock is held.
+        with self._translated_errors(member.name):
             with self._handle_guard():
                 extracted = self._tar.extractfile(info)
-            # tarfile stubs ``extractfile`` as ``IO[bytes] | None``; we need BinaryIO.
-            raw = cast(BinaryIO | None, extracted)
-        except tarfile.TarError as exc:
-            raw_exc = exc
-            raw = None
-        if raw_exc is not None:
-            translated = self._translate_exception(raw_exc)
-            if translated is not None:
-                self._stamp_error_context(translated, member.name)
-                raise translated from raw_exc
-            raise raw_exc
+        # tarfile stubs ``extractfile`` as ``IO[bytes] | None``; we need BinaryIO.
+        raw = cast(BinaryIO | None, extracted)
         if raw is None:
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.

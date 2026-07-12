@@ -19,6 +19,12 @@ archivey.extract("archive.zip", "out/")
 - **Decompression bombs** — cumulative bytes, per-member and archive ratios, entry cap
 - **Permission hygiene** — setuid/setgid/sticky stripped except under `TRUSTED`
 
+Atomic file writes stage into temp siblings named `.archivey-tmp-<random>` inside the
+destination directory. Any Python-level failure removes them; only a hard kill
+(SIGKILL, power loss) can leave one behind. Leftover `.archivey-tmp-*` files in an
+extraction destination are archivey's staging files and are safe to delete before
+re-running the extraction.
+
 Full trust boundaries and open gaps: [threat model](internal/threat-model.md).
 
 ## Policies

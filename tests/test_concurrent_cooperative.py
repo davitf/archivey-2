@@ -241,3 +241,70 @@ def test_stream_members_abandon_releases_pass(tmp_path: Path) -> None:
         # Pass released: a new open is allowed.
         with reader.open("a.txt") as s:
             assert s.read() == b"aaa"
+
+
+# --- Same-thread re-entry from callbacks must raise, not deadlock (deep N4) -------------
+
+
+def _zip_with_bad_dos_date(tmp_path: Path) -> Path:
+    """A ZIP whose materialization emits MEMBER_TIMESTAMP_INVALID (invalid DOS day)."""
+    import zipfile
+
+    path = tmp_path / "bad-date.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("bad.txt", date_time=(2021, 2, 31, 0, 0, 0))
+        zf.writestr(info, b"x")
+    return path
+
+
+def test_reader_reentry_from_diagnostic_callback_raises_not_deadlocks(
+    tmp_path: Path,
+) -> None:
+    """A diagnostic callback calling back into the reader mid-materialization would
+    wait on the materialization condition for a notify only its own thread can send.
+    It must be rejected loudly instead (the pre-fix behavior was a permanent
+    single-thread hang; pytest-timeout would trip on a regression)."""
+    from archivey import ArchiveyConfig
+
+    path = _zip_with_bad_dos_date(tmp_path)
+    reader = None
+
+    def on_diagnostic(diagnostic: object) -> None:
+        assert reader is not None
+        reader.members()  # re-enter the reader that is mid-materialization
+
+    config = ArchiveyConfig(on_diagnostic=on_diagnostic)
+    with open_archive(
+        path, member_streams=MemberStreams.CONCURRENT, config=config
+    ) as opened:
+        reader = opened
+        with pytest.raises(ArchiveyUsageError, match="re-entered"):
+            reader.members()
+        # The failed election rolled back; the reader stays usable once the callback
+        # behaves (subsequent emit re-fires the callback, so swap it off first).
+        reader = None
+
+
+def test_close_from_diagnostic_callback_raises_not_deadlocks(tmp_path: Path) -> None:
+    """close() from inside one of the reader's own worker calls (via a callback) would
+    drain-wait forever for a worker that cannot return until close() does."""
+    from archivey import ArchiveyConfig
+
+    path = _zip_with_bad_dos_date(tmp_path)
+    reader = None
+
+    def on_diagnostic(diagnostic: object) -> None:
+        assert reader is not None
+        reader.close()
+
+    config = ArchiveyConfig(on_diagnostic=on_diagnostic)
+    reader_cm = open_archive(
+        path, member_streams=MemberStreams.CONCURRENT, config=config
+    )
+    try:
+        reader = reader_cm
+        with pytest.raises(ArchiveyUsageError, match="from inside one of its own"):
+            reader.members()
+    finally:
+        reader = None
+        reader_cm.close()

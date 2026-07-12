@@ -35,6 +35,10 @@ class OperationToken:
     name: str
     parent: OperationToken | None = None
     kind: str = "root"  # "root" | "child" | "worker"
+    # The thread that acquired the token. Used to detect same-thread re-entry (a
+    # diagnostic/progress callback driving the reader that is mid-operation on this very
+    # thread), which must raise a usage error instead of deadlocking on a wait for itself.
+    thread_id: int = field(default_factory=threading.get_ident, repr=False)
     _released: bool = field(default=False, repr=False)
 
 
@@ -70,9 +74,17 @@ class ReaderState:
         self._live_streams: set[int] = set()
         self._lease_count = 1  # reader itself holds one lease until close
         self._teardown_claimed = False
-        self._teardown_error: BaseException | None = None
-        self._gate_exempt_depth = 0
-        self._internal_open_depth = 0
+        # Library-internal open windows (extract_all's coordinator, first-touch link
+        # reads), keyed BY THREAD: the exemption from the live-stream gate and from
+        # worker rejection applies only to the thread that entered the window. A plain
+        # reader-wide depth counter would silently admit a *foreign* thread's open()
+        # during extract_all on a non-CONCURRENT reader — and on backends without a
+        # shared-handle lock the interleaved seek+read pairs then serve wrong member
+        # bytes instead of the loud error this gate exists to raise (deep review N3).
+        self._internal_open_threads: dict[int, int] = {}
+        # The thread that currently owns the materialization election, for same-thread
+        # re-entry detection (deep review N4a).
+        self._materializing_thread: int | None = None
 
     @property
     def concurrent(self) -> bool:
@@ -91,20 +103,30 @@ class ReaderState:
             return self._root
 
     def begin_internal_opens(self) -> None:
+        tid = threading.get_ident()
         with self._lock:
-            self._internal_open_depth += 1
-            self._gate_exempt_depth += 1
+            self._internal_open_threads[tid] = (
+                self._internal_open_threads.get(tid, 0) + 1
+            )
 
     def end_internal_opens(self) -> None:
+        tid = threading.get_ident()
         with self._lock:
-            self._internal_open_depth = max(0, self._internal_open_depth - 1)
-            self._gate_exempt_depth = max(0, self._gate_exempt_depth - 1)
+            depth = self._internal_open_threads.get(tid, 0) - 1
+            if depth > 0:
+                self._internal_open_threads[tid] = depth
+            else:
+                self._internal_open_threads.pop(tid, None)
+
+    def _internal_opens_active_locked(self) -> bool:
+        """Whether the CURRENT thread is inside a library-internal open window."""
+        return self._internal_open_threads.get(threading.get_ident(), 0) > 0
 
     def acquire_pass(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
         with self._lock:
             self._require_admissible_locked(name)
-            if self._root is not None and self._internal_open_depth > 0:
+            if self._root is not None and self._internal_opens_active_locked():
                 child = OperationToken(name=name, parent=self._root, kind="child")
                 self._children.add(child)
                 return child
@@ -160,14 +182,16 @@ class ReaderState:
         """
         with self._lock:
             self._require_admissible_locked(name)
-            if self._root is not None and self._internal_open_depth == 0:
+            internal = self._internal_opens_active_locked()
+            if self._root is not None and not internal:
                 raise ArchiveyUsageError(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
-            # Under an internal library owner (extract_all), worker opens are admitted as
-            # children of that root.
-            if self._root is not None and self._internal_open_depth > 0:
+            # Under an internal library owner (extract_all), the OWNING THREAD's worker
+            # opens are admitted as children of that root; other threads are rejected
+            # above like during any root pass.
+            if self._root is not None and internal:
                 token = OperationToken(name=name, parent=self._root, kind="child")
                 self._children.add(token)
                 return token
@@ -207,6 +231,18 @@ class ReaderState:
                 if self.cache_state is CacheState.MATERIALIZED:
                     return False
                 if self.cache_state is CacheState.MATERIALIZING:
+                    if self._materializing_thread == threading.get_ident():
+                        # Same-thread re-entry: a diagnostic/progress callback fired
+                        # during materialization called back into the reader. Waiting
+                        # would deadlock this thread on a notify only it can send
+                        # (deep review N4a); a non-CONCURRENT reader would raise the
+                        # generic message below, which misdiagnoses the situation.
+                        raise ArchiveyUsageError(
+                            "Reader re-entered while it is materializing its member "
+                            "list on this same thread (e.g. from a diagnostic or "
+                            "progress callback). Callbacks must not call back into "
+                            "the reader that triggered them."
+                        )
                     if not self.concurrent:
                         raise ArchiveyUsageError(
                             "Cannot start materialization: another materialization is "
@@ -216,24 +252,27 @@ class ReaderState:
                     continue
                 # UNMATERIALIZED — elect this caller.
                 self.cache_state = CacheState.MATERIALIZING
+                self._materializing_thread = threading.get_ident()
                 return True
 
     def complete_materialization(self) -> None:
         with self._lock:
             self.cache_state = CacheState.MATERIALIZED
+            self._materializing_thread = None
             self._materialization_cv.notify_all()
 
     def fail_materialization(self) -> None:
         with self._lock:
             if self.cache_state is CacheState.MATERIALIZING:
                 self.cache_state = CacheState.UNMATERIALIZED
+                self._materializing_thread = None
                 self._materialization_cv.notify_all()
 
     def acquire_live_stream(self, stream: ArchiveStream) -> None:
         """Register a public member stream; enforce the single-live-stream gate."""
         with self._lock:
             self._require_lifecycle_open_locked("open()")
-            if self.concurrent or self._gate_exempt_depth > 0:
+            if self.concurrent or self._internal_opens_active_locked():
                 self._live_streams.add(id(stream))
                 self._lease_count += 1
                 return
@@ -288,6 +327,18 @@ class ReaderState:
                     "Cannot close the archive reader while an open()/read() call is "
                     "still in progress."
                 )
+            tid = threading.get_ident()
+            if any(worker.thread_id == tid for worker in self._workers):
+                # This thread is closing from INSIDE one of its own worker calls (a
+                # diagnostic/progress callback calling close()). Draining would wait
+                # forever for a worker that cannot return until close() does (deep
+                # review N4b).
+                raise ArchiveyUsageError(
+                    "Cannot close the archive reader from inside one of its own "
+                    "open()/read()/members() calls (e.g. from a diagnostic or "
+                    "progress callback). Callbacks must not close the reader that "
+                    "triggered them."
+                )
             self._closing = True
             try:
                 while self._workers:
@@ -315,17 +366,13 @@ class ReaderState:
             self.lifecycle = LifecycleState.TEARDOWN_RUNNING
             return True
 
-    def complete_teardown(self, error: BaseException | None = None) -> None:
+    def complete_teardown(self) -> None:
+        """Mark teardown finished. A teardown failure is the caller's to propagate
+        (``_maybe_teardown`` raises it, alone or in an ``ExceptionGroup``); the state
+        machine keeps no copy — a stored-but-never-surfaced error would be a silent
+        swallow path."""
         with self._lock:
-            if error is not None and self._teardown_error is None:
-                self._teardown_error = error
             self.lifecycle = LifecycleState.TEARDOWN_COMPLETE
-
-    def take_teardown_error(self) -> BaseException | None:
-        with self._lock:
-            err = self._teardown_error
-            self._teardown_error = None
-            return err
 
     def _release_lease_locked(self) -> bool:
         if self._lease_count > 0:

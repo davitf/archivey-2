@@ -41,6 +41,19 @@ from archivey.types import (
 )
 
 
+def _stat_datetime(ts: float) -> datetime | None:
+    """A stat timestamp as an aware UTC datetime, or ``None`` when out of range.
+
+    ``datetime.fromtimestamp`` raises ``ValueError``/``OverflowError`` on POSIX and
+    ``OSError`` on Windows (its ``gmtime()`` rejects pre-1970/huge values) for
+    out-of-range inputs, which a network/FUSE filesystem can genuinely report.
+    """
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
 def _is_junction(entry: os.DirEntry[str]) -> bool:
     """True if a scandir entry is a Windows NTFS junction.
 
@@ -195,17 +208,18 @@ class DirectoryReader(BaseArchiveReader):
         # "."/".."/leading-slash components), so it is normalize_member_name()-clean by
         # construction — unlike names decoded from an archive, which every real backend
         # must route through that helper.
-        modified = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
-        accessed = datetime.fromtimestamp(st.st_atime, tz=timezone.utc)
+        #
+        # Timestamps are guarded like every backend's (see internal/timestamps.py): a
+        # network/FUSE filesystem can report out-of-range values, and on Windows even
+        # tz-aware fromtimestamp raises OSError for them — one bad file must not sink
+        # the whole walk.
+        modified = _stat_datetime(st.st_mtime)
+        accessed = _stat_datetime(st.st_atime)
         # st_birthtime is the true creation time but only exists on some platforms
         # (macOS/BSD, Windows, recent Linux); st_ctime is metadata-change time on
         # Unix, NOT creation, so we never use it for `created`. Hence the getattr.
         birthtime = getattr(st, "st_birthtime", None)
-        created = (
-            datetime.fromtimestamp(birthtime, tz=timezone.utc)
-            if birthtime is not None
-            else None
-        )
+        created = _stat_datetime(birthtime) if birthtime is not None else None
 
         # os.stat_result always defines st_uid/st_gid (both 0 on Windows), so no
         # getattr guard is needed.

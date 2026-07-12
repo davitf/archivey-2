@@ -956,3 +956,50 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
     )
     with reader._open_with_link_follow(start, set()) as stream:
         assert stream.read() == b"payload"
+
+
+# ---------------------------------------------------------------------------
+# A failed streaming pass must not publish a partial member list (deep N1)
+# ---------------------------------------------------------------------------
+
+
+def test_error_mid_streaming_pass_poisons_scan_members() -> None:
+    """End-to-end N1 repro: a RAISE-disposition diagnostic fires mid-pass; the caller
+    catches it; ``scan_members()`` must then fail loud instead of silently returning
+    the two-member prefix as the complete resolved list."""
+    from archivey.diagnostics import (
+        DiagnosticCode,
+        DiagnosticDisposition,
+        DiagnosticPolicy,
+    )
+    from archivey.exceptions import DiagnosticRaisedError
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name in ("a", "b", "c", "d"):
+            data = b"x" * 100
+            info = tarfile.TarInfo(name + ".bin")
+            info.size = len(data)
+            if name == "c":
+                info.mtime = 2**62  # out of range -> MEMBER_TIMESTAMP_INVALID
+            tf.addfile(info, io.BytesIO(data))
+    buf.seek(0)
+
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            overrides={
+                DiagnosticCode.MEMBER_TIMESTAMP_INVALID: DiagnosticDisposition.RAISE
+            }
+        )
+    )
+    with open_archive(
+        buf, streaming=True, format=ArchiveFormat.TAR, config=config
+    ) as reader:
+        seen: list[str] = []
+        with pytest.raises(DiagnosticRaisedError):
+            for member in reader:
+                seen.append(member.name)
+        assert seen == ["a.bin", "b.bin"]
+        with pytest.raises(ReadError, match="previously failed"):
+            reader.scan_members()
+        assert reader.get_members_if_available() is None

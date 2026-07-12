@@ -280,3 +280,58 @@ def test_baseexception_during_materialization_does_not_wedge_reader() -> None:
     # UNMATERIALIZED, so a retry re-elects and succeeds instead of raising a
     # misleading "materialization already in progress".
     assert [m.name for m in reader.members()] == ["a.txt"]
+
+
+# --- A failed streaming pass must not publish a partial member list (deep N1) --------
+
+
+class _FailingScanReader(BaseArchiveReader):
+    """Streaming reader whose scan raises after yielding its first member."""
+
+    _SUPPORTS_RANDOM_ACCESS = False
+    _MEMBER_LIST_UPFRONT = False
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
+        raise archivey.CorruptionError("scan failed mid-pass")
+
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
+
+    def _get_archive_info(self) -> ArchiveInfo:
+        return _info(
+            ArchiveFormat.TAR,
+            ListingCost.REQUIRES_SCANNING,
+            StreamCapability.FORWARD_ONLY,
+        )
+
+    def _close_archive(self) -> None:
+        pass
+
+
+def test_failed_streaming_pass_does_not_publish_partial_list() -> None:
+    # An exception escaping the forward pass leaves its generator closed; a plain
+    # retry would see StopIteration and finalize the PARTIAL scan as the complete
+    # resolved cache — scan_members() would then silently return a truncated listing.
+    reader = _FailingScanReader(ArchiveFormat.TAR, True, "x.tar")
+    it = iter(reader)
+    assert next(it).name == "a.txt"
+    with pytest.raises(archivey.CorruptionError):
+        next(it)
+    # The resolved-list methods must fail loud, not serve the partial scan as complete.
+    with pytest.raises(archivey.ReadError, match="previously failed"):
+        reader.scan_members()
+    # And the partial scan must never be published as an available cache.
+    assert reader.get_members_if_available() is None
+
+
+def test_failed_streaming_pass_stays_poisoned_on_reiteration() -> None:
+    reader = _FailingScanReader(ArchiveFormat.TAR, True, "x.tar")
+    with pytest.raises(archivey.CorruptionError):
+        list(reader)
+    # scan_members() may finish an interrupted pass, so it reaches the poisoned
+    # iterator — and must keep failing loud on every retry, chained to the original.
+    for _ in range(2):
+        with pytest.raises(archivey.ReadError, match="previously failed") as excinfo:
+            reader.scan_members()
+        assert isinstance(excinfo.value.__cause__, archivey.CorruptionError)

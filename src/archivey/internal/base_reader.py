@@ -7,7 +7,15 @@ import uuid
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable, ContextManager, Iterator, Mapping
+from typing import (
+    TYPE_CHECKING,
+    BinaryIO,
+    Callable,
+    ContextManager,
+    Iterator,
+    Mapping,
+    NoReturn,
+)
 
 if TYPE_CHECKING:
     from archivey.internal.password import _PasswordCandidates
@@ -18,6 +26,7 @@ from archivey.diagnostics import DiagnosticSummary, ExtractionReport
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
+    EncryptionError,
     LinkTargetNotFoundError,
     ReadError,
     UnsupportedOperationError,
@@ -263,6 +272,50 @@ class BaseArchiveReader(ArchiveReader):
         """
         return self._handle_lock if self._handle_lock is not None else nullcontext()
 
+    def _raise_translated(
+        self,
+        exc: Exception,
+        member_name: str | None = None,
+        *,
+        stamp_encryption: bool = True,
+    ) -> NoReturn:
+        """Translate ``exc`` via ``_translate_exception``, stamp context, and raise.
+
+        The single backend-side error boundary (the out-of-stream counterpart of
+        ``ArchiveStream._fail``): an already-typed ``ArchiveyError`` is stamped and
+        re-raised as-is; a raw exception the translator recognizes is stamped and raised
+        chained to the original; an unrecognized exception propagates unchanged (the
+        catch-all-free rule in CONTRIBUTING). ``stamp_encryption=False`` skips member
+        stamping for ``EncryptionError`` (ZIP's password errors carry their own message
+        and must not be reattributed).
+        """
+        if isinstance(exc, ArchiveyError):
+            self._stamp_error_context(exc, member_name)
+            raise exc
+        translated = self._translate_exception(exc)
+        if translated is None:
+            raise exc
+        if stamp_encryption or not isinstance(translated, EncryptionError):
+            self._stamp_error_context(translated, member_name)
+        raise translated from exc
+
+    def _translated_errors(
+        self,
+        member_name: str | None = None,
+        *,
+        stamp_encryption: bool = True,
+    ) -> ContextManager[None]:
+        """Context manager routing any exception from the body through ``_raise_translated``.
+
+        Backends wrap every direct call into their underlying library with this instead
+        of hand-rolling the translate/stamp/raise tail per site — the pattern that
+        repeatedly drifted (one site catching a narrower tuple than its siblings).
+        Take the boundary OUTSIDE ``_handle_guard()`` so translation and stamping never
+        run while a shared-handle lock is held. ``BaseException`` (KeyboardInterrupt,
+        GeneratorExit) passes through untouched.
+        """
+        return _TranslatedErrorBoundary(self, member_name, stamp_encryption)
+
     @property
     def member_streams(self) -> MemberStreams:
         """Declared member-stream capabilities for this reader."""
@@ -313,7 +366,7 @@ class BaseArchiveReader(ArchiveReader):
             self._close_archive()
         except Exception as exc:  # noqa: BLE001 - combine with pending stream-close failure
             teardown_exc = exc
-            self._state.complete_teardown(exc)
+            self._state.complete_teardown()
         else:
             self._state.complete_teardown()
         if pending is not None and teardown_exc is not None:
@@ -327,7 +380,17 @@ class BaseArchiveReader(ArchiveReader):
             raise teardown_exc
 
     @abstractmethod
-    def _iter_members(self) -> Iterator[ArchiveMember]: ...
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        """Yield every member once, in archive order.
+
+        **Order stability is load-bearing:** repeated calls MUST yield the same members
+        in the same order. ``member_id`` is a stamp of enumeration position, and
+        selection/extraction match members from *separate* enumerations by
+        ``(archive_id, member_id)`` (``get_members_if_available()`` re-enumerates for
+        some backends while ``stream_members()`` serves the materialized cache) — an
+        order that varies between calls would silently select the wrong members.
+        """
+        ...
 
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs in archive order; backs ``stream_members``.
@@ -530,9 +593,13 @@ class BaseArchiveReader(ArchiveReader):
                 if child is not None:
                     self._state.release_child(child)
 
-            # Publish an immutable snapshot (tuple + frozen name map copy).
-            self._members_cache = members
+            # Publish the snapshot (the list and name map are never mutated after this
+            # point; callers get copies). ORDER IS LOAD-BEARING: `_members_cache` is the
+            # sentinel the lock-free fast path above keys on, and `get()`/`open(name)`
+            # dereference `_members_by_name_lists` immediately after that check — so the
+            # name map must be visible before the sentinel, i.e. stored first.
             self._members_by_name_lists = by_name_lists
+            self._members_cache = members
             self._state.complete_materialization()
         except BaseException:
             # MUST be BaseException, not Exception: a KeyboardInterrupt/MemoryError/
@@ -731,8 +798,11 @@ class BaseArchiveReader(ArchiveReader):
         for member in self._pass_scanned:
             if member.is_link and member.link_target:
                 self._resolve_link(member, self._pass_by_name_lists)
-        self._members_cache = self._pass_scanned
+        # Same publication order as _get_members_registered: name map before the
+        # `_members_cache` sentinel (streaming passes are single-owner, so this is
+        # consistency rather than a live race here).
         self._members_by_name_lists = self._pass_by_name_lists
+        self._members_cache = self._pass_scanned
 
     def _stamp_progressive_member(self, idx: int, member: ArchiveMember) -> None:
         # Progressive / stream_members path: account without enforcing (O(1) escape hatch).
@@ -1211,11 +1281,24 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         self._members_source = reader._iter_members()
         self._next_id = 0
         self._exhausted = False
+        self._error: BaseException | None = None
 
     def __iter__(self) -> _ProgressivePassIterator:
         return self
 
     def __next__(self) -> ArchiveMember:
+        if self._error is not None:
+            # The pass previously failed. Its generator is closed, so a plain retry
+            # would see StopIteration and finalize the PARTIAL scan as the complete,
+            # resolved member cache — scan_members() would then silently return a
+            # truncated listing after the caller caught the original error. Fail loud
+            # and keep the cache unpublished instead.
+            err = ReadError(
+                "The archive scan previously failed "
+                f"({type(self._error).__name__}); the member list is incomplete and "
+                "cannot be resumed. Reopen the archive to retry."
+            )
+            raise err from self._error
         if self._exhausted:
             raise StopIteration
         try:
@@ -1224,7 +1307,65 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
             self._exhausted = True
             self._reader._finalize_pass_links()
             raise
+        except BaseException as exc:
+            self._error = exc
+            raise
         idx = self._next_id
         self._next_id += 1
-        self._reader._stamp_progressive_member(idx, member)
+        try:
+            self._reader._stamp_progressive_member(idx, member)
+        except BaseException as exc:
+            # Registration/link bookkeeping failed mid-pass (e.g. a RAISE-disposition
+            # diagnostic): the pass state is inconsistent, so poison it the same way.
+            self._error = exc
+            raise
         return member
+
+
+class _TranslatedErrorBoundary:
+    """``with``-boundary that applies ``_raise_translated`` to an escaping exception.
+
+    A plain ``__exit__`` class (not a ``@contextmanager`` generator) so the exception
+    handling is explicit: ``BaseException`` that is not an ``Exception`` always passes
+    through untouched; an exception ``_raise_translated`` re-raises *unchanged* (already
+    typed, or unrecognized by the translator) propagates as the original — with context
+    stamped where applicable — and only a genuinely translated exception replaces it,
+    chained via ``from``.
+    """
+
+    __slots__ = ("_reader", "_member_name", "_stamp_encryption")
+
+    def __init__(
+        self,
+        reader: BaseArchiveReader,
+        member_name: str | None,
+        stamp_encryption: bool,
+    ) -> None:
+        self._reader = reader
+        self._member_name = member_name
+        self._stamp_encryption = stamp_encryption
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> bool:
+        if exc is None or not isinstance(exc, Exception):
+            return False
+        try:
+            self._reader._raise_translated(
+                exc,
+                self._member_name,
+                stamp_encryption=self._stamp_encryption,
+            )
+        except BaseException as raised:
+            if raised is exc:
+                # Already typed (stamped in place) or unrecognized: let the ORIGINAL
+                # propagate from the with-body rather than re-raising from here, which
+                # would tack an extra frame onto its traceback.
+                return False
+            raise

@@ -105,6 +105,17 @@ class ArchiveStream(ReadOnlyIOStream):
         """Safety-net finalizer: release the lease if the caller never closed us.
 
         Never raises; reports via ``sys.unraisablehook`` if release fails.
+
+        Shutdown caveat: the release path takes ``ReaderState``'s lock. At interpreter
+        exit, ``weakref.finalize``'s atexit hook runs while daemon threads are frozen —
+        a daemon thread that died *inside* a reader-state critical section leaves the
+        lock held forever and this finalizer would then hang shutdown. The window is a
+        few bytecodes wide and requires daemon threads driving a reader at exit; noted
+        so a future refactor doesn't widen it (e.g. by making the finalizer wait on a
+        condition).
+
+        Ordering note: this must be called AFTER ``_on_close`` is assigned — the
+        callback captures ``self._on_close`` at attach time, not at fire time.
         """
         if self._finalizer is not None:
             return
