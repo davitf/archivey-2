@@ -1,63 +1,44 @@
 ## MODIFIED Requirements
 
-### Requirement: Usage errors are a separate hierarchy from ArchiveyError
+### Requirement: Caller misuse remains outside ArchiveyError
 
-The system SHALL define `ArchiveyUsageError(Exception)` — deliberately **not** an
-`ArchiveyError` subclass — as the root for errors that indicate a bug in the calling
-code rather than a property of the archive, the environment, or a supported limitation.
-`except ArchiveyError` is what applications wrap archive handling in; it MUST NOT
-swallow caller misuse.
+The system SHALL define `ArchiveyUsageError(Exception)` outside `ArchiveyError`
+for detected caller-code bugs. `except ArchiveyError` MUST NOT swallow misuse.
 
-`ConcurrentAccessError(ArchiveyUsageError)` SHALL be raised when a second member stream
-is opened while another is live on a reader without `MemberStreams.CONCURRENT`. Its
-message SHALL include the recorded `open_archive()` call site (`file:line`) so the error
-points at where the capability should have been declared.
+`ConcurrentAccessError(ArchiveyUsageError)` SHALL be raised when a second member
+stream opens while another is live on a reader without `MemberStreams.CONCURRENT`.
+Its message SHALL include the recorded `open_archive()` call site (`file:line`).
 
-`ArchiveyUsageError` (the root, or a future subclass) SHALL cover the other detected
-misuse states:
+`ArchiveyUsageError` SHALL also cover:
 
-- a reader-wide single-owner pass overlapping another distinct pass (`__iter__` /
-  `stream_members` / `extract_all`) or overlapping active worker calls;
-- without `MemberStreams.CONCURRENT`, a reader close overlapping an actively executing
-  member-worker call (an idle leased stream is not overlap; under `CONCURRENT`, close
-  drains workers instead);
-- any new reader operation/property except repeated `close()` / `__exit__` after
-  `reader.close()`;
-- same-reader password-provider reentry into a password-requiring operation that would
-  deadlock;
-- opening/using an `ArchiveMember` that does not belong to this reader (wrong-reader
-  identity);
-- member I/O after the caller closed its own supplied source early; and
-- `open()` / `read()` of a resolved non-file member (`DIRECTORY`, `ANTI`, `OTHER`, or a
-  link that did not resolve to a `FILE`) — asking for payload that does not exist.
+- reader-wide exclusive pass overlap (`__iter__`, `stream_members`,
+  `extract_all`, materialization, active worker calls);
+- non-`CONCURRENT` close overlapping an active worker call;
+- any reader operation/property after `close()` except repeated `close()` /
+  `__exit__`;
+- same-reader password-provider reentry into password-requiring work;
+- using an `ArchiveMember` from another reader;
+- member I/O after a caller closes its supplied source early;
+- `open_archive(streaming=True, member_streams=...CONCURRENT...)`;
+- `open()` / `read()` of a resolved non-`FILE` member (directory, `ANTI`, `OTHER`,
+  or a link that did not resolve to a file).
 
-The error SHALL be raised at the later operation before it changes state and MUST leave
-the earlier operation/stream usable.
+The later operation SHALL fail before changing state and MUST leave the earlier
+operation/stream usable. Internal owner-child operations are exempt only through
+explicit internal tokens; public reentry does not inherit them. Closed stream I/O
+continues to raise `ValueError`, and unsupported stream positioning continues to
+raise `io.UnsupportedOperation`.
 
-`open_archive(streaming=True, member_streams=…CONCURRENT…)` SHALL raise
-`ArchiveyUsageError` (invalid access-mode/capability combination).
+#### Scenario: usage error matrix
 
-Boundaries of the hierarchy:
-
-- `UnsupportedOperationError` and `UnsupportedFeatureError` remain `ArchiveyError`s:
-  they describe what an archive, format, backend, or access mode cannot provide — an
-  input/environment property, not a caller bug.
-- Stream-level conventions stay stdlib-shaped and are not archivey taxonomy: I/O on a
-  **closed stream** raises `ValueError`; unsupported positioning raises
-  `io.UnsupportedOperation` (this is also how undeclared `SEEKABLE` surfaces, because
-  seek-probing consumers already check `seekable()`/catch that type).
-
-Internal operation-owner children are not overlap: materialization/worker link reads,
-`extract_all()` member/counter peeks and owned `stream_members()` passes, and I/O/close
-on a pass's yielded stream carry the root token explicitly. Reentrant public calls do
-not inherit that token implicitly and remain rejectable.
-
-#### Scenario: open on a directory is a usage error
-
-- **WHEN** `ar.open(directory_member)` is called
-- **THEN** `ArchiveyUsageError` is raised (not `ArchiveyError`, not a raw OS error)
-
-#### Scenario: ConcurrentAccessError remains a usage error
-
-- **WHEN** a second member stream is opened without `MemberStreams.CONCURRENT`
-- **THEN** `ConcurrentAccessError` (an `ArchiveyUsageError`) is raised
+| Case | Expected |
+| --- | --- |
+| `except ArchiveyError` wraps code that raises `ArchiveyUsageError` | Usage error propagates past the handler |
+| Second overlapping member stream without `CONCURRENT` | `ConcurrentAccessError` with open-site `file:line`; first stream still readable |
+| Exclusive pass/materialization is active and conflicting public op begins | Later op raises `ArchiveyUsageError`; active op remains valid |
+| Operation/property after `reader.close()` | `ArchiveyUsageError`; already-open member stream follows lifecycle lease |
+| Repeated `reader.close()` | No error; no repeated backend teardown |
+| Unsupported `seek()` on a stream | `io.UnsupportedOperation`, not archivey-typed |
+| Caller closes supplied `BinaryIO` before escaped stream finishes | Later member I/O raises `ArchiveyUsageError` |
+| Declared `CONCURRENT`, post-materialization independent streams | No concurrency exception |
+| `open`/`read` on a directory or anti-item | `ArchiveyUsageError` (not `ArchiveyError`, not raw OS/format error) |
