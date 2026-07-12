@@ -6,7 +6,7 @@ import io
 import lzma
 import stat
 import zlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -191,13 +191,31 @@ def _is_lzma_family(coder: SevenZipCoder) -> bool:
     )
 
 
+# stdlib exposes no *public* decoder for a raw LZMA1/LZMA2 property blob → filter dict;
+# py7zr relies on the same private `lzma._decode_filter_properties`, so there is no public
+# replacement to switch to. Bind it once at import and fail loud if a future CPython removes
+# it — a missing function is "archivey needs updating", NOT "every LZMA member is corrupt".
+# Previously an AttributeError here was caught and turned into a per-member CorruptionError,
+# which would silently mislabel every valid LZMA/LZMA2 7z member as corrupt.
+_raw_decode_filter_properties = getattr(lzma, "_decode_filter_properties", None)
+if _raw_decode_filter_properties is None:  # pragma: no cover - guards a future stdlib change
+    raise ImportError(
+        "This Python's `lzma` module no longer exposes `_decode_filter_properties`, which "
+        "archivey's native 7z reader needs to decode raw LZMA1/LZMA2 coder properties. "
+        "Please report this to archivey (with your Python version)."
+    )
+_decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
+
+
 def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
     if coder.properties is None:
         return {"id": filter_id}
     try:
-        decode_properties = getattr(lzma, "_decode_filter_properties")
-        return decode_properties(filter_id, coder.properties)
-    except (AttributeError, lzma.LZMAError, ValueError) as exc:
+        return _decode_filter_properties(filter_id, coder.properties)
+    except (lzma.LZMAError, ValueError) as exc:
+        # A genuine malformed property blob (bad dict-size byte, wrong length) — archive
+        # corruption. AttributeError is no longer caught here: the function is bound above,
+        # so its absence fails loud at import rather than masquerading as corruption.
         raise CorruptionError(
             f"Malformed 7z LZMA coder properties for {_method_hex(coder.method)}"
         ) from exc
