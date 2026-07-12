@@ -366,8 +366,8 @@ not detach streamed members from backend updates.
 ### Requirement: Enforce Cumulative Max-Extracted-Bytes Limit
 
 The system SHALL track total bytes written across a single `extract()` or
-`extract_all()` call and raise `ExtractionError` at the chunk boundary where the
-total exceeds `max_extracted_bytes`. The default is 2 GiB
+`extract_all()` call and raise `ResourceLimitError` at the chunk boundary where
+the total exceeds `max_extracted_bytes`. The default is 2 GiB
 (2,147,483,648 bytes). Callers override it through `ExtractionLimits`; `None` via
 `ExtractionLimits.UNLIMITED` disables this guard.
 
@@ -379,13 +379,13 @@ processed regardless of `OnError`.
 
 | Case | Expected |
 | --- | --- |
-| Running written-byte total crosses `max_extracted_bytes` | Immediate `ExtractionError`; extraction halts |
+| Running written-byte total crosses `max_extracted_bytes` | Immediate `ResourceLimitError`; extraction halts |
 | `ExtractionLimits(max_extracted_bytes=10 * 2**30)` | Enforced cumulative limit is 10 GiB |
 | `ExtractionLimits.UNLIMITED` | Cumulative byte guard is disabled |
 
 ### Requirement: Enforce Per-ArchiveMember Max Decompression Ratio
 
-The system SHALL raise `ExtractionError` when a single member's output exceeds
+The system SHALL raise `ResourceLimitError` when a single member's output exceeds
 `max_ratio * member.compressed_size` after that member's output crosses
 `ratio_activation_threshold`. Defaults are `max_ratio=1000.0` and threshold
 5 MiB. The ratio is per-member output, not cumulative output, and is checked only
@@ -400,17 +400,19 @@ under `OnError.CONTINUE`; global guards remain always-stop.
 
 | Case | Expected |
 | --- | --- |
-| Member output exceeds ratio after threshold | `ExtractionError` while processing that member |
+| Member output exceeds ratio after threshold | `ResourceLimitError` while processing that member |
 | Tiny highly-compressible member stays below threshold | No ratio error; threshold prevents false positive |
 | `compressed_size is None` or `0` | Per-member ratio skipped; cumulative/global guards still apply |
 | `ExtractionLimits(max_ratio=100)` | Members over 100:1 trip this guard |
 
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
-The system SHALL apply extraction bomb limits only during `archivey.extract()` and
-`ArchiveReader.extract_all()`. `ArchiveReader.read()` and `ArchiveReader.open()`
-return decompressed data/streams without byte, ratio, or entry-count enforcement;
-callers are responsible for guarding direct reads.
+The system SHALL apply `ExtractionLimits` bomb guards only during
+`archivey.extract()` and `ArchiveReader.extract_all()`. `ArchiveReader.read()`
+and `ArchiveReader.open()` return decompressed data/streams without byte, ratio,
+or entry-count enforcement; callers are responsible for guarding direct reads.
+Listing materialization caps are separate (`ListingLimits` in `archive-reading`)
+and do not apply to `read()` / `open()` either.
 
 #### Scenario: bomb-scope matrix
 
@@ -418,6 +420,7 @@ callers are responsible for guarding direct reads.
 | --- | --- |
 | `reader.read(member)` on extreme-ratio data | Raw decompressed bytes returned or normal read error; no extraction bomb guard |
 | `reader.open(member)` | Stream delivers decompressed data without extraction limits |
+| `reader.members()` on a metadata bomb | `ListingLimits` / `ResourceLimitError` per `archive-reading`, not `ExtractionLimits` |
 
 ### Requirement: Progress Reporting via on_progress Callback
 
@@ -514,7 +517,8 @@ Diagnostic disposition SHALL still be authoritative: `RAISE` emits
 `DiagnosticRaisedError` and halts immediately even under `OnError.CONTINUE`;
 logging-handler and diagnostic-callback exceptions propagate unchanged. Under
 `STOP`, the genuine rejection/failure raises immediately and is not converted to
-an extraction advisory. Global resource guards, `KeyboardInterrupt`,
+an extraction advisory. Global resource guards (`ResourceLimitError` for
+cumulative bytes, archive-wide/live ratio, and max entries), `KeyboardInterrupt`,
 `MemoryError`, and unexpected programming exceptions are always-stop and are not
 swallowed.
 
@@ -526,7 +530,7 @@ swallowed.
 | Extraction diagnostic resolves to `RAISE` under `CONTINUE` | `DiagnosticRaisedError` halts; no report returned |
 | `CorruptionError` under `STOP` | Original `CorruptionError` propagates; no continued-failure diagnostic |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result/diagnostic; extraction proceeds |
-| Cumulative bytes/live ratio/max entries exceed limit under `CONTINUE` | `ExtractionError` propagates and halts; no later member processed |
+| Cumulative bytes/live ratio/max entries exceed limit under `CONTINUE` | `ResourceLimitError` propagates and halts; no later member processed |
 | Default `STOP` member failure | Exception raises immediately; failing partial file removed; earlier outputs remain |
 | Mixed good/corrupt archive under `CONTINUE` | Extractable members are written; report includes `EXTRACTED` plus `FAILED`/`REJECTED`; no per-member exception escapes |
 
@@ -569,13 +573,14 @@ The ratio SHALL be `cumulative_bytes_written / compressed_source_size`, checked
 in `BombTracker.count()` using the same `max_ratio` and cumulative
 `ratio_activation_threshold` as other ratio guards. If `compressed_source_size`
 is absent, the static archive-wide check is skipped. Per-member and archive-wide
-ratios are independent; either may trip first.
+ratios are independent; either may trip first. A tripped archive-wide ratio
+SHALL raise `ResourceLimitError`.
 
 #### Scenario: static archive-wide ratio matrix
 
 | Case | Expected |
 | --- | --- |
-| Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ExtractionError` during extraction |
+| Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
 | Compressed tar from non-seekable pipe with unknown size | Static archive-wide ratio skipped; cumulative byte limit still applies |
 | Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
@@ -584,7 +589,7 @@ ratios are independent; either may trip first.
 ### Requirement: Enforce Maximum Entry Count
 
 The system SHALL count members actually written to disk during one extraction call
-and raise `ExtractionError` once the count exceeds `max_entries`. The default is
+and raise `ResourceLimitError` once the count exceeds `max_entries`. The default is
 `1_048_576`; callers override through `ExtractionLimits`, and `None` disables the
 guard. The counter protects against inode/per-directory/syscall bombs made of many
 tiny entries and is independent of byte and ratio limits.
@@ -598,7 +603,7 @@ guard and halts even under `OnError.CONTINUE`.
 
 | Case | Expected |
 | --- | --- |
-| More than `max_entries` members are written | `ExtractionError` once the count crosses the limit; extraction halts under any `OnError` |
+| More than `max_entries` members are written | `ResourceLimitError` once the count crosses the limit; extraction halts under any `OnError` |
 | `ExtractionLimits(max_entries=100)` | Error after the 100th written member when the 101st would be written |
 | Selector chooses one member from millions | Extraction can complete with `max_entries=1` because only selected written entries count |
 | Many tiny files stay below byte/ratio limits but exceed entry count | Entry-count guard still raises |
@@ -636,18 +641,18 @@ the counting reader exactly when the static denominator is absent.
 The ratio SHALL be `cumulative_bytes_written / compressed_bytes_consumed`, checked
 after cumulative output crosses `ratio_activation_threshold` using the same
 `max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
-under `OnError.CONTINUE`. The live path complements static checks and is not used
-when member compressed sizes or a cheap outer source size provide a denominator;
-whichever available guard trips first wins. Codec-layer seeks may re-read counted
-bytes, inflating the denominator and weakening the guard, but never causing a
-false positive.
+under `OnError.CONTINUE` with `ResourceLimitError`. The live path complements
+static checks and is not used when member compressed sizes or a cheap outer
+source size provide a denominator; whichever available guard trips first wins.
+Codec-layer seeks may re-read counted bytes, inflating the denominator and
+weakening the guard, but never causing a false positive.
 
 #### Scenario: live archive-wide ratio matrix
 
 | Case | Expected |
 | --- | --- |
-| Highly compressible `.tar.gz` from non-seekable pipe has no static denominator | Live ratio raises `ExtractionError` after threshold before absolute byte cap |
-| Live ratio exceeded under `OnError.CONTINUE` | `ExtractionError` propagates and extraction halts |
+| Highly compressible `.tar.gz` from non-seekable pipe has no static denominator | Live ratio raises `ResourceLimitError` after threshold before absolute byte cap |
+| Live ratio exceeded under `OnError.CONTINUE` | `ResourceLimitError` propagates and extraction halts |
 | Plain uncompressed `.tar` from a pipe | Consumed and written bytes stay about 1:1; live ratio does not trip; byte limit still applies |
 | `.tar.gz` has cheap `compressed_source_size` | Static archive-wide ratio is used; live path is not engaged/double-counted |
 | Seekable opaque compressed stream has no cheap size/`size`/`try_get_size()`/O(1) end seek | Source is counted live; archive is not left with only the byte cap |
