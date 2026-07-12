@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import struct
 import zlib
@@ -350,6 +351,11 @@ def test_rar_reader_masks_hostile_unix_mode() -> None:
     member = RarReader._to_member(reader, info)
     assert member.mode == 0o0644
 
+    # Win32 attrs are masked to 32 bits (FILE_ATTRIBUTE_* width).
+    info_win = dataclasses.replace(info, host_os=2, mode=(1 << 40) | 0x20)
+    member_win = RarReader._to_member(reader, info_win)
+    assert member_win.mode is None
+    assert member_win.windows_attrs == 0x20
 
 def test_non_rarlab_unrar_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

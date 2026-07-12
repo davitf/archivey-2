@@ -387,13 +387,14 @@ class RarReader(BaseArchiveReader):
         mode: int | None = None
         windows_attrs: int | None = None
         if info.mode is not None:
-            # RAR5 stores mode as a vint; mask before S_IMODE so hostile values cannot
-            # raise OverflowError from the C helper.
-            raw_mode = info.mode & 0xFFFFFFFF
+            # RAR5 stores attr as a vint (hostile values can exceed C unsigned long).
+            # Unix: ArchiveMember.mode is the low 12 permission bits (S_IMODE);
+            # mask before the C helper so OverflowError cannot abort listing.
+            # Win32: FILE_ATTRIBUTE_* is a 32-bit field.
             if info.host_os == 3:  # Unix
-                mode = stat.S_IMODE(raw_mode)
+                mode = stat.S_IMODE(info.mode & 0o7777)
             elif info.host_os == 2:  # Win32
-                windows_attrs = raw_mode
+                windows_attrs = info.mode & 0xFFFFFFFF
 
         member = ArchiveMember(
             type=member_type,
