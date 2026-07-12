@@ -20,7 +20,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator, Mapping, cast
+from typing import Any, BinaryIO, Iterator, Mapping, NoReturn, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -117,6 +117,23 @@ _BACKSLASH_SEPARATOR_SYSTEMS: frozenset[CreateSystem] = frozenset(
         CreateSystem.WINDOWS_NTFS,
         CreateSystem.VFAT,
     }
+)
+
+
+# Raw exceptions a ZIP member open/read can raise that _translate_exception maps to typed
+# ArchiveyErrors. Declared once so the catch sites (member open, compressed-confirm decrypt,
+# symlink-target read) cannot drift apart — they previously did (one omitted
+# io.UnsupportedOperation), exactly the bug this constant prevents.
+_ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
+    zipfile.BadZipFile,
+    RuntimeError,
+    io.UnsupportedOperation,
+    NotImplementedError,
+    zlib.error,
+    lzma.LZMAError,
+    UnicodeDecodeError,
+    ValueError,
+    OSError,
 )
 
 
@@ -597,24 +614,23 @@ class ZipReader(BaseArchiveReader):
             if self._handle_lock is not None:
                 return CloseLockedStream(raw, self._handle_lock)
             return raw
-        except (
-            zipfile.BadZipFile,
-            RuntimeError,
-            io.UnsupportedOperation,
-            NotImplementedError,
-            zlib.error,
-            lzma.LZMAError,
-            UnicodeDecodeError,
-            ValueError,
-            OSError,
-        ) as exc:
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                if isinstance(translated, EncryptionError):
-                    raise translated from exc
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise_member_error(exc, member_name)
+
+    def _reraise_member_error(self, exc: Exception, member_name: str) -> NoReturn:
+        """Translate a raw member-read error, stamp it with member context, and raise.
+
+        An unrecognized exception (``_translate_exception`` returns ``None``) is re-raised
+        unchanged. An ``EncryptionError`` is raised without member stamping (it carries its
+        own message and must not be reclassified). Shared by the member-open and
+        compressed-confirm decrypt paths so their translate/stamp/raise tail stays identical.
+        """
+        translated = self._translate_exception(exc)
+        if translated is not None:
+            if not isinstance(translated, EncryptionError):
                 self._stamp_error_context(translated, member_name)
-                raise translated from exc
-            raise
+            raise translated from exc
+        raise
 
     def _zip_open_raw(
         self, info: zipfile.ZipInfo, *, password: bytes | None
@@ -664,17 +680,7 @@ class ZipReader(BaseArchiveReader):
                 return self._open_zipfile_member(
                     info, password=password, member_name=member_name
                 )
-            except (
-                zipfile.BadZipFile,
-                RuntimeError,
-                io.UnsupportedOperation,
-                NotImplementedError,
-                zlib.error,
-                lzma.LZMAError,
-                UnicodeDecodeError,
-                ValueError,
-                OSError,
-            ) as exc:
+            except _ZIP_MEMBER_READ_ERRORS as exc:
                 if _is_candidate_integrity_failure(exc):
                     failure = EncryptionError(
                         f"Password candidate failed integrity validation for ZIP "
@@ -683,13 +689,7 @@ class ZipReader(BaseArchiveReader):
                     if not ambiguous_holder:
                         ambiguous_holder.append(failure)
                     raise failure from exc
-                translated = self._translate_exception(exc)
-                if translated is not None:
-                    if isinstance(translated, EncryptionError):
-                        raise translated from exc
-                    self._stamp_error_context(translated, member_name)
-                    raise translated from exc
-                raise
+                self._reraise_member_error(exc, member_name)
             finally:
                 if stream is not None:
                     self._zip_close_raw(stream)
@@ -854,24 +854,12 @@ class ZipReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=logger,
             )
-        except (
-            zipfile.BadZipFile,
-            RuntimeError,
-            zlib.error,
-            lzma.LZMAError,
-            OSError,
-            ValueError,
-            NotImplementedError,
-            UnicodeDecodeError,
-        ) as exc:
+        except _ZIP_MEMBER_READ_ERRORS as exc:
             # Reading the symlink's target data (raw zipfile stream, not ArchiveStream-wrapped)
             # can raise any of the member-read errors on a corrupt entry; translate them the
-            # same way rather than letting a raw codec exception escape the listing.
-            translated = self._translate_exception(exc)
-            if translated is not None:
-                self._stamp_error_context(translated, info.filename)
-                raise translated from exc
-            raise
+            # same way rather than letting a raw codec exception escape the listing. (An
+            # EncryptionError is handled by the separate except above and never reaches here.)
+            self._reraise_member_error(exc, info.filename)
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map

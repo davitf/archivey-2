@@ -368,10 +368,9 @@ class BaseArchiveReader(ArchiveReader):
                 yield member, stream
             else:
                 yield member, None
-        if previous is not None:
-            # Do not close here: the caller still holds the last yielded stream until
-            # they advance/close the generator (stream_members closes it in finally).
-            pass
+        # The last yielded stream (``previous``) is intentionally left open: the caller
+        # still holds it until they advance/close the generator (stream_members closes it
+        # in its finally). Closing it here would invalidate a handle the caller may still read.
 
     def _lazy_member_stream(self, member: ArchiveMember) -> ArchiveStream:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
