@@ -5,13 +5,16 @@
 > maintainer review, both earlier public-contract drafts. Member-stream capabilities are
 > **declared** at `open_archive(member_streams=MemberStreams.CONCURRENT | SEEKABLE)`; the
 > uniform default on every format (directory included) is forward-only, one live stream,
-> no locks, no seek machinery. Once `CONCURRENT` is declared: after random-access member
-> materialization, concurrent `open()` and independent member-stream read/readinto/close
-> (plus positioning under `SEEKABLE`) are safe by construction. Free-threaded correctness
-> for core backends is exercised by the Linux CPython `3.13t` `free-threaded-concurrency`
-> CI job (`pytest -m concurrent_reader`). An undeclared second overlapping open raises
+> no locks, no seek machinery. Once `CONCURRENT` is declared: concurrent first-touch
+> materialization is coordinated (one build; waiters share the published snapshot), then
+> concurrent `open()` and independent member-stream read/readinto/close (plus positioning
+> under `SEEKABLE`) are safe by construction. `close()` drains in-flight worker calls;
+> escaped streams keep the lifecycle-lease contract. Free-threaded correctness for core
+> backends is exercised by the Linux CPython `3.13t` `free-threaded-concurrency` CI job
+> (`pytest -m concurrent_reader`). An undeclared second overlapping open raises
 > `ConcurrentAccessError` (an `ArchiveyUsageError`, outside the `ArchiveyError` hierarchy).
-> Reader-wide iteration/materialization/extraction/close remain single-owner.
+> Distinct reader-wide passes (`__iter__` / `stream_members` / `extract_all`) and
+> same-stream access remain single-owner / caller-synchronized.
 > `tar-concurrent-open` supplies comprehensive TAR/ISO shared-handle locking for declared
 > readers. The gate covers stream capabilities only — solid open-*order* cost stays with
 > `AccessCost`/`stream_members()`. Parallel extraction scheduling remains future; speed
@@ -42,7 +45,7 @@ archivey-owned byte ranges still go through `SharedSource.view`.
 | Backend | Regime | Compliant? | Notes |
 |---|---|---|---|
 | **directory** | RA, independent | **Yes** | Opens `self._root / member.name` — independent FD per open; no reader scratch. Outside SharedSource (filesystem paths, not a shared byte source). |
-| **ZIP** | RA, independent | **Yes** | `_open_zip_entry` → `ZipFile.open(info)`; stdlib `_SharedFile` coordinates the handle (path *and* stream sources). No per-open scratch on `ZipReader`. Outside archivey SharedSource retrofit (library-owned addressing). |
+| **ZIP** | RA, independent | **Yes** | `_open_zip_entry` → `ZipFile.open(info)`; stdlib `_SharedFile` coordinates seek/read. Under `CONCURRENT`, archivey also serializes `open`/`close`/`ZipFile.close` so free-threaded `_fileRefCnt` updates cannot race. No per-open scratch on `ZipReader`. |
 | **single-file** | RA when seekable | **Yes** (post-`shared-source-streams`) | Seekable stream: `SharedSource.view(0)` + fresh codec per open. Path: independent codec FD per open. `_first_stream` scratch **removed**. Non-seekable: one-shot `_pending_stream` (streaming / single-pass — out of invariant scope). |
 | **TAR-RA** | RA, library seek-before-read | **Gap → `tar-concurrent-open`** | `tarfile._FileInFile` re-seeks on each `read()`, **no lock** (same shape as pycdlib). Keep `extractfile` (sparse); one per-reader lock covers `tarfile.open`, `getmembers()` scan I/O, strict EOF reads, member creation, read/readinto/supported positioning/close, and archive close. |
 | **ISO** | RA, library seek-before-read | **Gap → `tar-concurrent-open`** | `pycdlib.PyCdlibIO` re-seeks on each `read()`, **no lock**. One per-reader lock covers `PyCdlib.open` / `open_fp`, member creation/context entry, read/readinto/supported positioning/close, and archive close. Pinned `walk()` / `get_record()` are verified in-memory catalog paths and remain version-regression audit items. |
@@ -58,17 +61,17 @@ archivey-owned byte ranges still go through `SharedSource.view`.
 
 ## 2. Member-cache one-time-build safety
 
-`BaseArchiveReader._get_members_registered` does an unguarded read-modify-write into
-`_members_cache` / `_members_by_name_lists`. After population the caches are
-read-mostly; the race is only the first build.
+`BaseArchiveReader._get_members_registered` publishes `_members_cache` /
+`_members_by_name_lists` once. After population the caches are read-mostly; the race is
+only the first build.
 
-**Active design:** materialize-before-fan-out is the public phase boundary **and**
-publication is synchronized. One owner builds members/name indexes locally, completes link
-resolution, then publishes both atomically. A conflicting operation during the build raises
-`UnsupportedOperationError`; no caller sees partial cache state. After publication the
-internal containers are immutable (list-returning APIs do not expose them for structural
-mutation); existing backend-populated late-bound `ArchiveMember` fields remain synchronized.
-This supports the worker seam without pretending arbitrary reader methods are thread-safe.
+**Active design (`reader-concurrency-coordination`):** under `MemberStreams.CONCURRENT`,
+overlapping first-touch callers block on a condition while exactly one owner builds
+members/name indexes locally, completes link resolution, then publishes both atomically.
+Waiters proceed against the published snapshot (no `ArchiveyUsageError` for the overlap).
+A failed attempt returns to `UNMATERIALIZED`, wakes waiters, and never publishes a partial
+snapshot. Heavy work runs outside the reader-state lock. Default (non-`CONCURRENT`) and
+uncontended paths stay unchanged. Distinct passes and shared streams remain single-owner.
 
 ---
 
@@ -106,11 +109,13 @@ make no throughput claim.
 
 ## 4. Free-threading position (`threat-model.md` C4)
 
-**Target stance (`concurrent-member-streams`):**
+**Target stance (`concurrent-member-streams` + `reader-concurrency-coordination`):**
 
-- After materialization, one reader supports concurrent `open()` and independent operations
-  on different returned streams. Iteration, materialization, `stream_members`, extraction,
-  and reader close remain single-owner.
+- Under `CONCURRENT`, first-touch materialization is coordinated and one reader supports
+  concurrent `open()` plus independent operations on different returned streams.
+  `close()` drains in-flight worker calls. Distinct passes (`__iter__` /
+  `stream_members` / `extract_all`) and same-stream access remain single-owner /
+  caller-synchronized.
 - Single-owner APIs use explicit root tokens and private child scopes, so `extract_all()` may
   drive `stream_members()` and yielded-stream I/O without admitting unrelated reentry.
 - This correctness seam must use real synchronization. A required Linux CPython `3.13t`

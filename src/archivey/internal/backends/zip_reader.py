@@ -13,6 +13,7 @@ import lzma
 import re
 import stat
 import struct
+import threading
 import zipfile
 import zlib
 from collections.abc import Callable
@@ -57,6 +58,7 @@ from archivey.internal.password_confirm import (
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
+    CloseLockedStream,
     SlicingStream,
     is_seekable,
     is_stream,
@@ -311,6 +313,13 @@ class ZipReader(BaseArchiveReader):
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
         self._encoding = encoding
+        # Free-threaded ZIP: stdlib zipfile races on _fileRefCnt across concurrent
+        # ZipFile.open / ZipExtFile.close / ZipFile.close. Serialize those under
+        # CONCURRENT; leave reads to zipfile's own _SharedFile lock so independent
+        # members can still decompress in parallel.
+        self._handle_lock: threading.Lock | None = (
+            threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
+        )
 
         if is_stream(source) and not is_seekable(source):
             raise StreamNotSeekableError(
@@ -600,7 +609,10 @@ class ZipReader(BaseArchiveReader):
     ) -> BinaryIO:
         """Open via ``zipfile`` and translate member-open failures."""
         try:
-            return cast("BinaryIO", self._archive.open(info, pwd=password))
+            raw = self._zip_open_raw(info, password=password)
+            if self._handle_lock is not None:
+                return CloseLockedStream(raw, self._handle_lock)
+            return raw
         except (
             zipfile.BadZipFile,
             RuntimeError,
@@ -619,6 +631,23 @@ class ZipReader(BaseArchiveReader):
                 self._stamp_error_context(translated, member_name)
                 raise translated from exc
             raise
+
+    def _zip_open_raw(
+        self, info: zipfile.ZipInfo, *, password: bytes | None
+    ) -> BinaryIO:
+        """``ZipFile.open`` under the CONCURRENT handle lock when present."""
+        if self._handle_lock is not None:
+            with self._handle_lock:
+                return cast("BinaryIO", self._archive.open(info, pwd=password))
+        return cast("BinaryIO", self._archive.open(info, pwd=password))
+
+    def _zip_close_raw(self, stream: BinaryIO) -> None:
+        """Close a raw zip member stream under the CONCURRENT handle lock when present."""
+        if self._handle_lock is not None:
+            with self._handle_lock:
+                stream.close()
+        else:
+            stream.close()
 
     def _open_encrypted_lazy(
         self,
@@ -648,9 +677,9 @@ class ZipReader(BaseArchiveReader):
         def decrypt(password: bytes) -> BinaryIO:
             stream: BinaryIO | None = None
             try:
-                stream = cast("BinaryIO", self._archive.open(info, pwd=password))
+                stream = self._zip_open_raw(info, password=password)
                 read_exact(stream, CONFIRM_PREFIX_BYTES)
-                stream.close()
+                self._zip_close_raw(stream)
                 stream = None
                 # Fresh stream for the caller; zipfile re-checks CRC at EOF.
                 return self._open_zipfile_member(
@@ -684,7 +713,7 @@ class ZipReader(BaseArchiveReader):
                 raise
             finally:
                 if stream is not None:
-                    stream.close()
+                    self._zip_close_raw(stream)
 
         return self._finish_password_attempt(
             member,
@@ -895,7 +924,11 @@ class ZipReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        self._archive.close()
+        if self._handle_lock is not None:
+            with self._handle_lock:
+                self._archive.close()
+        else:
+            self._archive.close()
 
 
 def _looks_like_multivolume(exc: zipfile.BadZipFile) -> bool:

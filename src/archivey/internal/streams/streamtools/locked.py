@@ -6,7 +6,10 @@ import io
 import threading
 from typing import TYPE_CHECKING, BinaryIO
 
-from archivey.internal.streams.streamtools.base import DelegatingStream
+from archivey.internal.streams.streamtools.base import (
+    DelegatingStream,
+    ReadOnlyIOStream,
+)
 from archivey.internal.streams.streamtools.binaryio import is_seekable
 
 if TYPE_CHECKING:
@@ -62,6 +65,27 @@ class LockedStream(DelegatingStream):
         finally:
             # Mark the wrapper closed without re-entering the lock via super().close()
             # if DelegatingStream.close also closes inner — close inner once under lock.
-            from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
+            ReadOnlyIOStream.close(self)
 
+
+class CloseLockedStream(DelegatingStream):
+    """Hold ``lock`` only across ``close``; leave read/seek to the inner stream.
+
+    Used by ZIP under ``MemberStreams.CONCURRENT``: stdlib ``zipfile`` serializes
+    shared-fp seek/read via ``_SharedFile``, but ``_fileRefCnt`` on open/close is
+    unlocked and races under free-threaded CPython. Serializing open + close is enough;
+    holding the lock across reads would needlessly serialize independent decompressors.
+    """
+
+    def __init__(self, inner: BinaryIO, lock: threading.Lock | threading.RLock) -> None:
+        super().__init__(inner)
+        self._lock = lock
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            with self._lock:
+                self._inner.close()
+        finally:
             ReadOnlyIOStream.close(self)

@@ -401,9 +401,10 @@ class BaseArchiveReader(ArchiveReader):
         ``zipfile``) are not required to route through an archivey ``SharedSource`` view,
         but archivey-owned reader state still MUST NOT hold unsynchronized per-open scratch.
 
-        Concurrent ``open`` after materialization is supported when the reader was opened
-        with ``MemberStreams.CONCURRENT``. Forward-only / streaming passes remain
-        single-owner. See ``docs/parallel-reader.md``.
+        Concurrent ``open`` is supported when the reader was opened with
+        ``MemberStreams.CONCURRENT``: first-touch materialization is coordinated
+        (wait/share), and after the snapshot is published workers may fan out. Forward-only
+        / streaming passes remain single-owner. See ``docs/parallel-reader.md``.
         """
         ...
 
@@ -455,11 +456,20 @@ class BaseArchiveReader(ArchiveReader):
     def _close_archive(self) -> None: ...
 
     def _get_members_registered(self) -> list[ArchiveMember]:
-        """Get all members, assigning member_id and resolving links."""
+        """Get all members, assigning member_id and resolving links.
+
+        Under ``MemberStreams.CONCURRENT``, overlapping first-touch callers block until
+        one owner publishes the snapshot (or a failed attempt returns to unmaterialized
+        and another caller re-elects). Heavy work runs outside the reader-state lock.
+        """
         if self._members_cache is not None:
             return self._members_cache
 
-        self._state.begin_materialization()
+        if not self._state.begin_materialization():
+            # Another thread published while we waited (or cache was already ready).
+            assert self._members_cache is not None
+            return self._members_cache
+
         try:
             members = list(self._iter_members())
             by_name_lists: dict[str, list[ArchiveMember]] = {}
@@ -825,6 +835,15 @@ class BaseArchiveReader(ArchiveReader):
 
     def members(self) -> list[ArchiveMember]:
         self._require_random_access("members()")
+        # Under CONCURRENT, first-touch materialization is coordinated via worker tokens
+        # so overlapping members()/open()/get() share one build instead of rejecting.
+        # Default readers keep an exclusive pass (single-owner materialization).
+        if self._state.concurrent:
+            token = self._state.acquire_worker("members")
+            try:
+                return list(self._get_members_registered())
+            finally:
+                self._state.release_worker(token)
         token = self._state.acquire_pass("members")
         try:
             # Return a shallow copy so callers cannot mutate the published cache container.
@@ -898,8 +917,8 @@ class BaseArchiveReader(ArchiveReader):
         """Open member for reading. Follows symlinks.
 
         Without ``MemberStreams.CONCURRENT``, at most one member stream may be live.
-        With it, concurrent ``open`` is supported after member materialization
-        (see :class:`~archivey.types.MemberStreams`).
+        With it, concurrent first-touch materialization is coordinated and concurrent
+        ``open`` is supported (see :class:`~archivey.types.MemberStreams`).
         Positioning requires ``MemberStreams.SEEKABLE``.
         """
         # Two independent gates: the access mode (streaming=True forbids random access)
@@ -1069,11 +1088,27 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def close(self) -> None:
+        """Close the reader.
+
+        Idempotent. Under ``MemberStreams.CONCURRENT``, blocks until in-flight worker
+        ``open()`` / ``read()`` / ``get()`` / ``members()`` calls return, then marks the
+        reader closed. Escaped open member streams keep their lifecycle leases and remain
+        readable until they are closed. A worker that never returns is a caller bug (same
+        as any lock); there is no artificial timeout.
+
+        Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
+        pass is actively executing. Teardown runs at most once (possibly deferred until
+        the last leased stream closes).
+        """
         if self._closed:
             return
-        self._closed = True
+        # Only mark closed after mark_reader_closed succeeds (or is a no-op because another
+        # thread already closed). Raising on an active pass must leave the reader open.
         if self._state.mark_reader_closed():
+            self._closed = True
             self._maybe_teardown()
+        else:
+            self._closed = True
 
     def __enter__(self) -> "BaseArchiveReader":
         self._state.require_open("__enter__")

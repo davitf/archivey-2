@@ -94,10 +94,11 @@ points at where the capability should have been declared.
 `ArchiveyUsageError` (the root, or a future subclass) SHALL cover the other detected
 misuse states:
 
-- a reader-wide single-owner operation overlapping materialization/iteration/streaming/
-  extraction;
-- a reader close overlapping an actively executing member-worker call (an idle leased
-  stream is not overlap);
+- a reader-wide single-owner pass overlapping another distinct pass (`__iter__` /
+  `stream_members` / `extract_all`) or overlapping active worker calls;
+- without `MemberStreams.CONCURRENT`, a reader close overlapping an actively executing
+  member-worker call (an idle leased stream is not overlap; under `CONCURRENT`, close
+  drains workers instead);
 - any new reader operation/property except repeated `close()` / `__exit__` after
   `reader.close()`;
 - same-reader password-provider reentry into a password-requiring operation that would
