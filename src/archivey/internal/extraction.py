@@ -40,6 +40,7 @@ from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
     LinkTargetNotFoundError,
+    ResourceLimitError,
     SymlinkEscapeError,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -71,13 +72,17 @@ DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB
 DEFAULT_MAX_ENTRIES = 1_048_576  # 2**20
 
 
-class _AlwaysStopExtractionError(ExtractionError):
+class _AlwaysStopResourceLimitError(ResourceLimitError):
     """A cumulative/global bomb guard: halts extraction even under ``OnError.CONTINUE``.
 
-    A subclass of ``ExtractionError`` so callers catching ``ExtractionError`` still catch
-    it; the coordinator uses the type to distinguish it from a *skippable* per-member
-    ratio failure.
+    A subclass of ``ResourceLimitError`` so callers catching that type (or
+    ``ArchiveyError``) still catch it; the coordinator uses the type to distinguish it
+    from a *skippable* per-member ratio failure.
     """
+
+
+# Backward-compatible alias used by older tests/imports.
+_AlwaysStopExtractionError = _AlwaysStopResourceLimitError
 
 
 class BombTracker:
@@ -126,8 +131,9 @@ class BombTracker:
         self._member_bytes = 0
         self._entry_count += 1
         if self._max_entries is not None and self._entry_count > self._max_entries:
-            raise _AlwaysStopExtractionError(
-                f"Entry-count limit reached: {self._entry_count} > {self._max_entries}"
+            raise _AlwaysStopResourceLimitError(
+                f"Entry-count limit reached: max_entries={self._max_entries} "
+                f"(would write entry {self._entry_count})"
             )
 
     def count(self, chunk_bytes: int) -> None:
@@ -136,8 +142,9 @@ class BombTracker:
 
         # Cumulative byte guard (always-stop).
         if self._max_bytes is not None and self._total_bytes > self._max_bytes:
-            raise _AlwaysStopExtractionError(
-                f"Extraction limit reached: {self._total_bytes} bytes > {self._max_bytes}"
+            raise _AlwaysStopResourceLimitError(
+                f"Extraction limit reached: max_extracted_bytes={self._max_bytes} "
+                f"(written {self._total_bytes} bytes)"
             )
 
         # Per-member ratio: activates on THIS member's output; a per-member failure
@@ -153,9 +160,9 @@ class BombTracker:
         ):
             ratio = self._member_bytes / cs
             if ratio > self._max_ratio:
-                raise ExtractionError(
+                raise ResourceLimitError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit "
-                    f"{self._max_ratio:.0f}:1 for {member.name!r}"
+                    f"max_ratio={self._max_ratio:.0f}:1 for {member.name!r}"
                 )
 
         # Archive-wide ratio: activates on CUMULATIVE output; a whole-archive bomb signal
@@ -168,10 +175,10 @@ class BombTracker:
         if self._max_ratio is not None and self._total_bytes > self._ratio_floor:
             if css and css > 0:
                 if self._total_bytes / css > self._max_ratio:
-                    raise _AlwaysStopExtractionError(
+                    raise _AlwaysStopResourceLimitError(
                         f"Archive-wide decompression ratio "
                         f"{self._total_bytes / css:.0f}:1 exceeds limit "
-                        f"{self._max_ratio:.0f}:1"
+                        f"max_ratio={self._max_ratio:.0f}:1"
                     )
             elif self._source is not None:
                 consumed = self._source.compressed_bytes_consumed
@@ -180,10 +187,10 @@ class BombTracker:
                     and consumed > 0
                     and self._total_bytes / consumed > self._max_ratio
                 ):
-                    raise _AlwaysStopExtractionError(
+                    raise _AlwaysStopResourceLimitError(
                         f"Live decompression ratio "
                         f"{self._total_bytes / consumed:.0f}:1 exceeds limit "
-                        f"{self._max_ratio:.0f}:1"
+                        f"max_ratio={self._max_ratio:.0f}:1"
                     )
 
 
@@ -338,7 +345,7 @@ class ExtractionCoordinator:
                             forward_only,
                             result_index,
                         )
-            except (_AlwaysStopExtractionError, DiagnosticRaisedError):
+            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
                 # A name the universal filter accepted (it is fsencodable) but that the
@@ -675,7 +682,7 @@ class ExtractionCoordinator:
                 self._materialize_orphan_source(
                     member, stream, group, source_paths, tracker, results
                 )
-            except (_AlwaysStopExtractionError, DiagnosticRaisedError):
+            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
                 for orphan in group:
@@ -784,7 +791,7 @@ class ExtractionCoordinator:
                 self._place_link(
                     source_paths, source_id, orphan.dest_path, orphan.transformed
                 )
-            except (_AlwaysStopExtractionError, DiagnosticRaisedError):
+            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
                 results[orphan.result_index] = ExtractionResult(

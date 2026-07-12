@@ -15,10 +15,11 @@ from archivey import (
     AcceleratorMode,
     ArchiveyConfig,
     ExtractionLimits,
+    ListingLimits,
     extract,
     open_archive,
 )
-from archivey.exceptions import ExtractionError, TruncatedError
+from archivey.exceptions import ResourceLimitError, TruncatedError
 from archivey.internal.config import stream_config_from_archivey
 from archivey.types import ArchiveFormat
 
@@ -30,6 +31,9 @@ def test_config_types_are_frozen() -> None:
     limits = ExtractionLimits()
     with pytest.raises(dataclasses.FrozenInstanceError):
         limits.max_ratio = 1.0  # type: ignore[misc]
+    listing = ListingLimits()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        listing.max_members = 1  # type: ignore[misc]
 
 
 def test_default_config_is_module_constant() -> None:
@@ -37,6 +41,8 @@ def test_default_config_is_module_constant() -> None:
     assert DEFAULT_ARCHIVEY_CONFIG.use_rapidgzip is AcceleratorMode.AUTO
     assert DEFAULT_ARCHIVEY_CONFIG.strict_archive_eof is False
     assert DEFAULT_ARCHIVEY_CONFIG.extraction_limits == ExtractionLimits()
+    assert DEFAULT_ARCHIVEY_CONFIG.listing_limits == ListingLimits()
+    assert ListingLimits().max_members == ExtractionLimits().max_entries == 1_048_576
 
 
 def test_open_archive_without_config_uses_defaults(tmp_path) -> None:
@@ -119,7 +125,7 @@ def test_extract_limits_from_config(tmp_path) -> None:
     with zipfile.ZipFile(src, "w") as z:
         z.writestr("a.txt", b"x" * 5000)
     dest = tmp_path / "out"
-    with pytest.raises(ExtractionError):
+    with pytest.raises(ResourceLimitError):
         extract(
             src,
             dest,
@@ -157,8 +163,10 @@ def test_public_api_exports_config_types() -> None:
     for name in (
         "ArchiveyConfig",
         "ExtractionLimits",
+        "ListingLimits",
         "AcceleratorMode",
         "DEFAULT_ARCHIVEY_CONFIG",
+        "ResourceLimitError",
     ):
         assert name in archivey.__all__
         assert hasattr(archivey, name)

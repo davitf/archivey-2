@@ -29,6 +29,7 @@ from archivey import (
 from archivey.exceptions import (
     ExtractionError,
     PathTraversalError,
+    ResourceLimitError,
     SpecialFileError,
     SymlinkEscapeError,
 )
@@ -36,6 +37,7 @@ from archivey.internal.extraction import (
     BombTracker,
     ExtractionCoordinator,
     _AlwaysStopExtractionError,
+    _AlwaysStopResourceLimitError,
 )
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
@@ -302,16 +304,17 @@ def test_cumulative_byte_limit() -> None:
     t = BombTracker(max_bytes=100, max_ratio=1e9)
     t.start_member(_member("f"))
     t.count(60)
-    with pytest.raises(_AlwaysStopExtractionError):
+    with pytest.raises(_AlwaysStopResourceLimitError):
         t.count(50)  # crosses 100
 
 
 def test_per_member_ratio() -> None:
     t = BombTracker(max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=10)
     t.start_member(_member("f").replace(compressed_size=1))
-    with pytest.raises(ExtractionError) as ei:
+    with pytest.raises(ResourceLimitError) as ei:
         t.count(20)  # member_bytes 20 > floor 10, ratio 20:1 > 2
-    assert not isinstance(ei.value, _AlwaysStopExtractionError)  # skippable
+    assert not isinstance(ei.value, _AlwaysStopResourceLimitError)  # skippable
+    assert not isinstance(ei.value, ExtractionError)
 
 
 def test_ratio_activation_threshold_false_positive_guard() -> None:
@@ -331,7 +334,7 @@ def test_archive_wide_ratio() -> None:
         ),
     )
     t.start_member(_member("f"))  # no per-member compressed_size
-    with pytest.raises(_AlwaysStopExtractionError):
+    with pytest.raises(_AlwaysStopResourceLimitError):
         t.count(30)  # total 30 > floor 10, 30/10 = 3 > 2
 
 
@@ -347,7 +350,7 @@ def test_archive_wide_ratio_live_denominator() -> None:
         ),
     )
     t.start_member(_member("f"))
-    with pytest.raises(_AlwaysStopExtractionError):
+    with pytest.raises(_AlwaysStopResourceLimitError):
         t.count(30)  # total 30 > floor 10, live 30/10 = 3 > 2
 
 
@@ -361,15 +364,18 @@ def test_max_entries_guard() -> None:
     t = BombTracker(max_bytes=10**12, max_ratio=1e9, max_entries=2)
     t.start_member(_member("a"))
     t.start_member(_member("b"))
-    with pytest.raises(_AlwaysStopExtractionError):
+    with pytest.raises(_AlwaysStopResourceLimitError):
         t.start_member(_member("c"))
 
 
 def test_entry_count_independent_of_bytes() -> None:
     t = BombTracker(max_bytes=10**12, max_ratio=1e9, max_entries=1)
     t.start_member(_member("a"))
-    with pytest.raises(_AlwaysStopExtractionError):
+    with pytest.raises(_AlwaysStopResourceLimitError):
         t.start_member(_member("b"))  # trips on count, not bytes
+
+    # Alias still resolves for older imports.
+    assert _AlwaysStopExtractionError is _AlwaysStopResourceLimitError
 
 
 def test_file_writer_rejects_missing_stream() -> None:
@@ -594,7 +600,7 @@ def test_replace_failure_preserves_existing_file(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.mkdir()
     (dest / "a.txt").write_bytes(b"OLD DATA")
-    with pytest.raises(ExtractionError):
+    with pytest.raises(ResourceLimitError):
         extract(
             src,
             dest,
@@ -649,7 +655,7 @@ def test_cumulative_bomb_halts_even_under_continue(tmp_path: Path) -> None:
     src = tmp_path / "big.zip"
     _write_zip(src, {"a.txt": b"x" * 5000, "b.txt": b"y" * 5000})
     dest = tmp_path / "out"
-    with pytest.raises(ExtractionError):
+    with pytest.raises(ResourceLimitError):
         extract(
             src,
             dest,
@@ -664,7 +670,7 @@ def test_zip_bomb_per_member_ratio(tmp_path: Path) -> None:
     payload = b"\x00" * (8 * 1024 * 1024)  # 8 MiB of zeros -> tiny compressed
     _write_zip(src, {"bomb.bin": payload})
     dest = tmp_path / "out"
-    with pytest.raises(ExtractionError):
+    with pytest.raises(ResourceLimitError):
         extract(
             src,
             dest,
@@ -676,7 +682,7 @@ def test_entry_count_bomb(tmp_path: Path) -> None:
     src = tmp_path / "many.zip"
     _write_zip(src, {f"f{i}.txt": b"" for i in range(50)})
     dest = tmp_path / "out"
-    with pytest.raises(ExtractionError):
+    with pytest.raises(ResourceLimitError):
         extract(
             src,
             dest,
@@ -1038,7 +1044,7 @@ def test_seekable_targz_archive_wide_ratio(tmp_path: Path) -> None:
     payload = b"\x00" * (4 * 1024 * 1024)
     src.write_bytes(_tar_bytes([("file", "z.bin", payload)], mode="w:gz"))
     dest = tmp_path / "out"
-    with pytest.raises(ExtractionError):
+    with pytest.raises(ResourceLimitError):
         extract(
             src,
             dest,
@@ -1129,7 +1135,7 @@ def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
         assert r.compressed_source_size is None  # no static archive-wide denominator
-        with pytest.raises(ExtractionError):
+        with pytest.raises(ResourceLimitError):
             r.extract_all(
                 dest,
                 limits=ExtractionLimits(
@@ -1147,7 +1153,7 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ExtractionError):
+        with pytest.raises(ResourceLimitError):
             r.extract_all(
                 dest,
                 limits=ExtractionLimits(
@@ -1197,7 +1203,7 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
         assert (
             r.compressed_bytes_consumed is not None
         )  # counter wired for single-file too
-        with pytest.raises(ExtractionError):
+        with pytest.raises(ResourceLimitError):
             r.extract_all(
                 dest,
                 limits=ExtractionLimits(
@@ -1402,7 +1408,7 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
         assert (
             r.compressed_bytes_consumed is not None
         )  # ...so the live counter is wired
-        with pytest.raises(ExtractionError):
+        with pytest.raises(ResourceLimitError):
             r.extract_all(
                 dest,
                 limits=ExtractionLimits(

@@ -69,6 +69,27 @@ ExtractionLimits.UNLIMITED = ExtractionLimits(
 
 
 @dataclass(frozen=True)
+class ListingLimits:
+    """Caps for materializing a member list (``members`` / ``scan_members`` / extract prep).
+
+    Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
+    ``stream_members`` / forward-only iteration do not enforce these caps.
+    """
+
+    max_members: int | None = 1_048_576
+    max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
+
+    UNLIMITED: ClassVar[ListingLimits]
+
+
+ListingLimits.UNLIMITED = ListingLimits(
+    max_members=None,
+    max_metadata_bytes=None,
+)
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed explicitly as ``config=`` to :func:`open_archive` / :func:`extract`.
 
@@ -80,6 +101,7 @@ class ArchiveyConfig:
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     strict_archive_eof: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
+    listing_limits: ListingLimits = ListingLimits()
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
     max_retained_diagnostic_references: int = 256
     on_diagnostic: OnDiagnostic | None = None
