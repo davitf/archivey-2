@@ -267,7 +267,7 @@ minority of inputs (or a small dedicated budget) SHALL retain broken CRCs so
 the reject path stays exercised.
 
 The default main-branch run SHALL partition a wall-clock budget of approximately
-120 seconds across these targets (exact seconds MAY be env-overridable):
+150 seconds across these targets (exact seconds MAY be env-overridable):
 
 | Target | Role |
 | --- | --- |
@@ -276,7 +276,8 @@ The default main-branch run SHALL partition a wall-clock budget of approximately
 | `detect_format` over arbitrary/prefix seeds | Magic/peek-replay entry point |
 | ZIP and TAR `open_archive` + member list | Shallow wrapper/translation coverage |
 | ISO `open_archive` + member list | Shallow; MUST use a hard wall-clock kill timeout |
-| RAR metadata parse (+ open/list when registered) | Scaffold now; skip cleanly until the backend is available |
+| Native RAR header parse | Deep coverage of the pure-Python RAR3/RAR5 metadata parser (CRC mutate-then-fixup) |
+| RAR `open_archive` + member list | Reader/spine path after parse; skip cleanly if the backend is unavailable |
 
 Full member **extract** is out of scope for this harness (covered by the
 mutation harness). Stream/codec-only targets MAY be added later without removing
@@ -296,12 +297,12 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 
 | Case | Expected |
 | --- | --- |
-| Push to `main` | Fuzz workflow runs partitioned ~120s budget; green if no crash/hang/raw exception |
+| Push to `main` | Fuzz workflow runs partitioned ~150s budget; green if no crash/hang/raw exception |
 | `workflow_dispatch` with longer env budget | Same targets; extended exploration |
 | Pull request (default matrix) | Atheris job not required |
-| RAR backend absent | RAR target skipped; other targets still run |
+| RAR backend absent | RAR targets skipped; other targets still run |
 | Fuzzer finds a crashing input | Job fails; repro bytes uploaded; re-run command printed |
-| 7z header target with fixup enabled | Most iterations present a matching header CRC and enter post-CRC parse |
+| 7z / RAR header target with fixup enabled | Most iterations present a matching header CRC and enter post-CRC parse |
 | Broken-CRC sample / minority path | Typed CRC/corruption failure; reject path still hit |
 | Mutation harness / `ARCHIVEY_FUZZ` | Still available and unchanged in role |
 

@@ -89,10 +89,39 @@ def iso_seeds() -> list[bytes]:
         return tiny + _corpus_seeds("iso", Path(tmp)) + _adversarial_seeds(".iso")
 
 
+def rar_seeds() -> list[bytes]:
+    """Tiny magics + on-disk RAR fixtures (RAR3/RAR5, solid, links, volumes, …)."""
+    from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID
+
+    tiny = [
+        b"",
+        RAR_ID,
+        RAR5_ID,
+        b"not rar",
+        RAR_ID + b"\x00" * 32,
+        RAR5_ID + b"\xff" * 64,
+        # SFX-shaped: garbage prefix then magic (parser scans up to SFX_MAX).
+        b"MZ" + b"\x00" * 64 + RAR5_ID + b"\x00" * 16,
+    ]
+    fixture_dir = _REPO_ROOT / "tests" / "fixtures" / "rar"
+    fixtures: list[bytes] = []
+    if fixture_dir.is_dir():
+        for path in sorted(fixture_dir.glob("*.rar")):
+            # Skip volume continuation alone — needs part1 as first volume.
+            if path.name.endswith(".part2.rar") or ".part2." in path.name:
+                continue
+            # Header-encrypted archives need a password; still useful as reject-path seeds.
+            try:
+                fixtures.append(path.read_bytes())
+            except OSError:
+                continue
+    return tiny + fixtures + _adversarial_seeds(".rar")
+
+
 def detect_format_seeds() -> list[bytes]:
     """Mixed prefixes for ``detect_format`` — prefer short heads of real archives."""
     seeds: list[bytes] = [b"", b"\x00" * 16, b"PK", b"7z", b"Rar!", b"ustar"]
-    for builder in (sevenzip_seeds, zip_seeds, tar_seeds, iso_seeds):
+    for builder in (sevenzip_seeds, zip_seeds, tar_seeds, iso_seeds, rar_seeds):
         try:
             for blob in builder():
                 seeds.append(blob[: min(len(blob), 512)])
@@ -109,11 +138,6 @@ def detect_format_seeds() -> list[bytes]:
         seen.add(s)
         out.append(s)
     return out
-
-
-def rar_seeds() -> list[bytes]:
-    # No native RAR backend yet; keep tiny magic-shaped seeds for when it registers.
-    return [b"", b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00", b"not rar"]
 
 
 def write_seed_corpus(directory: Path, seeds: list[bytes]) -> int:

@@ -16,6 +16,7 @@ from archivey import (
     format_availability,
     open_archive,
 )
+from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.internal.backends.sevenzip_parser import (
     SevenZipFolder,
     parse_sevenzip_archive,
@@ -24,6 +25,7 @@ from archivey.internal.backends.sevenzip_reader import decode_folder_to_bytes
 from archivey.internal.registry import FormatSupport
 from archivey.internal.streams.crypto import SevenZipKeyCache
 from tests.atheris_fuzz.crc_fixup import (
+    fixup_rar_header_crcs,
     fixup_sevenzip_header_crcs,
     fixup_zip_local_and_cd_crc,
 )
@@ -138,8 +140,14 @@ def rar_available() -> bool:
     return availability.support is not FormatSupport.NONE
 
 
+def rar_header_one(data: bytes) -> None:
+    try:
+        parse_rar_archive(io.BytesIO(data))
+    except ArchiveyError:
+        return
+
+
 def rar_open_one(data: bytes) -> None:
-    # When enabled: apply RAR header CRC fixup here (same mutate-then-fixup pattern as 7z).
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.RAR, config=_FUZZ_CONFIG
@@ -202,10 +210,18 @@ def iter_target_specs() -> list[dict]:
             "per_input_timeout": iso_per_input_timeout(),
         },
         {
+            "name": "rar_header",
+            "fn": rar_header_one,
+            "seeds": rar_seeds,
+            "fixup": fixup_rar_header_crcs,
+            "per_input_timeout": None,
+            "skip_unless": rar_available,
+        },
+        {
             "name": "rar",
             "fn": rar_open_one,
             "seeds": rar_seeds,
-            "fixup": None,  # plan CRC/header fixup when enabling
+            "fixup": fixup_rar_header_crcs,
             "per_input_timeout": None,
             "skip_unless": rar_available,
         },

@@ -17,7 +17,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends import rar_unrar
-from archivey.internal.backends.rar_parser import RAR_ID, parse_rar_archive
+from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID, parse_rar_archive
 from archivey.types import MemberType
 from tests.conftest import requires, requires_binary
 
@@ -271,6 +271,33 @@ def test_extract_version_20_payload_accepted() -> None:
     assert member.extract_version == 20
     assert member.file_size == 2
     assert member.compress_size == 2
+
+
+def test_rar5_hostile_packed_size_is_corruption() -> None:
+    """Atheris: huge RAR5 vint add_size must not raise raw OverflowError on seek."""
+    import zlib
+
+    def vint(n: int) -> bytes:
+        out = bytearray()
+        while True:
+            b = n & 0x7F
+            n >>= 7
+            if n:
+                out.append(b | 0x80)
+            else:
+                out.append(b)
+                return bytes(out)
+
+    def block(body: bytes) -> bytes:
+        header_wo_crc = vint(len(body)) + body
+        crc = zlib.crc32(header_wo_crc) & 0xFFFFFFFF
+        return struct.pack("<I", crc) + header_wo_crc
+
+    main = block(vint(1) + vint(0) + vint(0))  # MAIN, no flags, main_flags=0
+    hostile = block(vint(99) + vint(0x02) + vint(1 << 70))  # unknown + DATA + huge
+    blob = RAR5_ID + main + hostile
+    with pytest.raises(CorruptionError, match="seekable range|packed size"):
+        parse_rar_archive(io.BytesIO(blob))
 
 
 def test_non_rarlab_unrar_rejected(

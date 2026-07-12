@@ -44,6 +44,8 @@ SFX_MAX = 2 * 1024 * 1024
 _RAR_MAX_PASSWORD = 127
 _RAR_MAX_KDF_SHIFT = 24
 _RAR5_MAX_HEADER = 2 * 1024 * 1024
+# BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
+_MAX_SEEK = (1 << 63) - 1
 
 # RAR3 block types
 _RAR3_MARK = 0x72
@@ -387,10 +389,33 @@ def _crc32(data: bytes | memoryview) -> int:
 
 
 def _require_exact(stream: BinaryIO, n: int, what: str) -> bytes:
-    data = read_exact(stream, n)
+    if n < 0 or n > _MAX_SEEK:
+        raise CorruptionError(f"Invalid {what} length: {n}")
+    try:
+        data = read_exact(stream, n)
+    except OverflowError as exc:
+        raise CorruptionError(f"Invalid {what} length: {n}") from exc
     if len(data) != n:
         raise CorruptionError(f"Unexpected EOF while reading {what}")
     return data
+
+
+def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> None:
+    """Skip past a packed-data region, translating hostile sizes to CorruptionError."""
+    if data_offset < 0 or add_size < 0:
+        raise CorruptionError(
+            f"Invalid RAR packed-data span: offset={data_offset}, size={add_size}"
+        )
+    if add_size > _MAX_SEEK - data_offset:
+        raise CorruptionError(
+            f"RAR packed size {add_size} at offset {data_offset} exceeds the seekable range"
+        )
+    try:
+        source.seek(data_offset + add_size)
+    except (OverflowError, OSError) as exc:
+        raise CorruptionError(
+            f"RAR packed-data seek failed at offset {data_offset}+{add_size}"
+        ) from exc
 
 
 def _load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
@@ -774,7 +799,7 @@ def _parse_rar3(
             add_size = 0
 
         if block_type == _RAR3_MARK:
-            source.seek(data_offset + add_size)
+            _seek_after_packed(source, data_offset, add_size)
             continue
 
         if block_type == _RAR3_MAIN:
@@ -799,7 +824,7 @@ def _parse_rar3(
                 raise CorruptionError(
                     f"RAR3 MAIN header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
                 )
-            source.seek(data_offset + add_size)
+            _seek_after_packed(source, data_offset, add_size)
             continue
 
         if block_type == _RAR3_ENDARC:
@@ -862,11 +887,11 @@ def _parse_rar3(
                 else:
                     comment = cmt
 
-            source.seek(data_offset + add_size)
+            _seek_after_packed(source, data_offset, add_size)
             continue
 
         # Unknown / skippable block
-        source.seek(data_offset + add_size)
+        _seek_after_packed(source, data_offset, add_size)
 
     return RarArchive(
         version=4,
@@ -1133,7 +1158,7 @@ def _parse_rar5(
                 )
             is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
             is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
-            source.seek(data_offset + add_size)
+            _seek_after_packed(source, data_offset, add_size)
             continue
 
         if block_type == _RAR5_ENCRYPTION:
@@ -1162,7 +1187,7 @@ def _parse_rar5(
                 raise EncryptionError(
                     "RAR archive has encrypted headers but no password was provided"
                 )
-            source.seek(data_offset + add_size)
+            _seek_after_packed(source, data_offset, add_size)
             continue
 
         if block_type == _RAR5_ENDARC:
@@ -1204,11 +1229,11 @@ def _parse_rar5(
                 source.seek(data_offset)
                 raw = _require_exact(source, member.file_size, "RAR5 comment")
                 comment = raw.split(b"\0", 1)[0].decode("utf8", "replace")
-            source.seek(data_offset + add_size)
+            _seek_after_packed(source, data_offset, add_size)
             continue
 
         # Unknown block — skip data area.
-        source.seek(data_offset + add_size)
+        _seek_after_packed(source, data_offset, add_size)
 
     return RarArchive(
         version=5,
