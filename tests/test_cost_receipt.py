@@ -81,7 +81,12 @@ _CASES: dict[str, tuple[Callable[[Path], Path], CostReceipt]] = {
     ),
     "directory": (
         _directory,
-        CostReceipt(ListingCost.INDEXED, AccessCost.DIRECT, StreamCapability.SEEKABLE),
+        # A directory walk is a scan, not an O(1) index (review C3 / format-directory spec).
+        CostReceipt(
+            ListingCost.REQUIRES_SCANNING,
+            AccessCost.DIRECT,
+            StreamCapability.SEEKABLE,
+        ),
     ),
     "tar": (
         _tar_writer("w", ".tar"),

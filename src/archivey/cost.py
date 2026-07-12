@@ -16,7 +16,10 @@ class ListingCost(Enum):
     """How expensive it is to *enumerate* all members (list names + metadata)."""
 
     INDEXED = "indexed"
-    """An index / central directory is present; listing is O(1) regardless of archive size."""
+    """An index / central directory is present (ZIP central directory, 7z header, ISO
+    directory tree parsed at open); members can be enumerated without scanning header-to-header
+    or decompressing payload. A filesystem directory is NOT indexed — its walk is a scan
+    (`REQUIRES_SCANNING`)."""
 
     REQUIRES_SCANNING = "requires_scanning"
     """No index, but members can be enumerated by seeking/scanning header-to-header
