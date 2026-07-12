@@ -122,8 +122,9 @@ def open_archive(
     (``ArchiveyUsageError``): a forward-only pass cannot fan out.
 
     ``config`` supplies library tuning knobs (accelerator modes, TAR end-of-archive
-    strictness via ``strict_archive_eof``, default extraction limits). ``None`` selects
-    the module default :data:`~archivey.DEFAULT_ARCHIVEY_CONFIG`.
+    strictness via ``strict_archive_eof``, default extraction limits, and listing
+    resource limits via ``listing_limits``). ``None`` selects the module default
+    :data:`~archivey.DEFAULT_ARCHIVEY_CONFIG`.
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
