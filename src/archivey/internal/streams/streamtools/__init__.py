@@ -27,7 +27,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_byte_size,
     source_name,
 )
-from archivey.internal.streams.streamtools.locked import LockedStream
+from archivey.internal.streams.streamtools.locked import CloseLockedStream, LockedStream
 from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import (
     SlicingStream,
@@ -36,6 +36,7 @@ from archivey.internal.streams.streamtools.slice import (
 
 __all__ = [
     "BinaryIOWrapper",
+    "CloseLockedStream",
     "DelegatingStream",
     "LockedStream",
     "ReadOnlyIOStream",

@@ -1059,7 +1059,10 @@ A failed build discards private state and returns to `UNMATERIALIZED`.
 
 **Backend compliance.** Archivey-owned byte-range backends MUST use views with per-view
 positions and atomic shared-source handle operations. External-library backends MUST provide
-equivalent coordination: ZIP MAY rely on stdlib `_SharedFile`; random-access TAR and ISO MUST
+equivalent coordination: ZIP MAY rely on stdlib `_SharedFile` for seek/read and MUST
+serialize `ZipFile.open` / member-stream close / `ZipFile.close` under
+`MemberStreams.CONCURRENT` so free-threaded `_fileRefCnt` updates cannot race;
+random-access TAR and ISO MUST
 use the one-per-reader lock specified by `tar-concurrent-open`, covering every operation on
 the shared library handle. A solid format satisfies correctness by giving each returned
 stream independent logical position/state. It MAY use per-open decoders or a synchronized,

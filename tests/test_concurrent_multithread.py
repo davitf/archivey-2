@@ -93,9 +93,19 @@ def test_multithread_directory_open_read(tmp_path: Path) -> None:
 
 
 @pytest.mark.concurrent_reader
-def test_multithread_zip_open_read(tmp_path: Path) -> None:
-    path = _make_zip(tmp_path / "a.zip")
-    assert _fan_out_read(path) == _expected()
+def test_multithread_zip_open_close_refcnt_stress(tmp_path: Path) -> None:
+    """Stress concurrent ZIP member open/close under free-threading.
+
+    Stdlib ``zipfile`` updates ``_fileRefCnt`` without a lock on open/close; under
+    CPython ``3.13t`` that races and asserts in ``_fpclose``. Repeat fan-out enough
+    times to make the failure reliable before the ZIP handle lock fix.
+    """
+    path = _make_zip(tmp_path / "a.zip", n=16)
+    expected = _expected(16)
+    # Enough trials that an unlocked free-threaded run fails consistently; a correct
+    # lock keeps every trial green.
+    for _ in range(40):
+        assert _fan_out_read(path) == expected
 
 
 @pytest.mark.concurrent_reader
