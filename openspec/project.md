@@ -21,16 +21,15 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 ## OpenSpec authoring
 
 Default change schema is **`library`** (`openspec/config.yaml`): proposal →
-compact specs → tasks. Use `--schema spec-driven` when a change needs
-`design.md` before tasks; `--schema minimalist` for tiny deltas that skip the
-proposal.
+compact specs + design → tasks. Use `--schema minimalist` for tiny deltas that
+skip proposal/design.
 
-Specs keep OpenSpec’s structural headers (`### Requirement:` / `#### Scenario:`)
-so `openspec validate` works, but bodies should stay dense:
-
-- Prefer Python signatures and markdown matrices over WHEN/THEN scenario farms
-- Do not restate what type hints already declare; no user stories
-- One scenario per behavioral axis; related cases go in a table inside it
+- **Specs** keep OpenSpec’s structural headers (`### Requirement:` /
+  `#### Scenario:`) so `openspec validate` works, but bodies stay dense:
+  signatures + matrices, no user stories, one scenario per behavioral axis.
+- **design.md** is where hard technical work lives (investigations, rejected
+  alternatives, module layout). Full design for parsers/codecs/concurrency/
+  safety; a short stub is enough for trivial deltas.
 
 See `openspec/schemas/library/README.md` and the `rules:` / `context:` blocks in
 `openspec/config.yaml`.

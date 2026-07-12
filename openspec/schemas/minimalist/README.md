@@ -26,9 +26,9 @@ openspec new change <name> --schema minimalist
 
 | Schema | Fit |
 | --- | --- |
-| `library` (default) | Normal changes — proposal + compact specs + tasks |
-| `minimalist` | Trivial deltas where a proposal is overhead |
-| `spec-driven` | Needs a full `design.md` before tasks |
+| `library` (default) | Normal/hard changes — proposal + compact specs + design + tasks |
+| `minimalist` | Trivial deltas where proposal and design are overhead |
+| `spec-driven` | Stock wording; same four-artifact shape as `library` |
 
 ## Spec format
 

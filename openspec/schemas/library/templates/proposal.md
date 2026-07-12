@@ -16,4 +16,4 @@
 
 ## Impact
 
-<!-- Modules, public API, extras/deps, tests -->
+<!-- Modules, public API, extras/deps, tests. HOW details go in design.md. -->

@@ -46,11 +46,10 @@ openspec validate --all       # validate all specs and changes
 openspec validate --strict <item-name>
 ```
 
-Default change schema is **`library`** (proposal → compact specs → tasks). Use
-`--schema spec-driven` when a change needs `design.md`; `--schema minimalist` for
-tiny deltas. Specs keep `### Requirement:` / `#### Scenario:` headers for
-`openspec validate`, but prefer signatures + matrices over WHEN/THEN farms — see
-`openspec/schemas/library/README.md` and `openspec/config.yaml`.
+Default change schema is **`library`** (proposal → compact specs + design →
+tasks). Specs stay dense (signatures/matrices); `design.md` holds investigations
+and decisions (stub OK for trivial deltas). Use `--schema minimalist` for tiny
+changes. See `openspec/schemas/library/README.md` and `openspec/config.yaml`.
 
 ## Reference repository: `archivey-dev`
 
