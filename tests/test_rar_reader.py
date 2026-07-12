@@ -311,6 +311,46 @@ def test_rar5_out_of_range_windowstime_is_tolerated() -> None:
     assert pos == 8
 
 
+def test_rar_reader_masks_hostile_unix_mode() -> None:
+    """Atheris: huge RAR5 mode vint must not OverflowError in ``stat.S_IMODE``."""
+    from archivey.internal.backends.rar_parser import RarMemberInfo
+    from archivey.internal.backends.rar_reader import RarReader
+
+    info = RarMemberInfo(
+        filename="a.txt",
+        orig_filename=b"a.txt",
+        file_size=0,
+        compress_size=0,
+        compress_type=0x30,
+        crc32=None,
+        blake2sp_hash=None,
+        mtime=None,
+        mode=(1 << 80) | 0o100644,
+        host_os=3,
+        flags=0,
+        file_redir=None,
+        file_encryption=None,
+        header_offset=0,
+        header_size=0,
+        data_offset=0,
+        extract_version=50,
+        file_solid=False,
+        is_directory=False,
+        is_symlink=False,
+        is_hardlink_or_copy=False,
+        is_encrypted=False,
+        volume_index=0,
+        split_before=False,
+        split_after=False,
+    )
+    # Build a reader without opening a real archive — call the mapper directly.
+    reader = object.__new__(RarReader)
+    reader._diagnostics_collector = None
+    reader._archive_name = "<test>"
+    member = RarReader._to_member(reader, info)
+    assert member.mode == 0o0644
+
+
 def test_non_rarlab_unrar_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
