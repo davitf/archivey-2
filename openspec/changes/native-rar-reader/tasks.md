@@ -8,13 +8,13 @@
 
 ## 2. unrar helper + reader backend
 
-- [ ] 2.1 Add RARLAB `unrar` locator/identifier; missing or non-RARLAB → `PackageNotInstalledError`; no tool fallbacks
-- [ ] 2.2 Implement `RarReader` / `RarReadBackend`: `_MEMBER_LIST_UPFRONT`, `_SUPPORTS_RANDOM_ACCESS`, `SUPPORTS_PASSWORD`, seek required; register format
-- [ ] 2.3 `_iter_members` → `ArchiveMember` mapping; resolve `link_target` when possible (RAR5 `file_redir`; RAR4 stored direct); hardlink/`FILE_COPY` → `HARDLINK`
-- [ ] 2.4 Solid `_iter_with_data`: one unnamed `unrar p -inul`; `SolidBlockReader` over payload FILE sizes only; verify CRC32/Blake2sp via shared stage
-- [ ] 2.5 `_open_member`: stored M0 direct read when possible; else single-name `unrar p … <member>`; solid random MAY use declared `unrar x` tempdir cleaned on close
-- [ ] 2.6 Nonsolid sequential: default lazy `_iter_with_data` (per-member named open); never ALL-pipe demux on mixed-password archives
-- [ ] 2.7 `ArchiveInfo` / `CostReceipt`: `is_solid`, `solid_block_count=None`, encryption, version, comment; fix stale multi-volume “Phase 7” stub in `core.py`
+- [x] 2.1 Add RARLAB `unrar` locator/identifier; missing or non-RARLAB → `PackageNotInstalledError`; no tool fallbacks
+- [x] 2.2 Implement `RarReader` / `RarReadBackend`: `_MEMBER_LIST_UPFRONT`, `_SUPPORTS_RANDOM_ACCESS`, `SUPPORTS_PASSWORD`, seek required; register format
+- [x] 2.3 `_iter_members` → `ArchiveMember` mapping; resolve `link_target` when possible (RAR5 `file_redir`; RAR4 stored direct); hardlink/`FILE_COPY` → `HARDLINK`
+- [x] 2.4 Solid `_iter_with_data`: one unnamed `unrar p -inul`; `SolidBlockReader` over payload FILE sizes only; verify CRC32/Blake2sp via shared stage
+- [x] 2.5 `_open_member`: stored M0 direct read when possible; else single-name `unrar p … <member>`; solid random MAY use declared `unrar x` tempdir cleaned on close
+- [x] 2.6 Nonsolid sequential: default lazy `_iter_with_data` (per-member named open); never ALL-pipe demux on mixed-password archives
+- [x] 2.7 `ArchiveInfo` / `CostReceipt`: `is_solid`, `solid_block_count=None`, encryption, version, comment; fix stale multi-volume “Phase 7” stub in `core.py`
 
 ## 3. Volumes + packaging docs
 
