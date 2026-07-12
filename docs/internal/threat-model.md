@@ -56,17 +56,19 @@
 
 ## OPEN gaps — security
 
-### O1. Listing-time resource exhaustion (metadata bombs)
+### O1. Listing-time resource exhaustion (metadata bombs) — mitigated
 
-`max_entries` and the byte/ratio guards protect **extraction only**. `members()` /
-`scan_members()` will happily materialize whatever the header claims: a small ZIP can
-carry hundreds of thousands of central-directory entries (or enormous
-comments/PAX blobs), costing gigabytes of `ArchiveMember` objects at *listing* time —
-before any extraction guard runs. `read()` is likewise documented as unbounded.
+`ListingLimits` on `ArchiveyConfig` (`max_members`, `max_metadata_bytes`) are enforced
+when members are registered into a materialized / resolved list (`members()`,
+`scan_members()`, extract-prep materialization). Crossing a cap raises
+`ResourceLimitError`. Defaults match extract `max_entries` on the count side
+(`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
+`stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
+hatch). Format-local parser bounds (e.g. 7z `num_files` vs header size →
+`CorruptionError`) stay as defense-in-depth.
 
-*Direction:* listing guards in `ArchiveyConfig` (max member count, max total metadata
-bytes) enforced in `_get_members_registered`/the progressive pass; keep iteration
-(`stream_members`) as the unguarded-by-design escape hatch since it is O(1) in members.
+`read()` / `open()` stream sizes remain unbounded (follow-on); prefer chunked
+reads for untrusted member payloads.
 
 ### O2. Case-insensitivity and Unicode-normalization collisions at extraction
 

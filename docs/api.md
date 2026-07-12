@@ -52,6 +52,7 @@ spec for lifecycle, retention, and policy.
 
 ::: archivey.ArchiveyConfig
 ::: archivey.ExtractionLimits
+::: archivey.ListingLimits
 ::: archivey.AcceleratorMode
 
 ## Access cost
@@ -64,4 +65,5 @@ spec for lifecycle, retention, and policy.
 ## Errors
 
 ::: archivey.ArchiveyError
+::: archivey.ResourceLimitError
 ::: archivey.DiagnosticRaisedError

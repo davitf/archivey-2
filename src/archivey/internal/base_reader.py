@@ -34,6 +34,7 @@ from archivey.internal.extraction_types import (
     OnError,
     OverwritePolicy,
 )
+from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.naming import (
     _warn_for_bidirectional_controls,
     resolve_link_target_name,
@@ -240,6 +241,7 @@ class BaseArchiveReader(ArchiveReader):
         self._compressed_input_counter: CountingReader | None = None
         self._members_cache: list[ArchiveMember] | None = None
         self._members_by_name_lists: dict[str, list[ArchiveMember]] | None = None
+        self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._pass_scanned: list[ArchiveMember] = []
@@ -355,7 +357,7 @@ class BaseArchiveReader(ArchiveReader):
         members = (
             self._begin_forward_pass()
             if self._streaming
-            else self._get_members_registered()
+            else self._get_members_registered(enforce_listing_limits=False)
         )
         previous: ArchiveStream | None = None
         for member in members:
@@ -471,26 +473,42 @@ class BaseArchiveReader(ArchiveReader):
     @abstractmethod
     def _close_archive(self) -> None: ...
 
-    def _get_members_registered(self) -> list[ArchiveMember]:
+    def _get_members_registered(
+        self, *, enforce_listing_limits: bool = True
+    ) -> list[ArchiveMember]:
         """Get all members, assigning member_id and resolving links.
 
         Under ``MemberStreams.CONCURRENT``, overlapping first-touch callers block until
         one owner publishes the snapshot (or a failed attempt returns to unmaterialized
         and another caller re-elects). Heavy work runs outside the reader-state lock.
+
+        When ``enforce_listing_limits`` is true (``members`` / ``scan_members`` / ``get`` /
+        extract-prep materialization), :class:`~archivey.config.ListingLimits` are checked
+        as members are registered and before the cache is published. ``stream_members``
+        passes false so iteration remains the unguarded escape hatch; a later materializing
+        API still re-checks the accumulated totals.
         """
         if self._members_cache is not None:
+            if enforce_listing_limits:
+                self._listing_tracker.assert_within_limits()
             return self._members_cache
 
         if not self._state.begin_materialization():
             # Another thread published while we waited (or cache was already ready).
             assert self._members_cache is not None
+            if enforce_listing_limits:
+                self._listing_tracker.assert_within_limits()
             return self._members_cache
 
         try:
+            self._listing_tracker.reset()
+            self._account_archive_comment(enforce=enforce_listing_limits)
             members = list(self._iter_members())
             by_name_lists: dict[str, list[ArchiveMember]] = {}
             for idx, member in enumerate(members):
-                self._register_member(idx, member)
+                self._register_member(
+                    idx, member, enforce_listing_limits=enforce_listing_limits
+                )
                 self._index_member_name(by_name_lists, member)
             # Link-data reads are a private child scope under an active root when one
             # exists; otherwise they only need the live-stream gate exemption.
@@ -524,24 +542,38 @@ class BaseArchiveReader(ArchiveReader):
             # CONCURRENT waiter blocks on the CV with no owner left to notify it. We reset
             # the election state and re-raise so the interrupt still propagates unchanged.
             # (mark_reader_closed's drain path handles BaseException the same way.)
+            self._listing_tracker.reset()
             self._state.fail_materialization()
             raise
         return members
 
     def _get_members_index_only(self) -> list[ArchiveMember]:
         """Index-only member list: stamp ids, no link resolution, no member-data reads."""
+        self._listing_tracker.reset()
+        self._account_archive_comment(enforce=True)
         members = list(self._iter_members())
         for idx, member in enumerate(members):
-            self._register_member(idx, member)
+            self._register_member(idx, member, enforce_listing_limits=True)
         return members
 
-    def _register_member(self, idx: int, member: ArchiveMember) -> None:
+    def _account_archive_comment(self, *, enforce: bool) -> None:
+        comment = self._get_archive_info().comment
+        self._listing_tracker.account_archive_comment(comment, enforce=enforce)
+
+    def _register_member(
+        self,
+        idx: int,
+        member: ArchiveMember,
+        *,
+        enforce_listing_limits: bool = False,
+    ) -> None:
         """Assign identity and run backend-independent presentation checks once."""
         if member._member_id is not None:
             return
         member._member_id = idx
         member._archive_id = self._archive_id
         _warn_for_bidirectional_controls(member.name)
+        self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         """Populate ``link_target`` from member data when needed. Base is a no-op."""
@@ -703,7 +735,8 @@ class BaseArchiveReader(ArchiveReader):
         self._members_by_name_lists = self._pass_by_name_lists
 
     def _stamp_progressive_member(self, idx: int, member: ArchiveMember) -> None:
-        self._register_member(idx, member)
+        # Progressive / stream_members path: account without enforcing (O(1) escape hatch).
+        self._register_member(idx, member, enforce_listing_limits=False)
         if member.is_link and member.link_target_member is None:
             target = self._lookup_link_target_for_member(
                 member,
@@ -723,6 +756,8 @@ class BaseArchiveReader(ArchiveReader):
         if self._progressive_gen is None:
             self._pass_scanned = []
             self._pass_by_name_lists = {}
+            self._listing_tracker.reset()
+            self._account_archive_comment(enforce=False)
             self._progressive_gen = _ProgressivePassIterator(self)
         return self._progressive_gen
 
@@ -881,6 +916,7 @@ class BaseArchiveReader(ArchiveReader):
             if not self._streaming:
                 return list(self._get_members_registered())
             if self._members_cache is not None:
+                self._listing_tracker.assert_within_limits()
                 return list(self._members_cache)
             if not self._forward_pass_started:
                 self._forward_pass_started = True
@@ -888,6 +924,7 @@ class BaseArchiveReader(ArchiveReader):
             for _ in gen:
                 pass
             assert self._members_cache is not None
+            self._listing_tracker.assert_within_limits()
             return list(self._members_cache)
         finally:
             self._state.release_pass(token)
@@ -904,6 +941,7 @@ class BaseArchiveReader(ArchiveReader):
         """
         self._state.require_open("get_members_if_available()")
         if self._members_cache is not None:
+            self._listing_tracker.assert_within_limits()
             return list(self._members_cache)
         if self._MEMBER_LIST_UPFRONT:
             return list(self._get_members_index_only())
@@ -1085,6 +1123,9 @@ class BaseArchiveReader(ArchiveReader):
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator
 
+        # Listing limits stay on the open-time reader config for the reader lifetime;
+        # a per-call config may override extraction_limits / policy / accelerators but
+        # must not replace self._config.listing_limits (see archive-reading).
         effective_config = config if config is not None else self._config
         effective_limits = (
             limits if limits is not None else effective_config.extraction_limits

@@ -99,6 +99,15 @@ class SpecialFileError(FilterRejectionError):
     """Device node, FIFO, socket — always rejected."""
 
 
+class ResourceLimitError(ArchiveyError):
+    """A configured listing or extraction resource limit was exceeded.
+
+    Covers :class:`~archivey.config.ListingLimits` materialization caps and
+    :class:`~archivey.config.ExtractionLimits` bomb guards. Sibling of
+    :class:`ExtractionError` (not a subclass): limit trips are not filter/path failures.
+    """
+
+
 class UnsupportedFeatureError(ArchiveyError):
     """Recognized but unhandled feature/variant/codec."""
 

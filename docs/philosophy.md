@@ -52,7 +52,7 @@ When you need more, you **declare** it. Escape hatches are explicit, not ambient
 | Seek inside a member | `member_streams=MemberStreams.SEEKABLE` |
 | Many open members / workers | `member_streams=MemberStreams.CONCURRENT` |
 | Trusted / unlimited extract | `ExtractionPolicy.TRUSTED`, `ExtractionLimits.UNLIMITED` |
-| Tune accelerators / EOF strictness | `ArchiveyConfig` |
+| Tune accelerators / EOF / listing caps | `ArchiveyConfig` (`listing_limits`, …) |
 
 ## Content-first, not extraction-first
 

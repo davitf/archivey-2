@@ -10,6 +10,7 @@ from archivey.config import (
     AcceleratorMode,
     ArchiveyConfig,
     ExtractionLimits,
+    ListingLimits,
     PasswordInput,
 )
 from archivey.diagnostics import ExtractionReport
@@ -64,6 +65,7 @@ __all__ = [
     "MissingComponent",
     "ArchiveyConfig",
     "ExtractionLimits",
+    "ListingLimits",
     "AcceleratorMode",
     "DEFAULT_ARCHIVEY_CONFIG",
     "detect_format",

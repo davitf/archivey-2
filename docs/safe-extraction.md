@@ -24,7 +24,7 @@ Full trust boundaries and open gaps: [threat model](internal/threat-model.md).
 ## Policies
 
 ```python
-from archivey import ExtractionPolicy, OverwritePolicy, OnError, ExtractionLimits
+from archivey import ExtractionPolicy, OverwritePolicy, OnError, ExtractionLimits, ListingLimits
 
 archivey.extract(
     "archive.zip",
@@ -34,6 +34,13 @@ archivey.extract(
     on_error=OnError.STOP,                # or CONTINUE
     limits=ExtractionLimits(...),         # or ExtractionLimits.UNLIMITED
 )
+
+with archivey.open_archive(
+    "huge.zip",
+    config=archivey.ArchiveyConfig(listing_limits=ListingLimits(max_members=10_000)),
+) as reader:
+    reader.members()  # ResourceLimitError if the central directory is larger
+
 ```
 
 | Policy | Intent |
@@ -50,13 +57,21 @@ with archivey.open_archive("a.zip") as reader:
 
 ## Limits
 
-Defaults (via `ExtractionLimits` / `ArchiveyConfig`) cap total extracted bytes, compression
-ratio, and entry count. Loosen per call with `limits=`, or use
-`ExtractionLimits.UNLIMITED` for trusted inputs you control.
+Defaults (via `ExtractionLimits` / `ListingLimits` on `ArchiveyConfig`) cap:
 
-Bomb guards apply during **extraction**. Listing a pathological central directory is a
-separate concern (see threat-model gap O1) — prefer progressive iteration for huge
-untrusted archives when you only need a subset of members.
+- **Extraction bombs** — total extracted bytes, compression ratio, and entry count
+  (`ExtractionLimits`). Trips raise `ResourceLimitError`.
+- **Listing materialization** — member count and retained metadata bytes
+  (`ListingLimits`) on `members()` / `scan_members()` / extract-prep materialization.
+  Trips raise `ResourceLimitError`. `stream_members()` stays unguarded by design.
+
+Loosen per call with `limits=` (extraction only), raise `listing_limits` at
+`open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /
+`ListingLimits.UNLIMITED` for trusted inputs you control.
+
+Bomb guards apply during **extraction**. Listing caps apply when a full member list is
+materialized — prefer `stream_members()` for huge untrusted archives when you only need
+a sequential subset.
 
 ## Diagnostics
 
