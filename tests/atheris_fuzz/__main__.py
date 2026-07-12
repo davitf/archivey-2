@@ -68,7 +68,7 @@ def _run_worker(args: argparse.Namespace) -> int:
     spec = loaded["specs"][args.target]
     skip_unless = spec.get("skip_unless")
     if skip_unless is not None and not skip_unless():
-        print(f"[atheris] skipping {args.target}: backend not available", flush=True)
+        print(f"[atheris] skipping {args.target}: skip_unless not met", flush=True)
         return 0
 
     if args.repro is not None:
@@ -108,12 +108,17 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
     if args.list:
-        from tests.atheris_fuzz.targets import rar_available
+        from tests.atheris_fuzz.targets import rar_available, rar_open_available
 
         for name in TARGET_NAMES:
             skip = ""
-            if name.startswith("rar") and not rar_available():
+            if name == "rar_header" and not rar_available():
                 skip = " (skipped: RAR backend not registered)"
+            elif name == "rar" and not rar_open_available():
+                if not rar_available():
+                    skip = " (skipped: RAR backend not registered)"
+                else:
+                    skip = " (skipped: RARLAB unrar not on PATH)"
             print(f"{name:20s} default={DEFAULT_BUDGETS[name]}s{skip}")
         return 0
 

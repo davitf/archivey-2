@@ -184,6 +184,17 @@ def test_multi_volume_roundtrip() -> None:
 
 
 @requires_binary("unrar")
+def test_multi_volume_rnn_roundtrip() -> None:
+    """Classic RAR4 volumes: ``name.rar`` + ``name.r00`` (``-vn`` naming)."""
+    first = _fixture("tinyvol_rnn.rar")
+    assert (_FIXTURES / "tinyvol_rnn.r00").is_file()
+    with open_archive(first) as archive:
+        assert archive.info.is_multivolume is True
+        assert archive.info.extra.get("rar.volume_count") == 2
+        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+@requires_binary("unrar")
 def test_multi_volume_stream_materialization() -> None:
     paths = [_fixture("tinyvol.part1.rar"), _FIXTURES / "tinyvol.part2.rar"]
     streams = [p.open("rb") for p in paths]

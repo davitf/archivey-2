@@ -16,7 +16,9 @@ from archivey import (
     format_availability,
     open_archive,
 )
+from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends.rar_parser import parse_rar_archive
+from archivey.internal.backends.rar_unrar import find_rarlab_unrar
 from archivey.internal.backends.sevenzip_parser import (
     SevenZipFolder,
     parse_sevenzip_archive,
@@ -140,6 +142,24 @@ def rar_available() -> bool:
     return availability.support is not FormatSupport.NONE
 
 
+def unrar_available() -> bool:
+    try:
+        find_rarlab_unrar()
+    except PackageNotInstalledError:
+        return False
+    return True
+
+
+def rar_open_available() -> bool:
+    """Open+list RAR target: backend registered and RARLAB ``unrar`` present.
+
+    Header-only fuzz does not need ``unrar``; the open target gates on it so CI
+    and local runs without RARLAB unrar skip rather than thrashing open paths
+    that are only fully meaningful with the data backend available.
+    """
+    return rar_available() and unrar_available()
+
+
 def rar_header_one(data: bytes) -> None:
     try:
         archive = parse_rar_archive(io.BytesIO(data))
@@ -227,6 +247,6 @@ def iter_target_specs() -> list[dict]:
             "seeds": rar_seeds,
             "fixup": fixup_rar_header_crcs,
             "per_input_timeout": None,
-            "skip_unless": rar_available,
+            "skip_unless": rar_open_available,
         },
     ]

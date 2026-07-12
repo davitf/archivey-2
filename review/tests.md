@@ -1,6 +1,6 @@
 # Theme 4 — Tests (scenario gaps, not line coverage)
 
-> **Post-review status (PR #73):** T2 partly addressed (BaseException-in-materialization test added). A directory get_members_if_available test was added. T1/T3/T4/T5/T6/T7 remain proposed harnesses.
+> **Post-review status (PR #73 + follow-ups):** T2 partly addressed (BaseException-in-materialization test added). A directory get_members_if_available test was added. **T5 landed** as the Atheris fuzz gate (`tests/atheris_fuzz/`, `.github/workflows/atheris-fuzz.yml` on push to `main` + `workflow_dispatch`; ~150s partitioned budget including RAR). T1/T3/T4/T6/T7 remain proposed harnesses.
 
 The suite is strong where the project decided to invest: a declarative corpus + conformance
 sweep, a corpus mutation harness (`test_mutation_fuzz.py`), Hypothesis property tests
@@ -76,13 +76,15 @@ Same shape for lzip. The mutation harness proves *never-crash*; this would prove
 under scattered seeks — the class of bug (off-by-one in `_round_up_4`, a wrong `decompressed_start`
 accumulation) that survives a forward-read-only test.
 
-## T5 — Coverage-guided fuzzing of the 7z/RAR parsers is not yet a gate (roadmap, expected)
+## T5 — Coverage-guided fuzzing of the 7z/RAR parsers — **done** (Atheris gate)
 
-`tests/fuzz_sevenzip_parser.py` + the corpus mutation harness exist, but the Atheris
-coverage-guided entry gate the roadmap names (`PLAN.md` Phase 6 entry criteria; threat-model O5)
-isn't stood up. The native 7z parser (`sevenzip_parser.py`) is pure-Python parsing of hostile
-input — the exact thing that class of fuzzing is for. Not a bug; a scheduled-work reminder that
-should land *with* the native readers, not after.
+Landed as `tests/atheris_fuzz/` + `.github/workflows/atheris-fuzz.yml` (push to
+`main` + `workflow_dispatch`). Partitioned libFuzzer budgets cover 7z headers
+(deep), 7z open+members, `detect_format`, ZIP/TAR/ISO shallow, and RAR
+(`rar_header` always when the backend is registered; `rar` open+list also requires
+RARLAB `unrar` on `PATH`). CRC mutate-then-fixup keeps most inputs past header
+integrity checks. This closes the Phase 6 / threat-model O5 “coverage-guided
+parser fuzz as a gate” item; OSS-Fuzz and longer soaks remain optional follow-ons.
 
 ## T6 — Platform-semantic scenarios (low-medium)
 
