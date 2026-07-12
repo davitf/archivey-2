@@ -1,7 +1,7 @@
 ## 1. Data model + crypto/codec stubs
 
-- [ ] 1.1 Add `ArchiveMember.is_anti: bool = False` (types + archive-data-model consumers/tests)
-- [ ] 1.2 Implement 7z SHA-256 KDF + AES-CBC decrypt stage in `streams/crypto.py`; key cache helper by `(password, salt, cycles)`
+- [ ] 1.1 Add `ArchiveMember.is_anti: bool = False` (raw ANTI bit) and `ArchiveMember.is_current: bool = True` (derived last-entry-wins) — types + archive-data-model consumers/tests; both included in equality
+- [ ] 1.2 Implement the format-agnostic AES-CBC decrypt stage on the shared crypto surface, and a **7z-local** SHA-256 KDF helper beside it (UTF-16LE pw + salt + `1 << NumCyclesPower`, `0x3f` special case) — not on the generic crypto backend; emits `AesParams`; key cache helper by `(password, salt, cycles)`; reader never imports `cryptography`
 - [ ] 1.3 Finish `PpmdCodec.open` for PPMd var.H parameters from 7z coder properties
 - [ ] 1.4 Update stale "Phase 7" comments in crypto/PPMd paths to Phase 6
 
@@ -25,8 +25,8 @@
 ## 4. Volumes + anti-items + extraction
 
 - [ ] 4.1 Join multi-volume sets (discovered siblings or explicit list) by concatenation; error on incomplete sets
-- [ ] 4.2 Expose anti members with `is_anti=True`; empty payload on open
-- [ ] 4.3 Extraction: anti-items delete in-root destination (7z CLI parity) after path-safety checks; missing dest = success no-op
+- [ ] 4.2 Expose anti members with `is_anti=True`; empty payload on open; compute `is_current` from the ANTI bitmask + same-name shadowing (superseded content → `is_current=False`)
+- [ ] 4.3 Extraction: skip `is_current=False` members by default (SKIPPED result; no limit counting); anti-items delete **only** a path this same extraction wrote (`lstat`/`unlink`, file/empty-dir only), never pre-existing/populated/out-of-root data; missing or not-written dest = success no-op
 
 ## 5. Tests, oracles, fuzz
 
@@ -34,7 +34,7 @@
 - [ ] 5.2 Per-codec fixtures: STORED, LZMA2, LZMA2+BCJ, LZMA2+Delta, Deflate, BZip2, Zstd, Brotli, PPMd, Deflate64, AES, solid, multi-password, header-encrypted, multi-volume
 - [ ] 5.3 LZMA1+BCJ fixture: either correct decode vs oracle or asserted `UnsupportedFeatureError` + short design note
 - [ ] 5.4 BCJ2 / unknown method rejection tests
-- [ ] 5.5 Anti-item fixtures via `7z` CLI; list + extract-delete vs `7z x` (skip without `7z`); do not require py7zr for these
+- [ ] 5.5 Anti-item fixtures via `7z` CLI; list + `is_current` computation; extract into a fresh dest and compare final tree vs `7z x` into a fresh dest (skip without `7z`); assert an anti-item leaves a pre-existing not-written destination untouched; do not require py7zr for these
 - [ ] 5.6 Core-only / `[7z]` / `[crypto]` gating tests (`PackageNotInstalledError` paths)
 - [ ] 5.7 Atheris (or env-gated harness) for header parser seeded from corpus + adversarial bytes
 - [ ] 5.8 `openspec validate native-7z-reader --strict`; `ruff` / `pyrefly` / `ty`; three-config pytest gate

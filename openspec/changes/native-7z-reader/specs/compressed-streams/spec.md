@@ -5,9 +5,13 @@
 The system SHALL derive 7z AES-256 keys using the 7z SHA-256 scheme (UTF-16LE
 password, salt, `1 << NumCyclesPower` rounds — with the documented `0x3f` special
 case) and pass the resulting key and IV to the shared crypto backend as `AesParams`.
-Derived keys SHALL be cacheable by `(password, salt, cycles)` for reuse across
-folders/header decrypts within one reader. Format parsers MUST NOT import
-`cryptography` directly. PPMd var.H streams SHALL open through the shared
+Because this KDF is 7z-specific (RAR and WinZip-AES derive keys differently), it SHALL
+live as a **7z-local helper within the crypto layer**, not on the generic crypto
+backend surface — so a format's key-derivation scheme does not accrete onto the shared
+AES stage. The shared AES decrypt stage itself stays format-agnostic and consumes only
+the derived `AesParams`. Derived keys SHALL be cacheable by `(password, salt, cycles)`
+for reuse across folders/header decrypts within one reader. Format parsers MUST NOT
+import `cryptography` directly. PPMd var.H streams SHALL open through the shared
 `PpmdCodec` once parameters from the 7z coder properties are supplied.
 
 #### Scenario: 7z folder decrypt uses derived AesParams
