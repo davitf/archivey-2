@@ -1,2 +1,0 @@
-reason=repro-failure
-repro=uv run --no-sync python -m tests.atheris_fuzz --target zip_tar --repro artifacts/atheris/zip_tar/crash-input.bin
