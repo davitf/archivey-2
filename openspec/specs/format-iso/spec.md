@@ -1,187 +1,125 @@
-# ISO 9660 Archive Support (via pycdlib)
+# ISO 9660 Archive Support
 
 ## Purpose
 
-The system reads ISO 9660 disc images through the `pycdlib` library (optional `[iso]` extra). Because ISO 9660 supports multiple filesystem namespaces — plain ISO 9660, Joliet, and Rock Ridge — the backend auto-selects the richest available namespace and reports the selection so callers can reason about filename and metadata fidelity.
+ISO 9660 disc images are read through the unified `ArchiveReader` API using
+`pycdlib` from the optional `[iso]` extra. The backend selects the richest
+available filename/metadata namespace and reports that choice so callers can
+reason about fidelity.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | Reader API, member metadata, declared member-stream capabilities |
+| `access-mode-and-cost` | Indexed/direct cost model and seekability requirements |
+| `format-detection` | ISO magic at `CD001` offset and extended peek window |
+| `reader-concurrency` | `MemberStreams.CONCURRENT`, operation ownership, lock boundaries |
+| `packaging-and-extras` | Optional `[iso]` dependency availability |
 
 ## Requirements
 
-### Requirement: Declare format properties
+### Requirement: Declare ISO format properties
 
-The system SHALL expose the following properties for the ISO 9660 backend:
+The ISO backend SHALL expose these properties for every opened ISO image:
 
 | Property | Value |
-|----------|-------|
+| --- | --- |
 | Backend dependency | `pycdlib` |
-| Listing cost | O(1) — directory tree in header region |
-| Access cost | DIRECT |
-| Supports write | No (pycdlib supports write but out of scope) |
-| Requires seek | Yes |
+| Listing cost | `ListingCost.INDEXED` — directory tree in header/catalog region |
+| Access cost | `AccessCost.DIRECT` |
+| Stream capability | `StreamCapability.SEEKABLE` |
+| Read source | Seekable only |
+| Write support | No; ISO writing is out of scope |
 
-#### Scenario: write attempt on an ISO image
+Write attempts SHALL raise `UnsupportedOperationError`. Non-seekable read
+sources SHALL be rejected at open because `pycdlib` requires seeking; the backend
+MUST NOT implicitly buffer or copy the image to make it seekable.
 
-- **WHEN** a caller attempts to create or write an ISO 9660 archive
-- **THEN** the system SHALL raise `UnsupportedOperationError`, because ISO write is out of scope for this version
+#### Scenario: ISO property matrix
 
-#### Scenario: opening from a non-seekable source
-
-- **WHEN** the source stream does not support seeking
-- **THEN** the backend SHALL reject the open with an appropriate error, because `Requires seek` is `True`
-
----
+| Case | Expected |
+| --- | --- |
+| Open valid ISO | `cost.listing_cost=INDEXED`, `cost.access_cost=DIRECT`, `cost.stream_capability=SEEKABLE` |
+| Attempt to create/write ISO | `UnsupportedOperationError` |
+| Open from non-seekable source | Seekability error at open; no implicit buffering |
 
 ### Requirement: Auto-select the richest available namespace
 
-The system SHALL automatically select the richest available namespace from the ISO image in the following priority order: Rock Ridge > Joliet > Plain ISO 9660. The selected namespace SHALL be reported in `ArchiveInfo.extra["iso.namespace"]`.
+The ISO backend SHALL select the richest available namespace in priority order:
+Rock Ridge, then Joliet, then plain ISO 9660. It SHALL report the selection in
+`ArchiveInfo.extra["iso.namespace"]`.
 
-| Namespace | Filename length | Case | POSIX metadata |
-|-----------|----------------|------|----------------|
-| Rock Ridge | Unlimited | Preserved | Full (mode, uid, gid, symlinks) |
-| Joliet | Up to 64 UCS-2 chars | Preserved | None |
-| Plain ISO 9660 | 8.3 (level 1) | Upper-case only | None |
+| Namespace | Reported value | Filename fidelity | POSIX metadata |
+| --- | --- | --- | --- |
+| Rock Ridge | `"rock_ridge"` | Original case and full length | mode, uid, gid, symlinks |
+| Joliet | `"joliet"` | Case-preserved, up to 64 UCS-2 chars | none |
+| Plain ISO 9660 | `"iso9660"` | Upper-case 8.3 / level-1 names | none |
 
-#### Scenario: ISO image with Rock Ridge extensions
+Fields unavailable in the selected namespace SHALL be `None`.
 
-- **WHEN** an ISO image contains Rock Ridge extensions
-- **THEN** the backend SHALL use the Rock Ridge namespace for all member names and metadata
-- **AND** `ArchiveInfo.extra["iso.namespace"]` SHALL be `"rock_ridge"`
+#### Scenario: ISO namespace matrix
 
-#### Scenario: ISO image with Joliet extensions but no Rock Ridge
+| Case | Expected |
+| --- | --- |
+| Image contains Rock Ridge | Use Rock Ridge names/metadata; `iso.namespace="rock_ridge"` |
+| Image contains Joliet but no Rock Ridge | Use Joliet names; POSIX fields `None`; `iso.namespace="joliet"` |
+| Image contains neither extension | Use plain ISO 9660 names; POSIX fields `None`; `iso.namespace="iso9660"` |
+| Rock Ridge symlink | Symlink metadata is available through the selected namespace |
 
-- **WHEN** an ISO image contains Joliet extensions but not Rock Ridge
-- **THEN** the backend SHALL use the Joliet namespace for all member names
-- **AND** `ArchiveInfo.extra["iso.namespace"]` SHALL be `"joliet"`
+### Requirement: Read raw .bin CD images through sector stripping
 
-#### Scenario: plain ISO 9660 image with no extensions
+The ISO backend SHALL support raw `.bin` CD images whose ISO 9660 filesystem is
+stored in 2352-byte raw sectors by interposing a thin stream wrapper that strips
+each sector to the 2048-byte user-data payload before passing it to `pycdlib`.
+This lower-priority capability MAY be dropped if raw-sector detection or common
+Mode 1 / Mode 2 Form 1 layout support grows beyond a thin wrapper. A `.cue` sheet
+is not required; Mode 1 `.bin` can be detected from sector sync.
 
-- **WHEN** an ISO image contains neither Rock Ridge nor Joliet extensions
-- **THEN** the backend SHALL use the plain ISO 9660 namespace for all member names
-- **AND** `ArchiveInfo.extra["iso.namespace"]` SHALL be `"iso9660"`
+Unsupported raw sector layouts SHALL raise `UnsupportedFeatureError` rather than
+misreading data.
 
----
+#### Scenario: raw-sector matrix
 
-### Requirement: Reflect namespace-dependent metadata and filename fidelity
+| Case | Expected |
+| --- | --- |
+| Raw Mode 1 `.bin` with 2352-byte sectors | Strip to 2048-byte payloads and read through `pycdlib` like a plain `.iso` |
+| Unsupported `.bin` sector layout | `UnsupportedFeatureError` |
 
-The system SHALL surface member metadata according to the capabilities of the selected namespace. Fields that the selected namespace cannot provide SHALL be `None`.
+### Requirement: Serialize shared pycdlib handle operations for concurrent reads
 
-#### Scenario: filename fidelity under Rock Ridge
+For ISO readers that allow concurrent member streams under
+`MemberStreams.CONCURRENT`, the backend SHALL keep using `pycdlib` payload APIs
+(for example `open_file_from_iso`) and SHALL serialize every operation that
+touches `pycdlib`'s shared image handle with one per-reader lock. This preserves
+pycdlib extent and namespace behavior while preventing races on shared state.
 
-- **WHEN** the Rock Ridge namespace is active
-- **THEN** member names preserve their original case and full length
-- **AND** POSIX metadata (`mode`, `uid`, `gid`) and symlinks are available from the Rock Ridge extensions
+The lock SHALL cover `PyCdlib.open()` / `open_fp()` initialization and failure
+cleanup, `open_file_from_iso()` and `PyCdlibIO.__enter__`, member `read` /
+`readinto` / supported `seek` / `tell`, member close/context exit,
+archive/PyCdlib close, and any audited operation that repositions or closes
+`PyCdlib._cdfp` or `PyCdlibIO._fp`. Archivey buffering/error/lifecycle wrappers
+sit outside it; exception translation, diagnostics/logging, lifecycle release,
+callbacks, and finalizers run after the lock is released. Unsupported positioning
+retains normal `io.UnsupportedOperation` behavior.
 
-#### Scenario: filename fidelity under Joliet
+For the pinned `pycdlib` implementation, `walk()` and `get_record()` SHALL be
+treated as audited in-memory catalog operations under the materialization owner
+scope. Regression tests SHALL record that audit; if a supported `pycdlib` version
+adds handle access, the affected call joins the critical section.
 
-- **WHEN** the Joliet namespace is active
-- **THEN** member names preserve case and support up to 64 UCS-2 characters
-- **AND** `ArchiveMember.mode`, `ArchiveMember.uid`, and `ArchiveMember.gid` SHALL be `None`, because Joliet carries no POSIX metadata
+The lock guarantees correctness but not parallel throughput. Any later
+independent-handle or raw-extent optimization SHALL use targeted before/after
+measurements; this baseline has no correctness speed threshold.
 
-#### Scenario: filename fidelity under plain ISO 9660
+#### Scenario: ISO handle-lock matrix
 
-- **WHEN** the plain ISO 9660 namespace is active
-- **THEN** member names are upper-case and truncated to 8.3 format (level 1 interoperability)
-- **AND** `ArchiveMember.mode`, `ArchiveMember.uid`, and `ArchiveMember.gid` SHALL be `None`, because plain ISO 9660 carries no POSIX metadata
-
----
-
-### Requirement: Read raw `.bin` CD images via a sector-stripping wrapper (lower priority)
-
-The system SHALL support raw `.bin` CD images (bin/cue tracks) — ISO 9660 filesystems
-stored in raw 2 352-byte sectors (sync + header + 2 048 bytes of user data + EDC/ECC)
-rather than the 2 048-byte logical sectors `pycdlib` expects — by interposing a stream
-wrapper that strips each sector down to its 2 048-byte user-data payload and feeds the
-unwrapped logical stream to `pycdlib`. This is a **lower-priority** capability: if
-supporting it (raw-sector detection, the several common Mode 1 / Mode 2 Form 1 sector
-layouts) grows beyond a thin stripping wrapper, this requirement MAY be dropped rather
-than carrying disproportionate complexity. A `.cue` sheet is not required; a Mode 1
-`.bin` can be detected from its sector sync pattern.
-
-#### Scenario: Mode 1 .bin image
-
-- **WHEN** a raw Mode 1 `.bin` image (2 352-byte sectors) is opened
-- **THEN** the backend strips each sector to its 2 048-byte payload and reads the ISO 9660 filesystem through `pycdlib` as if it were a plain `.iso`
-
-#### Scenario: unsupported raw sector layout
-
-- **WHEN** a `.bin` image uses a raw sector layout the stripping wrapper does not handle
-- **THEN** the backend raises `UnsupportedFeatureError` rather than misreading the image
-
----
-
-### Requirement: ISO concurrent member open via locked pycdlib streams
-
-The system SHALL support interleaved concurrent member data streams from one ISO reader
-unconditionally, as required by `concurrent-member-streams`. The reader MUST continue to
-obtain file member payloads through `pycdlib` (e.g. `open_file_from_iso`), preserving
-pycdlib's extent and namespace behavior.
-
-Each `IsoReader` SHALL own one lock covering **every operation on pycdlib's shared image
-handle**, including:
-
-- `PyCdlib.open()` / `open_fp()` archive initialization and failure cleanup;
-- `open_file_from_iso()` member creation and `PyCdlibIO.__enter__` initialization;
-- member `read` and `readinto`, plus `seek`/`tell` where supported;
-- member close/context exit;
-- archive/PyCdlib close; and
-- any other operation found by audit to reposition or close `PyCdlib._cdfp` /
-  `PyCdlibIO._fp`.
-
-The lock surrounds the complete pycdlib operation. Archivey buffering/error/lifecycle
-wrappers SHALL sit outside the locked layer. Exception translation/stamping, logging,
-lifecycle lease release, callbacks, and finalizer hooks SHALL execute after the lock is
-released. Library-internal decode inseparable from an atomic handle call MAY execute under
-the lock. Unsupported positioning SHALL retain normal `io.UnsupportedOperation` behavior.
-
-For the pinned pycdlib implementation, `walk()` and `get_record()` traverse the parsed
-in-memory catalog and do not access `_cdfp`; the materialization operation-owner scope
-serializes them, so they do not require the handle lock. The implementation SHALL record and
-regression-test that version audit. If a supported pycdlib version adds handle access, the
-complete affected call SHALL join the critical section.
-
-This lock guarantees correctness but may serialize I/O; it is not a parallel-throughput
-promise. A later independent-image-handle or raw-extent speed claim uses proportionate,
-targeted before/after measurements; the baseline has no correctness speed threshold.
-
-#### Scenario: interleaved opens on ISO
-
-- **WHEN** two file members of an ISO image are opened and read interleaved
-- **THEN** each stream yields that member's exact bytes in order
-
-#### Scenario: multi-thread opens on ISO
-
-- **WHEN** multiple threads concurrently open and read distinct file members of an ISO
-  under `MemberStreams.CONCURRENT` after materialization
-- **THEN** each thread yields that member's exact bytes without data races on the shared
-  pycdlib handle
-
-#### Scenario: ISO open initialization shares the handle lock
-
-- **WHEN** workers concurrently call member `open()`
-- **THEN** `open_file_from_iso` and `PyCdlibIO.__enter__` each execute under the same
-  per-reader lock used by subsequent stream operations
-
-#### Scenario: seek, tell, and close cannot race ISO reads
-
-- **WHEN** independent ISO member streams concurrently read/readinto/close and use supported
-  positioning
-- **THEN** each complete pycdlib operation is serialized under the per-reader lock and
-  member positions remain correct
-
-#### Scenario: catalog-only pycdlib calls are audited, not mislabeled
-
-- **WHEN** ISO materialization uses pinned pycdlib `walk()` and `get_record()`
-- **THEN** a regression probe confirms they remain in-memory catalog operations under the
-  materialization owner scope
-- **AND** any supported version that adds `_cdfp` access receives the backend handle lock
-
-#### Scenario: callbacks run after releasing the ISO handle lock
-
-- **WHEN** an ISO operation raises or closes and archivey translates/logs/releases its
-  lifecycle lease
-- **THEN** that diagnostic/lifecycle work executes without the ISO shared-handle lock held
-
-#### Scenario: ISO lock baseline informs later replacement
-
-- **WHEN** independent handles or raw extent views are proposed to increase throughput
-- **THEN** targeted before/after evidence compares relevant wall/lock timing and practical
-  seek/byte counters, adding peak memory only if buffering/materialization changes
+| Case | Expected |
+| --- | --- |
+| Two ISO file members opened/read interleaved | Each stream yields exact bytes in order |
+| Multiple threads read distinct members under `MemberStreams.CONCURRENT` after materialization | No data races on shared `pycdlib` handle |
+| Workers concurrently call member `open()` | `open_file_from_iso` and `PyCdlibIO.__enter__` execute under the same per-reader lock as stream operations |
+| Independent streams read/readinto/close and use supported positioning | Complete pycdlib operations serialize; member positions remain correct |
+| Materialization uses pinned `walk()` / `get_record()` | Regression probe confirms catalog-only behavior; future handle access receives the lock |
+| Operation raises or closes | Translation/logging/lifecycle/callback work runs without the ISO handle lock held |
+| Future throughput optimization proposed | Evidence compares wall/lock timing and practical seek/byte counters; adds peak memory only if buffering/materialization changes |
