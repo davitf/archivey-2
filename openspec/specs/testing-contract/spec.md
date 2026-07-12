@@ -206,6 +206,27 @@ SHALL assert `type == MemberType.ANTI`, `None` stream, and usage-error open/read
 | Directory backend dir `open` | `ArchiveyUsageError` (not `IsADirectoryError`) |
 | 7z anti list + stream + open | `ANTI`; stream `None`; `ArchiveyUsageError` |
 
+### Requirement: Property-based tests for safety logic
+
+The test suite SHALL include bounded Hypothesis property tests over the
+load-bearing safety functions: member-name normalization, the universal
+extraction filter, link-target resolution, volume-name discovery, and format
+detection over an arbitrary byte prefix on a peekable source. Tests SHALL assert
+structural invariants (totality under typed errors, no escape introduced by
+normalization, peek/replay preserved for detection) rather than golden outputs
+from a second implementation. Shrunk counterexamples SHALL be pinned as explicit
+regression examples. `hypothesis` is a `dev`-group dependency only; `[core-only]`
+MUST still pass without it.
+
+#### Scenario: property-test matrix
+
+| Case | Expected |
+| --- | --- |
+| Generated traversal / absolute / NUL member names fed to `check_universal` | Typed `FilterRejectionError` subclass for every unsafe name |
+| Arbitrary decoded names fed to `normalize_member_name` | Always returns `str`; idempotent; never introduces `..` or leading `/` absent from the input |
+| Arbitrary byte prefixes on a peekable detection source | Typed result or typed error; peek source left unadvanced |
+| Strategy discovers a shrunk failing input | Input is pinned as an `@example` or unit case |
+
 ### Requirement: Concurrent member-stream correctness and free-threaded stress
 
 The test suite SHALL exercise the supported post-materialization concurrency
