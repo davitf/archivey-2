@@ -500,7 +500,14 @@ class BaseArchiveReader(ArchiveReader):
             self._members_cache = members
             self._members_by_name_lists = by_name_lists
             self._state.complete_materialization()
-        except Exception:
+        except BaseException:
+            # MUST be BaseException, not Exception: a KeyboardInterrupt/MemoryError/
+            # SystemExit raised mid-scan (7z folder decode, TAR header walk, a bomb) would
+            # otherwise leave cache_state stuck at MATERIALIZING forever — a non-concurrent
+            # reader then raises a misleading "materialization already in progress", and a
+            # CONCURRENT waiter blocks on the CV with no owner left to notify it. We reset
+            # the election state and re-raise so the interrupt still propagates unchanged.
+            # (mark_reader_closed's drain path handles BaseException the same way.)
             self._state.fail_materialization()
             raise
         return members
