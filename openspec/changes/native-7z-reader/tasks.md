@@ -1,7 +1,7 @@
 ## 1. Data model + crypto/codec stubs
 
 - [ ] 1.1 Add `ArchiveMember.is_anti: bool = False` (raw ANTI bit) and `ArchiveMember.is_current: bool = True` (derived last-entry-wins) — types + archive-data-model consumers/tests; both included in equality
-- [ ] 1.2 Implement 7z SHA-256 KDF + AES-CBC decrypt stage in `streams/crypto.py`; key cache helper by `(password, salt, cycles)`
+- [ ] 1.2 Implement the format-agnostic AES-CBC decrypt stage on the shared crypto surface, and a **7z-local** SHA-256 KDF helper beside it (UTF-16LE pw + salt + `1 << NumCyclesPower`, `0x3f` special case) — not on the generic crypto backend; emits `AesParams`; key cache helper by `(password, salt, cycles)`; reader never imports `cryptography`
 - [ ] 1.3 Finish `PpmdCodec.open` for PPMd var.H parameters from 7z coder properties
 - [ ] 1.4 Update stale "Phase 7" comments in crypto/PPMd paths to Phase 6
 

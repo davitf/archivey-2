@@ -55,6 +55,14 @@ Cache derived 32-byte keys by `(password, salt, cycles)` for the life of the rea
 Try known-good candidates first; promote successes. Wrong password →
 `EncryptionError`/`CorruptionError`, never wrong bytes.
 
+**Placement:** the 7z SHA-256 KDF (UTF-16LE password + salt + `1 << NumCyclesPower`
+rounds, incl. the `0x3f` special case) is 7z-specific — RAR and WinZip-AES derive keys
+differently — so it lives in a **7z-local area of the crypto module** (a `sevenzip`
+helper beside `streams/crypto.py`), not on the generic crypto backend surface. It emits
+the 32-byte key + IV that feed the shared, format-agnostic AES decrypt stage as
+`AesParams`; the reader never imports `cryptography` directly. If a later format turns
+out to share the exact scheme, promote it to a shared helper then — not preemptively.
+
 ### 5. Unsupported codec combinations
 - **BCJ2** / unknown method IDs / newer BCJ absent from liblzma → `UnsupportedFeatureError`.
 - **LZMA1+BCJ**: attempt a correct stdlib-only composition (separate stages if needed). If

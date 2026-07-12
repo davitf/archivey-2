@@ -25,7 +25,7 @@ Phase 6 needs a zero-dependency native 7z reader so listing and decoding no long
 - `format-7z`: lock solid random-access = re-decode only; specify anti-item list + `is_current` computation; document unsupported codec combinations.
 - `archive-data-model`: add `ArchiveMember.is_anti` (raw ANTI bit) and `ArchiveMember.is_current` (derived last-entry-wins by name).
 - `safe-extraction`: skip non-current members by default; anti-item extraction never deletes data the extraction did not create (no-op on disk in the common case) instead of writing bytes.
-- `compressed-streams`: complete PPMd stream open + AES decrypt stage (7z KDF feeds `AesParams`).
+- `compressed-streams`: complete PPMd stream open + format-agnostic AES decrypt stage, fed by a 7z-local KDF helper (`AesParams`).
 - `testing-contract`: activate native↔py7zr/7z CLI cross-validation for 7z; anti-item fixtures via `7z` CLI when py7zr cannot parse them.
 
 ## Impact
