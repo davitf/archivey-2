@@ -594,7 +594,6 @@ class SevenZipReader(BaseArchiveReader):
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,
-            is_anti=record.is_anti,
             is_current=is_current,
             create_system=CreateSystem.UNIX
             if unix_mode is not None
@@ -629,6 +628,8 @@ class SevenZipReader(BaseArchiveReader):
         return member
 
     def _member_type(self, record: SevenZipFileRecord) -> MemberType:
+        if record.is_anti:
+            return MemberType.ANTI
         attrs = record.attributes
         if attrs is not None:
             unix_mode = attrs >> 16
@@ -816,7 +817,9 @@ class SevenZipReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
-        if member.is_anti or raw.folder_index is None:
+        # Directories/anti/other never reach here: BaseArchiveReader rejects them.
+        # Empty FILE members (no folder stream) still present an empty payload.
+        if raw.folder_index is None:
             return self._wrap_member_stream(
                 io.BytesIO(b""), member.name, size=member.size
             )

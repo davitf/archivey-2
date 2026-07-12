@@ -44,14 +44,20 @@ Callers filter on `is_file`; `OTHER` always raises `SpecialFileError` at extract
 Remove the dataclass field. **Rejected:** keeping both field and type (drift risk).
 
 ### 3. Central gate after link follow
-In `BaseArchiveReader`, once the resolved member is not `FILE`, raise
-`ArchiveyUsageError`. Symlinks that resolve to a file still succeed.
-**Rejected:** `UnsupportedOperationError` / `CorruptionError` (misuse, not capability
-or corrupt archive).
+In `BaseArchiveReader`, once the resolved member is `DIRECTORY` / `ANTI` /
+`OTHER`, raise `ArchiveyUsageError`. Symlinks that resolve to a file still
+succeed. Missing link targets stay `LinkTargetNotFoundError` (`ArchiveyError`).
+**Rejected:** treating unresolved links as usage errors; `UnsupportedOperationError`
+/ `CorruptionError` for directories.
 
-### 4. Extraction
-`check_universal` rejects only `OTHER`. Anti branch keys off `is_anti` (⇔ `ANTI`).
-Non-current members stay `SKIPPED` by default.
+### 4. Extraction / non-current
+Hardwired coordinator skip of `is_current=False` **after** the user `filter` so
+filters observe non-current members; returning them from the filter does not force
+a write. No extract-all opt-in in this change — use `open`/`read` for superseded
+`FILE` bytes. Anti branch keys off `is_anti` (⇔ `ANTI`). `check_universal` rejects
+only `OTHER`.
+**Rejected:** encoding non-current skip as the default `MemberFilter` (would make
+policy/filter composition ambiguous).
 
 ## Risks / Trade-offs
 

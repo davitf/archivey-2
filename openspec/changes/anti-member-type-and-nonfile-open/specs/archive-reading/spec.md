@@ -20,10 +20,11 @@ members). `open()` streams in bounded chunks. Full reads verify supported digest
 streaming verification raises `CorruptionError` only on the terminal read after
 valid chunks; `read()` raises without returning bytes.
 
-After symlink/hardlink following, if the **resolved** member is not
-`MemberType.FILE`, `open()` / `read()` SHALL raise `ArchiveyUsageError`. They MUST
-NOT return empty bytes for directories, `ANTI`, or `OTHER`, and MUST NOT leak raw
-`IsADirectoryError` or format `CorruptionError` for directory paths.
+After symlink/hardlink following, if the **resolved** member is
+`DIRECTORY`, `ANTI`, or `OTHER`, `open()` / `read()` SHALL raise
+`ArchiveyUsageError`. They MUST NOT return empty bytes, and MUST NOT leak raw
+`IsADirectoryError` or format `CorruptionError` for directory paths. A link whose
+target is missing SHALL still raise `LinkTargetNotFoundError` (`ArchiveyError`).
 
 **Diagnostics (observable):** A reader-owned stream's `diagnostics` shows only
 that open operation's events; the same events also appear on the reader's
@@ -42,6 +43,7 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 | `open`/`read` directory (ZIP/TAR/ISO/directory/7z) | `ArchiveyUsageError` |
 | `open`/`read` `MemberType.ANTI` or `OTHER` | `ArchiveyUsageError` |
 | Symlink resolves to a file | Follow succeeds; returns file stream/bytes |
+| Symlink target missing in archive | `LinkTargetNotFoundError` |
 
 ## ADDED Requirements
 
