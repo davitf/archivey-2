@@ -388,12 +388,58 @@ def test_synthetic_anti_item_lists_and_extracts_safely(tmp_path: Path) -> None:
 
 @requires_binary("7z")
 def test_anti_item_fresh_extract_matches_7z_cli(tmp_path: Path) -> None:
-    archive = tmp_path / "anti.7z"
-    archive.write_bytes(_anti_item_archive())
+    """Build a real anti-item archive with the 7z CLI and compare fresh-dest trees.
+
+    Recipe: archive keep.txt + gone.txt, delete gone.txt on disk, then ``7z u`` with
+    anti-item update options into a new archive. Fresh ``7z x`` and archivey extract
+    must both leave keep.txt and omit gone.txt.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "keep.txt").write_text("keep\n", encoding="utf-8")
+    (work / "gone.txt").write_text("gone\n", encoding="utf-8")
+    base = tmp_path / "base.7z"
+    archive = tmp_path / "with_anti.7z"
+    create = subprocess.run(
+        ["7z", "a", "-t7z", str(base), "keep.txt", "gone.txt", "-y"],
+        cwd=work,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if create.returncode != 0:
+        pytest.skip(f"7z CLI cannot build base archive: {create.stderr}")
+    (work / "gone.txt").unlink()
+    update = subprocess.run(
+        [
+            "7z",
+            "u",
+            str(base),
+            "-u-",
+            f"-up0q3x2y2z1!{archive}",
+            "keep.txt",
+            "gone.txt",
+            "-y",
+        ],
+        cwd=work,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if update.returncode != 0 or not archive.is_file():
+        pytest.skip(f"7z CLI cannot build anti-item update archive: {update.stderr}")
+
+    with open_archive(archive) as reader:
+        members = reader.members()
+        by_name = {m.name: m for m in members}
+        assert by_name["gone.txt"].is_anti is True
+        assert by_name["gone.txt"].is_current is True
+        assert by_name["keep.txt"].is_anti is False
+        assert by_name["keep.txt"].is_current is True
+
     archivey_dest = tmp_path / "archivey"
     cli_dest = tmp_path / "cli"
     cli_dest.mkdir()
-
     with open_archive(archive) as reader:
         reader.extract_all(archivey_dest)
     subprocess.run(
@@ -403,6 +449,10 @@ def test_anti_item_fresh_extract_matches_7z_cli(tmp_path: Path) -> None:
     )
 
     assert sorted(
-        p.relative_to(archivey_dest) for p in archivey_dest.rglob("*")
-    ) == sorted(p.relative_to(cli_dest) for p in cli_dest.rglob("*"))
-    assert not any(path.is_file() for path in archivey_dest.rglob("*"))
+        p.relative_to(archivey_dest) for p in archivey_dest.rglob("*") if p.is_file()
+    ) == sorted(p.relative_to(cli_dest) for p in cli_dest.rglob("*") if p.is_file())
+    assert (archivey_dest / "keep.txt").read_bytes() == (
+        cli_dest / "keep.txt"
+    ).read_bytes()
+    assert not (archivey_dest / "gone.txt").exists()
+    assert not (cli_dest / "gone.txt").exists()

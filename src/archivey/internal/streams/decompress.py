@@ -111,3 +111,28 @@ class PpmdDecompressorStream(DecompressorStream[Any]):
 
     def _is_decompressor_finished(self) -> bool:
         return bool(self._decompressor.eof)
+
+
+class Deflate64DecompressorStream(DecompressorStream[Any]):
+    """Decode a Deflate64 stream via ``inflate64.Inflater``.
+
+    Forward-only. The ``inflate64`` package exposes an incremental ``Inflater``
+    (``inflate()`` / ``eof``) with no file-like open — same shape as Brotli/PPMd.
+    """
+
+    def _create_decompressor(self, point: SeekPoint) -> Any:
+        import inflate64
+
+        return inflate64.Inflater()
+
+    def _decompress_chunk(self, chunk: bytes) -> bytes:
+        return self._decompressor.inflate(chunk)
+
+    def _flush_decompressor(self) -> bytes:
+        # Flush remaining state with an empty feed (mirrors py7zr's Deflate64Decompressor).
+        if self._decompressor.eof:
+            return b""
+        return self._decompressor.inflate(b"")
+
+    def _is_decompressor_finished(self) -> bool:
+        return bool(self._decompressor.eof)

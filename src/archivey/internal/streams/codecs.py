@@ -45,6 +45,7 @@ from archivey.internal.streams.archive_stream import (
 )
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
+    Deflate64DecompressorStream,
     PpmdDecompressorStream,
     ZlibDecompressorStream,
 )
@@ -1023,7 +1024,7 @@ class Deflate64Codec(StreamCodec):
                 "The 'inflate64' package is required for Deflate64 streams "
                 "(install the '7z' extra)."
             )
-        return ensure_binaryio(_inflate64.Inflate64File(ensure_bufferedio(source)))
+        return Deflate64DecompressorStream(source)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
