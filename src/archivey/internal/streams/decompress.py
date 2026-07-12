@@ -70,3 +70,41 @@ class BrotliDecompressorStream(DecompressorStream[Any]):
 
     def _is_decompressor_finished(self) -> bool:
         return self._decompressor.is_finished()
+
+
+class PpmdDecompressorStream(DecompressorStream[Any]):
+    """Decode a PPMd var.H stream via ``pyppmd.Ppmd7Decoder``.
+
+    Forward-only. ``order`` / ``mem_size`` come from the 7z coder properties blob
+    (5 or 7 bytes). The ``pyppmd`` import is local — the codec layer gates presence
+    before constructing this stream.
+    """
+
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | BinaryIO,
+        *,
+        order: int,
+        mem_size: int,
+    ) -> None:
+        self._order = order
+        self._mem_size = mem_size
+        super().__init__(path, codec_name="ppmd")
+
+    def _create_decompressor(self, point: SeekPoint) -> Any:
+        import pyppmd
+
+        return pyppmd.Ppmd7Decoder(self._order, self._mem_size)
+
+    def _decompress_chunk(self, chunk: bytes) -> bytes:
+        return self._decompressor.decode(chunk)
+
+    def _flush_decompressor(self) -> bytes:
+        # 7z PPMd streams sometimes need a trailing NUL to finish when the decoder
+        # still reports needs_input at EOF (mirrors py7zr's PpmdDecompressor).
+        if getattr(self._decompressor, "needs_input", False) and not self._decompressor.eof:
+            return self._decompressor.decode(b"\0")
+        return b""
+
+    def _is_decompressor_finished(self) -> bool:
+        return bool(self._decompressor.eof)

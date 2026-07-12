@@ -1,4 +1,4 @@
-"""Multi-volume path discovery (Phase 5 plumbing; joining lands in Phase 7)."""
+"""Multi-volume path discovery and joining (7z concatenation; RAR join later)."""
 
 from __future__ import annotations
 

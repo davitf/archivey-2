@@ -306,6 +306,12 @@ class ArchiveMember:
     is_encrypted: bool = False
     """Whether this member's data is encrypted."""
 
+    is_anti: bool = False
+    """Whether this member is a format-level deletion marker (7z ANTI bit)."""
+
+    is_current: bool = True
+    """Whether this member is the live final state of its path (last-entry-wins)."""
+
     is_sparse: bool = False
     """Whether this member is stored as a sparse file."""
 

@@ -86,7 +86,7 @@ class ReadBackend(ABC):
     # Whether this backend's format has encryption a password could unlock. Checked
     # centrally by open_archive(): a password passed for a format that cannot use one is
     # API misuse and is rejected uniformly (backends never see it). ZIP sets this True;
-    # the native 7z/RAR readers (Phase 7) will too.
+    # the native 7z/RAR readers will too.
     SUPPORTS_PASSWORD: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.
