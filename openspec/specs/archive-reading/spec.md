@@ -649,9 +649,11 @@ unsupported.
 
 Consequently, exiting `with open_archive(...) as reader` closes the reader but an escaped
 member stream intentionally extends backend resource lifetime until that stream closes.
-Callers SHOULD close member streams promptly. Concurrent reader close with `open()` or
-member-stream operations is unsupported and is rejected; no close-vs-I/O linearization is
-promised.
+Callers SHOULD close member streams promptly. Under `MemberStreams.CONCURRENT`,
+`reader.close()` drains in-flight worker `open()`/`read()` calls (blocks until they
+return) before transitioning to closed; escaped idle streams keep their lifecycle leases.
+Without `CONCURRENT`, concurrent reader close with an actively executing worker call is
+rejected. No close-vs-stream-I/O linearization is promised beyond that draining contract.
 
 After reader close, repeated `close()` / `__exit__` are no-ops and already-open streams
 continue according to their capabilities. Every new reader operation or property—including
@@ -1044,10 +1046,12 @@ ordinary Python file objects. The supported behavior SHALL NOT rely on the GIL.
 state, completed (including link resolution), and published together exactly once as immutable
 internal containers. A public API whose existing return type is `list` SHALL return a
 copy that cannot structurally mutate those cache containers. `ArchiveMember` objects
-retain their existing backend-populated late-bound fields. Materialization/iteration itself
-is a single-owner operation and MUST NOT overlap worker opens. A second operation detected
-while materialization is in progress SHALL raise `ArchiveyUsageError` without
-observing a partial cache or disturbing the first operation. Late-bound random-open updates
+retain their existing backend-populated late-bound fields. Under `MemberStreams.CONCURRENT`,
+overlapping first-touch materialization is coordinated: exactly one caller builds while
+others wait for the published snapshot (or a failed attempt returns to `UNMATERIALIZED`
+and wakes waiters to re-elect); no caller observes a partial cache. Without `CONCURRENT`,
+a second overlapping materialization SHALL raise `ArchiveyUsageError`. Distinct
+reader-wide passes remain single-owner. Late-bound random-open updates
 to a member MUST be idempotent and synchronized; conflicting last-writer-wins updates are
 forbidden. Materialization state is exactly `UNMATERIALIZED` / `MATERIALIZING` /
 `MATERIALIZED`; reader lifecycle is separate and MUST NOT add `CLOSED` to the cache state.
@@ -1062,10 +1066,12 @@ stream independent logical position/state. It MAY use per-open decoders or a syn
 bounded/spooled shared decode/materialization strategy; the contract neither requires
 one decoder per open nor promises elimination of redundant decompression.
 
-**Reader-wide operation ownership.** Public iteration, materialization, `scan_members`,
-`get_members_if_available` initialization, `stream_members`, `extract_all`, and reader
-`close` are single-owner operations and cannot overlap one another or the random worker seam.
-The base reader SHALL represent ownership with an explicit unforgeable root token, not thread
+**Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
+`stream_members`, `extract_all`) and `scan_members` / `get_members_if_available`
+initialization remain single-owner and cannot overlap one another or the random worker
+seam. Under `MemberStreams.CONCURRENT`, first-touch materialization is coordinated
+(wait/share) and `reader.close()` drains in-flight worker calls rather than rejecting
+them. The base reader SHALL represent ownership with an explicit unforgeable root token, not thread
 identity. Private helpers MAY receive that token to enter child scopes: materialization may
 perform link-data reads; a random worker `open()` may do name lookup/link following and late
 link-data reads; `extract_all` may inspect available members/source counters and drive one or
@@ -1077,8 +1083,9 @@ changing state; the earlier root and children remain usable.
 Random `open()` and each operation on a random-open stream SHALL hold a short-lived worker
 token only while that call executes. An idle open stream owns a lifecycle lease, not active
 operation ownership. It carries a private lease-bound entry capability so later stream I/O
-remains admissible after `reader.close()`. Thus reader close MAY run while streams are idle,
-but is rejected while a worker call is executing; closure does not enable any new reader API.
+remains admissible after `reader.close()`. Under `CONCURRENT`, `close()` waits for
+in-flight worker tokens to drain, then closes; without `CONCURRENT`, close is rejected while
+a worker call is executing. Closure does not enable any new reader API.
 
 "Overlap" means concurrent method/I/O execution, not the lifetime of an idle open member
 stream: a non-concurrent `reader.close()` MAY run while member streams remain open, and their
@@ -1129,25 +1136,34 @@ operations, or lifecycle lease release.
 - **THEN** both are correct on every format; `AccessCost` describes the expense but never
   denies the declared capability
 
-#### Scenario: materialization overlap is rejected without partial publication
+#### Scenario: concurrent first-touch materialization is coordinated
 
-- **WHEN** one thread is materializing a reader and another operation attempts to
-  materialize or open from the not-yet-published cache
-- **THEN** the later operation raises `ArchiveyUsageError`, and no caller observes a
-  partial member list/name index
+- **WHEN** several threads call `open()`, `members()`, or `get()` as first operations on
+  an un-materialized `CONCURRENT` reader
+- **THEN** exactly one thread performs materialization while the others wait, every
+  waiting thread proceeds against the published snapshot, and no thread receives
+  `ArchiveyUsageError` for the overlap
 
 #### Scenario: materialization failure does not close or poison the cache
 
 - **WHEN** a materialization owner fails before publication
 - **THEN** its private structures are discarded, cache state returns to `UNMATERIALIZED`,
-  and lifecycle remains independently `OPEN`
+  waiters are woken to re-elect or observe the error, and lifecycle remains independently
+  `OPEN`
 
-#### Scenario: reader-wide mutation does not overlap the worker seam
+#### Scenario: distinct passes do not overlap the worker seam
 
-- **WHEN** worker member-stream operations are active and iteration, `stream_members`,
-  `extract_all`, or reader `close()` is attempted concurrently
+- **WHEN** worker member-stream operations are active and `__iter__`, `stream_members`,
+  or `extract_all` is attempted concurrently
 - **THEN** the detected later operation raises `ArchiveyUsageError` without closing
   or corrupting the active member streams
+
+#### Scenario: concurrent close drains workers then closes
+
+- **WHEN** `reader.close()` is called under `CONCURRENT` while worker `open()`/`read()`
+  calls are executing
+- **THEN** `close()` blocks until those calls return, transitions to closed, and does not
+  raise merely because workers were active; escaped idle streams remain leased
 
 #### Scenario: solid concurrent streams are correct but may repeat work
 
@@ -1161,6 +1177,88 @@ operations, or lifecycle lease release.
   covered by the required CPython `3.13t` job
 - **THEN** cache publication, lifecycle leases, password state, and member/source positions
   remain data-race-free with the same observable results as a regular build
+
+### Requirement: Coordinated first-touch materialization
+
+A reader opened with `MemberStreams.CONCURRENT` SHALL coordinate concurrent first-touch
+operations on a not-yet-materialized member list by blocking all but one caller until the
+immutable snapshot is published, rather than rejecting the overlap. Materialization SHALL
+run exactly once, and the non-concurrent and uncontended paths SHALL be unchanged.
+
+#### Scenario: concurrent first-touch converges on one materialization
+
+- **WHEN** several threads call `open()`, `members()`, or `get()` simultaneously as the
+  first operations on an un-materialized `CONCURRENT` reader
+- **THEN** exactly one thread performs materialization while the others block on a
+  condition, and once the immutable snapshot is published every waiting thread proceeds
+  against it with no thread receiving `ArchiveyUsageError` for the overlap
+
+#### Scenario: failed first-touch wakes every waiter without a partial snapshot
+
+- **WHEN** the electing thread's first-touch materialization fails (for example a corrupt
+  header) while other threads are blocked waiting
+- **THEN** the cache returns to the un-materialized state, no partial snapshot is ever
+  observed, and each waiting thread either observes the same translated error or cleanly
+  re-elects a fresh attempt
+
+#### Scenario: uncontended and default paths are unchanged
+
+- **WHEN** materialization happens on a default (non-`CONCURRENT`) reader or with no
+  contention
+- **THEN** no waiting is introduced, and the member scan, link reads, and callbacks still
+  run with no reader-state lock held
+
+### Requirement: Draining reader close
+
+Under `MemberStreams.CONCURRENT`, `reader.close()` SHALL wait for in-flight worker
+`open()`/`read()` calls to return and then transition the reader to closed, rather than
+raising because workers are active. Escaped open member streams SHALL remain governed by
+the existing lifecycle-lease contract, and close idempotency, one-shot teardown, and
+post-close rejection SHALL be preserved.
+
+#### Scenario: close drains in-flight worker calls
+
+- **WHEN** a thread calls `reader.close()` while one or more worker `open()`/`read()` calls
+  are executing on other threads
+- **THEN** `close()` blocks until those calls return, then transitions the reader to
+  closed, and does not raise `ArchiveyUsageError` merely because workers were active
+
+#### Scenario: escaped stream survives a drained close
+
+- **WHEN** a member stream that escaped the reader is still open as `close()` returns
+- **THEN** it remains readable under the lifecycle-lease contract until its own `close()`,
+  and archive teardown runs exactly once after the final lease is released
+
+#### Scenario: concurrent double close is idempotent
+
+- **WHEN** two threads call `reader.close()` (or `__exit__`) simultaneously
+- **THEN** teardown runs exactly once, both calls return without error, and simultaneous
+  inner-close and teardown failures surface once as an `ExceptionGroup`
+
+#### Scenario: operations after close still reject
+
+- **WHEN** a new `open()` or other reader operation is attempted after `close()` returned
+- **THEN** it raises `ArchiveyUsageError` (post-close), unchanged from today
+
+### Requirement: Distinct passes and shared streams remain single-owner
+
+Overlapping *distinct* reader-wide passes or concurrent access to a single stream object
+SHALL remain rejected or caller-synchronized, so the coordinated contract stays bounded to
+materialization and close.
+
+#### Scenario: a different reader-wide pass is still rejected
+
+- **WHEN** a reader is running `extract_all()` or an active `stream_members()` pass and
+  another thread starts a different pass (`__iter__`, `stream_members()`, or
+  `extract_all()`)
+- **THEN** the later operation is rejected with `ArchiveyUsageError`, unchanged
+
+#### Scenario: same-stream access stays the caller's responsibility
+
+- **WHEN** two threads call `read`/`readinto`/`seek`/`close` on the same `ArchiveStream`
+  object concurrently
+- **THEN** correctness is the caller's responsibility under standard file semantics; this
+  change adds no per-stream locking
 
 #### Scenario: unsupported seek keeps normal stream semantics
 
