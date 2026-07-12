@@ -12,6 +12,7 @@ from archivey import extract, open_archive
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
 from archivey.internal.volumes import discover_volume_siblings, join_volumes
 from archivey.types import ArchiveFormat
+from tests.conftest import requires_binary
 
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
@@ -72,11 +73,44 @@ def test_join_7z_volumes_rejects_numbering_gaps(tmp_path: Path) -> None:
         join_volumes(paths)
 
 
-def test_multi_volume_rar_raises_phase7_message(tmp_path: Path) -> None:
+def test_multi_volume_rar_opens_volume_set_or_rejects_stub(tmp_path: Path) -> None:
+    # Magic-only stubs are discovered as a volume set. The native parser may open
+    # them as an empty archive (EOF after the signature) or raise on truncated
+    # headers — either is acceptable; what matters is we no longer stub with Phase 7.
     for name in ("set.part1.rar", "set.part2.rar"):
         (tmp_path / name).write_bytes(_RAR_MAGIC)
-    with pytest.raises(UnsupportedFeatureError, match="Phase 7"):
-        open_archive(tmp_path / "set.part1.rar", format=ArchiveFormat.RAR)
+    try:
+        with open_archive(
+            tmp_path / "set.part1.rar", format=ArchiveFormat.RAR
+        ) as archive:
+            assert archive.info.is_multivolume is True
+            assert archive.info.extra.get("rar.volume_count") == 2
+    except (CorruptionError, UnsupportedFeatureError, TruncatedError):
+        pass
+
+
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_multi_volume_rar_real_roundtrip(tmp_path: Path) -> None:
+    import subprocess
+
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"VOLDATA!" * 100)
+    result = subprocess.run(
+        ["rar", "a", "-m0", "-v400b", str(tmp_path / "set.rar"), str(payload.name)],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"rar cannot build multi-volume fixture: {result.stderr!r}")
+    part1 = tmp_path / "set.part1.rar"
+    if not part1.is_file() or not (tmp_path / "set.part2.rar").is_file():
+        pytest.skip("rar did not produce a multi-volume set")
+
+    with open_archive(part1) as archive:
+        assert archive.info.is_multivolume is True
+        assert archive.read("payload.bin") == payload.read_bytes()
 
 
 def test_explicit_multi_source_tar_raises_not_multivolume(tmp_path: Path) -> None:

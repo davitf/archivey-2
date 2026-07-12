@@ -49,7 +49,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     source_name,
 )
-from archivey.internal.volumes import OpenSourceInput, resolve_source
+from archivey.internal.volumes import ConcatenatedFile, OpenSourceInput, resolve_source
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams, StreamFormat
 
@@ -80,13 +80,6 @@ __all__ = [
 def _raise_multi_volume_not_supported(
     fmt: ArchiveFormat, archive_name: str | None
 ) -> None:
-    if fmt.container == ContainerFormat.RAR:
-        raise UnsupportedFeatureError(
-            f"Multi-volume {fmt.container.value} archives are not supported yet "
-            f"(lands in Phase 7).",
-            source_format=fmt,
-            archive_name=archive_name,
-        )
     raise UnsupportedFeatureError(
         f"Format {fmt!r} does not support multi-volume archives.",
         source_format=fmt,
@@ -142,8 +135,8 @@ def open_archive(
     without manual slicing).
 
     ``source`` may be an ordered sequence of paths or binary streams that together form
-    a multi-volume archive (volume joining lands in Phase 7). A length-1 sequence is
-    treated as a single source.
+    a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
+    ``unrar`` resolve siblings). A length-1 sequence is treated as a single source.
 
     ``password`` accepts a single value, an ordered sequence of candidate passwords, or
     a provider callable. List the most likely password first — especially for 7z, where
@@ -196,8 +189,21 @@ def open_archive(
         detected = detect_format(open_source, collector=collector)
         format = detected.format
 
-    if resolved.volume_count > 1 and format.container != ContainerFormat.SEVEN_Z:
+    if resolved.volume_count > 1 and format.container not in (
+        ContainerFormat.SEVEN_Z,
+        ContainerFormat.RAR,
+    ):
         _raise_multi_volume_not_supported(format, archive_name)
+
+    # RAR multi-volume: unrar needs real sibling volume files on disk. When
+    # resolve_source concatenated an explicit path sequence, reopen volume 1 only.
+    if format.container == ContainerFormat.RAR and isinstance(
+        open_source, ConcatenatedFile
+    ):
+        volume_paths = open_source.volume_paths
+        if volume_paths:
+            open_source.close()
+            open_source = volume_paths[0]
 
     registry = get_registry()
     backend_cls = registry.reader_for_format(format)

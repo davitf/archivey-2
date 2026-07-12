@@ -1,4 +1,4 @@
-"""Multi-volume path discovery and joining (7z concatenation; RAR join later)."""
+"""Multi-volume path discovery and joining (7z concatenation; RAR keeps volume-1 path)."""
 
 from __future__ import annotations
 
@@ -130,6 +130,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             raise ValueError("at least one volume is required")
         self._streams: list[BinaryIO] = []
         self._owned: list[BinaryIO] = []
+        # Retained so format-specific openers (RAR) can recover real volume paths —
+        # unrar needs sibling files on disk, not a concatenated byte stream.
+        self._volume_paths: list[Path] = [
+            source for source in sources if isinstance(source, Path)
+        ]
+        self._volume_items: list[Path | BinaryIO] = list(sources)
         offsets = [0]
         total = 0
         for source in sources:
@@ -151,6 +157,18 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         self._size = total
         self._pos = 0
         self.volume_count = len(sources)
+
+    @property
+    def volume_paths(self) -> list[Path]:
+        """Path volumes in order, when every volume was a ``Path``; else empty."""
+        if len(self._volume_paths) != self.volume_count:
+            return []
+        return list(self._volume_paths)
+
+    @property
+    def volume_items(self) -> list[Path | BinaryIO]:
+        """Original volume sources in order (paths and/or streams)."""
+        return list(self._volume_items)
 
     @property
     def size(self) -> int:

@@ -200,18 +200,19 @@ delta shared with O3/O4.
 
 ## OPEN gaps — compatibility
 
-### C1. The RAR decompressor matrix (and unrar licensing)
+### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed
 
 RAR member data requires an external tool. `unrar` is **non-free** (freeware license);
 `unrar-free` handles little of RAR5; `7z`/`bsdtar` coverage varies by build; `unar`
-exists on macOS. "Maximum compatibility" will otherwise degrade into "works on my
-machine".
+exists on macOS. A multi-tool fallback matrix would otherwise degrade into "works on my
+machine" plus divergent solid/password behavior.
 
-*Direction:* decide and **test** a supported decompressor matrix (candidate: prefer
-`unrar`, fall back `7z`, document capabilities per tool), surface which tool was used
-via `MissingComponent`-style data, and document the licensing situation prominently
-(archivey itself stays permissively licensed; the binary is a system dependency).
-Feeds the Phase-6 native-RAR design directly.
+*Decision (closed):* Archivey supports **RARLAB `unrar` only** for RAR member data.
+Non-RARLAB binaries on `PATH` raise `PackageNotInstalledError` naming RARLAB `unrar`;
+there is no silent fallback to `unrar-free` / `unar` / `7z`. Licensing remains a
+documented system dependency (archivey itself stays permissively licensed). See
+ADR [`0002-native-rar-metadata-unrar-data`](../decisions/0002-native-rar-metadata-unrar-data.md)
+and OpenSpec `format-rar`.
 
 ### C2. Warnings that should be data — addressed
 

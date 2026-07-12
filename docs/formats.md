@@ -54,7 +54,7 @@ Recommended installs: `archivey[recommended]` or `archivey[recommended-lite]` (n
 
 ## RAR
 
-- Metadata / listing: native RAR3/RAR5 parser (works without `unrar`).
+- Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
 - Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free` / `unar`).
 - `[rar]` / `[crypto]`: header-encrypted RAR5 and Blake2sp verification.
 - Solid archives: one `unrar p` pipe for `stream_members()`; random solid opens may use
