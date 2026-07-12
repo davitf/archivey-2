@@ -151,8 +151,11 @@ points at `_assert_roundtrip` / native codec reads (py7zr-built fixtures: LZMA2,
 brotli, …), but heap corruption is typically detected *after* the guilty native call, so the
 exact codec/library is not reliably identified from one failure.
 
-**Mitigation:** on `win32`, each codec parametrization of that test runs in its own subprocess.
-A native abort then fails only that label (with the NTSTATUS in the assertion message) instead of
-taking down the whole pytest process. Not a product-runtime change — archivey's public API is
-unchanged. If a specific codec starts failing consistently under isolation, treat that as a
+**Mitigation:** on `win32`, each codec parametrization of that test runs in its own subprocess
+with faulthandler enabled and flushed phase breadcrumbs (`phase.txt`: build → open → list →
+per-member read). A native abort then fails only that label; the pytest failure message includes
+NTSTATUS (named when known), last phase, native-lib versions/paths, and child stdout/stderr —
+so the next occurrence should name the codec and the step that died. Not a product-runtime
+change. If a specific codec starts failing consistently under isolation, treat that as a
 reproducible lead against the corresponding native wheel (`pyppmd` / `brotli` / `pybcj` / …).
+

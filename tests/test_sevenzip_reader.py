@@ -95,6 +95,64 @@ def _codec_roundtrip_body(
     _assert_roundtrip(archive, _FILES)
 
 
+# NTSTATUS values Windows has surfaced (or may surface) for native aborts in this suite.
+_WINDOWS_NTSTATUS: dict[int, str] = {
+    0xC0000005: "STATUS_ACCESS_VIOLATION",
+    0xC0000374: "STATUS_HEAP_CORRUPTION",
+    0xC0000409: "STATUS_STACK_BUFFER_OVERRUN",  # rapidgzip shutdown canary on win32
+    0xC00000FD: "STATUS_STACK_OVERFLOW",
+    0xC0000094: "STATUS_INTEGER_DIVIDE_BY_ZERO",
+    0x80000003: "STATUS_BREAKPOINT",
+}
+
+
+def _format_windows_rc(returncode: int) -> str:
+    """Human-readable subprocess return code, including known NTSTATUS names."""
+    unsigned = returncode & 0xFFFFFFFF
+    if returncode < 0 or returncode > 255:
+        name = _WINDOWS_NTSTATUS.get(unsigned)
+        if name is not None:
+            return f"0x{unsigned:08X} ({name}); signed={returncode}"
+        # Small negatives are usually POSIX signal exits (-N == signal N), not NTSTATUS.
+        if -64 < returncode < 0:
+            return f"{returncode} (likely signal {-returncode})"
+        return f"0x{unsigned:08X} (unknown); signed={returncode}"
+    return str(returncode)
+
+
+_NATIVE_PROBE_MODULES: tuple[str, ...] = (
+    "py7zr",
+    "bcj",
+    "pyppmd",
+    "brotli",
+    "inflate64",
+    "rapidgzip",
+    "Cryptodome",
+    "cryptography",
+    # Stdlib codecs the native 7z reader also uses:
+    "lzma",
+    "_lzma",
+    "bz2",
+    "_bz2",
+    "zlib",
+)
+
+
+def _native_extension_probe() -> str:
+    """Versions + file paths of native libs the codec matrix may load."""
+    lines: list[str] = []
+    for mod_name in _NATIVE_PROBE_MODULES:
+        try:
+            mod = __import__(mod_name)
+        except ImportError as exc:
+            lines.append(f"  {mod_name}: NOT IMPORTABLE ({exc})")
+            continue
+        ver = getattr(mod, "__version__", getattr(mod, "version", "?"))
+        path = getattr(mod, "__file__", "?")
+        lines.append(f"  {mod_name}: version={ver!s} path={path}")
+    return "\n".join(lines)
+
+
 def _windows_isolated_codec_roundtrip(
     tmp_path: Path, label: str, filter_names: tuple[str, ...]
 ) -> None:
@@ -104,21 +162,109 @@ def _windows_isolated_codec_roundtrip(
     ``test_py7zr_codec_fixtures_roundtrip``, aborting the entire pytest process. Isolating
     each codec contains the blast radius and surfaces which label crashed (non-zero rc /
     NTSTATUS) instead of a suite-wide fatal exception with an ambiguous stack.
+
+    The child writes flushed phase breadcrumbs to ``phase.txt`` so a hard abort still
+    leaves a last-known step for the parent to report.
     """
-    work = tmp_path / "win-iso"
+    import platform
+
+    work = tmp_path / f"win-iso-{label}"
     work.mkdir()
-    # Driver imports this module's helpers under a PYTHONPATH matching pyproject.
+    phase_path = work / "phase.txt"
+    archive_path = work / f"{label}.7z"
+    diag_path = work / "diag.txt"
+    probe_mods = ", ".join(repr(m) for m in _NATIVE_PROBE_MODULES)
+
+    # Driver: faulthandler + phase breadcrumbs + native-lib probe. Keep it self-contained
+    # so a hard abort still leaves phase.txt / diag.txt for the parent to print.
     driver = work / "_driver.py"
     driver.write_text(
         "\n".join(
             [
-                "from pathlib import Path",
+                "from __future__ import annotations",
+                "import faulthandler",
+                "import os",
+                "import platform",
                 "import sys",
-                "from tests.test_sevenzip_reader import _codec_roundtrip_body",
+                "import traceback",
+                "from pathlib import Path",
+                "",
+                "faulthandler.enable(all_threads=True, file=sys.stderr)",
+                "",
                 f"label = {label!r}",
                 f"filter_names = {filter_names!r}",
                 f"workdir = Path({str(work)!r})",
-                "_codec_roundtrip_body(workdir, label, filter_names)",
+                f"phase_path = Path({str(phase_path)!r})",
+                f"diag_path = Path({str(diag_path)!r})",
+                f"archive_path = Path({str(archive_path)!r})",
+                f"probe_mods = ({probe_mods},)",
+                "",
+                "def _phase(msg: str) -> None:",
+                "    # Flushed line so a hard abort still leaves the last known step.",
+                "    line = msg + '\\n'",
+                "    with phase_path.open('a', encoding='utf-8') as fh:",
+                "        fh.write(line)",
+                "        fh.flush()",
+                "        os.fsync(fh.fileno())",
+                "    print(f'[phase] {msg}', flush=True)",
+                "",
+                "def _probe() -> str:",
+                "    lines = [",
+                "        f'python={sys.version!r}',",
+                "        f'executable={sys.executable!r}',",
+                "        f'platform={platform.platform()!r}',",
+                "        f'machine={platform.machine()!r}',",
+                "        f'label={label!r}',",
+                "        f'filter_names={filter_names!r}',",
+                '        f\'PYTHONPATH={os.environ.get("PYTHONPATH", "")!r}\',',
+                "    ]",
+                "    for mod_name in probe_mods:",
+                "        try:",
+                "            mod = __import__(mod_name)",
+                "        except ImportError as exc:",
+                "            lines.append(f'{mod_name}: NOT IMPORTABLE ({exc})')",
+                "            continue",
+                "        ver = getattr(mod, '__version__', getattr(mod, 'version', '?'))",
+                "        path = getattr(mod, '__file__', '?')",
+                "        lines.append(f'{mod_name}: version={ver!s} path={path}')",
+                "    return '\\n'.join(lines)",
+                "",
+                "try:",
+                "    _phase('start')",
+                "    diag_path.write_text(_probe() + '\\n', encoding='utf-8')",
+                "    _phase('diag-written')",
+                "    from archivey import open_archive",
+                "    from tests.test_sevenzip_reader import (",
+                "        _FILES,",
+                "        _filters,",
+                "        _write_py7zr_archive,",
+                "    )",
+                "    _phase('imports-ok')",
+                "    _phase(f'building-archive filters={filter_names!r}')",
+                "    _write_py7zr_archive(archive_path, _FILES, filters=_filters(*filter_names))",
+                "    size = archive_path.stat().st_size if archive_path.exists() else -1",
+                "    head = archive_path.read_bytes()[:32].hex() if archive_path.exists() else ''",
+                "    _phase(f'archive-built path={archive_path} size={size} head32={head}')",
+                "    _phase('open_archive')",
+                "    with open_archive(archive_path) as archive:",
+                "        _phase('list_members')",
+                "        members = {",
+                "            member.name: member",
+                "            for member in archive.members()",
+                "            if member.is_file",
+                "        }",
+                "        _phase(f'listed count={len(members)} names={sorted(members)!r}')",
+                "        assert set(members) == set(_FILES)",
+                "        for name in sorted(_FILES):",
+                "            _phase(f'read_member:{name}:start')",
+                "            data = archive.read(members[name])",
+                "            _phase(f'read_member:{name}:done len={len(data)}')",
+                "            assert data == _FILES[name]",
+                "    _phase('roundtrip-ok')",
+                "except BaseException:",
+                "    _phase('exception')",
+                "    traceback.print_exc()",
+                "    raise",
             ]
         ),
         encoding="utf-8",
@@ -132,25 +278,54 @@ def _windows_isolated_codec_roundtrip(
             env.get("PYTHONPATH", ""),
         ]
     )
+    # Prefer a full faulthandler dump on fatal native errors when the CRT cooperates.
+    env.setdefault("PYTHONFAULTHANDLER", "1")
+
     proc = subprocess.run(
-        [sys.executable, str(driver)],
+        [sys.executable, "-u", str(driver)],  # -u: unbuffered so phase prints survive
         capture_output=True,
         text=True,
         env=env,
         timeout=120,
         check=False,
     )
-    if proc.returncode != 0:
-        # Windows aborts often surface as large unsigned NTSTATUS values (e.g. 0xC0000374).
-        rc_disp = (
-            f"0x{proc.returncode & 0xFFFFFFFF:08X}"
-            if proc.returncode < 0 or proc.returncode > 255
-            else str(proc.returncode)
+    if proc.returncode == 0:
+        return
+
+    phase_text = (
+        phase_path.read_text(encoding="utf-8") if phase_path.exists() else "<missing>"
+    )
+    diag_text = (
+        diag_path.read_text(encoding="utf-8") if diag_path.exists() else "<missing>"
+    )
+    archive_info = "<not created>"
+    if archive_path.exists():
+        head = archive_path.read_bytes()[:32].hex()
+        archive_info = (
+            f"path={archive_path} size={archive_path.stat().st_size} "
+            f"head32={head} "
+            f"(preserved under tmp_path for CI artifact upload if configured)"
         )
-        pytest.fail(
-            f"Windows-isolated codec roundtrip[{label}] failed (rc={rc_disp})\n"
-            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        )
+
+    parent_probe = _native_extension_probe()
+    pytest.fail(
+        "Windows-isolated codec roundtrip FAILED — details for the next investigation:\n"
+        f"  label={label!r}\n"
+        f"  filter_names={filter_names!r}\n"
+        f"  returncode={_format_windows_rc(proc.returncode)}\n"
+        f"  parent python={sys.version!r}\n"
+        f"  parent executable={sys.executable!r}\n"
+        f"  parent platform={platform.platform()!r}\n"
+        f"  child archive: {archive_info}\n"
+        f"--- child phase breadcrumbs (last line = last step before abort) ---\n"
+        f"{phase_text}"
+        f"--- child diag (native libs / versions as seen in the child) ---\n"
+        f"{diag_text}"
+        f"--- parent native-lib probe ---\n"
+        f"{parent_probe}\n"
+        f"--- child stdout ---\n{proc.stdout}\n"
+        f"--- child stderr (faulthandler dumps land here) ---\n{proc.stderr}\n"
+    )
 
 
 @pytest.mark.parametrize(
