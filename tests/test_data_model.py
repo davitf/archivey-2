@@ -105,12 +105,14 @@ def test_anti_and_current_defaults_and_equality() -> None:
     assert default.is_anti is False
     assert default.is_current is True
 
-    # Both flags participate in equality.
-    anti = ArchiveMember(type=MemberType.FILE, name="a.txt", is_anti=True)
+    # is_anti is derived from type; is_current remains a field in equality.
+    anti = ArchiveMember(type=MemberType.ANTI, name="a.txt")
+    assert anti.is_anti is True
+    assert anti.is_file is False
     assert anti != default
     superseded = ArchiveMember(type=MemberType.FILE, name="a.txt", is_current=False)
     assert superseded != default
-    assert anti == ArchiveMember(type=MemberType.FILE, name="a.txt", is_anti=True)
+    assert anti == ArchiveMember(type=MemberType.ANTI, name="a.txt")
 
 
 def test_single_codec_member_compression_shape() -> None:
@@ -128,6 +130,8 @@ def test_type_helpers() -> None:
     assert ArchiveMember(type=MemberType.SYMLINK, name="s").is_link
     assert ArchiveMember(type=MemberType.HARDLINK, name="h").is_link
     assert ArchiveMember(type=MemberType.OTHER, name="o").is_other
+    assert ArchiveMember(type=MemberType.ANTI, name="a").is_anti
+    assert not ArchiveMember(type=MemberType.ANTI, name="a").is_file
 
 
 def test_junction_helper() -> None:

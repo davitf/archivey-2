@@ -12,6 +12,7 @@ import pytest
 
 from archivey import ExtractionStatus, open_archive
 from archivey.exceptions import (
+    ArchiveyUsageError,
     EncryptionError,
     PackageNotInstalledError,
     UnsupportedFeatureError,
@@ -20,6 +21,7 @@ from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFo
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.streams import codecs, crypto
+from archivey.types import MemberType
 from tests.conftest import requires, requires_binary, requires_zstd
 
 _FILES = {
@@ -412,13 +414,24 @@ def test_synthetic_anti_item_lists_and_extracts_safely(tmp_path: Path) -> None:
     with open_archive(archive) as reader:
         content, anti = reader.members()
         assert content.name == "gone.txt"
+        assert content.type is MemberType.FILE
         assert content.is_anti is False
         assert content.is_current is False
         assert anti.name == "gone.txt"
+        assert anti.type is MemberType.ANTI
         assert anti.is_anti is True
+        assert anti.is_file is False
         assert anti.is_current is True
         assert reader.read(content) == b"obsolete"
-        assert reader.read(anti) == b""
+        with pytest.raises(ArchiveyUsageError, match="anti"):
+            reader.read(anti)
+        for member, stream in reader.stream_members():
+            if member.is_anti:
+                assert stream is None
+            elif member.is_file:
+                assert stream is not None
+                stream.read()
+                stream.close()
 
     fresh = tmp_path / "fresh"
     with open_archive(archive) as reader:
@@ -484,10 +497,13 @@ def test_anti_item_fresh_extract_matches_7z_cli(tmp_path: Path) -> None:
     with open_archive(archive) as reader:
         members = reader.members()
         by_name = {m.name: m for m in members}
+        assert by_name["gone.txt"].type is MemberType.ANTI
         assert by_name["gone.txt"].is_anti is True
         assert by_name["gone.txt"].is_current is True
         assert by_name["keep.txt"].is_anti is False
         assert by_name["keep.txt"].is_current is True
+        with pytest.raises(ArchiveyUsageError):
+            reader.read(by_name["gone.txt"])
 
     archivey_dest = tmp_path / "archivey"
     cli_dest = tmp_path / "cli"

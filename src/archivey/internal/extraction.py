@@ -286,13 +286,18 @@ class ExtractionCoordinator:
 
         for original, stream in reader.stream_members(stream_selector):
             try:
-                if not original.is_current:
+                # User filter sees every selected member (including non-current); the
+                # is_current skip is hardwired after the filter and does not force a write
+                # even if the filter returns the member.
+                transformed = self._transform(original, dest_root)
+                if transformed is None:
+                    # Filter-skipped: no result; still counts as processed for progress.
+                    pass
+                elif not original.is_current:
                     results.append(
                         ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
                     )
-                    continue
-                transformed = self._transform(original, dest_root)
-                if transformed is not None:
+                else:
                     result_index = len(results)
                     results.append(
                         ExtractionResult(original, None, ExtractionStatus.FAILED, None)
@@ -311,31 +316,28 @@ class ExtractionCoordinator:
                             forward_only,
                             result_index,
                         )
-                        continue
-                    # Entry-count guard + ratio bookkeeping. Counted only once the
-                    # selector and user filter have accepted the member (and the
-                    # universal check inside _transform has passed), immediately before
-                    # writing begins — so selector-skipped, filter-skipped, and rejected
-                    # members create nothing on disk and do not count toward max_entries
-                    # (resolved 2026-07 decision).
-                    tracker.start_member(original)
+                    else:
+                        # Entry-count guard + ratio bookkeeping. Counted only once the
+                        # selector and user filter have accepted the member (and the
+                        # universal check inside _transform has passed), immediately before
+                        # writing begins — so selector-skipped, filter-skipped, and rejected
+                        # members create nothing on disk and do not count toward max_entries
+                        # (resolved 2026-07 decision).
+                        tracker.start_member(original)
 
-                    results[result_index] = self._write_member(
-                        original,
-                        transformed,
-                        stream,
-                        dest,
-                        dest_root,
-                        tracker,
-                        source_paths,
-                        written_paths,
-                        orphans,
-                        forward_only,
-                        result_index,
-                    )
-                # A filter-skipped member (transformed is None) records no result, but
-                # still counts as processed for progress below — it is one of the
-                # selected members this pass walked over.
+                        results[result_index] = self._write_member(
+                            original,
+                            transformed,
+                            stream,
+                            dest,
+                            dest_root,
+                            tracker,
+                            source_paths,
+                            written_paths,
+                            orphans,
+                            forward_only,
+                            result_index,
+                        )
             except (_AlwaysStopExtractionError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:

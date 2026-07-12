@@ -300,6 +300,7 @@ class MemberType(Enum):
     SYMLINK   = "symlink"       # includes Windows junction (flagged via extra["is_junction"])
     HARDLINK  = "hardlink"
     OTHER     = "other"         # device nodes, FIFOs, sockets — extraction always rejected
+    ANTI      = "anti"          # deletion / tombstone marker (e.g. 7z ANTI bit)
 ```
 
 ### 4.3 CompressionAlgo and CompressionMethod

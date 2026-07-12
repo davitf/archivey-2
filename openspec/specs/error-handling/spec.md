@@ -89,7 +89,12 @@ Its message SHALL include the recorded `open_archive()` call site (`file:line`).
 - same-reader password-provider reentry into password-requiring work;
 - using an `ArchiveMember` from another reader;
 - member I/O after a caller closes its supplied source early;
-- `open_archive(streaming=True, member_streams=...CONCURRENT...)`.
+- `open_archive(streaming=True, member_streams=...CONCURRENT...)`;
+- `open()` / `read()` of a resolved non-payload member (`DIRECTORY`, `ANTI`,
+  `OTHER`). A symlink/hardlink that fails to resolve remains
+  `LinkTargetNotFoundError` (`ArchiveyError`) — that is an archive property,
+  not caller misuse. A link that resolves to a non-`FILE` then hits the
+  non-payload rule above.
 
 The later operation SHALL fail before changing state and MUST leave the earlier
 operation/stream usable. Internal owner-child operations are exempt only through
@@ -109,6 +114,8 @@ raise `io.UnsupportedOperation`.
 | Unsupported `seek()` on a stream | `io.UnsupportedOperation`, not archivey-typed |
 | Caller closes supplied `BinaryIO` before escaped stream finishes | Later member I/O raises `ArchiveyUsageError` |
 | Declared `CONCURRENT`, post-materialization independent streams | No concurrency exception |
+| `open`/`read` on a directory or anti-item | `ArchiveyUsageError` (not `ArchiveyError`, not raw OS/format error) |
+| `open`/`read` symlink with missing target | `LinkTargetNotFoundError` (`ArchiveyError`), not `ArchiveyUsageError` |
 
 ### Requirement: Close teardown failures preserve state and causes
 
