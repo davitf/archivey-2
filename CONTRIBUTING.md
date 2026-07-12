@@ -3,8 +3,11 @@
 Thanks for working on Archivey! This file is the **coding and testing standards**;
 the *design* lives elsewhere and is authoritative:
 
-- `SPEC.md`, `ARCHITECTURE.md`, `COMPARISON.md`, `PLAN.md` — prose design + roadmap.
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs.
+- `docs/` — end-user guide; `docs/decisions/` — design decision log; `docs/internal/` —
+  threat model / codec analysis; `docs/grab-bag/` — historical SPEC/ARCHITECTURE/
+  COMPARISON/ASYNC and explorations (not normative).
+- `VISION.md`, `PLAN.md`, `IDEAS.md` — vision, roadmap, backlog.
 - `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
   edit shipped specs ad hoc). Default schema is `library` (compact library-style
   deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.

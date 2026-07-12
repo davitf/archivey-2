@@ -7,12 +7,17 @@ library: read, stream, and safely extract ZIP / TAR / RAR / 7z / ISO / directory
 ## Where things live
 
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
-  strategy; the tie-breaker when trade-offs conflict.
-- `SPEC.md`, `ARCHITECTURE.md`, `COMPARISON.md`, `PLAN.md` — the original prose
-  design docs (reference). `PLAN.md` is the phased implementation roadmap
-  (resequenced 2026-07: native 7z/RAR before CLI before writing).
-- `docs/threat-model.md` — trust boundaries + the open security/compat gap register
-  (each open item becomes an OpenSpec change when tackled).
+  strategy; the tie-breaker when trade-offs conflict. End-user distill:
+  `docs/philosophy.md`.
+- `PLAN.md` — phased implementation roadmap (resequenced 2026-07: native 7z/RAR
+  before CLI before writing). `IDEAS.md` — speculative backlog.
+- `docs/` — end-user MkDocs guide (`philosophy`, `usage`, `costs`, `formats`,
+  `safe-extraction`, `api`). `docs/decisions/` — ADR-style “why” log.
+  `docs/internal/` — threat model, codec analysis, known issues.
+  `docs/grab-bag/` — historical `SPEC` / `ARCHITECTURE` / `COMPARISON` / `ASYNC`
+  and explorations (not normative; triage later).
+- `docs/internal/threat-model.md` — trust boundaries + the open security/compat gap
+  register (each open item becomes an OpenSpec change when tackled).
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs
   (OpenSpec format: requirements + WHEN/THEN scenarios). The specs are authoritative,
   but when they disagree with the prose docs (or with each other), **pause and surface

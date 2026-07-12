@@ -239,4 +239,4 @@ must use real synchronization rather than relying on the GIL. Parallel extractio
 remains future, and speed claims require measurements proportionate to the mechanism changed.
 Accelerator close-before-finalize
 (`known-issues.md`) still applies, so member-stream lifecycle leases defer backend teardown
-until the final stream closes. See [`parallel-reader.md`](parallel-reader.md) §4.
+until the final stream closes. See [`parallel-reader.md`](../grab-bag/parallel-reader.md) §4.

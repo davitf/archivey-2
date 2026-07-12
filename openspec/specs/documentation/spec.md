@@ -62,16 +62,31 @@ the build.
 
 ### Requirement: Per-format compression-library choices are documented
 
-The documentation SHALL include `docs/library-analysis.md`. For each read codec it
-MUST name the chosen library, alternatives considered, and criteria:
+The documentation SHALL include `docs/internal/library-analysis.md`. For each read
+codec it MUST name the chosen library, alternatives considered, and criteria:
 non-seekability, seeking, corruption/truncation detection, error fidelity,
-installability, and maintenance. Each decision SHALL be self-contained; external
-links such as `davitf/archivey-dev#214` MAY provide provenance but MUST NOT replace
-the recorded rationale.
+installability, and maintenance.
+Each decision SHALL be self-contained; external links such as
+`davitf/archivey-dev#214` MAY provide provenance but MUST NOT replace the recorded
+rationale.
 
 #### Scenario: library-analysis matrix
 
 | Case | Expected |
 | --- | --- |
-| Contributor reads `docs/library-analysis.md` | Each read codec (gzip, bzip2, xz/lzma, lzip, zstd, lz4, brotli, unix-compress, deflate64, ppmd) has chosen library, rejected alternatives, and rationale |
+| Contributor reads `docs/internal/library-analysis.md` | Each read codec (gzip, bzip2, xz/lzma, lzip, zstd, lz4, brotli, unix-compress, deflate64, ppmd) has chosen library, rejected alternatives, and rationale |
 | XZ decision is documented | Native-parser rationale is recorded in full, including why stdlib `lzma.open` and `python-xz` were rejected; external link is provenance only |
+
+### Requirement: End-user guide is separate from internal reference
+
+The MkDocs site SHALL present an end-user narrative (philosophy, basic usage, access
+costs/pitfalls, formats/extras, safe extraction, API reference) distinct from
+contributor material (decision log, threat model, codec analysis, known issues) and
+from the non-normative grab-bag of historical prose and explorations.
+
+#### Scenario: docs information architecture
+
+| Case | Expected |
+| --- | --- |
+| User opens the docs home | User-guide pages are primary navigation; internal/grab-bag are clearly secondary |
+| Contributor looks up “why not py7zr” | Answer is in `docs/decisions/` (and/or library analysis), not mixed into basic usage |

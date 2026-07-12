@@ -67,7 +67,7 @@ and that documented misuse still raises `ArchiveyUsageError` /
 
 A small script (or documented recipe) records TAR/ISO lock wall and wait/hold samples
 under representative loads. Checked into `benchmarks/` or referenced from
-`docs/parallel-reader.md`. No CI fail threshold; later perf claims need before/after of
+`docs/grab-bag/parallel-reader.md`. No CI fail threshold; later perf claims need before/after of
 the same recipe.
 
 ### D6. Provisional language removal is documentation-only for the API

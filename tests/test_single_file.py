@@ -446,7 +446,7 @@ def test_read_after_reader_and_source_close_raises_typed_error() -> None:
     # reader boundary — never a raw ValueError. (Reader close alone does NOT invalidate
     # member streams: the SharedSource is non-owning and deliberately left open, matching
     # ZIP/path-source behavior — and killing the source under a live rapidgzip stream
-    # would abort the process; see docs/known-issues.md.) Pinned to the stdlib gzip path
+    # would abort the process; see docs/internal/known-issues.md.) Pinned to the stdlib gzip path
     # with an incompressible payload larger than its read-ahead, so the post-close read
     # deterministically touches the closed source (the accelerator may buffer a small
     # member whole on its first read — and terminates on a dead source, per above).

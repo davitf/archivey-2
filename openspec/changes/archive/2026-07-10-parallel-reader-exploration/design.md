@@ -9,7 +9,7 @@
 
 This change has **one committed outcome** (the scoped `_open_member` reentrancy invariant + an
 ABC docstring) and an **analysis** that seeds a future `parallel-extraction` change. The
-durable analysis lives in `docs/parallel-reader.md` (audit table + §§2–7 below summarized).
+durable analysis lives in `docs/grab-bag/parallel-reader.md` (audit table + §§2–7 below summarized).
 
 ## Committed now
 
@@ -37,13 +37,13 @@ durable analysis lives in `docs/parallel-reader.md` (audit table + §§2–7 bel
 | TAR-RA | Exempt (single shared `tarfile`) |
 | ISO | Compliant on archivey state; pycdlib-owned addressing (not non-compliant) |
 
-Full table: `docs/parallel-reader.md` §1.
+Full table: `docs/grab-bag/parallel-reader.md` §1.
 
 ## Analysis conclusions (tasks 2.1–2.6)
 
 1. **Member-cache safety** — recommend the materialize-before-fan-out precondition for v1;
    optional init-under-lock only if a parallel feature wants defense-in-depth.
-2. **Benchmark design** — workloads/metrics/runtimes sketched in `docs/parallel-reader.md` §3;
+2. **Benchmark design** — workloads/metrics/runtimes sketched in `docs/grab-bag/parallel-reader.md` §3;
    home `benchmarks/`; decide the feature with numbers per `VISION.md`.
 3. **Free-threading (C4 draft)** — keep "one reader per thread" public; parallel work is
    across independent units; accelerator close-before-finalize still applies. Promote into

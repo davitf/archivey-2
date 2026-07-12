@@ -43,7 +43,7 @@
 - [x] 3.2 Ensure TAR-RA and ISO support simultaneous random-access streams under declared
       `MemberStreams.CONCURRENT`, with no TAR/ISO-specific exemption; the lock mechanism is
       not instantiated for undeclared (default single-stream) readers
-- [x] 3.3 Update `docs/parallel-reader.md` TAR-RA/ISO rows with comprehensive shared-handle
+- [x] 3.3 Update `docs/grab-bag/parallel-reader.md` TAR-RA/ISO rows with comprehensive shared-handle
       lock coverage (`getmembers`/EOF and pycdlib catalog audit included), callback boundary,
       capability-conditional positioning, and correctness-vs-parallelism trade-off
 - [x] 3.4 Update relevant ABC/backend docstrings to point to the one-lock mechanism and

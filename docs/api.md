@@ -1,7 +1,8 @@
 # API reference
 
 Everything documented here is re-exported from the top-level `archivey` package and
-listed in `archivey.__all__`.
+listed in `archivey.__all__`. Narrative guide: [Home](index.md). Authoritative
+contracts: `openspec/specs/`.
 
 ## Opening archives
 

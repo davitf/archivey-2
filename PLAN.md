@@ -1,7 +1,8 @@
 # Archivey — Implementation Plan (v2 Clean-Slate Rewrite)
 
-> **Approach:** clean-slate rewrite. New code is written fresh against `SPEC.md`,
-> `ARCHITECTURE.md`, and the authoritative `openspec/specs/` capability specs. The
+> **Approach:** clean-slate rewrite. New code is written fresh against the
+> authoritative `openspec/specs/` capability specs (historical prose lives under
+> `docs/grab-bag/SPEC.md` and `docs/grab-bag/ARCHITECTURE.md`). The
 > existing `archivey-dev` codebase is **reference-only** — we read it and port
 > specific, well-isolated parts (leaf format/codec logic), but we do **not** copy
 > it wholesale as a baseline.
@@ -392,7 +393,7 @@ passing; wire the oracles. See `format-7z/spec.md`, `format-rar/spec.md`,
 
 **Entry criteria:** Phase 5 green; **the fuzzing scaffold is stood up** (property
 tests + the corpus mutation harness running; Atheris harnesses for the new parsers
-land with them — see cross-cutting concerns and `docs/threat-model.md` O5);
+land with them — see cross-cutting concerns and `docs/internal/threat-model.md` O5);
 `py7zr`/`rarfile`/`unrar` available as
 dev-group oracles; the **shared-source stream plumbing** decided/landed — a
 `streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
@@ -401,7 +402,7 @@ concurrently-open member streams by construction, and a decided concurrency
 contract via `MemberStreams.CONCURRENT` (post-materialization fan-out; free-threaded
 correctness covered by the Linux `3.13t` CI job) — what is
 supported vs. what fails loudly as `ArchiveyUsageError` / `ConcurrentAccessError`,
-never silent interleaving; see `docs/parallel-reader.md` and
+never silent interleaving; see `docs/grab-bag/parallel-reader.md` and
 the parallel-extraction entry in `IDEAS.md`.
 
 ### Tasks
@@ -543,7 +544,7 @@ coverage **reported, not gated**); no committed generated binaries.
 
 ### Fuzzing & benchmarks (cross-cutting scaffold)
 
-- **Fuzzing** (see `docs/threat-model.md` O5), staged: (a) now — Hypothesis property
+- **Fuzzing** (see `docs/internal/threat-model.md` O5), staged: (a) now — Hypothesis property
   tests for the pure safety logic (naming, `check_universal`, link resolution,
   detection) and a corpus **mutation harness** (bit-flips/truncations over generated
   archives asserting never-crash / never-hang / always a typed `ArchiveyError`);

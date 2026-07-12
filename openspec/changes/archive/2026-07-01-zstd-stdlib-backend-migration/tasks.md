@@ -1,6 +1,6 @@
 # Tasks — zstd stdlib backend migration
 
-> Implements the zstd decision recorded in `docs/library-analysis.md` /
+> Implements the zstd decision recorded in `docs/internal/library-analysis.md` /
 > `compression-library-evaluation`. Run tools via `uv`.
 
 ## 1. Backend

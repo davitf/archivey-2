@@ -112,7 +112,7 @@
   minimal 10-byte gzip header + 8-byte trailer so rapidgzip will index it; check whether it needs
   a *valid* CRC32/ISIZE trailer or just well-formed framing to build the seek index. No
   coexistence concern — archivey already uses rapidgzip as its single accelerator library (see
-  `docs/known-issues.md`). Pairs with **seek-index persistence** below.
+  `docs/internal/known-issues.md`). Pairs with **seek-index persistence** below.
 
 - **Compressed-passthrough transcoding (no recompress)** — when writing a member from a source
   that is itself an archive/compressed stream, and the destination format can carry the source's
@@ -144,7 +144,7 @@
   backend ratarmount uses, wrapping `libzstd-seek`), is a heavy Cython/C++17 extension that
   statically bundles a C++ core "based on `indexed_bzip2`" — so it carries the *same class* of
   macOS dual-load symbol-collision risk that forced archivey onto a single accelerator library
-  (`docs/known-issues.md`) and would need its own coexistence canary.
+  (`docs/internal/known-issues.md`) and would need its own coexistence canary.
 
   **But first check whether it actually buys us anything our own infrastructure can't.**
   `libzstd-seek`'s jump table maps **frame boundaries only** — its own header says records map a
@@ -190,12 +190,12 @@
     are available (header field or seek table) and otherwise fall back to the rewind path.
 
   Note `pyzstd.SeekableZstdFile` is **not** a substitute either: it reads only the *Seekable
-  Zstd* container, not plain `.zst`. See `docs/library-analysis.md` (zstd).
+  Zstd* container, not plain `.zst`. See `docs/internal/library-analysis.md` (zstd).
 
 ## Strategy & adoption (2026-07 review backlog)
 
 > Parked here from the 2026-07 architecture-review discussion so nothing is lost.
-> Security/compat items with a threat angle live in `docs/threat-model.md` (the gap
+> Security/compat items with a threat angle live in `docs/internal/threat-model.md` (the gap
 > register); the product framing lives in `VISION.md`. These are the rest.
 
 - **Salvage / best-effort read mode** — the founding use case (indexing decades of
@@ -230,7 +230,7 @@
 - **Warnings-as-data sweep** — audit every `logger.warning` in the library: each should
   (also) be queryable as data (member/info field, `FormatInfo`, `CostReceipt`,
   `ExtractionResult`), since most applications never surface logging. See
-  `docs/threat-model.md` C2.
+  `docs/internal/threat-model.md` C2.
 - **Extraction collision handling + `OverwritePolicy.RENAME`** — deterministic
   cross-platform handling of casefold/normalization collisions (threat-model O2), plus
   an opt-in RENAME policy (`name (1)`) for archives with intentional duplicates.

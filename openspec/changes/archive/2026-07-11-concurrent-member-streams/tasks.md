@@ -148,7 +148,7 @@
       capability with correct-by-construction machinery underneath
 - [x] 6.5 Update `IDEAS.md` parallel-extraction entry: the declared worker seam is committed;
       scheduling/throughput remains future and any speed claim needs targeted measurements
-- [x] 6.6 Update `docs/parallel-reader.md` and `docs/threat-model.md` C4 to the
+- [x] 6.6 Update `docs/grab-bag/parallel-reader.md` and `docs/internal/threat-model.md` C4 to the
       declared-capabilities stance
 - [x] 6.7 Update public API/ABC docstrings and the user guide: the `member_streams`
       declaration (with the explicit note that solid open-order cost is NOT covered by the

@@ -1,10 +1,10 @@
 """Canary for the accelerator interpreter-shutdown abort and archivey's guard against it
-(see ``docs/known-issues.md`` and ``_AcceleratorStream`` in ``archivey.internal.streams.codecs``).
+(see ``docs/internal/known-issues.md`` and ``_AcceleratorStream`` in ``archivey.internal.streams.codecs``).
 
 archivey uses a single accelerator library, ``rapidgzip``, for both gzip (``RapidgzipFile``) and
 bzip2 (its bundled ``IndexedBzip2File``) — deliberately NOT the separate ``indexed_bzip2``
 package, because loading both into one process corrupts the heap and aborts on macOS (see
-``test_archivey_uses_single_accelerator_library`` below and ``docs/known-issues.md``).
+``test_archivey_uses_single_accelerator_library`` below and ``docs/internal/known-issues.md``).
 
 The accelerator spawns C++ worker threads. A thread still running when the interpreter finalizes
 trips the library's guard ("Detected Python finalization from running … thread") and aborts the

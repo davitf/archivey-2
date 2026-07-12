@@ -47,7 +47,7 @@
 - [x] 4.4 Mark the new tests `concurrent_reader` so the Linux `3.13t`
       `free-threaded-concurrency` job exercises them.
 - [x] 4.5 Update the thread-safety contract in `packaging-and-extras`, the `MemberStreams`
-      docstring, and `docs/parallel-reader.md`: first-touch materialization and `close()`
+      docstring, and `docs/grab-bag/parallel-reader.md`: first-touch materialization and `close()`
       are now coordinated; distinct passes and shared streams remain single-owner.
 
 ## 5. Verify

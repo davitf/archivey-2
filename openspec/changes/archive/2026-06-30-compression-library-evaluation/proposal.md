@@ -44,7 +44,7 @@ own follow-up changes once decided — but the decisions and their rationale are
 
 ### 1. A per-format library analysis doc
 
-Add **`docs/library-analysis.md`** (rendered in the MkDocs site) — the single source of
+Add **`docs/internal/library-analysis.md`** (rendered in the MkDocs site) — the single source of
 truth for "which library backs each codec and why". For every codec the library reads, a
 row per candidate library scored on:
 
@@ -79,7 +79,7 @@ xz/lzma (stdlib `lzma`, our `xz.py`, `python-xz`), lzip (our `lzip.py`), zstd (`
 - **everything else:** record the chosen library + the rejected alternatives + the reason,
   so future contributors don't re-litigate (e.g. why `uncompresspy` for `.Z`, why
   `rapidgzip` for both gzip and bzip2 random access — the macOS single-accelerator
-  constraint is already in `docs/known-issues.md` and should be cross-linked).
+  constraint is already in `docs/internal/known-issues.md` and should be cross-linked).
 
 ### 3. Dependency cleanup
 
@@ -101,7 +101,7 @@ Concretely:
 The full delta requirements (with scenarios) live in this change's `specs/` directory:
 
 - `specs/packaging-and-extras/spec.md` — **MODIFIED** optional extras map to exactly the libraries the code uses (drop the dead `python-xz` / `pyzstd` pins).
-- `specs/documentation/spec.md` — **ADDED** per-format compression-library choices are documented in `docs/library-analysis.md`, citing already-recorded decisions (e.g. [`davitf/archivey-dev#214`](https://github.com/davitf/archivey-dev/pull/214) for XZ).
+- `specs/documentation/spec.md` — **ADDED** per-format compression-library choices are documented in `docs/internal/library-analysis.md`, citing already-recorded decisions (e.g. [`davitf/archivey-dev#214`](https://github.com/davitf/archivey-dev/pull/214) for XZ).
 
 This change is primarily a doc + packaging decision; the spec touchpoints are light. The
 concrete backend-selection requirements in `compressed-streams` /
@@ -111,8 +111,8 @@ criteria, not the swaps.
 
 ## Impact
 
-- **New doc:** `docs/library-analysis.md` (+ a nav entry in `mkdocs.yml`); cross-links from
-  `docs/known-issues.md` and `COMPARISON.md` (which already mentions the seekable-stream
+- **New doc:** `docs/internal/library-analysis.md` (+ a nav entry in `mkdocs.yml`); cross-links from
+  `docs/internal/known-issues.md` and `COMPARISON.md` (which already mentions the seekable-stream
   subsystem).
 - **Packaging:** `pyproject.toml` `[all]` / `[zstd]` extras adjusted per the findings
   (drop dead `python-xz` / `pyzstd`, or justify keeping).
