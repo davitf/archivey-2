@@ -2,293 +2,180 @@
 
 ## Purpose
 
-The ZIP backend presents ZIP archives through the unified `ArchiveReader` / `ArchiveWriter` interface using Python's stdlib `zipfile` module. It reads the central directory on open for O(1) member listing, supports direct random access to any member, and can write archives in streaming mode using data descriptors.
+ZIP archives are read through the unified `ArchiveReader` API using stdlib
+`zipfile` for the central directory and current member data path. ZIP listing is
+indexed, member access is direct, read sources must be seekable, and streaming
+write uses data descriptors.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | Reader API, password candidates, weak-check confirmation, bounded storage |
+| `access-mode-and-cost` | Random-access vs streaming rules; non-seekable random-access failure |
+| `diagnostics` | Timestamp and symlink-target diagnostic values / policy |
+| `backend-registry` | `format_availability(ZIP)` partial-read status |
+| `compressed-streams` | Future ZIP member-data codec path |
 
 ## Requirements
 
 ### Requirement: Report ZIP format properties
 
-The system SHALL expose the following cost and capability properties for every opened ZIP archive:
+The ZIP backend SHALL expose these properties for every opened ZIP archive:
 
 | Property | Value |
-|----------|-------|
+| --- | --- |
 | Backend dependency | `zipfile` (stdlib) |
-| Listing cost | O(1) — central directory is read first |
-| Access cost | DIRECT — independent local file offsets |
-| Supports write | Yes |
-| Requires seek | Yes for read (central dir at EOF); No for streaming write |
-
-#### Scenario: CostReceipt on open
-
-- **WHEN** a ZIP archive is opened with `archivey.open_archive()`
-- **THEN** the returned reader's `cost` property reports `ListingCost.INDEXED`, `AccessCost.DIRECT`, and `StreamCapability.SEEKABLE`
-
-#### Scenario: Central directory lookup is O(1)
-
-- **WHEN** `reader.get("some/member.txt")` is called on a ZIP reader
-- **THEN** the lookup is satisfied via the reader's in-memory name→member map (built from the central directory) with no additional I/O
-
-### Requirement: Map ZIP member metadata to the unified ArchiveMember model
-
-The system SHALL map each `ZipInfo` entry to a `ArchiveMember` dataclass using the following field rules:
-
-- `mode`: parsed from `external_attr >> 16`. If `external_attr == 0` and `create_system != 3` (Unix), `mode` is set to `None`.
-- `modified`/`accessed`/`created`: layered by precedence, each layer overriding only the
-  times it actually carries. Base: the DOS `date_time` tuple as a naive `datetime` (no TZ;
-  local wall-clock, 2-second granularity; `None` for the year-1980 "no timestamp"
-  sentinel). Above it: the NTFS extra field (`0x000A`) — three 64-bit FILETIMEs
-  (modification/access/creation, 100 ns UTC ticks since 1601, zero = "not set"; written
-  by Windows tools such as 7-Zip) — as timezone-aware UTC `datetime`s. Highest: the
-  Extended Timestamp extra field (`0x5455`) — signed 32-bit Unix times, its flags byte
-  signaling which of modification/access/creation are present — as timezone-aware UTC
-  `datetime`s.
-- `type`: inferred from `mode` if Unix, otherwise from `is_dir()` and symlink detection via extra field `0x000A` (NTFS) or `0x7875` (Unix UID/GID).
-- `compression`: map `compress_type` integer to `CompressionMethod`.
-- `is_encrypted`: set to `True` when `flag_bits & 0x1` is non-zero.
-
-> **Phase 3 → 7 gap (member decode via stdlib zipfile).** Member *data* decompression
-> currently goes through stdlib `zipfile`, which cannot decode deflate64/PPMd (or zstd
-> before Python 3.14) even when the corresponding codec packages are installed —
-> reading such a member raises `UnsupportedFeatureError`. Until Phase 6 wires the shared
-> `compressed-streams` codec layer into ZIP member reads (see `openspec/project.md`),
-> `format_availability(ZIP)` SHALL report **PARTIAL** regardless of optional codec
-> installation (`backend-registry`); listing is unaffected. Installing `[7z]` / `[zstd]`
-> alone does not unlock those member reads before Phase 6.
->
-> The intended fix (Phase 6, alongside the 7z container codecs) keeps `zipfile` for the
-> central directory but bypasses its decompressor for member data: locate the member's
-> raw compressed bytes (local-header offset + a `SlicingStream` view) and decode them
-> through the shared `compressed-streams` codec layer. `zipfile` exposes no decompressor
-> plug-in point, so this raw-slice route — a first step toward the full native ZIP
-> reader in `IDEAS.md` — is the mechanism; the Phase 6 change proposal specifies it.
-
-#### Scenario: Unix mode from external_attr
-
-- **WHEN** a ZIP entry has `create_system == 3` (Unix) and a non-zero `external_attr`
-- **THEN** `member.mode` is set to `external_attr >> 16` (low 12 bits: permission bits)
-
-#### Scenario: Non-Unix or missing mode
-
-- **WHEN** a ZIP entry has `external_attr == 0` or `create_system != 3`
-- **THEN** `member.mode` is set to `None`
-
-#### Scenario: Extended Timestamp takes precedence over DOS date_time
-
-- **WHEN** a ZIP entry carries an Extended Timestamp extra field (`0x5455`) with a modification time
-- **THEN** `member.modified` is a timezone-aware UTC `datetime` derived from that Unix time, overriding the value from `date_time`
-
-#### Scenario: NTFS timestamps used when no Extended Timestamp is present
-
-- **WHEN** a ZIP entry carries an NTFS extra field (`0x000A`) with non-zero FILETIMEs and no `0x5455` field
-- **THEN** `member.modified`/`accessed`/`created` are timezone-aware UTC `datetime`s derived from those FILETIMEs, overriding the value from `date_time`
-
-#### Scenario: Encrypted entry detection
-
-- **WHEN** a ZIP entry has `flag_bits & 0x1` set
-- **THEN** `member.is_encrypted` is `True`
-
-### Requirement: Handle non-seekable ZIP streams
-
-The ZIP central directory resides at the **end** of the file, so a ZIP cannot be read from a non-seekable source (a pipe/socket) without first buffering it to seekable storage. Per the access-mode contract (`access-mode-and-cost`), the system SHALL raise `StreamNotSeekableError` at open time for a non-seekable ZIP source, advising the caller to buffer the source (save to disk or a `BytesIO`) and reopen, rather than buffering implicitly.
-
-> **Reconcile when the ZIP backend lands (Phase 3).** The earlier design auto-spooled a non-seekable ZIP into a `tempfile.SpooledTemporaryFile` transparently (threshold `spool_max_size`, default 50 MiB; oversized → `ReadError`). That convenience conflicts with the decided rule that `streaming=False` **fails fast** on a source it cannot random-access and the library does **not** implicitly buffer. If transparent spooling is wanted back, it must return as an **explicit opt-in** (e.g. a `spool_max_size` argument), not the default. Finalize this when the backend is implemented.
-
-#### Scenario: non-seekable ZIP fails fast
-
-- **WHEN** a ZIP stream is opened from a non-seekable source (e.g. a network pipe) with the default `streaming=False`
-- **THEN** `StreamNotSeekableError` is raised at open time, advising the caller to buffer the source and reopen
-
-### Requirement: Reject multi-volume (split/spanned) ZIP archives with a clear error
-
-The system SHALL detect multi-volume (split/spanned) ZIP archives and raise
-`UnsupportedFeatureError` with a clear error rather than mis-reading the archive or
-surfacing a cryptic stdlib `BadZipFile`. Unlike multi-volume 7z and RAR (which
-Archivey joins — see `format-7z` and `format-rar`), the stdlib `zipfile` backend
-cannot read a multi-volume ZIP. A ZIP **split** set (`name.z01`, `name.z02`, …, final
-`name.zip`) or a **spanned** set (written across removable media) records each entry's
-location as a *(disk-number, offset-within-disk)* pair; `zipfile` rejects the ZIP64
-multi-disk locator outright, and naive concatenation of the segments is unreliable
-(non-zero disk fields in the end-of-central-directory, a possible leading spanning
-marker, and non-absolute offsets).
-
-- Detection MAY use: a non-zero "number of this disk" / "disk where the central
-  directory starts" field in the (ZIP64) end-of-central-directory record, a `disks > 1`
-  ZIP64 EOCD locator, or being pointed at a `.z01`/`.zNN` segment.
-- The error message SHOULD advise the caller to rejoin the volumes first
-  (e.g. `zip -s 0 split.zip --out whole.zip`).
-- Proper multi-volume ZIP support is deferred to a future **native ZIP reader**
-  (see `IDEAS.md`), which can resolve *(disk, offset)* addressing across a
-  concatenation of the segments.
-
-#### Scenario: opening a split ZIP set is rejected
-
-- **WHEN** `open_archive()` is given a multi-volume ZIP (a `.z01`…`.zip` split set, or any segment of one)
-- **THEN** `UnsupportedFeatureError` is raised, advising the caller to rejoin the volumes first
-
-#### Scenario: a ZIP declaring multiple disks is rejected cleanly
-
-- **WHEN** a ZIP whose end-of-central-directory declares a non-zero disk number (or a ZIP64 locator with `disks > 1`) is opened
-- **THEN** `UnsupportedFeatureError` is raised rather than a stdlib `BadZipFile`
-
-### Requirement: Multi-candidate disambiguation for traditional ZipCrypto
-
-For a member encrypted with traditional ZipCrypto (PKWARE), whose per-open password check
-is a single verification byte while the authoritative check is the member's CRC-32 (and,
-for a compressed member, completion of the decompressor), the ZIP reader SHALL confirm a
-candidate that passes the byte check before accepting it whenever another candidate may be
-tried under `archive-reading` → "Confirm candidates when a weak check permits retries".
-Confirmation SHALL be bounded per `archive-reading` → "Bounded implicit temporary
-storage": it SHALL NOT buffer plaintext proportional to the member size to memory or
-temporary disk.
-
-**Compressed members (DEFLATE / BZIP2 / LZMA).** A candidate is confirmed by decompressing
-a bounded plaintext prefix (an internal constant on the order of 64 KiB of decompressed
-output), discarding the output. A wrong ZipCrypto key feeds the decompressor
-high-entropy garbage, which each stdlib codec rejects far within that bound (the
-gibberish-rejection investigation in this change's tasks records the measured margins).
-If the member's decompressed size is within the bound, the prefix read reaches EOF and
-`zipfile`'s CRC check runs, making confirmation exact.
-
-**STORED members.** No decompressor exists to reject garbage and only the full-stream
-CRC-32 discriminates, so per-candidate full reads would cost one pass per candidate.
-The reader SHALL disambiguate surviving candidates (those that pass the verification
-byte) in a **single shared pass** over the member's ciphertext: decrypt the stream once
-per candidate in parallel, accumulate each candidate's plaintext CRC-32 in constant
-memory, and at EOF accept the candidate whose CRC matches the central directory value.
-At most one extra full read of the member is performed in total, regardless of the
-number of candidates. If more than one candidate's CRC matches (a CRC collision across
-keystreams), the earliest match in candidate order is accepted.
-
-A compressibility (or magic-byte) early-accept probe was considered and rejected: STORED
-members are typically already-compressed media that look random to such heuristics, while
-compressible plaintext is rarely stored uncompressed — so a probe would almost never
-avoid the CRC pass in practice, and the multi-candidate ZipCrypto case is already niche.
-
-**Returning the winner.** After confirmation the reader SHALL open a fresh stream with the
-accepted password for the caller (ZIP requires a seekable source, so re-open is always
-available) and SHALL record the password as known-good. The caller's stream retains the
-format's ordinary read-time integrity checking — `zipfile` verifies the CRC-32 at EOF —
-so acceptance by bounded confirmation never weakens the read-time contract relative to
-the single-candidate path: plaintext that is wrong beyond the confirmed prefix still
-surfaces as `CorruptionError` during the caller's read.
-
-The candidate-confirmation failure set SHALL include only `zipfile.BadZipFile` whose
-message identifies `"Bad CRC-32 for file ..."`, `zlib.error`, `lzma.LZMAError`, and
-exactly the BZIP2 decoder's `OSError("Invalid data stream")`. Local-header mismatch, bad
-local-header magic, overlap, and other structural `BadZipFile` failures SHALL remain
-`CorruptionError` and stop candidate iteration. Other `OSError` values SHALL propagate
-unchanged. Streams opened for a rejected candidate SHALL be closed before the next
-candidate is tried.
-
-If one or more candidates reach confirmation but no candidate succeeds, the reader SHALL
-raise `EncryptionError` explaining that the passwords may be wrong or the encrypted member
-may be corrupt. This is intentionally not a promise to distinguish those equivalent
-failure observations. The reader SHALL never accept a candidate through a path that
-bypasses the caller stream's ordinary read-time integrity check: candidate order alone,
-neighbour-member affinity, or guess-with-warning are not acceptance signals. (The
-bounded decompress prefix is an acceptance accelerator whose residual error is still
-caught by the caller's EOF CRC check, so it does not bypass it.)
-
-With one distinct static candidate, including duplicate copies of it, the reader SHALL
-retain its normal lazy stream with no eager confirmation read. A read-time integrity
-failure on that path SHALL be translated as corruption in the ordinary way.
-
-#### Scenario: colliding wrong candidate is rejected for every stdlib ZIP codec
-
-- **WHEN** a STORED, DEFLATE, BZIP2, or LZMA ZipCrypto member is opened with a wrong candidate that passes the verification byte followed by the correct candidate
-- **THEN** confirmation rejects the wrong candidate and the reader returns a fresh stream opened with the correct candidate
-
-#### Scenario: single candidate keeps the fast path
-
-- **WHEN** a ZipCrypto member is opened with one distinct static candidate password
-- **THEN** the reader does not perform a confirmation read; the member streams as before
-
-#### Scenario: confirming a large compressed member is bounded
-
-- **WHEN** a compressed ZipCrypto member much larger than the confirmation bound is opened with multiple candidates
-- **THEN** confirmation decompresses at most the bounded prefix per candidate, retains no plaintext in memory or temporary storage, and the caller receives a fresh stream whose CRC is still verified at EOF by the ordinary read path
-
-#### Scenario: stored members disambiguate with one shared CRC pass
-
-- **WHEN** a STORED ZipCrypto member is opened with several candidates that pass the verification byte
-- **THEN** one shared pass over the ciphertext computes every candidate's plaintext CRC-32 concurrently, the matching candidate is accepted and re-opened fresh for the caller, and no candidate's plaintext is buffered
-
-#### Scenario: multiple stored CRC matches resolve by candidate order
-
-- **WHEN** the single-pass STORED disambiguation finds two candidates whose plaintext CRC-32 both match the stored value
-- **THEN** the earliest match in candidate order is accepted
-
-#### Scenario: corruption beyond the confirmed prefix surfaces on the caller's read
-
-- **WHEN** a candidate is accepted after bounded prefix confirmation but the member's data is corrupt beyond the confirmed prefix
-- **THEN** the caller's read raises `CorruptionError` at the point the ordinary ZIP read path detects it — identical to the single-candidate behavior
-
-#### Scenario: corrupt encrypted data cannot be distinguished from a collision
-
-- **WHEN** multiple candidates are available and a candidate passes the verification byte but fails confirmation
-- **THEN** if no candidate is confirmed, `EncryptionError` states that the passwords may be wrong or the member may be corrupt and returns no bytes
-
-#### Scenario: unrelated OSError is not a candidate failure
-
-- **WHEN** confirmation encounters an `OSError` other than BZIP2's exact `"Invalid data stream"` decoder message
-- **THEN** that `OSError` propagates unchanged and the failed stream is closed
-
-#### Scenario: structural BadZipFile is not password ambiguity
-
-- **WHEN** opening an encrypted member reports a local-header or other structural `BadZipFile` failure
-- **THEN** the reader raises `CorruptionError` immediately rather than trying another password or reporting candidate exhaustion
-
-### Requirement: Invalid ZIP timestamps are member diagnostic data
-
-The existing ZIP mapping and timestamp precedence remain. If a DOS `date_time` or NTFS
-FILETIME cannot be represented as a Python `datetime`, the affected field SHALL fall
-through to the next valid precedence layer or `None`, and the reader SHALL emit
-`MEMBER_TIMESTAMP_INVALID` with member identity, timestamp source/field, and a JSON-safe
-stored-value representation.
-
-Under default policy the occurrence is collected/logged and MAY attach to the member under
-the shared retention budget. Under `RAISE`, listing halts with
-`DiagnosticRaisedError`.
-
-#### Scenario: invalid NTFS timestamp remains queryable
-
-- **WHEN** a ZIP member has an out-of-range NTFS FILETIME
-- **THEN** timestamp precedence falls back as specified, `MEMBER_TIMESTAMP_INVALID` is counted, and retained detail may attach to the member
-
-#### Scenario: invalid DOS timestamp can be escalated
-
-- **WHEN** a ZIP DOS `date_time` is invalid and the timestamp code resolves to `RAISE`
-- **THEN** listing halts with `DiagnosticRaisedError` carrying the typed timestamp context
-
-### Requirement: Unavailable encrypted symlink target is member diagnostic data
-
-When ZIP listing cannot read a symlink target because a correct password is unavailable,
-the member's `link_target` SHALL remain unset and the reader SHALL emit
-`SYMLINK_TARGET_UNAVAILABLE` with the member identity and non-secret reason
-`"password_required"`. The event MAY attach to the member under the shared budget.
-
-No message/context/log/error SHALL include attempted passwords, candidates, provider
-returns, key material, or decrypted target bytes. Under `RAISE`, listing SHALL halt with
-`DiagnosticRaisedError`.
-
-#### Scenario: unavailable target is collected without a secret
-
-- **WHEN** an encrypted ZIP symlink target cannot be read under default policy
-- **THEN** listing continues with `link_target=None`, the member may carry `SYMLINK_TARGET_UNAVAILABLE`, and serialized diagnostic data contains no password or decrypted target
-
-#### Scenario: strict caller rejects unavailable target
-
-- **WHEN** `SYMLINK_TARGET_UNAVAILABLE` resolves to `RAISE`
-- **THEN** listing halts with `DiagnosticRaisedError`
-
-### Requirement: Support streaming ZIP write via data descriptor
-
-The system SHALL support writing ZIP archives to non-seekable destinations using the data descriptor mechanism.
-
-When writing, the backend sets `flag_bits |= 0x8` (data descriptor flag), which allows the CRC-32 and compressed/uncompressed sizes to be written after the file data rather than before. File size is therefore not required in advance from the caller.
-
-#### Scenario: Streaming write without pre-known size
-
-- **WHEN** `writer.add_stream(stream, name=...)` is called without a `size` argument
-- **THEN** the ZIP backend writes the local file header with placeholder CRC and sizes, streams the data, and appends a data descriptor record with the actual CRC-32 and sizes
-- **AND** the resulting ZIP file is valid and readable by standard ZIP tools
+| Listing cost | `ListingCost.INDEXED` — central directory read at open |
+| Access cost | `AccessCost.DIRECT` — independent local file offsets |
+| Stream capability | `StreamCapability.SEEKABLE` |
+| Read source | Seekable only; no implicit buffering/spooling |
+| Write support | Yes, including streaming write |
+
+`reader.get()` and other name lookups SHALL use the central-directory-derived
+member map without extra archive I/O. ZIP member data still goes through stdlib
+`zipfile`; unsupported methods such as Deflate64/PPMd and zstd before Python
+3.14 SHALL raise `UnsupportedFeatureError`. Until ZIP member reads use the
+shared codec layer, `format_availability(ZIP)` SHALL report **PARTIAL**
+regardless of optional codec installation. Installing `[7z]` / `[zstd]` alone
+does not unlock those member reads.
+
+The future raw-slice member-data path SHALL keep `zipfile` for the central
+directory, compute each member's compressed byte range from local headers, and
+decode via `compressed-streams`; `zipfile` has no decompressor plug-in point.
+
+#### Scenario: ZIP property matrix
+
+| Case | Expected |
+| --- | --- |
+| Open valid ZIP | `cost.listing_cost=INDEXED`, `cost.access_cost=DIRECT`, `cost.stream_capability=SEEKABLE` |
+| `reader.get("some/member.txt")` | Satisfied from the in-memory central-directory name map; no additional archive I/O |
+| Member uses unsupported stdlib method | Listing succeeds; reading raises `UnsupportedFeatureError`; availability remains `PARTIAL` |
+| Streaming write without pre-known size | Local header uses data-descriptor placeholders; data descriptor stores final CRC and sizes; standard ZIP tools can read the result |
+
+### Requirement: Reject non-seekable ZIP read sources
+
+The ZIP central directory is at EOF, so the ZIP reader SHALL raise
+`StreamNotSeekableError` at open when reading from a non-seekable source. The
+library MUST NOT buffer, spool, or copy a non-seekable ZIP source into seekable
+storage implicitly. Callers must provide a seekable source or choose an access
+path that does not require opening ZIP as random-access. Any future spooling
+convenience must be an explicit opt-in, not default behavior.
+
+#### Scenario: non-seekable read matrix
+
+| Case | Expected |
+| --- | --- |
+| Non-seekable ZIP with default `streaming=False` | `StreamNotSeekableError` at open; no reader |
+| Non-seekable ZIP with `streaming=True` | Still rejected because this backend cannot provide ZIP reading without seek |
+| Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback |
+
+### Requirement: Map ZIP member metadata to ArchiveMember
+
+The ZIP backend SHALL map each `ZipInfo` to `ArchiveMember` with these field
+rules:
+
+| Field | Mapping |
+| --- | --- |
+| `mode` | `external_attr >> 16` only for Unix entries with non-zero attrs; otherwise `None` |
+| timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; Extended Timestamp `0x5455` UTC Unix times override present fields |
+| `type` | Infer from Unix mode when available; otherwise directory marker and symlink hints |
+| `compression` | `compress_type` mapped to `CompressionMethod` |
+| `is_encrypted` | `flag_bits & 0x1 != 0` |
+
+Invalid DOS or NTFS timestamp values SHALL fall through to the next valid
+precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`. If listing
+cannot read an encrypted symlink target because no correct password is
+available, `link_target` SHALL remain unset and `SYMLINK_TARGET_UNAVAILABLE`
+SHALL be emitted with reason `"password_required"`. Diagnostic payloads SHALL
+not include passwords, candidates, provider returns, key material, or decrypted
+target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
+
+#### Scenario: ZIP metadata matrix
+
+| Case | Expected |
+| --- | --- |
+| Unix entry with non-zero `external_attr` | `member.mode = external_attr >> 16` |
+| Non-Unix entry or missing attrs | `member.mode is None` |
+| Extended Timestamp carries modification time | `member.modified` is timezone-aware UTC from `0x5455`, overriding DOS / NTFS |
+| NTFS FILETIMEs present, no Extended Timestamp | Present `modified` / `accessed` / `created` fields are timezone-aware UTC from `0x000A` |
+| `flag_bits & 0x1` | `member.is_encrypted is True` |
+| Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
+| Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
+| Encrypted symlink target unavailable | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` contains no secret |
+
+### Requirement: Reject multi-volume ZIP cleanly
+
+The ZIP backend SHALL detect split/spanned ZIP archives and raise
+`UnsupportedFeatureError` with a clear rejoin-first message instead of
+mis-reading data or surfacing stdlib `BadZipFile`. Detection MAY use `.z01` /
+`.zNN` segment names, non-zero disk fields in EOCD/ZIP64 EOCD, or ZIP64 locator
+`disks > 1`. Archivey joins multi-volume 7z/RAR elsewhere; stdlib `zipfile`
+cannot resolve ZIP `(disk-number, offset-within-disk)` addressing, and naive
+segment concatenation is unreliable. Proper support is deferred to a future
+native ZIP reader.
+
+#### Scenario: multi-volume ZIP matrix
+
+| Case | Expected |
+| --- | --- |
+| `open_archive()` receives `.z01`...`.zip` split set or any segment | `UnsupportedFeatureError`; caller is told to rejoin volumes first |
+| EOCD declares non-zero disk number | `UnsupportedFeatureError`, not `BadZipFile` |
+| ZIP64 locator reports `disks > 1` | `UnsupportedFeatureError` |
+
+### Requirement: Confirm multi-candidate ZipCrypto passwords
+
+For traditional ZipCrypto, the per-open verification byte is weak and the
+authoritative check is CRC-32 plus decompressor completion. When another
+distinct candidate may be tried, the ZIP reader SHALL confirm a candidate that
+passes the byte check before accepting it, following `archive-reading` weak-check
+confirmation and bounded-storage rules. With one distinct static candidate
+(duplicates included), the reader SHALL keep the normal lazy stream path; any
+read-time integrity failure is translated normally.
+
+Compressed members (`DEFLATE`, `BZIP2`, `LZMA`) SHALL confirm by decompressing a
+bounded plaintext prefix and discarding it. If EOF is reached within the bound,
+the CRC check makes confirmation exact. STORED members SHALL disambiguate all
+surviving candidates in one shared ciphertext pass, computing each candidate's
+plaintext CRC-32 in constant memory; if multiple candidates match, candidate
+order wins. No candidate plaintext may be buffered.
+
+After confirmation, the reader SHALL open a fresh caller stream with the accepted
+password, promote it to known-good, and retain ordinary read-time integrity
+checking. Confirmation failure for all candidates SHALL raise `EncryptionError`
+explaining that passwords may be wrong or the member may be corrupt.
+
+Candidate failures SHALL include only `zipfile.BadZipFile` with `"Bad CRC-32 for
+file ..."`, `zlib.error`, `lzma.LZMAError`, and exactly BZIP2's
+`OSError("Invalid data stream")`. Local-header mismatch, bad local-header magic,
+overlap, and other structural `BadZipFile` failures SHALL become
+`CorruptionError` immediately. Other `OSError` values SHALL propagate unchanged.
+Rejected-candidate streams SHALL be closed before trying the next candidate.
+
+#### Scenario: ZipCrypto confirmation matrix
+
+| Case | Expected |
+| --- | --- |
+| Wrong candidate passes verification byte before correct one (STORED / DEFLATE / BZIP2 / LZMA) | Wrong candidate rejected; fresh stream opened with correct candidate |
+| One distinct static candidate | No confirmation read; member streams lazily |
+| Large compressed member | At most bounded prefix decompressed per candidate; no proportional plaintext storage; caller stream still checks CRC at EOF |
+| STORED member with several surviving candidates | One shared ciphertext pass computes every candidate CRC; matching candidate accepted and reopened |
+| Multiple STORED CRC matches | Earliest matching candidate in order wins |
+| Corruption beyond confirmed prefix | Caller read raises `CorruptionError` where the ordinary ZIP path detects it |
+| Candidates fail confirmation | `EncryptionError` says password may be wrong or member corrupt; no bytes returned |
+| Non-BZIP2 `OSError("Invalid data stream")` or any unrelated `OSError` | Propagates unchanged; failed stream is closed |
+| Structural `BadZipFile` | `CorruptionError`; no further password iteration |
+
+### Requirement: Support streaming ZIP write via data descriptors
+
+The ZIP writer SHALL support non-seekable destinations by setting data descriptor
+flag `0x8`, writing placeholder CRC and sizes in the local file header, streaming
+data, and appending the actual CRC-32 and compressed/uncompressed sizes after the
+member data. File size need not be known in advance.
+
+#### Scenario: streaming ZIP write matrix
+
+| Case | Expected |
+| --- | --- |
+| `writer.add_stream(stream, name=...)` without `size` | Header placeholders written; data streamed; descriptor appended with final CRC and sizes |
+| Result read by standard ZIP tool | Archive is valid |

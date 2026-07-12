@@ -1,0 +1,152 @@
+name: library
+version: 1
+description: >
+  Compact workflow for developer-facing library work —
+  proposal → specs + design → tasks. Specs stay dense (signatures/matrices under
+  Requirement/Scenario headers). design.md holds technical investigations and
+  decisions; for trivial deltas it may be a short stub explaining why no deeper
+  design was needed.
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Short why/what/impact proposal for the change
+    template: proposal.md
+    instruction: |
+      Create a concise proposal (aim for well under one page).
+
+      Sections:
+      - **Why**: 1–3 sentences on the problem or opportunity.
+      - **What Changes**: Bullet list. Mark breaking changes with **BREAKING**.
+      - **Capabilities**:
+        - **New Capabilities**: kebab-case names → each becomes specs/<name>/spec.md
+        - **Modified Capabilities**: existing names from openspec/specs/ whose
+          REQUIREMENTS change (not pure implementation refactors). Leave empty if none.
+      - **Impact**: Affected modules, public API, extras/deps, tests.
+
+      Focus on why/what. HOW belongs in design.md (investigations, alternatives,
+      decisions). Research openspec/specs/ before filling Capabilities.
+    requires: []
+
+  - id: specs
+    generates: "specs/**/*.md"
+    description: Compact delta specs (Requirement/Scenario headers, dense bodies)
+    template: spec.md
+    instruction: |
+      Create delta spec files for each capability listed in the proposal.
+
+      Paths:
+      - New: specs/<capability>/spec.md (kebab-case from proposal)
+      - Modified: specs/<existing>/spec.md matching openspec/specs/<existing>/
+
+      Delta headers (exact):
+      - ## ADDED Requirements
+      - ## MODIFIED Requirements
+      - ## REMOVED Requirements
+      - ## RENAMED Requirements
+
+      Structural rules (openspec validate requires these):
+      - Each item: ### Requirement: <name>
+      - Requirement body MUST contain SHALL or MUST
+      - Each requirement MUST have ≥1 #### Scenario: <name> (exactly four #)
+      - MODIFIED: copy the ENTIRE existing requirement block, then edit
+      - REMOVED: include **Reason** and **Migration**
+      - RENAMED: FROM:/TO: only
+
+      Density rules (Archivey library style — critical):
+      - This is a Python library API, not a user-facing product. No user stories.
+      - Prefer a short normative paragraph + Python signatures over long prose.
+      - Do NOT restate what a type signature already says (None, lists, raises, etc.).
+      - Prefer ONE scenario per behavioral axis. Put related cases in a markdown
+        table inside that scenario instead of repeating WHEN/THEN blocks.
+      - WHEN/THEN bullets are optional inside a scenario; use them only when a
+        single path needs narrative. Tables and compact bullets are preferred.
+      - Do not invent scenarios that only rephrase the requirement body.
+      - Keep requirement bodies tight; if a requirement exceeds ~500 characters of
+        prose, split or move matrices into scenarios.
+      - Put investigations, rejected alternatives, and implementation layout in
+        design.md — not in the requirement prose.
+
+      Good pattern:
+
+      ### Requirement: Sequential in-order iteration
+      The system SHALL expose:
+
+      ```python
+      def __iter__(self) -> Iterator[ArchiveMember]: ...
+      def members(self) -> list[ArchiveMember]: ...
+      ```
+
+      #### Scenario: access-mode matrix
+      | Method | streaming=False | streaming=True |
+      | --- | --- | --- |
+      | `__iter__` | cached after first scan | single-use; second call raises |
+      | `members()` | full scan | raises UnsupportedOperationError |
+
+      Bad pattern: five nearly identical #### Scenario blocks that only change one
+      clause of the same matrix row.
+    requires:
+      - proposal
+
+  - id: design
+    generates: design.md
+    description: Technical investigations, alternatives, and decisions
+    template: design.md
+    instruction: |
+      Create design.md for HOW this change will be implemented.
+
+      **When to write a full design** (usual for Archivey — prefer this):
+      - Format parsers, codecs, streaming/concurrency, crypto, extraction safety
+      - Non-obvious algorithms, performance trade-offs, or oracle/fixture strategy
+      - New modules, cross-cutting internals, or several viable approaches
+      - Spike/investigation results that must not be lost in chat history
+
+      **When a stub is enough** (simple deltas only):
+      - Pure rename, docs, packaging tweak, or a one-line API clarification
+      - Then write a short design.md: Context one-liner + Decisions stating
+        "No deeper design — straightforward delta; see proposal/specs."
+
+      Do NOT skip the file. OpenSpec tracks design as a required artifact;
+      stubs keep status complete without forcing essays on trivial work.
+
+      Sections (omit empty ones only in stubs; keep them for full designs):
+      - **Context**: Current code/spec state, constraints, provenance
+        (e.g. archivey-dev notes, prior spikes)
+      - **Goals / Non-Goals**: What this design settles vs explicitly defers
+      - **Investigations**: Spikes, measurements, format/oracle findings
+        (tables OK). Capture evidence that drove decisions.
+      - **Decisions**: Numbered choices with rationale and **Rejected:**
+        alternatives. This is the heart of the doc.
+      - **Risks / Trade-offs**: [Risk] → Mitigation
+      - **Open Questions**: Only unresolved items; remove as they close
+
+      Keep design about architecture and approach, not line-by-line code.
+      Normative caller-visible behavior stays in specs; design explains why
+      the implementation looks the way it does.
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: Implementation checklist with trackable tasks
+    template: tasks.md
+    instruction: |
+      Create the task list. **Follow the checkbox template exactly** — apply
+      tracks `- [ ] X.Y` items only.
+
+      Guidelines:
+      - Group under ## numbered headings
+      - Each task: `- [ ] X.Y <description>`
+      - Small, dependency-ordered, verifiable
+      - Mirror design decisions (module layout, spikes → implement/verify tasks)
+      - Include a final verify group: targeted tests + `openspec validate --strict <change>`
+      - Reference delta specs for behavior; do not paste scenarios into tasks
+    requires:
+      - specs
+      - design
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    Read context files, work through pending tasks, mark complete as you go.
+    Pause if you hit blockers or need clarification.

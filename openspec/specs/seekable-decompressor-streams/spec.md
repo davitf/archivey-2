@@ -2,224 +2,160 @@
 
 ## Purpose
 
-Archivey (DEV) provides a subsystem that gives random access inside single-file compressed streams — formats that would otherwise require full decompression from the start. This is achieved by exploiting format-native index structures and optional accelerator backends, enabling use cases such as cheaply reading the last member of a multi-gigabyte `.tar.xz`.
+Archivey provides random access inside single-file compressed streams when the
+caller declares seekability. The subsystem uses native indexes where formats
+provide them and optional rapidgzip accelerators where they do not, while keeping
+forward-only streams free of seek machinery.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `compressed-streams` | Public `open_stream(..., seekable=...)` and codec backend dispatch |
+| `archive-reading` | `MemberStreams.SEEKABLE` on archive member streams |
+| `access-mode-and-cost` | Declared capabilities vs access modes |
+| `diagnostics` | Rewind and seek-index diagnostic policy/retention |
+| `error-handling` | Codec exception translation and `DiagnosticRaisedError` |
 
 ## Requirements
 
 ### Requirement: Seek machinery is demand-driven
 
-Seek support SHALL be constructed only for streams whose seekability was declared —
-`MemberStreams.SEEKABLE` on `open_archive()`, or `seekable=True` on the single-stream
-API. For undeclared streams the system SHALL NOT parse XZ footers or lzip trailers for
-random access, SHALL NOT instantiate `rapidgzip` / indexed-bzip2 accelerators, and SHALL
-NOT retain rewind buffers or seek-point tables; the stream is forward-only
-(`seekable() is False`, `seek()` raises `io.UnsupportedOperation`).
+The system SHALL construct seek support only when seekability is declared:
+`MemberStreams.SEEKABLE` on `open_archive()` or `seekable=True` on the
+single-stream API. Undeclared streams SHALL NOT parse XZ footers, scan lzip
+trailers, instantiate rapidgzip accelerators, retain rewind buffers, or retain
+seek-point tables; they are forward-only.
 
-The `use_rapidgzip` / `use_indexed_bzip2` tri-state (`AUTO`/`ON`/`OFF`) configuration
-resolves `AUTO` against **declared seek demand** rather than the access-mode proxy:
-`AUTO` + declared seekability + library available → accelerator used; `AUTO` without
-declared seekability → accelerator not instantiated. `ON`/`OFF` retain their explicit
-meanings for declared-seekable streams; `ON` with an undeclared stream has nothing to
-accelerate and creates no accelerator.
+`use_rapidgzip` and `use_indexed_bzip2` SHALL resolve their `AUTO` / `ON` / `OFF`
+configuration against declared seek demand, not the `streaming` access-mode
+proxy. For declared-seekable streams, native XZ/lzip indexes, rapidgzip-backed
+gzip/bzip2 indexes, and stdlib fallback rewinds retain their contracts. The
+stdlib O(n)-per-rewind path MAY serve the seek but MUST emit the documented
+slow-rewind diagnostic/warning.
 
-For **declared-seekable** streams the existing contract is unchanged: native-index
-formats (XZ, lzip) seek by decompressing only the needed blocks; accelerator-backed
-gzip/bzip2 seek via their indexes; and the stdlib fallback's O(n)-per-rewind seek is
-permitted but MUST NOT be silent (the warning naming the `[seekable]` accelerator
-remains).
+#### Scenario: demand matrix
 
-#### Scenario: undeclared stream builds no seek machinery
+| Case | Expected |
+| --- | --- |
+| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only |
+| Same stream opened with seekability, `AUTO`, accelerator installed | Accelerator or native index provides random access |
+| Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from start and warns/names `[seekable]` accelerator |
 
-- **WHEN** a gzip/xz/bzip2/lzip stream is opened without declared seekability under
-  `AUTO` accelerator configuration
-- **THEN** no index is parsed, no accelerator is instantiated, and the stream is
-  forward-only
+### Requirement: XZ and lzip use format-native indexes
 
-#### Scenario: declared stream resolves AUTO to the accelerator
+The system SHALL support random access in XZ and lzip by reading their embedded
+index structures. XZ SHALL use the footer and block index to map uncompressed
+offsets to compressed block positions. Lzip SHALL scan trailers to locate block
+boundaries. A seek SHALL decompress only the block range needed for the requested
+uncompressed offset.
 
-- **WHEN** the same stream is opened with declared seekability, `AUTO` configuration,
-  and the accelerator library installed
-- **THEN** the accelerator (or native index) provides random access without full
-  re-decompression
+#### Scenario: native index matrix
 
-#### Scenario: declared stream without accelerator still warns on slow rewinds
+| Case | Expected |
+| --- | --- |
+| Seekable XZ source opens | Footer/block index maps uncompressed offsets to compressed positions |
+| Seek within XZ | Only containing block range is decompressed |
+| Seekable lzip source opens | Trailer scan locates block boundaries |
+| Seek within lzip | Only required block range is decompressed |
 
-- **WHEN** a declared-seekable gzip stream has no accelerator available and the caller
-  seeks backward
-- **THEN** the seek succeeds by re-decompressing from the start and a warning names the
-  `[seekable]` accelerator
+### Requirement: Gzip and bzip2 random access use rapidgzip only
 
----
+The system SHALL use `rapidgzip` as the only optional accelerator library for
+both gzip and bzip2: gzip through `rapidgzip.RapidgzipFile`, bzip2 through
+`rapidgzip.IndexedBzip2File`. It MUST NOT import the standalone `indexed_bzip2`
+package because loading both C++ cores in one process can corrupt the heap on
+macOS. `use_indexed_bzip2` remains the bzip2 configuration flag but selects the
+rapidgzip-bundled decoder.
 
-### Requirement: Seekable random access via format-native indexes
+When rapidgzip is unavailable or disabled, gzip and bzip2 SHALL use stdlib
+decoders; backward seek is serviced by re-decompressing from the start and MUST
+not degrade silently.
 
-The system SHALL support seekable random access within XZ and lzip compressed streams by reading the index structures embedded in those formats. For XZ, this is done by parsing the XZ stream footer and block index, which records the uncompressed offset of each block without requiring full decompression. For lzip, this is done by scanning the lzip trailer at the end of the stream. These index-based approaches make it possible to seek to an arbitrary uncompressed offset by decompressing only the block(s) that contain it.
+#### Scenario: accelerator matrix
 
-#### Scenario: seeking within an XZ stream using the block index
+| Case | Expected |
+| --- | --- |
+| `use_rapidgzip` enabled and package installed | gzip seeks without full re-decompression |
+| `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File`; standalone `indexed_bzip2` never imports |
+| rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses and warns |
 
-- **WHEN** a seekable source containing an XZ-compressed stream is opened
-- **THEN** the system reads the XZ stream footer and block index to construct a mapping from uncompressed offsets to compressed block positions
-- **AND** a subsequent seek to an arbitrary uncompressed offset decompresses only the block(s) containing that offset, not the entire stream from the start
+### Requirement: Accelerator errors translate uniformly
 
-#### Scenario: seeking within a lzip stream using the trailer scan
+The system SHALL translate corrupt/truncated input from rapidgzip-backed gzip and
+bzip2 into the same `compressed-streams` errors as stdlib paths:
+`CorruptionError` or `TruncatedError`, never raw third-party exceptions. This
+translator SHALL account for platform-varying rapidgzip exception types/messages.
 
-- **WHEN** a seekable source containing a lzip-compressed stream is opened
-- **THEN** the system scans the lzip trailer to locate block boundaries
-- **AND** a subsequent seek to an arbitrary uncompressed offset decompresses only the required block(s)
+For seekable-source gzip through rapidgzip, the system SHALL backstop truncation
+by comparing full-read decompressed length modulo 2^32 with the gzip ISIZE
+trailer. A conservative multi-member scan SHALL prevent valid concatenated gzip
+streams from being misreported when the trailer records only the last member.
 
-### Requirement: Optional accelerator backends for gzip and bzip2 random access
+#### Scenario: accelerator error matrix
 
-The system SHALL support optional accelerator backends for formats that have no native block index, using the `rapidgzip` library as the **single** accelerator backend for both codecs: gzip via `rapidgzip.RapidgzipFile` and bzip2 via rapidgzip's bundled `rapidgzip.IndexedBzip2File`. The system SHALL NOT use the standalone `indexed_bzip2` package — loading both `rapidgzip` and `indexed_bzip2` into one process corrupts the heap and aborts on macOS (their statically-linked C++ cores share symbols that collide under dyld), and the library author's own guidance is to "depend on rapidgzip" when both gzip and bzip2 are needed. These backends are opt-in (controlled by `use_rapidgzip` and `use_indexed_bzip2` configuration flags, tri-state `AUTO`/`ON`/`OFF` resolved against **declared seek demand** — `MemberStreams.SEEKABLE` / `seekable=True` — rather than the access-mode `streaming` flag; `use_indexed_bzip2` now selects rapidgzip's bundled bzip2 decoder). When the accelerator is not available or not enabled, gzip and bzip2 streams stay backed by the stdlib decoders, which still support seeking but service it by re-decompressing from the start (O(n) per rewind). The slow path is permitted — not every format can offer fast random access, and a slow seek beats failing — but it MUST NOT be silent: a seek that rewinds the stream SHALL log a warning naming the `[seekable]` accelerator (`rapidgzip`).
+| Case | Expected |
+| --- | --- |
+| Corrupt gzip/bzip2 through rapidgzip | `CorruptionError`; raw accelerator exception never escapes |
+| Truncated gzip through rapidgzip from seekable source | `TruncatedError` via ISIZE backstop or `CorruptionError` from accelerator; never silent short read |
+| Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 
-#### Scenario: gzip random access with rapidgzip enabled
+### Requirement: Accelerator lifecycle is safe at shutdown
 
-- **WHEN** `use_rapidgzip` is enabled and the `rapidgzip` package is installed
-- **THEN** a gzip-compressed stream supports seeking to arbitrary uncompressed offsets without decompressing from the start
+The system SHALL protect rapidgzip streams with a `weakref.finalize` guard that
+closes the raw object exactly once when the wrapper is collected or at
+interpreter exit. The guard MUST hold a strong reference to the raw object until
+close completes, because `join_threads()` alone does not stop rapidgzip's C++
+worker thread and an unclosed worker can abort the process during finalization.
 
-#### Scenario: bzip2 random access via rapidgzip's bundled IndexedBzip2File
+The system SHALL keep one accelerator library in process by using rapidgzip for
+both gzip and bzip2 and never importing standalone `indexed_bzip2`. With these
+measures, `AUTO` MAY select rapidgzip for declared random access on every
+platform.
 
-- **WHEN** `use_indexed_bzip2` is enabled and the `rapidgzip` package is installed
-- **THEN** a bzip2-compressed stream supports seeking to arbitrary uncompressed offsets without decompressing from the start, using `rapidgzip.IndexedBzip2File` (the standalone `indexed_bzip2` package is never imported)
+#### Scenario: accelerator safety matrix
 
-#### Scenario: accelerator backend absent
+| Case | Expected |
+| --- | --- |
+| Accelerator stream is leaked, cyclically collected, or process exits | Finalizer closes raw object before free; process terminates cleanly |
+| Process accelerates gzip and bzip2 | Both use rapidgzip; standalone `indexed_bzip2` is absent; no cross-library heap double-free |
+| Declared random access with `AUTO` and rapidgzip available | rapidgzip may be selected on every platform |
 
-- **WHEN** `rapidgzip` is not installed, or the corresponding flag is `OFF`
-- **THEN** gzip and bzip2 streams stay backed by the stdlib decoders, which service a seek only by re-decompressing from the start (O(n) per rewind)
-- **AND** a seek that rewinds the stream logs a warning naming the `[seekable]` accelerator, rather than degrading silently or failing
+### Requirement: Index-less rewinds emit diagnostic data
 
-### Requirement: Accelerator backends surface corruption and truncation uniformly
+When an index-less codec first services a backward seek by re-decompressing from
+the start, the system SHALL emit `STREAM_REWIND_REDECOMPRESSES` with codec,
+before/after offsets, and accelerator name or `None`. It SHALL emit at most once
+per stream. Forward/no-op seeks SHALL emit nothing.
 
-The system SHALL surface corrupt or truncated input read through the `rapidgzip`
-accelerator (driving gzip via `RapidgzipFile` and bzip2 via its bundled
-`IndexedBzip2File`) as the same `compressed-streams` error types as the stdlib path —
-`CorruptionError` or `TruncatedError` — never as a raw third-party exception, per the
-error-translation contract. The accelerator has its own exception taxonomy that differs
-from the stdlib decoders' and **varies by platform** (e.g. `rapidgzip` raises a
-`RuntimeError` "Failed to parse gzip/zlib header" on Linux but a `ValueError` "… Invalid
-gzip magic bytes" on macOS for the same corrupt input).
+The event SHALL live on the stream operation and cumulative owning-reader
+aggregate, never on `CostReceipt` or `ArchiveInfo`. Gzip/bzip2 context names the
+`[seekable]` accelerator when relevant; brotli, lz4, zstd, and zlib record no
+accelerator. XZ, lzip, and unix-compress indexed seeks SHALL NOT emit this event.
+Stdlib zstd SHALL rewind in place like other index-less codecs.
 
-Truncation needs extra care for `rapidgzip`: it does **not** reliably report a truncated
-gzip — it raises for a cut that leaves a partially-decodable block, but for other cuts it
-silently returns short or zero output (its end-of-file condition does not always reach the
-caller). The system SHALL backstop this: when a gzip is read through `rapidgzip` from a
-seekable source, a full read to EOF compares the decompressed length (mod 2³²) against the
-gzip ISIZE trailer and raises `TruncatedError` on a mismatch. A concatenated multi-member
-gzip (whose trailer records only the *last* member's size) is disambiguated by a
-conservative scan for a further gzip header, so a valid file is never misreported.
+#### Scenario: slow rewind matrix
 
-#### Scenario: corrupt input through an accelerator is translated
+| Case | Expected |
+| --- | --- |
+| One index-less stream performs many backward seeks | One `STREAM_REWIND_REDECOMPRESSES` occurrence; later rewinds no duplicate |
+| Rewind diagnostic resolves to `RAISE` | `DiagnosticRaisedError` is raised from that seek |
+| Only forward/no-op seeks occur | No rewind occurrence |
+| zstd stream rewinds via stdlib backend | Re-decompresses from start in place and emits one occurrence |
 
-- **WHEN** a corrupt gzip is read through `rapidgzip` (or a corrupt bzip2 through `indexed_bzip2`)
-- **THEN** a `CorruptionError` is raised (the raw accelerator exception is never propagated), on every platform
+### Requirement: Recoverable seek-index degradation is diagnostic data
 
-#### Scenario: truncated gzip through rapidgzip is reported
+When an XZ/lzip backward index or trailer scan fails but sequential
+decompression remains safe, the system SHALL emit `SEEK_INDEX_DEGRADED` with
+codec, scan kind, and public failure type, then use sequential fallback unless
+policy escalates. The occurrence SHALL be aggregate-only on stream/reader
+operation summaries. Unsafe corruption SHALL remain a typed
+`CorruptionError`/`TruncatedError`, not a recoverable diagnostic.
 
-- **WHEN** a truncated gzip is read to EOF through `rapidgzip` from a seekable source
-- **THEN** the read raises `TruncatedError` (via the ISIZE backstop) or `CorruptionError` (when the accelerator itself detects the cut) — never a silent short read
+#### Scenario: seek-index degradation matrix
 
-#### Scenario: a valid multi-member gzip is not misreported as truncated
-
-- **WHEN** a concatenated multi-member gzip is read through `rapidgzip`
-- **THEN** it decompresses fully with no error, because the ISIZE backstop disambiguates the multi-member case rather than flagging the size mismatch
-
-The accelerator spawns **C++ worker threads** (invisible to Python's `threading` module). Two
-distinct failure modes must be handled for the accelerator to be safe at interpreter shutdown:
-
-1. **Finalization without close.** A worker thread still running when the interpreter finalizes
-   trips the library's own guard and aborts the process with SIGABRT. Stopping the thread requires
-   **closing** the object: `join_threads()` alone does not stop it — only `close()` does. The
-   owning object must therefore be closed before it is freed, and never left to the garbage
-   collector unclosed, which on a reference cycle (e.g. an exception traceback capturing the
-   stream) can finalize it without closing. The system SHALL guarantee this with a
-   `weakref.finalize` guard per accelerator stream: it **closes** the raw object exactly once —
-   when the wrapper is collected (cyclically or not) or at interpreter exit, whichever comes first
-   — holding a strong reference to the raw object so the close always completes before it is freed.
-
-2. **Two accelerator libraries in one process.** Loading both `rapidgzip` and the standalone
-   `indexed_bzip2` into one process corrupts the heap and aborts (a `malloc … pointer being freed
-   was not allocated` double-free) on macOS, because their statically-linked C++ cores share weak
-   symbols that dyld coalesces across the two dynamic libraries. The system SHALL therefore use
-   `rapidgzip` as the only accelerator library — driving bzip2 through its bundled
-   `IndexedBzip2File` — and SHALL NOT import `indexed_bzip2`. This matches the library author's
-   guidance ("if you need to use both, depend on rapidgzip"). With a single accelerator library in
-   the process the collision cannot occur.
-
-With both measures in place the accelerator runs cleanly on every platform, so `AUTO` MAY select
-it for random access on every platform (a forward-only `streaming=True` pass needs no seeking and
-stays on the sequential backend). See `docs/known-issues.md`.
-
-#### Scenario: a leaked accelerator stream does not crash at shutdown
-
-- **WHEN** a process opens an accelerator-backed stream through the library and exits, or lets the garbage collector reclaim it (including via a reference cycle), without closing it explicitly
-- **THEN** the process terminates cleanly on every platform, because the `weakref.finalize` guard closes the raw object before it is freed, rather than aborting from a worker thread still running at interpreter finalization
-
-#### Scenario: gzip and bzip2 accelerated in the same process do not corrupt the heap
-
-- **WHEN** a process decompresses both a gzip stream and a bzip2 stream through the accelerators
-- **THEN** both are served by `rapidgzip` alone (bzip2 via `rapidgzip.IndexedBzip2File`), the standalone `indexed_bzip2` package is never imported, and the process exits cleanly rather than aborting from a cross-library heap double-free
-
-#### Scenario: AUTO does not select an accelerator on macOS
-
-- **WHEN** a gzip or bzip2 stream is opened for random access on macOS with the accelerator mode left at `AUTO`
-- **THEN** the sequential stdlib backend is used (no accelerator), because the full-process shutdown abort on macOS is not yet resolved — a rewinding seek is serviced slowly (and warns) rather than risking a crash
-
-### Requirement: Index-less codecs warn on a rewinding seek
-
-When an index-less codec first services a backward seek by re-decompressing from the
-start, the system SHALL emit `STREAM_REWIND_REDECOMPRESSES` with codec, before/after
-offsets, and accelerator name (or `None`) in typed context. It SHALL be emitted at most
-once per stream, matching the existing warning's transition semantics; exact counts
-therefore report affected streams, not every seek call.
-
-The event SHALL live on the stream operation and cumulative owning-reader aggregate, never
-on `CostReceipt` or `ArchiveInfo`. Diagnostic policy controls logging, callback delivery,
-and escalation. Forward/no-op seeks SHALL emit nothing.
-
-This applies to gzip/bzip2 when their accelerator is unavailable or disabled and to
-brotli, lz4, zstd, and zlib, which have no random-access index. Gzip/bzip2 context names
-the `[seekable]` accelerator; the other codecs record no accelerator. XZ, lzip, and
-unix-compress use their own indexes and SHALL not emit this event for indexed seeks.
-
-With the stdlib zstd backend (`compression.zstd` / `backports.zstd`), zstd rewinds **in
-place** like the other index-less codecs (no reopen-from-source special case).
-
-#### Scenario: repeated rewinds emit once for the stream
-
-- **WHEN** one index-less stream performs 1,000 backward seeks
-- **THEN** it emits one `STREAM_REWIND_REDECOMPRESSES` occurrence, later rewinds emit no duplicate, and no open-time metadata object changes
-
-#### Scenario: raised rewind halts at the seek
-
-- **WHEN** `STREAM_REWIND_REDECOMPRESSES` resolves to `RAISE`
-- **THEN** the backward seek's diagnostic is delivered and `DiagnosticRaisedError` is raised from that seek operation
-
-#### Scenario: forward seek has no rewind event
-
-- **WHEN** an index-less stream seeks only forward or to its current position
-- **THEN** no `STREAM_REWIND_REDECOMPRESSES` occurrence is emitted
-
-#### Scenario: zstd rewinds in place via the stdlib backend
-
-- **WHEN** a zstd stream is read forward and then seeked backward
-- **THEN** the stdlib `ZstdFile` services the rewind by re-decompressing from the start (no reopen-from-source special case) and emits one `STREAM_REWIND_REDECOMPRESSES` occurrence
-
-### Requirement: Optional seek-index degradation is diagnostic data
-
-When an XZ/lzip backward index or trailer scan fails in a way for which the stream can
-safely fall back to sequential decompression, the system SHALL emit
-`SEEK_INDEX_DEGRADED` with codec, scan kind, and public failure type in typed context.
-The occurrence SHALL be aggregate-only on the stream/reader operation.
-
-If policy escalates the code, the stream SHALL halt with `DiagnosticRaisedError` instead
-of taking the fallback. Genuine corruption that already makes decoding unsafe remains its
-typed read exception rather than a diagnostic.
-
-#### Scenario: recoverable XZ index failure falls back under default policy
-
-- **WHEN** an XZ backward index scan fails but sequential decompression remains valid
-- **THEN** `SEEK_INDEX_DEGRADED` is collected/logged and the stream uses sequential fallback
-
-#### Scenario: unsafe corruption remains an error
-
-- **WHEN** the same corruption prevents correct sequential decoding
-- **THEN** the appropriate `CorruptionError`/`TruncatedError` is raised rather than converting the failure to a recoverable diagnostic
+| Case | Expected |
+| --- | --- |
+| Recoverable XZ index scan failure | `SEEK_INDEX_DEGRADED` collected/logged; stream falls back sequentially |
+| Same issue resolves to `RAISE` | `DiagnosticRaisedError`; no fallback |
+| Corruption prevents correct sequential decoding | `CorruptionError` / `TruncatedError`, not diagnostic fallback |

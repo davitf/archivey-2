@@ -2,169 +2,131 @@
 
 ## Purpose
 
-The backend registry maps archive formats to the backend classes that can read or write them. Core backends are registered automatically at import time; optional backends register themselves only when their third-party dependency is available. The registry exposes a selection API used internally by `archivey.open_archive()`, `archivey.create()`, and `detect_format()`.
+The backend registry maps detected archive formats to stateless read/write
+backend factories. It knows core and optional formats at import time, reports
+availability with install hints, and keeps format detection separate from backend
+selection.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `format-detection` | Central magic/probe/extension matching before registry lookup |
+| `compressed-streams` | Codec descriptors and codec availability used in format support |
+| `archive-reading` | `open_archive()` calls detection then registry selection |
+| `error-handling` | `FormatDetectionError`, `UnsupportedFormatError`, `PackageNotInstalledError` |
+| `packaging-and-extras` | Extras that satisfy optional dependencies |
+
 ## Requirements
+
 ### Requirement: Backends self-register at import time
 
-The system SHALL register **all** known core and optional backends when `archivey`
-is imported, without any user action. Optional, library-backed backends (ISO, ZST,
-LZ4) and the optional 7-Zip *writing* capability SHALL attempt their import inside a
-`try/except ImportError` guard and register **regardless of the outcome**. Each
-backend declares its `OPTIONAL_DEPENDENCY` (and install hint) as data; availability is
-derived centrally from whether that dependency imports — using the existing
-**module-or-`None` sentinel** idiom (`_optional("pycdlib")` returns the module or
-`None`), not a separate per-backend boolean. A missing dependency therefore makes a
-format *unavailable*, not *unknown*: the registry still knows the format exists and can
-name the package to install. Import MUST NOT raise when an optional dependency is
-absent.
+The system SHALL register all known core and optional backends when `archivey`
+imports. Optional library-backed backends (ISO, ZST, LZ4) and optional 7z writing
+SHALL be imported behind `try/except ImportError` guards and registered
+regardless of dependency availability. Missing dependencies make a format known
+but unavailable, not unknown, and import MUST NOT fail.
 
-Note: 7-Zip and RAR *reading* are **native** and always available (no optional
-dependency). RAR data reads additionally require the external `unrar` binary at
-runtime — a missing-tool condition that lowers RAR to *partial* support (listing
-works, data does not), handled at read time, not via an import guard (see
-`format-rar`).
+Each backend SHALL declare dependency metadata as data. Availability SHALL be
+derived centrally from the module-or-`None` sentinel idiom (`_optional("pycdlib")`
+returns module or `None`), not per-backend booleans. 7z and RAR reading are
+native and known; RAR data reads additionally require the external `unrar` binary
+at read time, making RAR partial rather than import-unavailable.
 
 ```python
-# formats/iso_reader.py
-pycdlib = _optional("pycdlib")   # the module, or None when the [iso] extra is absent
+pycdlib = _optional("pycdlib")
 
 class IsoReadBackend(ReadBackend):
     FORMATS = (ArchiveFormat.ISO,)
-    EXTENSIONS = {".iso": ArchiveFormat.ISO}        # extension -> format
-    MAGIC = ((32769, b"CD001", ArchiveFormat.ISO),) # (offset, bytes, format)
-    OPTIONAL_DEPENDENCY = "pycdlib"       # data; the registry derives availability from it
-    def open_read(self, source, format, streaming, password, encoding, archive_name) -> ArchiveReader:
-        assert pycdlib is not None        # open_read is only reached for an available backend
+    EXTENSIONS = {".iso": ArchiveFormat.ISO}
+    MAGIC = ((32769, b"CD001", ArchiveFormat.ISO),)
+    OPTIONAL_DEPENDENCY = "pycdlib"
+
+    def open_read(self, source, format, streaming, password, encoding, archive_name):
+        assert pycdlib is not None
         ...
 
-# Always registered. The registry derives availability centrally as
-# `_optional("pycdlib") is not None`, so an absent pycdlib yields a NONE-support ISO
-# with an install hint rather than a silent "unknown format" — no per-backend boolean.
 register_reader(IsoReadBackend)
 ```
 
-`pycdlib` typed as `ModuleType | None` narrows cleanly under Pyrefly + ty: every use
-sits behind an `is not None` guard (or the `assert` above, since `open_read` is only
-selected for an available backend). This mirrors how the codec layer already handles
-its optional packages.
+The sentinel SHALL type-check cleanly under Pyrefly and ty because uses occur
+behind `is not None` or equivalent registry-selection guarantees.
 
-#### Scenario: core backend available without extras
+#### Scenario: import registration matrix
 
-- **WHEN** `import archivey` succeeds on a system with no optional extras installed
-- **THEN** ZIP, TAR (all variants), GZ, BZ2, XZ, Directory, and the native 7z and RAR readers are registered and appear in `BackendRegistry.list_supported_formats()` with FULL or PARTIAL support
+| Case | Expected |
+| --- | --- |
+| `import archivey` with no optional extras | Core formats plus native 7z/RAR register; supported formats show FULL/PARTIAL where applicable |
+| `pycdlib` absent at import | No `ImportError`; ISO absent from supported formats but present in known formats with NONE support and install hint |
 
-#### Scenario: optional backend absent at import is known but unavailable
+### Requirement: Backend classes are stateless factories
 
-- **WHEN** `pycdlib` is not installed and `archivey` is imported
-- **THEN** no `ImportError` is raised during import
-- **AND** `ArchiveFormat.ISO` is absent from `BackendRegistry.list_supported_formats()`
-- **AND** `ArchiveFormat.ISO` is present in `BackendRegistry.list_known_formats()` with support `NONE` and a missing-component hint naming `pycdlib` / `pip install archivey[iso]`
+Each `ReadBackend` and `WriteBackend` subclass SHALL hold no per-archive state.
+All archive state lives in the returned `ArchiveReader` or `ArchiveWriter`.
+Multiple readers from the same backend class MUST be independent.
 
-### Requirement: Backend is a stateless factory
+#### Scenario: stateless backend matrix
 
-The system SHALL implement each `ReadBackend`/`WriteBackend` subclass as a stateless factory: the class holds no per-archive state. All archive state lives in the `ArchiveReader` or `ArchiveWriter` instance returned by `open_read()` or `open_write()`. This allows multiple readers to be open simultaneously from the same backend class and simplifies testing by making it possible to mock `ReadBackend.open_read()` to return a fake reader.
+| Case | Expected |
+| --- | --- |
+| `open_archive("a.zip")` and `open_archive("b.zip")` are both open | Independent `ArchiveReader` instances; operations do not affect each other |
 
-#### Scenario: two simultaneous readers from the same backend
+### Requirement: Detection owns matching and registry selects by format
 
-- **WHEN** `archivey.open_archive("a.zip")` and `archivey.open_archive("b.zip")` are both open at the same time
-- **THEN** each call returns an independent `ArchiveReader` instance with its own state
-- **AND** operations on one reader do not affect the other
-
----
-
-### Requirement: Detection owns matching; the registry selects a backend by format
-
-The system SHALL keep **format detection** and **backend selection** as two separate
-steps, rather than having each backend re-run byte matching:
-
-1. `detect_format()` (the `format-detection` capability) is the single authority for
-   *which format* a source is. It owns the central magic table and all special-case
-   probes (SFX stub scan, inner-TAR probe, ISO extended window). The per-format magic it
-   matches against is **declared as data** by each read backend (`MAGIC`/`MAGIC_OFFSET`/
-   `EXTENSIONS`) and aggregated by the detector — backends do not each re-implement
-   matching logic. Detection inspects bytes through the shared `PeekableStream` (it is
-   passed the peekable/seekable source, not a fixed-size `bytes` snapshot, so probes that
-   need a larger or decompressed window can request more), and consumes nothing.
-2. The registry then maps the detected `ArchiveFormat` to a registered backend.
+The system SHALL keep format detection and backend selection separate.
+`detect_format()` is the authority for source format: it aggregates backend
+`MAGIC`, `EXTENSIONS`, and `CONTENT_PROBES`, performs special probes through
+`PeekableStream`, consumes no bytes, and raises `FormatDetectionError` when no
+format matches. The registry SHALL map the resolved `ArchiveFormat` to a
+registered available backend. If a detected format has no available backend,
+lookup SHALL raise `UnsupportedFormatError` with the install hint.
 
 ```python
 class BackendRegistry:
-    # read side
     def register_reader(self, backend_cls: type[ReadBackend]) -> None: ...
     def reader_for_format(self, format: ArchiveFormat) -> type[ReadBackend]: ...
-    # write side (separate registry of write backends)
     def register_writer(self, backend_cls: type[WriteBackend]) -> None: ...
     def writer_for_format(self, format: ArchiveFormat) -> type[WriteBackend]: ...
-    # availability
-    def list_formats(self) -> list[ArchiveFormat]: ...      # readable formats available now
+    def list_formats(self) -> list[ArchiveFormat]: ...
     def list_writable_formats(self) -> list[ArchiveFormat]: ...
 ```
 
-If detection yields a format with no registered (available) read backend, the system
-SHALL raise `UnsupportedFormatError` with the install hint (see graceful degradation).
-If detection itself finds no format, it raises `FormatDetectionError` (see
-`format-detection`).
+#### Scenario: detection/selection matrix
 
-#### Scenario: format mapped to its read backend
+| Case | Expected |
+| --- | --- |
+| Detection reports `ArchiveFormat.SEVEN_Z` | `reader_for_format()` returns native `SevenZReadBackend` |
+| Detected backend's optional dependency is missing | `UnsupportedFormatError` names missing package and install hint |
+| No magic/probe/extension matches | `FormatDetectionError`; no backend lookup |
 
-- **WHEN** `detect_format()` reports `ArchiveFormat.SEVEN_Z` and `reader_for_format(ArchiveFormat.SEVEN_Z)` is called
-- **THEN** the native `SevenZReadBackend` is returned (it is always registered)
+### Requirement: ReadBackend and WriteBackend are separate ABCs
 
-#### Scenario: detected format has no available backend
+The system SHALL define separate `ReadBackend` and `WriteBackend` ABCs because
+read and write lifecycles, state, and availability differ. A format may have
+read support, write support, both, or read-only support such as RAR.
 
-- **WHEN** detection yields a format whose backend's optional dependency is not installed
-- **THEN** `reader_for_format()` raises `UnsupportedFormatError` naming the missing package and install hint
-
-#### Scenario: source matches no format
-
-- **WHEN** detection matches no magic and no recognisable extension
-- **THEN** `detect_format()` raises `FormatDetectionError` and no backend lookup occurs
-
----
-
-### Requirement: Separate ReadBackend and WriteBackend ABCs
-
-The system SHALL define **two** abstract base classes — `ReadBackend` and `WriteBackend`
-— rather than one `Backend` with an optional write method, because reading and writing
-are different concerns with different state, lifecycles, and even availability. A format
-may have a read backend, a write backend, both, or (RAR) only a reader. They are
-registered in separate registries.
-
-Each `ReadBackend` declares its magic and extensions **as data**, and **every entry
-names the `ArchiveFormat` it implies**, so a *multi-format* backend (the single
-`SingleFileBackend`; the TAR backend over `TAR` + its compressed combos) can map each
-signal to the right format. The detector aggregates these across all registered
-backends into one table; backends carry no `detect(peek)` method (matching is
-centralized — see the detection/selection requirement).
+Read backends SHALL declare all detection signals as data, and each signal SHALL
+name the `ArchiveFormat` it implies so multi-format backends can map each
+extension/magic/probe to the correct format without re-inspecting the source.
+Magic-less or weak-signature formats SHALL use `CONTENT_PROBES` plus extensions;
+there is no weak-magic flag.
 
 ```python
 class MagicSignature(NamedTuple):
     offset: int
     magic: bytes
     format: ArchiveFormat
-    # No "weak" flag: a match is accepted on the byte comparison alone. A format whose
-    # signature is too short/unspecific to trust (zlib's 2-byte header) or that has no
-    # signature at all (Brotli) is recognized by a CONTENT_PROBES entry instead.
 
 class ReadBackend(ABC):
-    FORMATS: tuple[ArchiveFormat, ...]                   # formats this backend reads
-    EXTENSIONS: Mapping[str, ArchiveFormat] = {}         # ".gz" -> ArchiveFormat.GZ
-    MAGIC: tuple[MagicSignature, ...] = ()               # exact magic signals as data
+    FORMATS: tuple[ArchiveFormat, ...]
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {}
+    MAGIC: tuple[MagicSignature, ...] = ()
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
-                         # (format, probe) pairs for formats with no trustworthy exact
-                         # magic; the probe inspects a peeked prefix (see format-detection)
-    SUPPORTS_STREAMING_NON_SEEKABLE: bool = False        # True for formats walkable front-to-back
-                         # (TAR, single-file codecs): streaming=True may open a non-seekable
-                         # source. Random access (streaming=False) always requires a seekable
-                         # source -- format-independent, so it needs no per-backend flag.
-    OPTIONAL_DEPENDENCY: str | None = None               # e.g. "pycdlib"
+    SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
+    OPTIONAL_DEPENDENCY: str | None = None
 
     @abstractmethod
     def open_read(self, source, format, streaming, password, encoding, archive_name) -> ArchiveReader: ...
-    # `format` is the resolved ArchiveFormat the registry selected this backend for —
-    # detected by open_archive() or passed explicitly by the caller. A multi-format
-    # backend (SingleFileBackend, TAR) uses it to pick its concrete codec/variant instead
-    # of re-inspecting the source; single-format backends ignore it.
 
 class WriteBackend(ABC):
     FORMATS: tuple[ArchiveFormat, ...]
@@ -174,161 +136,102 @@ class WriteBackend(ABC):
     def open_write(self, dest, compression, password, encoding) -> ArchiveWriter: ...
 ```
 
-A magic-less format (e.g. Brotli) declares no `MAGIC` entry and is reached by its
-`EXTENSIONS` mapping plus the content probe (see `format-detection`). A format with no
-registered write backend is unwritable and the attempt raises `UnsupportedOperationError`
-(native-read-only RAR) or `UnsupportedFormatError` with an install hint (7z without
-`[7z-write]`).
+The `format` argument SHALL be the already-resolved `ArchiveFormat`; multi-format
+backends use it to choose a variant, while single-format backends may ignore it.
+A missing write backend SHALL raise `UnsupportedOperationError` for read-only
+formats or `UnsupportedFormatError` with an install hint for optional write
+formats.
 
-#### Scenario: a multi-format backend maps each magic to its format
+#### Scenario: backend ABC matrix
 
-- **WHEN** the detector aggregates `SingleFileBackend.MAGIC`, which contains `(0, b"\x1f\x8b", ArchiveFormat.GZ)` and `(0, b"BZh", ArchiveFormat.BZ2)`
-- **THEN** a source beginning `1F 8B` resolves to `ArchiveFormat.GZ` and one beginning `42 5A 68` resolves to `ArchiveFormat.BZ2`, both served by the one `SingleFileBackend`
+| Case | Expected |
+| --- | --- |
+| `SingleFileBackend.MAGIC` has gzip and bzip2 signatures | Detector resolves `GZ` vs `BZ2`; both are served by one backend |
+| `archivey.create()` targets read-only RAR | `UnsupportedOperationError` names the format |
 
-#### Scenario: format with no write backend
+### Requirement: Optional dependencies degrade gracefully
 
-- **WHEN** `archivey.create()` is called for a format that has a read backend but no registered write backend (e.g. RAR)
-- **THEN** `UnsupportedOperationError` is raised with a message naming the format
+The system SHALL degrade missing optional components to NONE or PARTIAL support
+rather than import crashes. Opening a format or reading a member that needs a
+missing component SHALL raise an error naming the package/tool and install
+command from the same metadata exposed by `format_availability()`.
 
-### Requirement: Optional-dependency graceful degradation
+| Missing component kind | Support | Later error |
+| --- | --- | --- |
+| Single-codec format backend/codec missing (ISO without `pycdlib`, `.zst` without zstd backend before 3.14, `.lz4` without `lz4`) | NONE | `UnsupportedFormatError` at open with hint |
+| Multi-codec container missing optional member codec/tool | PARTIAL | Opens/lists; member read raises `PackageNotInstalledError` or documented missing-tool error |
+| 7z writing without `py7zr` / `[7z-write]` | Read support unaffected | Write raises `UnsupportedOperationError` naming `[7z-write]` |
 
-The system SHALL degrade gracefully when an optional dependency is missing: the
-affected format becomes *unavailable* or *partially available* rather than causing an
-import crash. When such a format is subsequently opened (or a member needing the
-missing piece is read), the system SHALL raise an error whose message names the
-missing package/tool and the install command, derived from the same availability
-metadata exposed by `format_availability()`.
+#### Scenario: graceful degradation matrix
 
-- A **single-codec** format whose sole codec/backend is missing (ISO without
-  `pycdlib`; `.zst` without `backports.zstd` (or stdlib `compression.zstd` on 3.14+); `.lz4` without `lz4`) has support **NONE**;
-  opening it raises `UnsupportedFormatError` with the install hint.
-- A **multi-codec container** missing only some optional codecs/tools has support
-  **PARTIAL**; it opens and lists, and only a member using the missing codec/tool
-  raises `PackageNotInstalledError` (or, for RAR data without `unrar`, the documented
-  missing-tool error) at read time.
-- **7-Zip writing** is gated on `py7zr` (`[7z-write]`); 7z *reading* is native. A 7z
-  write without the extra raises `UnsupportedOperationError` naming `[7z-write]`.
+| Case | Expected |
+| --- | --- |
+| ISO magic source opened without `pycdlib` | `UnsupportedFormatError` names `pycdlib` and `pip install archivey[iso]`; no `ImportError` |
+| `list_supported_formats()` without `pycdlib` | ISO absent; native 7z/RAR and satisfied formats present |
 
-#### Scenario: ISO file opened without pycdlib
+### Requirement: Codec availability and install hints come from descriptors
 
-- **WHEN** a source with the ISO 9660 magic is passed to `archivey.open_archive()` and `pycdlib` is not installed
-- **THEN** `UnsupportedFormatError` is raised, its message names `pycdlib` and suggests `pip install archivey[iso]`, and no `ImportError` propagates
+The system SHALL derive compositional support and missing-component install hints
+from codec descriptor `requirement` fields. The separate `_CODEC_REQUIREMENT`
+table SHALL not exist. FULL/PARTIAL/NONE results MUST remain unchanged by this
+refactor.
 
-#### Scenario: list_supported_formats() excludes NONE-support formats
+#### Scenario: codec requirement matrix
 
-- **WHEN** `BackendRegistry.list_supported_formats()` is called on a system where `pycdlib` is not installed
-- **THEN** `ArchiveFormat.ISO` is absent (support NONE)
-- **AND** the native 7z and RAR readers are present (FULL or PARTIAL), along with all formats whose dependencies are satisfied
-
-### Requirement: Codec availability and install hints come from the descriptor
-
-A format's compositional support and its missing-component install hints SHALL be derived
-from the codec descriptors' `requirement` fields, so a codec's package / extra / install
-hint / unlocked capability is declared in exactly one place. The separate
-`_CODEC_REQUIREMENT` table SHALL be removed, and the tri-state FULL / PARTIAL / NONE results
-for every format MUST be unchanged from before the refactor.
-
-#### Scenario: a codec's install hint is declared once
-
-- **WHEN** a single-codec format's sole codec backend is missing
-- **THEN** `format_availability()` reports `NONE` with the install hint taken from that codec's descriptor `requirement`, not from a duplicate registry table
-
-#### Scenario: multi-codec container support is unchanged
-
-- **WHEN** `format_availability()` is queried for ZIP / 7z / a `tar.<codec>` on a system missing some optional member codecs
-- **THEN** the support level and missing-component list are identical to before, computed from the same codec descriptors
+| Case | Expected |
+| --- | --- |
+| Single-codec format's backend is missing | `format_availability()` reports NONE with descriptor-sourced install hint |
+| ZIP / 7z / `tar.<codec>` availability is queried with missing optional codecs | Support level and missing list match the previous behavior, computed from descriptors |
 
 ### Requirement: Format support is tri-state and compositional
 
-The system SHALL report the readability of each known format as one of three levels
-rather than a binary available/unavailable flag, because a per-member multi-codec
-container can be readable for its common members while lacking a rarely-used optional
-codec:
+The system SHALL report readability as FULL, PARTIAL, or NONE:
 
 ```python
 class FormatSupport(Enum):
-    FULL    = "full"     # format backend usable AND every optional codec/tool it can use is present
-    PARTIAL = "partial"  # opens & lists; common members decode; some optional codec/tool missing
-    NONE    = "none"     # the format backend (or a single-codec format's sole codec) is unavailable
-```
+    FULL = "full"
+    PARTIAL = "partial"
+    NONE = "none"
 
-Support SHALL be computed **compositionally** across the *format backend* (registry
-level) and the *codec backends* a format can use (the `compressed-streams` layer):
-
-- A format is **NONE** if its format backend is unavailable, or — for a single-codec
-  format (single-file compressors, `tar.<codec>`) — if that one codec backend is
-  unavailable.
-- A multi-codec container (7z, RAR) whose format backend is available is **FULL**
-  when every optional codec/tool it can use is present, otherwise **PARTIAL**.
-- **ZIP is an exception until Phase 6** (see `format-zip`): member *data* decompression
-  still goes through stdlib `zipfile`, which cannot use deflate64/PPMd (or zstd before
-  Python 3.14) even when the corresponding codec packages are installed. Therefore
-  `format_availability(ArchiveFormat.ZIP)` SHALL report **PARTIAL** regardless of
-  optional codec installation until Phase 6 wires the shared codec layer into ZIP
-  member reads. When optional ZIP member-codec packages are absent, `missing` lists
-  them as for any other multi-codec container; when every package is present, `missing`
-  is empty — support remains `PARTIAL` because the read-time gap is implementation
-  stage, not a missing install.
-- **Missing-dependency** gaps (which determine PARTIAL/NONE) are distinct from
-  **by-design** rejections. Codecs the library deliberately does not support — 7z
-  **BCJ2** and unknown 7z method IDs — never count against FULL; a member using them
-  raises `UnsupportedFeatureError` regardless of what is installed.
-
-The system SHALL expose this via:
-
-```python
 @dataclass(frozen=True)
 class MissingComponent:
-    name: str              # package / extra / external tool, e.g. "pycdlib", "[7z]", "unrar"
-    install_hint: str      # e.g. "pip install archivey[iso]"
-    unlocks: tuple[str, ...]  # member-codecs/capabilities it would enable, e.g. ("ppmd",)
+    name: str
+    install_hint: str
+    unlocks: tuple[str, ...]
 
 @dataclass(frozen=True)
 class FormatAvailability:
     format: ArchiveFormat
     support: FormatSupport
-    missing: tuple[MissingComponent, ...]   # empty when FULL
+    missing: tuple[MissingComponent, ...]
 
 def format_availability(format: ArchiveFormat) -> FormatAvailability: ...
-def list_supported_formats() -> list[ArchiveFormat]:  # FULL ∪ PARTIAL (readable now)
-def list_known_formats() -> list[ArchiveFormat]:  # every format the registry knows
+def list_supported_formats() -> list[ArchiveFormat]: ...
+def list_known_formats() -> list[ArchiveFormat]: ...
 ```
 
-`list_supported_formats()` SHALL return formats with support FULL or PARTIAL;
+Support SHALL be computed across the format backend and codecs/tools:
+
+- NONE when the format backend is unavailable, or a single-codec format's only
+  codec/backend is unavailable.
+- FULL for an available multi-codec container only when every optional codec/tool
+  it can use is present.
+- PARTIAL for available multi-codec containers with missing optional codecs/tools.
+- ZIP SHALL remain PARTIAL until Phase 6 routes member decompression through the
+  shared codec layer, even if all optional member-codec packages are installed.
+- By-design unsupported features such as 7z BCJ2 and unknown 7z method IDs SHALL
+  not lower support; members using them raise `UnsupportedFeatureError`.
+
+`list_supported_formats()` SHALL return FULL plus PARTIAL formats.
 `list_known_formats()` SHALL return every known format including NONE.
 
-#### Scenario: 7z without optional codecs is partial
+#### Scenario: format support matrix
 
-- **WHEN** `format_availability(ArchiveFormat.SEVEN_Z)` is queried on a system without `[7z]` or `[crypto]`
-- **THEN** `support` is `FormatSupport.PARTIAL`
-- **AND** `missing` names `[7z]` (unlocking ppmd/deflate64) and `[crypto]` (unlocking AES)
-- **AND** opening a 7z archive whose members use only LZMA2/bzip2/copy succeeds, while reading a PPMd member raises `PackageNotInstalledError`
-
-#### Scenario: single-codec format without its codec is none
-
-- **WHEN** `format_availability(ArchiveFormat.ZSTD)` is queried and the zstd backend is not available (`backports.zstd` absent on Python < 3.14)
-- **THEN** `support` is `FormatSupport.NONE` and `missing` names `[zstd]` / `pip install archivey[zstd]`
-
-#### Scenario: fully-stdlib format is full
-
-- **WHEN** `format_availability(ArchiveFormat.GZIP)` is queried
-- **THEN** `support` is `FormatSupport.FULL` and `missing` is empty
-
-#### Scenario: by-design-unsupported codec does not lower support
-
-- **WHEN** `format_availability(ArchiveFormat.SEVEN_Z)` is queried on a system with `[7z]` and `[crypto]` installed
-- **THEN** `support` is `FormatSupport.FULL` even though a 7z member using BCJ2 would still raise `UnsupportedFeatureError`
-
-#### Scenario: ZIP reports partial until member-codec bypass lands
-
-- **WHEN** `format_availability(ArchiveFormat.ZIP)` is queried on a system with every optional ZIP member codec installed (deflate64, PPMd, zstd)
-- **THEN** `support` is `FormatSupport.PARTIAL` and `missing` is empty
-- **AND** reading a deflate64/PPMd/zstd member still raises `UnsupportedFeatureError` until Phase 6 wires the codec layer into ZIP member reads
-
-#### Scenario: ZIP partial when optional member codecs are missing
-
-- **WHEN** `format_availability(ArchiveFormat.ZIP)` is queried on a system without deflate64 and/or zstd packages
-- **THEN** `support` is `FormatSupport.PARTIAL`
-- **AND** `missing` names the absent codec packages
-- **AND** stored/deflate members still open and list successfully
-
+| Case | Expected |
+| --- | --- |
+| 7z availability without `[7z]` or `[crypto]` | PARTIAL; missing names `[7z]` and `[crypto]`; LZMA2/bzip2/copy members still read |
+| ZSTD availability before Python 3.14 without zstd backend | NONE with `[zstd]` / `pip install archivey[zstd]` hint |
+| GZIP availability | FULL; no missing components |
+| 7z with `[7z]` and `[crypto]` installed | FULL even though BCJ2 still raises `UnsupportedFeatureError` |
+| ZIP with every optional member codec installed | PARTIAL with empty missing list until Phase 6 |
+| ZIP missing deflate64 and/or zstd packages | PARTIAL; missing names absent codec packages; stored/deflate members still list/read |

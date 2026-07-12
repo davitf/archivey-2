@@ -2,331 +2,230 @@
 
 ## Purpose
 
-The compressed-streams layer is the single place where Archivey turns compressed
-or encrypted bytes into a decompressed pull stream. It owns one decompressor-stream
-abstraction, a registry of per-codec backends (stdlib and optional packages), an
-AES decrypt stage, uniform exception translation, and missing-dependency reporting.
-**Format parsers compose this layer rather than calling codec libraries directly**,
-so a codec is implemented once and reused across the single-file compressors, the
-native 7z reader, and a future native ZIP reader. The seekable-index features live
-in the separate `seekable-decompressor-streams` capability, which builds on this one.
+Compressed streams are the shared pull-stream layer that turns compressed or
+encrypted bytes into decompressed bytes. Format parsers compose this layer rather
+than calling codec libraries directly, so codecs, AES decryption, exception
+translation, dependency checks, digest verification, diagnostics, and compressed
+byte accounting are implemented once.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-data-model` | `CompressionMethod`, member hashes, and standalone raw-stream formats |
+| `seekable-decompressor-streams` | Seekable/indexed behavior when seekability is requested |
+| `error-handling` | Typed exception hierarchy and cause preservation |
+| `diagnostics` | Digest, rewind, and seek-index diagnostic policy/retention |
+| `backend-registry` | Codec availability and install hints for format support |
 
 ## Requirements
 
-### Requirement: Format parsers decompress only through the shared stream layer
+### Requirement: Format parsers use the shared decompressor-stream layer
 
-The system SHALL expose codec decompression through a uniform pull-based
-decompressor-stream interface (an `open_stream(...)`-style entry point returning a
-`BinaryIO`). Format backends — single-file compressors, the native 7z reader, and
-future readers such as a native ZIP reader — SHALL obtain decompression by composing
-these shared stream backends and MUST NOT import or drive codec libraries
-(`pyppmd`, `inflate64`, `lzma` raw filters, the crypto backend, etc.) directly.
+The system SHALL expose codec decompression through one pull-based
+`open_stream(...)`-style API returning `BinaryIO`/`ArchiveStream`. Single-file
+compressors, native 7z, and future native ZIP SHALL compose shared stream
+backends and MUST NOT directly import or drive codec libraries such as `pyppmd`,
+`inflate64`, raw `lzma` filters, or the crypto backend.
 
-#### Scenario: 7z reader composes shared codec streams
+#### Scenario: shared pipeline matrix
 
-- **WHEN** the native 7z reader decodes a folder coded as, e.g., Delta + LZMA2
-- **THEN** it builds the pipeline from the shared decompressor-stream backends rather than calling `lzma` itself
+| Case | Expected |
+| --- | --- |
+| Native 7z decodes Delta + LZMA2 | Builds pipeline from shared stream backends |
+| 7z and future ZIP need Deflate64 | Both use the same `inflate64`-backed stream backend |
 
-#### Scenario: a codec is implemented once and reused
+### Requirement: open_stream is forward-only unless seekability is requested
 
-- **WHEN** both the 7z reader and a future ZIP reader need Deflate64
-- **THEN** both use the same shared `inflate64`-backed stream backend, not a format-local copy
+The single-stream API SHALL default to a forward-only stream and accept
+`seekable: bool = False`. Without `seekable=True`, the stream reports
+`seekable() is False`, `seek()` raises `io.UnsupportedOperation`, `tell()` works,
+and no seek index or accelerator is instantiated. With `seekable=True`, the
+`seekable-decompressor-streams` contract SHALL apply. Concurrency is not a
+parameter because the API returns one stream.
 
----
+#### Scenario: seekability matrix
 
-### Requirement: open_stream is non-seekable by default
+| Case | Expected |
+| --- | --- |
+| Open compressed source without `seekable=True` | Reads forward; `seekable()` false; `seek()` unsupported; no index |
+| Open same source with `seekable=True` | Seekable behavior follows `seekable-decompressor-streams` |
 
-The single-stream entry point (`open_stream(...)`-style API) SHALL return a
-forward-only stream by default and SHALL accept `seekable: bool = False` to request a
-seekable stream. This matches the archive-side rule — no archivey stream is seekable
-unless asked — so the seek contract is learned once and applies everywhere.
-Concurrency is not a concept for this API (it returns exactly one stream), so it takes
-the boolean, not the `MemberStreams` flags enum.
+### Requirement: One StreamCodec descriptor describes each codec
 
-Without `seekable=True`: the returned stream reports `seekable() is False`, `seek()`
-raises `io.UnsupportedOperation`, `tell()` works, and no seek index or accelerator is
-instantiated. With `seekable=True`: the `seekable-decompressor-streams` contract applies
-(native indexes, demand-driven accelerator `AUTO` resolution, loud slow rewinds on the
-non-accelerated path).
+The system SHALL register each single-stream codec through one descriptor
+containing its open function, exception translator, exact magic signatures,
+optional content probe, file extensions, metadata extractor, and optional
+dependency requirement (package/extra/tool, install hint, unlocked capability).
+A codec SHALL be recognized by exact magic or content probe; there is no separate
+weak-magic flag. Descriptor construction MUST NOT eagerly import optional codec
+libraries.
 
-#### Scenario: default stream is forward-only
+Registering a standalone codec descriptor SHALL make detection, the single-file
+reader, and availability reporting work without edits elsewhere.
 
-- **WHEN** a compressed source is opened through the single-stream API without
-  `seekable=True`
-- **THEN** the stream reads correctly forward, reports `seekable() is False`, raises
-  `io.UnsupportedOperation` on `seek()`, and builds no seek index
+#### Scenario: descriptor matrix
 
-#### Scenario: requested seekability activates the seekable-stream contract
+| Case | Expected |
+| --- | --- |
+| New standalone codec descriptor is registered | `detect_format()`, `SingleFileBackend`, and availability reporting pick it up |
+| Import `archivey` with no optional codec packages | No third-party codec import and no `ImportError` |
 
-- **WHEN** the same source is opened with `seekable=True`
-- **THEN** the stream is seekable per `seekable-decompressor-streams`, using native
-  indexes or accelerators where available and warning loudly on O(n) rewind fallbacks
+### Requirement: Each supported codec has a default backend
 
----
-
-### Requirement: A codec is described by one StreamCodec descriptor
-
-The system SHALL represent each single-stream codec as a single descriptor object that
-carries its open function, exception translator, exact magic signatures, an optional
-**content-probe function** (for a format with no exact magic, that inspects a peeked prefix
-and returns whether it matches), its standalone file extensions, an optional metadata
-extractor that fills `ArchiveMember` fields, and its optional-dependency requirement
-(package / extra / external tool + install hint + unlocked capability). A codec SHALL be
-recognized by EITHER an exact magic signature OR a content-probe function, not a separate
-"weak magic" flag. A new standalone codec SHALL become fully readable and detectable by
-registering one descriptor, without edits to the detector, the single-file reader, or the
-registry's availability code. The descriptor registry MUST NOT eagerly import optional
-codec libraries, so the zero-dep core stays importable with no third-party packages.
-
-#### Scenario: adding a standalone codec is a one-descriptor change
-
-- **WHEN** a new single-stream codec descriptor is registered (open fn, translator, magic/probe, extension, requirement)
-- **THEN** `detect_format()` recognizes it, `SingleFileBackend` reads it as a one-member archive, and `format_availability()` reports its support — with no other code changes
-
-#### Scenario: descriptors do not pull in optional libraries at import
-
-- **WHEN** `archivey` is imported in a core-only environment (no optional codec packages)
-- **THEN** building the descriptor registry raises no `ImportError` and imports no third-party codec package
-
----
-
-### Requirement: Each codec has a default backend
-
-The system SHALL decompress each supported codec through a default backend:
+The system SHALL decompress supported codecs through these default backends:
 
 | Codec | Default backend | Availability |
-|-------|-----------------|--------------|
+| --- | --- | --- |
 | gzip | stdlib `gzip` | core |
 | bzip2 | stdlib `bz2` | core |
 | xz | native xz stream over stdlib `lzma` | core |
-| LZMA1 / LZMA2 (raw) | stdlib `lzma` `FORMAT_RAW` | core |
+| LZMA1 / LZMA2 raw | stdlib `lzma` `FORMAT_RAW` | core |
 | Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `lzma` raw filters | core |
 | raw Deflate | stdlib `zlib` (`-15`) | core |
 | Copy/STORED | pass-through | core |
-| zstd | stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14) | optional `[zstd]` on <3.14; core on 3.14+ |
+| zstd | stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14) | optional `[zstd]` before 3.14; core on 3.14+ |
 | lz4 | `lz4` | optional `[lz4]` |
 | Brotli | `brotli` | optional `[7z]` |
-| unix-compress (LZW, `.Z`) | `uncompresspy` | optional `[unix-compress]` |
-| PPMd (var.H) | `pyppmd` | optional `[7z]` |
+| unix-compress `.Z` | `uncompresspy` | optional `[unix-compress]` |
+| PPMd var.H | `pyppmd` | optional `[7z]` |
 | Deflate64 | `inflate64` | optional `[7z]` |
-| AES-256 (decrypt stage) | the wrapped crypto backend | optional `[crypto]` |
+| AES-256 decrypt stage | wrapped crypto backend | optional `[crypto]` |
 
-#### Scenario: default gzip backend
+#### Scenario: backend matrix
 
-- **WHEN** a gzip stream is opened with default configuration
-- **THEN** it is decompressed using the stdlib `gzip` module
+| Case | Expected |
+| --- | --- |
+| Default gzip stream | stdlib `gzip` |
+| Default zstd on Python 3.14+ | stdlib `compression.zstd` |
+| Default zstd on Python 3.11-3.13 with `backports.zstd` | `backports.zstd` using the same API |
+| 7z folder LZMA2 raw stream | `lzma` in `FORMAT_RAW` mode |
 
-#### Scenario: default zstd backend on Python 3.14+
+### Requirement: AES decryption is one wrapped pipeline stage
 
-- **WHEN** a zstd stream is opened with default configuration on Python 3.14 or newer
-- **THEN** it is decompressed using the standard-library `compression.zstd` module
+The system SHALL use `cryptography` from `[crypto]` through an internal wrapper
+only. AES decryption SHALL be a stream stage composed before decompression, such
+as AES then LZMA2 for an encrypted 7z folder. Format parsers MUST use the wrapper
+instead of importing `cryptography` directly.
 
-#### Scenario: default zstd backend on Python 3.11–3.13
+#### Scenario: crypto matrix
 
-- **WHEN** a zstd stream is opened with default configuration on Python 3.11–3.13 and `backports.zstd` is installed
-- **THEN** it is decompressed using `backports.zstd` (the same `compression.zstd` API)
-
-#### Scenario: raw LZMA2 backend for a 7z folder
-
-- **WHEN** a 7z folder's LZMA2 stream is opened
-- **THEN** it is decompressed using `lzma` in `FORMAT_RAW` mode
-
----
-
-### Requirement: A single, wrapped crypto backend provides the AES stage
-
-The system SHALL standardize on the `cryptography` package as the one crypto
-backend (resolved by the `[crypto]` extra), accessed only through an internal
-abstraction so the backend can be swapped without touching format parsers. AES
-decryption is exposed as a decrypt **stage** that composes ahead of a decompressor
-in a stream pipeline (e.g. AES → LZMA2 for an encrypted 7z folder).
-
-#### Scenario: encrypted folder composes a decrypt stage before decompression
-
-- **WHEN** a 7z folder is AES-encrypted over LZMA2 and `[crypto]` is installed
-- **THEN** the pipeline applies the AES decrypt stage, then the LZMA2 decompressor
-
-#### Scenario: crypto backend is reachable only through the wrapper
-
-- **WHEN** any format parser needs AES
-- **THEN** it uses the internal crypto abstraction, not `cryptography` directly, so the backend is swappable
-
----
+| Case | Expected |
+| --- | --- |
+| AES-encrypted 7z folder over LZMA2 with `[crypto]` installed | Pipeline applies AES decrypt stage, then LZMA2 |
+| Any format parser needs AES | Uses internal crypto abstraction |
 
 ### Requirement: Missing optional backends raise PackageNotInstalledError
 
-The system SHALL raise `PackageNotInstalledError`, naming the missing package, when
-a codec's selected backend requires an optional package that is not installed —
-rather than failing obscurely.
+The system SHALL raise `PackageNotInstalledError`, naming the missing package,
+extra, or tool, when the selected codec/decrypt backend requires an unavailable
+optional component.
 
-#### Scenario: PPMd without pyppmd
+#### Scenario: missing backend matrix
 
-- **WHEN** a PPMd stream is opened and `pyppmd` is not installed
-- **THEN** `PackageNotInstalledError` naming `pyppmd` is raised
-
-#### Scenario: AES without the crypto backend
-
-- **WHEN** an AES-encrypted stream is opened and `[crypto]` is not installed
-- **THEN** `PackageNotInstalledError` naming the crypto backend is raised
-
----
+| Case | Expected |
+| --- | --- |
+| PPMd stream without `pyppmd` | `PackageNotInstalledError` naming `pyppmd` |
+| AES stream without `[crypto]` | `PackageNotInstalledError` naming the crypto backend |
 
 ### Requirement: Returned streams translate decompression errors
 
-The system SHALL wrap each backend stream so decompression failures surface as the
-library's own exception types: corrupt data as `CorruptionError`, unexpected
-end-of-input as `TruncatedError`, and a backend that requires seeking on a
-non-seekable source as the documented non-seekable error. For the zstd backend
-specifically, the `compression.zstd` `ZstdError` SHALL map to `CorruptionError`
-and its `EOFError` (raised on a truncated frame) SHALL map to `TruncatedError`.
-No raw backend exception escapes unwrapped.
+The system SHALL wrap backend streams so decompression failures surface as
+Archivey exceptions: corrupt data as `CorruptionError`, unexpected end-of-input
+as `TruncatedError`, and source seek requirements as the documented non-seekable
+error. No raw backend exception SHALL escape. For zstd specifically,
+`compression.zstd.ZstdError` SHALL map to `CorruptionError`, and its truncation
+`EOFError` SHALL map to `TruncatedError`.
 
-#### Scenario: corrupt compressed data
+#### Scenario: decompression error matrix
 
-- **WHEN** a corrupted compressed stream is read
-- **THEN** `CorruptionError` is raised with the original exception attached as `__cause__`
+| Case | Expected |
+| --- | --- |
+| Corrupt compressed stream is read | `CorruptionError` with backend exception as `__cause__` |
+| Compressed stream ends mid-data | `TruncatedError` |
+| Zstd stream ends before end-of-frame marker | `TruncatedError`, not a silent short read |
+| Zstd checksum frame is corrupted | `CorruptionError` with backend `ZstdError` as `__cause__` |
 
-#### Scenario: truncated compressed data
+### Requirement: Decompressed output digests are verified at clean EOF
 
-- **WHEN** a compressed stream ends mid-data
-- **THEN** `TruncatedError` is raised
+The verification stage SHALL compute available expected digest algorithms
+incrementally over decompressed bytes and raise `CorruptionError` for a
+computable mismatch at clean EOF. A mismatch SHALL surface from the terminal read
+after all data chunks have been delivered; a bytes-returning full read raises and
+returns no bytes. Partial/random-access reads SHALL NOT produce a digest verdict.
 
-#### Scenario: truncated zstd data raises
+When an expected digest cannot be computed because the algorithm is unknown or a
+backend is missing, the system SHALL emit `DIGEST_UNVERIFIABLE` with algorithm,
+non-secret reason, and member identity when available. Diagnostic policy controls
+collection, logging/callback delivery, member attachment, and escalation.
 
-- **WHEN** a zstd stream that ends before its end-of-frame marker is read to EOF
-- **THEN** `TruncatedError` is raised (the stdlib backend reports the cut as `EOFError`), rather than a silent short read
+#### Scenario: digest matrix
 
-#### Scenario: corrupt zstd data raises
+| Case | Expected |
+| --- | --- |
+| Expected `blake2sp` cannot be computed under default policy | `DIGEST_UNVERIFIABLE` counted/retained/logged; bytes still returned without that check |
+| Full member read reaches EOF with computable digest mismatch | `CorruptionError` naming the algorithm |
+| Chunked read reaches EOF with mismatch | All valid chunks delivered; following terminal read raises |
+| Caller abandons stream before clean EOF | No digest verdict or mismatch exception |
+| `DIGEST_UNVERIFIABLE` resolves to `RAISE` | `DiagnosticRaisedError` halts open/read |
 
-- **WHEN** a zstd frame carrying a content checksum is corrupted and read
-- **THEN** `CorruptionError` is raised with the backend `ZstdError` attached as `__cause__`
+### Requirement: Public ArchiveStream exposes bounded operation diagnostics
 
----
+Every public `ArchiveStream` SHALL expose an immutable `diagnostics` snapshot. A
+reader-owned stream shows an operation-filtered view over the reader collector; a
+standalone codec stream owns a stream-lifetime collector. Serving the view SHALL
+not retain another aggregate copy of each occurrence.
 
-### Requirement: Verify decompressed output against expected digests
+#### Scenario: ArchiveStream diagnostics matrix
 
-The verification stage SHALL continue to raise `CorruptionError` for a computable digest
-mismatch at clean EOF and skip verification after a partial read. It SHALL compute each
-available algorithm incrementally over decompressed bytes. A mismatch SHALL surface from
-the terminal read that would otherwise signal EOF, after every data chunk has been
-delivered; a bytes-returning full read SHALL raise and return no bytes. Codec-internal
-checks remain distinct from this container-supplied digest stage, and random-access/
-partial reads do not verify.
+| Case | Expected |
+| --- | --- |
+| Standalone codec stream emits index/rewind diagnostic | `stream.diagnostics` exposes exact counts and bounded details without a reader |
+| Reader-owned member stream emits diagnostic | Stream view and reader aggregate share one retained occurrence |
 
-When an expected digest algorithm cannot be computed because it is unknown or its backend
-is unavailable, the stage SHALL emit `DIGEST_UNVERIFIABLE` with typed context containing
-the algorithm, non-secret reason, and member identity when available.
+### Requirement: Read-only stream wrappers share one internal base
 
-The event SHALL follow diagnostic policy. Under `COLLECT`, that algorithm is skipped while
-other computable algorithms are still verified; the occurrence appears in the stream/
-reader aggregate and MAY attach to the member under the shared retention budget. Under
-`IGNORE`, it is counted but has no delivery/detail and verification still skips it. Under
-`RAISE`, `DiagnosticRaisedError` halts the read.
+Read-only wrappers in this layer SHALL share an internal base for the read-only
+`BinaryIO` surface (`readable`, `writable`, `write`) and canonical `readinto` /
+`readall` built from each wrapper's `read`. The public codec-stream path SHALL
+return an `ArchiveStream` carrying stream-level presentation metadata; internal
+`backend.open()` calls MAY return raw backend streams.
 
-#### Scenario: unverifiable digest is collected as data
+#### Scenario: wrapper surface matrix
 
-- **WHEN** a member's expected `blake2sp` cannot be computed and default policy applies
-- **THEN** `DIGEST_UNVERIFIABLE` is counted/retained/logged, may attach to the member, and the readable bytes are returned without that digest check
-
-#### Scenario: digest mismatch on full read
-
-- **WHEN** a member is read to EOF and its decompressed bytes do not match an expected computable digest
-- **THEN** `CorruptionError` naming the algorithm is raised
-
-#### Scenario: mismatch does not discard the final chunk
-
-- **WHEN** a caller consumes chunks until EOF from a member whose digest mismatches
-- **THEN** every data chunk is delivered, and the following terminal read raises `CorruptionError`
-
-#### Scenario: partial read is not verified
-
-- **WHEN** a caller abandons a member stream before clean EOF
-- **THEN** no digest verdict or mismatch exception is produced
-
-#### Scenario: strict caller escalates unverifiable digest
-
-- **WHEN** `DIGEST_UNVERIFIABLE` resolves to `RAISE`
-- **THEN** `DiagnosticRaisedError` halts opening/reading the stream rather than silently skipping the check
-
-### Requirement: Public ArchiveStream exposes bounded operation snapshots
-
-Every public `ArchiveStream` SHALL expose an immutable `diagnostics` snapshot. For a
-reader-owned stream this is an operation-filtered view over the reader collector; for a
-standalone codec stream it is a stream-lifetime collector. Serving the view SHALL not
-retain a second aggregate copy of each occurrence.
-
-#### Scenario: standalone stream owns its diagnostics
-
-- **WHEN** a standalone codec stream emits an index or rewind diagnostic
-- **THEN** `stream.diagnostics` exposes exact counts and bounded retained details without requiring an `ArchiveReader`
-
-### Requirement: Read-only stream wrappers share an internal base; the public surface is an ArchiveStream
-
-The read-only stream wrappers in this layer SHALL share an internal base that provides the
-read-only `BinaryIO` surface (`readable`/`writable`/`write`) and a single canonical
-`readinto`/`readall` built on each wrapper's `read`, so that primitive is defined once rather
-than re-implemented per wrapper. The object returned on the public/codec-stream path SHALL
-always be an `ArchiveStream` — the single, stable surface where stream-level presentation
-metadata (e.g. a rewind-is-slow warning, and future seek-cost information) lives; transient
-internal opens (`backend.open()`) MAY return the raw backend stream without this wrapper.
-
-#### Scenario: read-only wrappers expose a uniform read-only surface
-
-- **WHEN** any read-only stream wrapper in this layer is used
-- **THEN** its `readable()`/`writable()`/`write()` and `readinto`/`readall` come from the shared base, defined once rather than re-implemented per wrapper
-
-#### Scenario: the public codec stream is an ArchiveStream
-
-- **WHEN** a codec stream is opened on the public path
-- **THEN** the returned object is an `ArchiveStream` carrying any stream-level presentation metadata (such as a rewind-is-slow warning)
-
----
+| Case | Expected |
+| --- | --- |
+| Any read-only stream wrapper is used | Shared base supplies read-only surface and `readinto` / `readall` |
+| Public codec stream is opened | Returned object is an `ArchiveStream` with stream presentation metadata |
 
 ### Requirement: Backend dispatch is separable from opening
 
-The system SHALL allow the open function and its exception translator for a given
-codec/configuration to be resolved independently of opening a stream, so callers
-(format detection, the TAR reader, the 7z folder pipeline) can reuse the correct
-backend.
+The system SHALL allow callers to resolve a codec/configuration's open function
+and matching exception translator independently of opening a stream, so detection,
+TAR, and 7z folder pipelines reuse the same backend selection.
 
-#### Scenario: resolve a backend without opening
+#### Scenario: backend dispatch matrix
 
-- **WHEN** the open function for a codec and configuration is requested
-- **THEN** the function and its matching exception translator are returned
+| Case | Expected |
+| --- | --- |
+| Open function is requested for a codec/configuration | Function and matching exception translator are returned |
 
----
+### Requirement: Decompression streams count compressed bytes consumed
 
-### Requirement: Decompression streams expose compressed bytes consumed
+The decompression layer SHALL expose a monotonically increasing count of
+compressed bytes consumed from the underlying source, such as
+`input_bytes_consumed`. The counter SHALL be cheap, available for non-seekable
+pipes, and MUST NOT perturb bytes read or decompressed.
 
-The decompression stream layer SHALL expose a monotonically increasing count of the number of
-**compressed bytes consumed from the underlying source** so far, so a caller can compute a live
-decompression ratio without knowing the source's total size. The count is surfaced as a running
-value (e.g. an `input_bytes_consumed` property) backed by a counting reader wrapping the raw
-compressed source; it is incremented as the decompressor pulls input and is available even when
-the source is a non-seekable pipe.
+Archive readers SHALL surface the running total for a single outer compressed
+source as `compressed_bytes_consumed`, returning `None` when no single compressed
+source exists (uncompressed container, directory). When solid/streamed member
+streams share that outer source, the count is cumulative across the archive.
 
-The reader SHALL surface the running total for the archive's outer compressed source (parallel
-to the cheap-total `compressed_source_size`) as `compressed_bytes_consumed`, returning `None`
-when there is no single compressed source to count (an uncompressed container, a directory).
-When a member stream is served from the same outer compressed stream (solid / streamed
-containers), that member stream's consumption is reflected in the same outer counter — the count
-is cumulative across the archive, not reset per member.
+#### Scenario: compressed-byte counter matrix
 
-The counter SHALL be cheap (an integer incremented on `read()`), and reporting it SHALL NOT
-change what bytes are read or decompressed.
-
-#### Scenario: consumed count grows as a compressed stream is read
-
-- **WHEN** a compressed stream (e.g. a `.gz`) is read incrementally from a non-seekable source
-- **THEN** the exposed compressed-bytes-consumed count increases monotonically toward the total
-  input, and is readable at any point mid-stream
-
-#### Scenario: no counter for an uncompressed or non-stream source
-
-- **WHEN** the archive has no single compressed source (an uncompressed container or a directory)
-- **THEN** `compressed_bytes_consumed` is `None`
-
-#### Scenario: reporting the count does not perturb decoding
-
-- **WHEN** the compressed-bytes-consumed count is read repeatedly during extraction
-- **THEN** the decompressed output is byte-for-byte identical to reading without observing the count
+| Case | Expected |
+| --- | --- |
+| `.gz` read incrementally from non-seekable source | Count increases monotonically and is readable mid-stream |
+| Uncompressed container or directory | `compressed_bytes_consumed is None` |
+| Count is observed repeatedly during extraction | Decompressed output is byte-for-byte unchanged |

@@ -1,309 +1,196 @@
-# 7-Zip Archive Support (native reader; py7zr for writing)
+# 7-Zip Archive Support
 
 ## Purpose
 
-Archivey reads 7-Zip archives with a native, zero-dependency reader: the header
-is parsed natively and decompression is driven through Python's standard library
-— `lzma` in `FORMAT_RAW` mode covers LZMA1, LZMA2, the simple BCJ branch-filter
-family, and Delta, while `bz2` and `zlib` cover BZip2 and Deflate. This yields
-true pull-based streaming with none of the background-thread/queue or per-folder
-spooling that a push-based library backend requires. The `py7zr` library is NOT a
-read dependency; it is used only to provide 7z *writing* (optional `[7z-write]`
-extra) and as a cross-validation oracle in the test suite.
+Archivey reads 7-Zip archives with a native, zero-dependency reader. The reader
+parses headers itself and uses shared `compressed-streams` decoders backed by the
+standard library for the common methods (`lzma` `FORMAT_RAW`, `bz2`, `zlib`).
+`py7zr` is not a read dependency; it is used only for optional 7z writing and as
+a test oracle.
 
-> Provenance: the native-reader direction and its key feasibility finding (stdlib
-> `lzma` `FORMAT_RAW` natively implements LZMA1/LZMA2 + the BCJ family + Delta)
-> come from the `archivey-dev` `sevenzip-native-reader` exploration, distilled in
-> COMPARISON.md §3 and ARCHITECTURE.md §5.6.
+The native-first strategy preserves true pull-based streaming and avoids
+background thread/queue or per-folder spooling behavior from push-based library
+readers. It follows the `archivey-dev` `sevenzip-native-reader` exploration.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | `open_archive`, multi-source input, passwords, bounded storage, `stream_members` |
+| `access-mode-and-cost` | Seek requirement, cost receipt, solid access semantics |
+| `compressed-streams` | Decoder composition, CRC verification, optional codec backends |
+| `packaging-and-extras` | `[7z]`, `[crypto]`, `[7z-write]` extras |
+| `testing-contract` | Native parser coverage and `py7zr` oracle checks |
 
 ## Requirements
 
-### Requirement: Declare format properties
+### Requirement: Declare 7-Zip format properties
 
-The system SHALL expose the following properties for the 7-Zip backend:
+The 7-Zip backend SHALL expose these properties:
 
 | Property | Value |
-|----------|-------|
-| Read dependency | None — native parser + stdlib `lzma`/`bz2`/`zlib` (7z **reading** is part of the zero-dependency core) |
-| Write dependency | `py7zr` (optional `[7z-write]` extra) |
-| Listing cost | O(1) — header parsed natively upfront |
-| Access cost | SOLID when a folder packs multiple files; DIRECT for single-file folders |
-| Supports write | Yes, via `py7zr` (`[7z-write]`) |
+| --- | --- |
+| Read dependency | None; native parser + shared stdlib-backed decoders |
+| Write dependency | `py7zr` via optional `[7z-write]` |
+| Listing cost | O(1); native header parse, no file-data decompression |
+| Access cost | `SOLID` when any folder packs multiple files; `DIRECT` for single-file folders |
+| Supports write | Yes, via `[7z-write]` |
 | Requires seek | Yes |
 
-#### Scenario: listing members of a 7z archive
+#### Scenario: format property matrix
 
-- **WHEN** a caller opens a 7-Zip archive
-- **THEN** the native parser reads the header region and the full member list is available in O(1), decompressing no file data
-- **AND** no third-party library is imported for reading
+| Case | Expected |
+| --- | --- |
+| Open a seekable 7z for listing | Header is parsed natively; full member list is available; no third-party reader imports |
+| Open from a non-seekable source | Open fails because 7z requires seek |
+| Attempt 7z write with `[7z-write]` installed | Archive is written through `py7zr` |
+| Attempt 7z write without `[7z-write]` | Clear missing-extra error |
 
-#### Scenario: opening a 7z archive from a non-seekable source
+### Requirement: Parse 7-Zip headers natively
 
-- **WHEN** the source stream does not support seeking
-- **THEN** the backend rejects the open with an appropriate error, because `Requires seek` is `True`
+The system SHALL parse the signature header, packed-streams info, folders/coder
+chains, substreams info, files info, archive comment, and anti-items without any
+third-party reader. The parsed header produces every member, each member's folder
+mapping, each folder's file count, contiguous file layout inside decompressed
+folder output, and `ArchiveInfo.comment` when present. Anti-items SHALL not
+corrupt the member list.
 
----
+#### Scenario: native header matrix
 
-### Requirement: Parse the 7-Zip header natively
+| Case | Expected |
+| --- | --- |
+| Open any supported 7z | Members and folder mapping come from the header without decompressing folders |
+| Archive stores a comment | `ArchiveInfo.comment` contains the comment |
+| Archive contains anti-items | Member list remains correct |
 
-The system SHALL parse the 7z structure natively — signature header, packed-streams
-info, the unpacked folders and their coder chains, substreams info, and files info
-— without any third-party library. This produces the full member list and the
-folder→file mapping in O(1), decompressing no file data. Each folder's file count
-and the contiguous layout of files within the folder's decompressed output are
-derived from the substreams info.
+### Requirement: Decode folder coder chains through compressed-streams
 
-#### Scenario: member list and folder mapping from the header
-
-- **WHEN** a 7-Zip archive is opened
-- **THEN** the backend produces every member's metadata and the mapping of members to their containing folder purely from the parsed header, without decompressing any folder
-
----
-
-### Requirement: Decode folder coder chains natively
-
-The system SHALL decode each folder's coder chain by composing decompressors —
-the common codecs needing only the standard library, with a few less-common ones
-provided by small optional packages:
+The system SHALL decode each folder by composing shared `compressed-streams`
+backends in decoding order. A coder list such as `AES -> LZMA2` decrypts, then
+decompresses. Files in a folder are yielded by reading exactly `member.size`
+bytes in archive order from the decompressed folder stream. Per-member CRC32
+values SHALL appear in `hashes["crc32"]` and SHALL be verified by the shared
+verification stage as data is read.
 
 | 7z codec | Method ID | Backend | Availability |
-|----------|-----------|---------|--------------|
+| --- | --- | --- | --- |
 | STORED | `0x00` | pass-through | core |
 | LZMA1 / LZMA2 | `0x030101` / `0x21` | `lzma` `FORMAT_RAW` | core |
 | Delta | `0x03` | `lzma.FILTER_DELTA` | core |
-| BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`–`0x09`, `0x03030103`… | `lzma.FILTER_X86`/`ARM`/… | core |
-| Deflate | `0x040108` | `zlib` (raw) | core |
+| BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`-`0x09`, `0x03030103`... | `lzma` BCJ filters | core |
+| Deflate | `0x040108` | raw `zlib` | core |
 | BZip2 | `0x040202` | `bz2` | core |
-| Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | optional `[7z]` on <3.14; core on 3.14+ |
-| Brotli | `0x04f71102` | `brotli` | optional `[7z]` |
-| PPMd (var.H) | `0x030401` | `pyppmd` | optional `[7z]` |
-| Deflate64 | `0x040109` | `inflate64` | optional `[7z]` |
-| AES-256 / SHA-256 | `0x06f10701` | crypto backend | optional `[7z]` |
-| BCJ2 | `0x0303011B` | — | unsupported (detect & raise) |
-
-Files within a folder are laid out contiguously in the decompressed output, so the
-backend produces a member's stream by reading exactly `member.size` bytes, in
-order, from the folder's decompressed byte stream. The core codec set requires no
-third-party runtime dependency; the `[7z]` bundle adds every optional 7z codec
-(PPMd, Deflate64, Zstd, Brotli) and AES decryption in one install. A coder chain is
-applied in reverse coder order for decoding (e.g. an `AES → LZMA2` coder list means
-decrypt, then decompress). Decoding composes the shared `compressed-streams`
-backends — the 7z reader does NOT call codec libraries (`lzma`, `pyppmd`,
-`inflate64`, the crypto backend) directly — and the reader verifies each member's
-stored CRC32 (`hashes["crc32"]`) via the shared `compressed-streams` verification
-stage as it is read.
-
-#### Scenario: member compressed with a BCJ + LZMA2 chain
-
-- **WHEN** a member lives in a folder coded as BCJ-over-LZMA2
-- **THEN** the backend composes the shared `lzma` `FORMAT_RAW` filter-chain backend, decodes the folder, and returns bytes identical to the original file content
-
-#### Scenario: per-member CRC verified on read
-
-- **WHEN** a 7z member that records a CRC32 is decoded
-- **THEN** the reader verifies the decompressed bytes against `hashes["crc32"]` and raises `CorruptionError` on mismatch
-
-#### Scenario: PPMd member without the [7z] extra
-
-- **WHEN** a folder is PPMd-compressed and `pyppmd` is not installed
-- **THEN** the backend raises `PackageNotInstalledError` naming `pyppmd` (installable via the `[7z]` extra)
-
----
-
-### Requirement: Reject genuinely unsupported codecs and variants
-
-The system SHALL raise `UnsupportedFeatureError`, naming the codec, when a folder
-uses a coder with no available backend — notably **BCJ2** (`0x0303011B`), a
-multi-stream filter not implemented by any standard or available package, or any
-newer branch filter absent from the installed liblzma — or an unrecognized method
-ID. The system SHALL handle 7z **anti-items** without corrupting the member list.
-The library MUST NOT silently return incorrect data and MUST NOT fall back to a
-third-party reader. (PPMd and Deflate64 are supported via the optional `[7z]`
-extra and are NOT in this category; multi-volume 7z is supported by volume-joining,
-see the next requirement, not rejected.)
-
-#### Scenario: BCJ2-filtered member
-
-- **WHEN** a member's folder uses the BCJ2 filter
-- **THEN** `UnsupportedFeatureError` is raised naming BCJ2, with no garbage output
-
-#### Scenario: unrecognized method ID
-
-- **WHEN** a folder uses a coder whose method ID is not recognized
-- **THEN** `UnsupportedFeatureError` is raised naming the unknown method ID
-
----
-
-### Requirement: Support multi-volume 7z by joining split volumes
-
-The system SHALL support multi-volume 7z archives (`name.7z.001`, `name.7z.002`, …) —
-a single 7z byte stream split across fixed-size parts — by concatenating
-the volumes, in order, into one logical stream and parsing that stream as a normal
-7z. Two entry paths SHALL be accepted (see `archive-reading` for the multi-source
-`open_archive()` contract):
-
-- opening from a path that is part of the set (e.g. `*.7z.001`): the reader discovers
-  the sibling volumes in numeric order and joins them; and
-- `open_archive()` receiving an explicit ordered list of the volume files/streams.
-
-The join is a thin sequential concatenation; once joined, header parsing and folder
-decoding are identical to a single-file 7z. If a volume is missing or the parts are
-out of order so the stream cannot be reconstructed, the system SHALL raise
-`UnsupportedFeatureError` or a truncated/corrupt error as appropriate.
-
-#### Scenario: open a complete volume set from the first part
-
-- **WHEN** `name.7z.001` of a complete `.7z.NNN` set is opened
-- **THEN** the reader joins the volumes in numeric order and lists and reads members exactly as for a single-file archive
-
-#### Scenario: open from an explicit ordered list of volumes
-
-- **WHEN** `open_archive()` is given the ordered list of volume streams of a multi-volume 7z
-- **THEN** they are concatenated and read as one archive
-
-#### Scenario: missing volume
-
-- **WHEN** a volume is absent from the set so the byte stream cannot be reconstructed
-- **THEN** the system raises an error (an `UnsupportedFeatureError` or a truncated/corrupt error) rather than returning garbage
-
----
-
-### Requirement: Decrypt AES-encrypted 7z, honoring per-member passwords
-
-The system SHALL read AES-256-encrypted 7z archives — including header-encrypted
-archives — when a password and the `[crypto]` extra are available. Decryption uses
-the wrapped crypto backend as a per-folder AES decrypt stage (see
-`compressed-streams`); the key is derived per the 7z SHA-256 scheme and applied
-ahead of decompression. For a header-encrypted archive the encrypted end header is
-decrypted before parsing, so even *listing* requires the password and crypto
-backend; without them the system SHALL raise `EncryptionError` (or
-`PackageNotInstalledError` if the crypto backend is missing). When the archive (or
-any folder) is encrypted, `ArchiveInfo.is_encrypted` SHALL be `True`.
-
-The system SHALL resolve each folder's password through the **candidate model** of
-`archive-reading` (known-good list, then remaining sequence candidates, then the
-provider callable — the provider receiving the member being decrypted, or `None` for
-the header), so members in folders encrypted with different passwords can each be
-decrypted within the same open — including in a single forward `stream_members()`
-pass — with no global password state and no per-call password parameter. Because 7z
-has **no password check value**, trying a candidate costs a full key derivation
-(2^19 SHA-256 rounds) plus decoding until corruption surfaces; the reader SHALL cache
-derived keys by (password, salt, cycles) and try known-good passwords first, and an
-incorrect password SHALL surface as an encrypted/corrupted failure
-(`EncryptionError`/`CorruptionError`), not silent garbage.
-
-#### Scenario: members with different passwords
-
-- **WHEN** an encrypted 7z archive holds members in folders encrypted with different passwords and is opened with `password=[pw_a, pw_b]` (or a provider that supplies each on request)
-- **THEN** each member decrypts with its matching candidate and verifies its CRC, including during a single streaming pass
-
-#### Scenario: wrong password
-
-- **WHEN** an encrypted member is opened and no candidate decrypts it (or the sole password is incorrect)
-- **THEN** decryption fails and surfaces as `EncryptionError`/`CorruptionError`, never incorrect bytes
-
-#### Scenario: header-encrypted 7z opened without a password
-
-- **WHEN** a header-encrypted 7z archive is opened without a password (and any provider returns `None` for the header request)
-- **THEN** the system raises `EncryptionError`, because the end header cannot be decrypted to list members
-
----
-
-### Requirement: Expose the archive comment
-
-The system SHALL surface the 7z archive comment (from `FILES_INFO`) in
-`ArchiveInfo.comment` when present, rather than discarding it.
-
-#### Scenario: archive with a comment
-
-- **WHEN** a 7z archive stores a comment
-- **THEN** `ArchiveInfo.comment` returns it
-
----
-
-### Requirement: True pull-based streaming with bounded memory
-
-The system SHALL provide `stream_members()` as a true pull stream: each folder is
-decoded once, its members yielded in archive order as the decompressor produces
-bytes, with no buffering of the whole folder and no background thread or queue.
-Peak memory is bounded by the decompressor's working set rather than the folder's
-uncompressed size. For random `ar.open()` of a member inside a solid folder, the
-backend decodes the folder from its start; it MAY retain decoded folder output so that
-repeated access to members of the same folder is served without re-decoding — but any
-such retention MUST honor `archive-reading`'s bounded-memory rule (no growing cache of
-decompressed block data held in RAM until `close()`): a decoded-folder cache is spilled
-to a temporary file on disk and/or explicitly bounded, with the exact mechanism decided
-in the Phase 6 change proposal.
-
-#### Scenario: streaming a solid 7z archive
-
-- **WHEN** a caller iterates a solid 7-Zip archive with `stream_members()`
-- **THEN** each folder is decoded once and its members are yielded as a pull stream, with peak memory bounded by the decompressor working set, not the folder size
-
-#### Scenario: random access into a solid folder
-
-- **WHEN** `ar.open(member)` is called for a member inside a multi-file folder
-- **THEN** the backend decodes the folder from its start to produce the member's bytes, optionally retaining the decoded output for subsequent access within the bounded-memory rule (disk spill / explicit bound)
-
----
-
-### Requirement: Report solid block metadata in CostReceipt
-
-The system SHALL populate the solidity signals from the natively parsed header:
-`CostReceipt.solid_block_count` is the number of folders, and `ArchiveInfo.is_solid`
-is `True` when any folder packs more than one file (`is_solid` lives on `ArchiveInfo`,
-not on `CostReceipt` — see `access-mode-and-cost`).
-
-#### Scenario: reporting cost for a solid 7z archive
-
-- **WHEN** a 7-Zip archive contains folders that pack multiple files
-- **THEN** `ArchiveInfo.is_solid` is `True` and `CostReceipt.solid_block_count` reflects the folder count from the header
-
-#### Scenario: reporting cost for a non-solid 7z archive
-
-- **WHEN** every folder packs exactly one file
-- **THEN** `ArchiveInfo.is_solid` is `False` and `CostReceipt.access_cost` is `DIRECT`
-
----
-
-### Requirement: Map compression chain to CompressionMethod
-
-The system SHALL map each folder's natively parsed coder chain to a
-`tuple[CompressionMethod, ...]` on every `ArchiveMember`, modelling the filter chain in
-order (e.g. `(CompressionMethod(BCJ), CompressionMethod(LZMA2))`).
-
-#### Scenario: member with a BCJ + LZMA2 filter chain
-
-- **WHEN** a member's folder uses a BCJ pre-filter followed by LZMA2
-- **THEN** `member.compression` reflects the full chain in order as `CompressionMethod` values
-
----
-
-### Requirement: Represent absent POSIX metadata as None
-
-The system SHALL set `mode`, `uid`, and `gid` to `None` when the 7-Zip archive
-does not include a POSIX metadata attribute block — never a guessed default.
-
-#### Scenario: 7z archive created without a POSIX attribute block
-
-- **WHEN** a 7-Zip archive lacks a POSIX metadata attribute block
-- **THEN** `member.mode`, `member.uid`, and `member.gid` are all `None`
-
----
-
-### Requirement: Provide 7-Zip writing via py7zr
-
-The system SHALL provide 7-Zip *writing* through `py7zr`, gated behind the
-optional `[7z-write]` extra. Reading MUST NOT depend on `py7zr`. If a 7z write is
-attempted without `[7z-write]` installed, the system SHALL raise a clear error
-indicating the extra is required.
-
-#### Scenario: writing a 7z archive with the extra installed
-
-- **WHEN** `archivey.create(dest, ArchiveFormat.SEVEN_Z)` is called and `[7z-write]` is installed
-- **THEN** the archive is written using `py7zr`
-
-#### Scenario: writing a 7z archive without the extra
-
-- **WHEN** a 7z write is attempted and `[7z-write]` is not installed
-- **THEN** the system raises a clear error indicating the `[7z-write]` extra is required
+| Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | core on 3.14+; otherwise `[7z]` |
+| Brotli | `0x04f71102` | `brotli` | `[7z]` |
+| PPMd (var.H) | `0x030401` | `pyppmd` | `[7z]` |
+| Deflate64 | `0x040109` | `inflate64` | `[7z]` |
+| AES-256 / SHA-256 | `0x06f10701` | crypto backend | `[crypto]` / `[7z]` |
+| BCJ2 | `0x0303011B` | none | unsupported |
+
+The `[7z]` extra SHALL provide PPMd, Deflate64, Zstd on Python versions without
+stdlib zstd, Brotli, and AES support in one install.
+
+#### Scenario: coder-chain matrix
+
+| Case | Expected |
+| --- | --- |
+| BCJ + LZMA2 folder | Shared `lzma` raw filter chain returns original bytes |
+| Member with stored CRC32 | Terminal verification raises `CorruptionError` on mismatch |
+| PPMd without `[7z]` | `PackageNotInstalledError` names `pyppmd` and the `[7z]` extra |
+| AES + LZMA2 folder | Crypto stage decrypts before LZMA2 decompression |
+
+### Requirement: Reject unsupported codecs without fallback
+
+The system SHALL raise `UnsupportedFeatureError` naming the codec or method ID
+when a folder uses a coder with no available backend. This includes BCJ2, newer
+branch filters absent from installed liblzma, and unrecognized method IDs. The
+reader MUST NOT return garbage and MUST NOT fall back to `py7zr` or another
+third-party reader. PPMd and Deflate64 are optional-supported codecs, and
+multi-volume 7z is supported by volume joining.
+
+#### Scenario: unsupported-codec matrix
+
+| Case | Expected |
+| --- | --- |
+| Folder uses BCJ2 | `UnsupportedFeatureError` names BCJ2; no output bytes |
+| Folder uses unknown method ID | `UnsupportedFeatureError` names the method ID |
+| Folder uses PPMd with `[7z]` installed | Member is decoded, not rejected |
+
+### Requirement: Support multi-volume 7z by ordered concatenation
+
+The system SHALL support split 7z sets (`name.7z.001`, `name.7z.002`, ...) by
+joining volumes in order into one logical byte stream and parsing that stream as
+ordinary 7z. `open_archive()` SHALL accept either a path inside the set, with
+sibling discovery in numeric order, or an explicit ordered source sequence. If a
+volume is missing or the stream cannot be reconstructed, the system SHALL raise
+`UnsupportedFeatureError` or a truncated/corrupt error, never a partial result.
+
+#### Scenario: volume matrix
+
+| Case | Expected |
+| --- | --- |
+| Open `name.7z.001` with complete siblings | Volumes join in numeric order; listing and reads match a single-file archive |
+| Open an explicit ordered volume list | Sources concatenate and read as one archive |
+| Missing or out-of-order volume | Error instead of partial or garbage output |
+
+### Requirement: Decrypt AES-encrypted 7z with archive-reading passwords
+
+The system SHALL read AES-256-encrypted 7z folders and header-encrypted archives
+when a valid password and crypto backend are available. Header encryption SHALL
+decrypt the end header before listing; without a password the system raises
+`EncryptionError`, and with no crypto backend it raises `PackageNotInstalledError`.
+Any archive or folder encryption SHALL set `ArchiveInfo.is_encrypted` to `True`.
+
+Passwords SHALL use the `archive-reading` candidate model: known-good successes
+for this reader, remaining static candidates, then provider requests. Header
+requests use `member is None`; folder/member requests identify the member being
+decrypted where possible. Members in different encrypted folders MAY use different
+passwords in one open or one `stream_members()` pass. Because 7z has no password
+check value, the reader SHALL cache derived keys by `(password, salt, cycles)`,
+try known-good passwords first, and surface wrong passwords as
+`EncryptionError`/`CorruptionError`, never silent bytes.
+
+#### Scenario: encryption matrix
+
+| Case | Expected |
+| --- | --- |
+| Header-encrypted archive, no password/provider result | `EncryptionError` before listing |
+| Header-encrypted archive, valid password + crypto | Header is decrypted natively; members list; `is_encrypted` true |
+| Encrypted folders with different passwords | Each folder uses its matching candidate in random access or one streaming pass |
+| Sole wrong password | `EncryptionError`/`CorruptionError`; no incorrect data |
+| Repeated salt/cycles/password | Derived key cache avoids repeated key derivation |
+
+### Requirement: Stream solid folders with bounded memory
+
+The system SHALL implement `stream_members()` as a pull stream: each folder is
+decoded once, members are yielded in archive order as bytes become available, and
+peak memory is bounded by decoder working set plus in-flight output. The reader
+MUST NOT buffer an entire solid folder in memory or keep a growing decompressed
+cache until close. Random `open()` for a member inside a solid folder MAY
+re-decode from the folder start or use explicitly bounded/disk-backed retention.
+
+#### Scenario: streaming and random access matrix
+
+| Case | Expected |
+| --- | --- |
+| `stream_members()` over a solid 7z | Each folder decodes once; peak memory is not proportional to folder size |
+| Random `open()` inside a multi-file folder | Backend decodes from folder start or uses bounded/disk-backed retention |
+| Repeated random opens in one folder | Any acceleration obeys `archive-reading` bounded-storage rules |
+
+### Requirement: Report 7z cost and member metadata
+
+The system SHALL populate 7z metadata from the native header. `ArchiveInfo.is_solid`
+is `True` when any folder packs more than one file, `CostReceipt.solid_block_count`
+is the folder count, and non-solid archives report `AccessCost.DIRECT`. Each
+member's parsed coder chain SHALL map to `tuple[CompressionMethod, ...]` in filter
+order. If a POSIX attribute block is absent, `mode`, `uid`, and `gid` SHALL be
+`None`, never guessed defaults.
+
+#### Scenario: metadata matrix
+
+| Case | Expected |
+| --- | --- |
+| Folder packs multiple files | `ArchiveInfo.is_solid` true; `solid_block_count` equals folder count |
+| Every folder packs one file | `ArchiveInfo.is_solid` false; access cost is `DIRECT` |
+| BCJ pre-filter followed by LZMA2 | `member.compression` records the full chain in order |
+| No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |

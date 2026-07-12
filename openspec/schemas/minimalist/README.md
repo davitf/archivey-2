@@ -1,29 +1,35 @@
 # Minimalist OpenSpec Schema
 
-`minimalist` is for getting to build quickly with a direct `specs -> tasks` flow.
+`minimalist` is **specs → tasks** for tiny, low-risk library deltas.
 
-- Good fit: landing pages and simple apps with too many technical design decisions.
-- Not a good fit: complete apps with multiple layers, database work, and broader architecture concerns.
+It is **not** a different spec grammar. Deltas must still use
+`## ADDED Requirements` / `### Requirement:` / `#### Scenario:` so
+`openspec validate` passes. Bodies should stay compact (signatures + matrices).
 
-## Install (copy/paste)
-
-Use the root `README.md` single-line install command with:
-- `SCHEMA="minimalist"`
+> Older community Minimalist templates used user stories + Given/When/Then.
+> Those **fail** `openspec validate` here — do not use that format.
 
 ## Activate
 
-Set this in `openspec/config.yaml`:
-
 ```yaml
-schema: minimalist
+# openspec/config.yaml — project default is `library`, not this
+schema: library
 ```
 
-## Spec Format
+Per change:
 
-When authoring `specs` artifacts in this schema:
-- Write each requirement as a user story:
-  `As a <role>, I want <capability>, so that <benefit>.`
-- Write acceptance criteria using Gherkin structure:
-  `Given ...`, `When ...`, `Then ...`
+```bash
+openspec new change <name> --schema minimalist
+```
 
-For more schemas, refer to https://github.com/intent-driven-dev/openspec-schemas.
+## When to use
+
+| Schema | Fit |
+| --- | --- |
+| `library` (default) | Normal/hard changes — proposal + compact specs + design + tasks |
+| `minimalist` | Trivial deltas where proposal and design are overhead |
+| `spec-driven` | Stock wording; same four-artifact shape as `library` |
+
+## Spec format
+
+Same as `library`: Requirement/Scenario headers, dense bodies, no user stories.

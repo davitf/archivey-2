@@ -18,6 +18,22 @@ When a format quirk cannot be cleanly mapped to the unified model, the library
 surfaces the inconsistency as an explicit, documented field value (`None` or an
 `Unknown` sentinel) — never as a silent guess, default, or exception.
 
+## OpenSpec authoring
+
+Default change schema is **`library`** (`openspec/config.yaml`): proposal →
+compact specs + design → tasks. Use `--schema minimalist` for tiny deltas that
+skip proposal/design.
+
+- **Specs** keep OpenSpec’s structural headers (`### Requirement:` /
+  `#### Scenario:`) so `openspec validate` works, but bodies stay dense:
+  signatures + matrices, no user stories, one scenario per behavioral axis.
+- **design.md** is where hard technical work lives (investigations, rejected
+  alternatives, module layout). Full design for parsers/codecs/concurrency/
+  safety; a short stub is enough for trivial deltas.
+
+See `openspec/schemas/library/README.md` and the `rules:` / `context:` blocks in
+`openspec/config.yaml`.
+
 ## Target environment
 
 | Item | Constraint |
@@ -26,14 +42,15 @@ surfaces the inconsistency as an explicit, documented field value (`None` or an
 | Core dependencies | None (stdlib only) |
 | Optional extras | `[7z]`, `[rar]`, `[crypto]`, `[7z-write]` (py7zr), `[iso]` (pycdlib), `[zstd]`, `[lz4]`, `[cli]`, `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]` — RAR data needs the system `unrar` binary (see `packaging-and-extras`) |
 | OS support | Linux, macOS, Windows |
-| Thread safety | The `ArchiveReader` object is not generally thread-safe. Declared `MemberStreams.CONCURRENT` coordinates first-touch materialization and draining `close()`, then unlocks concurrent `open()` / independent streams; free-threaded correctness is covered by the Linux `3.13t` `free-threaded-concurrency` CI job. Writers are not thread-safe. |
+| Thread safety | The `ArchiveReader` object is not generally thread-safe. Declared `MemberStreams.CONCURRENT` coordinates first-touch materialization and draining `close()`, then unlocks concurrent `open()` / independent streams (see `reader-concurrency`); free-threaded correctness is covered by the Linux `3.13t` `free-threaded-concurrency` CI job. Writers are not thread-safe. |
 | Concurrency model | Synchronous API only for v1 (async is a deferred follow-on). |
 
 ## Capability map
 
 | Capability | Concern |
 |------------|---------|
-| `archive-reading` | `open_archive()`, the `ArchiveReader` surface, iteration, random/sequential access, link following |
+| `archive-reading` | `open_archive()`, the caller-facing `ArchiveReader` surface, iteration, random/sequential access, link following, passwords |
+| `reader-concurrency` | `MemberStreams.CONCURRENT`, pass ownership, materialization coordination, draining close, free-threaded / backend lock invariants |
 | `archive-writing` | `create()`, the `ArchiveWriter` surface, streaming conversion |
 | `archive-data-model` | `Member`, `ArchiveInfo`, `ArchiveFormat`, `MemberType`, compression types |
 | `access-mode-and-cost` | the `streaming: bool` access mode and the `CostReceipt` cost surface |
@@ -79,7 +96,7 @@ once. Specs themselves remain order-free; this table is the association.
 | 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams`. (7z/ZIP container codecs `pyppmd`/`inflate64`/AES stage land with Phase 6.) |
 | 3 | Indexed leaf formats | `format-zip`, `format-tar` (random-access **read** + compressed-tar), `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry` (selection/degradation + tri-state availability), `access-mode-and-cost` (CostReceipt values). (`format-directory` already landed in Phase 1.) |
 | 4 | TAR streaming & safe extraction | `format-tar` (forward-only `stream_members`), `safe-extraction` (incl. bomb limits + progress/result), `archive-reading` (sequential + `stream_members`) |
-| 5 | Public API finalization, cost surface & diagnostics | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling`; then the `diagnostics-warnings-as-data` follow-on advances `diagnostics`, `logging`, `format-detection`, `safe-extraction`, `compressed-streams`, `seekable-decompressor-streams`, `format-directory`, `format-tar`, and `format-zip` before Phase 6 |
+| 5 | Public API finalization, cost surface & diagnostics | `archive-reading`, `reader-concurrency`, `archive-data-model`, `access-mode-and-cost`, `error-handling`; then the `diagnostics-warnings-as-data` follow-on advances `diagnostics`, `logging`, `format-detection`, `safe-extraction`, `compressed-streams`, `seekable-decompressor-streams`, `format-directory`, `format-tar`, and `format-zip` before Phase 6 |
 | 6 | Native 7z reader + native RAR metadata parser (resequenced 2026-07 ahead of writing — see `VISION.md`; fuzzing is an entry gate) | `format-7z`, `format-rar` (native-first: read path imports no third-party lib; `unrar` binary stays for RAR data; `py7zr` for 7z write only); `testing-contract` oracle cross-validation |
 | 7 | CLI (pulled forward: dev tool + safe-extraction demo) | `cli` |
 | 8 | Seekable zstd + blocked gzip (rescoped — the original zst/lz4 *read* goals landed with Phases 2–3; `w:zst` writing moved to the writing phase) | `seekable-decompressor-streams`, `format-single-file-compressors` |

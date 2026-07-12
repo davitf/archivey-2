@@ -46,6 +46,11 @@ openspec validate --all       # validate all specs and changes
 openspec validate --strict <item-name>
 ```
 
+Default change schema is **`library`** (proposal → compact specs + design →
+tasks). Specs stay dense (signatures/matrices); `design.md` holds investigations
+and decisions (stub OK for trivial deltas). Use `--schema minimalist` for tiny
+changes. See `openspec/schemas/library/README.md` and `openspec/config.yaml`.
+
 ## Reference repository: `archivey-dev`
 
 `archivey-dev` is the **v1 / DEV** codebase that v2 selectively ports from and

@@ -1,1 +1,43 @@
-schema: spec-driven
+schema: library
+
+# Archivey is a developer-facing Python library (not a user product).
+# Prefer compact OpenSpec deltas: signatures + matrices under Requirement/Scenario
+# headers. Technical HOW goes in design.md. See openspec/schemas/library/README.md.
+context: |
+  Archivey is a pure Python archive library (ZIP/TAR/RAR/7z/ISO/directory/
+  single-file compressors) with a sync-only public API. Specs describe library
+  contracts for AI agents and maintainers — not end-user product stories.
+
+  Authoring style:
+  - Keep OpenSpec structural headers (Purpose / Requirements for main specs;
+    ADDED|MODIFIED|REMOVED|RENAMED Requirements for deltas; Requirement and
+    Scenario headings) so `openspec validate` keeps working.
+  - Prefer Python signatures and markdown matrices over BDD WHEN/THEN farms.
+  - Do not restate what type hints already declare.
+  - One scenario per behavioral axis; put related cases in a table.
+  - No user stories ("As a … I want …").
+  - design.md is required: full investigations/decisions for hard work
+    (parsers, codecs, concurrency, safety); a short stub is OK for trivial
+    deltas. Do not dump design rationale into spec requirement prose.
+
+rules:
+  proposal:
+    - Keep under ~one page; why/what/impact only
+    - List only capabilities whose REQUIREMENTS change
+  specs:
+    - "Use ### Requirement: / #### Scenario: headers (validate requires them)"
+    - Every requirement body must include SHALL or MUST
+    - Prefer API signatures and tables inside scenarios over WHEN/THEN lists
+    - Do not write user stories or Given/When/Then as the primary form
+    - Do not duplicate the requirement body as five near-identical scenarios
+    - MODIFIED requirements must paste the full existing block before editing
+    - Leave investigations and rejected alternatives to design.md
+  design:
+    - Prefer a full design for parsers, codecs, concurrency, crypto, extraction safety
+    - Capture investigations and rejected alternatives under Decisions
+    - For trivial deltas only, stub with "No deeper design — see proposal/specs"
+    - Do not restate normative API contracts that belong in specs
+  tasks:
+    - "Checkbox format `- [ ] X.Y` under ## headings only"
+    - "Include a verify step with `openspec validate --strict <change-id>`"
+    - Mirror design decisions as implement/verify tasks where relevant

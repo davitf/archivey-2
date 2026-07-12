@@ -2,339 +2,225 @@
 
 ## Purpose
 
-Allows callers to declare upfront how they intend to access an archive (sequential vs. random), and exposes a machine-readable `CostReceipt` describing the actual listing cost, per-member access cost, stream seekability, and solid-block count. Together these two mechanisms let callers make informed access decisions and let the library enforce contracts that prevent accidentally expensive operations.
+Callers declare access pattern via `streaming: bool` at open, and read a
+machine-readable `CostReceipt` (`listing` / `access` / `stream` axes + solid
+block count). This spec is the **canonical** access-mode × method table;
+`archive-reading` summarizes the same rules for the reader surface.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | Reader API that obeys these rules |
+| `reader-concurrency` | `MemberStreams.CONCURRENT` within random-access mode |
+| `diagnostics` | Runtime rewind / seek-index events (not frozen into `CostReceipt`) |
+| `safe-extraction` | `extract_all` as a forward-pass entry point |
 
 ## Requirements
 
 ### Requirement: Declaring access mode at open_archive()
 
-The system SHALL accept a `streaming: bool` parameter in `archivey.open_archive()` (default `False`) by which the caller declares their access pattern. The library uses it to optimize backend initialization and to enforce access constraints. There are exactly two modes:
+`open_archive(..., streaming: bool = False)` SHALL accept exactly two modes:
 
-- **`streaming=False`** (default) — **random access**. The library loads index structures (central directories, 7z headers) when available, and presents the archive for arbitrary member access. It **requires a source it can random-access**: it fails fast at `open_archive()` if the source is non-seekable and the format cannot adapt (it does **not** silently degrade to forward-only, which would surface failures only later, at read time). For seekable single-stream formats, seek points are built **lazily** — only if the caller actually `seek()`s.
-- **`streaming=True`** — **forward-only, single pass**. The caller promises one forward pass. The library MUST disable index loading where possible, avoiding the upfront cost of scanning or parsing a central directory, and works on any source (including non-seekable pipes/sockets). All random-access and full-materialization operations are disabled **uniformly** — independent of whether a backend happens to have an index loaded — so `streaming=True` behaviour is deterministic across formats. `get_members_if_available()` stays callable because it never scans.
+| Mode | Meaning |
+| --- | --- |
+| `streaming=False` (default) | **Random access.** Load indexes when available. Fail fast at open if the source is non-seekable and the format cannot adapt — never silently degrade to forward-only. Seek points for single-stream formats are built **lazily** on first `seek()`. |
+| `streaming=True` | **Forward-only, single pass.** Disable index loading where possible; works on non-seekable sources. Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `get_members_if_available()` stays callable (never scans). |
 
-> A caller who wants forward-only access to a non-seekable source passes `streaming=True`; a caller who needs random access over a non-seekable source must buffer it (e.g. to a file or `BytesIO`) and reopen, rather than relying on implicit buffering. *(Eager seek-point building — the old `Intent.RANDOM` promise — is intentionally not exposed; it can return later as an explicit opt-in flag if a need arises.)*
+Non-seekable sources are never given random access: with `streaming=False` the
+library fails fast at open when the format needs seek (it does not buffer the
+source into memory or a temp file). Use `streaming=True` for pipes/sockets.
+Eager seek-point building is not exposed.
 
-#### Scenario: random-access (default) open on an indexed format
+#### Scenario: open mode matrix
 
-- **WHEN** `archivey.open_archive("archive.zip")` is called (`streaming=False`)
-- **THEN** the ZIP central directory is read upfront and random access is available
-
-#### Scenario: streaming open disables index loading
-
-- **WHEN** `archivey.open_archive("archive.tar.gz", streaming=True)` is called
-- **THEN** the library does not attempt to scan the full archive to build an index, and members are yielded as the stream is read
-
-#### Scenario: random-access (default) fails fast on a non-seekable source
-
-- **WHEN** `archivey.open_archive(non_seekable_stream)` is called (`streaming=False`) on a format that needs to seek
-- **THEN** an appropriate error is raised at open time, before any member data is read — the caller must pass `streaming=True` (or buffer the source) to proceed
-
----
+| Case | Expected |
+| --- | --- |
+| `streaming=False` on indexed ZIP | Central directory loaded; random access available |
+| `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
+| `streaming=False` on non-seekable source that needs seek | Error at open (before member data); caller must use `streaming=True` (or supply a seekable source) — library does not buffer |
 
 ### Requirement: Access-mode enforcement — streaming is forward-only
 
-A reader opened with `streaming=True` is forward-only. The system SHALL raise `UnsupportedOperationError` from every random-access or full-materialization method — `members()`, `get()`, `open()`, and `read()`. (`ArchiveReader` defines no `__len__`/`__getitem__` at all — see `archive-reading` — and `member in reader` is scan-free identity membership, allowed in both modes.) This holds **uniformly**, regardless of whether the backend happens to have an index loaded, so streaming behaviour does not vary by format.
+On `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
+`UnsupportedOperationError` uniformly. No `__len__`/`__getitem__`
+(`archive-reading`); `member in reader` is scan-free identity membership (both
+modes).
 
-The source is traversed **at most once**, forward. The system SHALL treat `__iter__`, `stream_members`, and `extract_all` as the forward-pass entry points: the first of them to run consumes the single pass, and any subsequent call to **any** of them SHALL raise `UnsupportedOperationError` — uniformly for every format, and even after the first pass ran to completion (there is **no** cache-replay of `__iter__` in streaming mode; a caller that wants the list again uses `scan_members()` or `get_members_if_available()`). A pass abandoned before EOF (an early `break`) still counts as consumed. (There is no single-member `extract()`; selecting members for extraction is `extract_all(members=...)` — see `safe-extraction`.)
+Forward-pass entry points: `__iter__`, `stream_members`, `extract_all`. The first
+consumes the single pass; any later call to any of them SHALL raise — even after
+completion (no streaming `__iter__` cache-replay). Early `break` still consumes.
+Member selection for extraction is `extract_all(members=...)` (`safe-extraction`).
 
-`scan_members()` is the sole exception: it MAY run before the pass (initiating and finishing it), after an *interrupted* pass (finishing the remainder internally), or after a completed pass (returning the cache). It returns the fully-resolved member list. When it initiates the pass it also consumes it, so a later `__iter__`/`stream_members`/`extract_all` SHALL raise.
+`scan_members()` MAY run before the pass (starts+finishes it), after an interrupted
+pass (drains remainder), or after completion (returns cache). Starting the pass
+consumes it. `get_members_if_available()` never begins/advances/consumes the pass.
 
-`get_members_if_available()` neither begins nor advances the forward pass and never marks it consumed (see the next requirement), so it remains callable on any reader at any time.
+#### Scenario: streaming enforcement matrix
 
-#### Scenario: random access raises on a streaming reader
-
-- **WHEN** any of `ar.get("f")`, `ar.members()`, `ar.open(m)`, or `ar.read(m)` is called on a reader opened with `streaming=True`
-- **THEN** `UnsupportedOperationError` is raised
-
-#### Scenario: a single forward pass is allowed on a streaming reader
-
-- **WHEN** a `streaming=True` reader is iterated once via `__iter__` or `stream_members()`
-- **THEN** members are yielded in archive order without error
-
-#### Scenario: a second forward pass raises uniformly, even after completion
-
-- **WHEN** a `streaming=True` reader has begun or completed one forward pass (via `__iter__`, `stream_members`, or `extract_all`) and any of those forward-pass methods is called again
-- **THEN** `UnsupportedOperationError` is raised, regardless of format and regardless of whether the first pass ran to completion
-
-#### Scenario: scan_members() finishes an interrupted pass
-
-- **WHEN** a `streaming=True` reader's `__iter__` (or `stream_members`) is interrupted with an early `break`, then `ar.scan_members()` is called
-- **THEN** `scan_members()` drains the remainder of the single pass internally and returns the complete, fully-resolved member list
-- **AND** a subsequent `stream_members()` / `__iter__` / `extract_all` raises `UnsupportedOperationError`
-
-#### Scenario: scan_members() before any pass consumes it
-
-- **WHEN** `ar.scan_members()` is called on a not-yet-iterated `streaming=True` reader and afterwards `ar.stream_members()` is called
-- **THEN** `scan_members()` returns the full member list, and the subsequent `stream_members()` raises `UnsupportedOperationError`, for every index topology (leading, trailing, no-index)
-
----
+| Case | Expected |
+| --- | --- |
+| `get` / `members` / `open` / `read` on `streaming=True` | `UnsupportedOperationError` |
+| First `__iter__` or `stream_members` | Yields in archive order |
+| Second forward-pass method after begin/complete | `UnsupportedOperationError` (all formats) |
+| Early `break` then `scan_members()` | Drains remainder; fully-resolved list; later pass methods raise |
+| `scan_members()` then `stream_members()` on fresh streaming reader | List returned; subsequent pass raises (any index topology) |
 
 ### Requirement: get_members_if_available() — an index-only member list
 
-The system SHALL provide `get_members_if_available() -> list[ArchiveMember] | None`. It is **index-only**: it performs **no forward scan and no member-data reads**, and never begins or consumes the forward pass, so it is safe to call on any reader (including `streaming=True`) at any time without affecting a later pass. It returns the full member list when that list is available from a true upfront index or an already-materialized cache (a completed iteration / `scan_members` pass, or `members()` in random mode), and `None` otherwise. A caller that wants a guaranteed-materialized, fully-resolved list uses `members()` (random-access mode) or `scan_members()` (either mode).
+`get_members_if_available() -> list[ArchiveMember] | None` is **index-only**: no
+forward scan, no member-data reads, never consumes the pass. Returns the list from
+an upfront index or already-materialized cache; else `None`. Guaranteed
+fully-resolved list → `members()` (RA) or `scan_members()` (either mode).
 
-Availability depends on the format's **index topology** (the `_MEMBER_LIST_UPFRONT` predicate):
+| Index topology | Availability |
+| --- | --- |
+| Leading (directory, ISO) | Both modes |
+| Trailing (ZIP CD, 7z EOF header) | Both modes today (those backends require seekable sources; `SUPPORTS_STREAMING_NON_SEEKABLE` is false). Future trailing+non-seekable → `None` on non-seekable |
+| No-index (TAR) | `None` until a completed forward pass / `scan_members` / `members` |
 
-- **Leading-index** (directory listing, ISO): reachable from the front — available in both modes.
-- **Trailing-index** (ZIP central directory, native 7z header at EOF): reachable **only by seeking to the end**, so availability presupposes a **seekable source**. Those backends require a seekable source in every mode (they do not permit non-seekable streaming -- `SUPPORTS_STREAMING_NON_SEEKABLE` is false), so their list is available in both modes. A hypothetical future format with a trailing index that also permitted non-seekable streaming SHALL report unavailable (`None`) on a non-seekable source.
-- **No-index** (TAR): not reachable index-only — `None` until a forward pass has completed (or `scan_members()`/`members()` materialized the cache), after which the materialized, fully-resolved list is returned.
+Index-only listings SHALL leave data-stored link targets unset (`link_target` /
+`link_target_member`); resolving them needs member-data reads that
+`members()`/`scan_members()` perform.
 
-Because it is index-only, the members it returns are **not guaranteed to have resolved links**: for a format whose link *targets* are stored in member data (e.g. a ZIP symlink's target is its file content), `get_members_if_available()` SHALL return those members with `link_target` and `link_target_member` **unset**, since resolving them would require reading member data. `members()` and `scan_members()` perform the reads/scan needed to resolve links; `get_members_if_available()` does not.
+#### Scenario: index-only listing matrix
 
-#### Scenario: indexed backend returns the list even on a streaming reader
-
-- **WHEN** `ar.get_members_if_available()` is called on a `streaming=True` reader of a format with an upfront index (e.g. ZIP)
-- **THEN** the full member list is returned, with no scan and no member-data read, and the single forward pass remains available
-
-#### Scenario: streaming backend returns None before iteration
-
-- **WHEN** `ar.get_members_if_available()` is called on a not-yet-iterated reader of a no-index format (e.g. a streaming tar)
-- **THEN** `None` is returned
-
-#### Scenario: no-index backend returns the resolved list after a completed pass
-
-- **WHEN** a `streaming=True` reader of a no-index format is iterated to completion (or `scan_members()` is called), then `ar.get_members_if_available()` is called
-- **THEN** the fully-resolved materialized list is returned rather than `None`
-
-#### Scenario: index-only listing leaves data-stored link targets unresolved
-
-- **WHEN** `ar.get_members_if_available()` is called on a ZIP archive containing a symlink (whose target is stored in the member's data)
-- **THEN** the returned symlink member has `link_target` and `link_target_member` unset (no member-data read occurs)
-- **AND** `ar.members()` / `ar.scan_members()` on the same archive return that symlink with its `link_target` populated and `link_target_member` resolved
-
----
+| Case | Expected |
+| --- | --- |
+| Streaming ZIP (upfront index) | Full list; no scan/data read; forward pass still available |
+| No-index, not yet iterated | `None` |
+| No-index after completed pass / `scan_members` | Fully-resolved materialized list |
+| ZIP symlink via `get_members_if_available` | Link fields unset; `members`/`scan_members` resolve them |
 
 ### Requirement: Access mode × method behaviour summary
 
-The per-method behaviour is the composition of the rules above. There are exactly two modes: **random access** (`streaming=False`, the default) and **streaming** (`streaming=True`). The system SHALL behave per this table (`✅` = allowed, `⛔` = `UnsupportedOperationError`):
+The system SHALL behave per this canonical table (`✅` allowed,
+`⛔` → `UnsupportedOperationError`):
 
-| Method | random access (`streaming=False`) | streaming (`streaming=True`) |
-|--------|-----------------------------------|------------------------------|
-| `__iter__` | ✅ (repeatable; from cache after first) | ✅ **once** (no replay; second call ⛔) |
-| `stream_members` | ✅ | ✅ once (the one pass; second call ⛔) |
-| `extract_all` | ✅ | ✅ once (the one pass) |
-| `scan_members` | ✅ (= `members`) | ✅ (finishes the pass; may follow an interrupted/completed one) |
-| `get_members_if_available` | ✅ (index-only; may be `None`) | ✅ (index-only, no-consume; may be `None`) |
-| `members` | ✅ (may scan) | ⛔ |
-| `get` | ✅ (may scan) | ⛔ |
-| `open`, `read` | ✅ | ⛔ |
-| `in` (`__contains__`, identity — see `archive-reading`) | ✅ (no scan) | ✅ (no scan) |
-| `cost`, `info`, `format`, `close`, context manager | ✅ | ✅ |
-| at `open_archive()` | fail fast if the source can't be random-accessed | works on any source |
+| Method | `streaming=False` | `streaming=True` |
+| --- | --- | --- |
+| `__iter__` | ✅ repeatable (cache after first) | ✅ **once** (no replay) |
+| `stream_members` | ✅ | ✅ once |
+| `extract_all` | ✅ | ✅ once |
+| `scan_members` | ✅ (= `members`) | ✅ finishes/returns pass |
+| `get_members_if_available` | ✅ index-only (may be `None`) | ✅ index-only, no-consume |
+| `members` / `get` / `open` / `read` | ✅ | ⛔ |
+| `in` (identity) | ✅ no scan | ✅ no scan |
+| `cost` / `info` / `format` / `close` / CM | ✅ | ✅ |
+| at `open_archive()` | fail fast if source not RA-capable | any source |
 
-In streaming mode, `__iter__`, `stream_members`, and `extract_all` all draw on the **same single forward pass**: whichever runs first consumes it, and a later one raises; `scan_members()` may still finish or return that pass's result. The independent backend-capability flag `_SUPPORTS_RANDOM_ACCESS` can also force `open`/`read` to raise (a backend that cannot seek the source at all); it composes with — does not replace — the access-mode rules above.
+In streaming mode, `__iter__` / `stream_members` / `extract_all` share one pass.
+Backend `_SUPPORTS_RANDOM_ACCESS` may also force `open`/`read` to raise; it
+composes with — does not replace — these rules.
 
-#### Scenario: scan_members is allowed in both modes
+#### Scenario: summary checks
 
-- **WHEN** `ar.scan_members()` is called on either a `streaming=False` or a `streaming=True` reader
-- **THEN** it returns the fully-resolved member list (in random-access mode it is equivalent to `members()`; in streaming mode it finishes/consumes the single forward pass)
-
-#### Scenario: streaming __iter__ does not replay after completion
-
-- **WHEN** a `streaming=True` reader is fully iterated once via `__iter__`, then iterated again
-- **THEN** the second iteration raises `UnsupportedOperationError` (streaming `__iter__` is single-use; use `scan_members()` / `get_members_if_available()` for the list)
-
----
+| Case | Expected |
+| --- | --- |
+| `scan_members()` either mode | Fully-resolved list (RA ≡ `members()`; streaming finishes pass) |
+| Full streaming `__iter__`, then iterate again | Second → `UnsupportedOperationError` |
 
 ### Requirement: Exposing a CostReceipt describing access costs
 
-The system SHALL compute and expose a `CostReceipt` for every opened archive, available via `ar.cost` and embedded in `ar.info.cost`. The receipt SHALL be computed during `open_read()` before any heavy I/O. It is the most subtle part of the API, so each field is defined precisely below; the receipt describes three **independent** axes plus a solid-block count.
+Every opened archive SHALL expose `ar.cost` (also in `ar.info.cost`), computed
+during open before heavy I/O. Three **orthogonal** axes + solid-block count:
 
 ```python
 class ListingCost(Enum):
-    """How expensive it is to ENUMERATE all members (list names + metadata)."""
-    INDEXED               = "indexed"               # an index / central directory is present;
-                                                    #   listing is O(1) regardless of archive size
-    REQUIRES_SCANNING     = "requires_scanning"     # no index, but members can be enumerated by
-                                                    #   seeking/scanning header-to-header without
-                                                    #   decompressing payload (e.g. uncompressed tar,
-                                                    #   or a RAR with no quick-open record)
-    REQUIRES_DECOMPRESSION = "requires_decompression" # the stream must be decompressed to reach the
-                                                    #   member headers (e.g. a compressed tar)
+    INDEXED = "indexed"                     # O(1) listing via index/CD
+    REQUIRES_SCANNING = "requires_scanning" # header-to-header, no payload decode
+    REQUIRES_DECOMPRESSION = "requires_decompression"  # must decompress to list
 
 class AccessCost(Enum):
-    """How expensive it is to READ one member's data, given the FORMAT layout."""
-    DIRECT = "direct"   # any member can be read without touching other members
-    SOLID  = "solid"    # reading member N may require decompressing earlier members in its block
+    DIRECT = "direct"  # member N independent of others
+    SOLID = "solid"    # may need earlier bytes in the block
 
 class StreamCapability(Enum):
-    """A property of the underlying SOURCE bytes, independent of the format layout."""
-    SEEKABLE     = "seekable"      # the source supports arbitrary seek(); positions can be revisited
-    FORWARD_ONLY = "forward_only"  # non-seekable source (pipe/socket): it cannot be rewound at all.
-                                   #   Re-reading any earlier position requires a brand-new stream.
+    SEEKABLE = "seekable"        # source seekable
+    FORWARD_ONLY = "forward_only"  # pipe/socket; revisit needs a new stream
 
 @dataclass(frozen=True)
 class CostReceipt:
     listing_cost: ListingCost
     access_cost: AccessCost
     stream_capability: StreamCapability
-    solid_block_count: int | None   # number of distinct solid blocks (each one decompress pass),
-                                    #   or None when not applicable / unknown. is_solid lives on
-                                    #   ArchiveInfo, not here, to avoid duplicating the flag.
-    notes: tuple[str, ...] = ()     # human-readable caveats
+    solid_block_count: int | None  # distinct solid blocks, or None
+    notes: tuple[str, ...] = ()    # caveats — not an occurrence log
 ```
 
-**The three axes are orthogonal and MUST NOT be conflated:**
+| Axis | About |
+| --- | --- |
+| `stream_capability` | Source bytes — can they be `seek()`ed? |
+| `access_cost` | Format layout — `DIRECT` vs `SOLID` (re-decompress cost lives here, not in seekability) |
+| `listing_cost` | Enumerating names+metadata |
 
-- `stream_capability` is about the **source byte stream** — can the raw bytes be
-  `seek()`ed? A file on disk is `SEEKABLE`; a socket or pipe is `FORWARD_ONLY`. A
-  `FORWARD_ONLY` source cannot be rewound at all — not even to re-read an earlier
-  member — so anything requiring a revisit needs a fresh stream.
-- `access_cost` is about the **format layout** — is member N's data independent
-  (`DIRECT`) or entangled with earlier members in a shared compression stream
-  (`SOLID`)? This is where "rewinding a decompressed stream costs a re-decompress from
-  the block start" belongs — it is a consequence of `SOLID` (and of `ArchiveInfo.is_solid`),
-  *not* of source seekability.
-- `listing_cost` is about **enumeration** — getting names+metadata for all members.
+Examples: ZIP file → `INDEXED`+`DIRECT`+`SEEKABLE`; plain tar file →
+`REQUIRES_SCANNING`+`DIRECT`+`SEEKABLE`; tar on pipe → same + `FORWARD_ONLY`;
+`.tar.gz` file → `REQUIRES_DECOMPRESSION`+`SOLID`+`SEEKABLE`; solid 7z →
+`INDEXED`+`SOLID`+`SEEKABLE` with `solid_block_count` = folder count.
 
-They compose. Examples:
+#### Scenario: cost receipt matrix
 
-- **ZIP** on a file: `INDEXED` (EOCD/central directory) + `DIRECT` (per-member offsets) + `SEEKABLE`.
-- **plain `.tar`** on a file: `REQUIRES_SCANNING` (walk 512-byte headers, no decompress) + `DIRECT` + `SEEKABLE`.
-- **plain `.tar`** on a pipe: `REQUIRES_SCANNING` + `DIRECT` + `FORWARD_ONLY` (one forward pass only).
-- **`.tar.gz`** on a file: `REQUIRES_DECOMPRESSION` (must inflate to reach headers) + `SOLID` (single gzip stream) + `SEEKABLE` (the *source* seeks, even though random member access still costs a re-decompress).
-- **7z** solid: `INDEXED` (header block at start) + `SOLID` (members share folders) + `SEEKABLE`, with `solid_block_count` = number of solid folders.
-
-#### Scenario: CostReceipt available immediately after open
-
-- **WHEN** an archive is opened successfully
-- **THEN** `ar.cost` is populated without requiring a separate scan or read of member data
-
-#### Scenario: ZIP reports INDEXED listing cost and DIRECT access
-
-- **WHEN** a ZIP archive is opened
-- **THEN** `ar.cost.listing_cost == ListingCost.INDEXED`
-- **AND** `ar.cost.access_cost == AccessCost.DIRECT`
-
-#### Scenario: compressed tar requires decompression to list and is SOLID
-
-- **WHEN** a `.tar.gz` archive is opened
-- **THEN** `ar.cost.listing_cost == ListingCost.REQUIRES_DECOMPRESSION`
-- **AND** `ar.cost.access_cost == AccessCost.SOLID`
-
-#### Scenario: stream capability reflects the source, not the format
-
-- **WHEN** the same plain `.tar` is opened once from a seekable file and once from a non-seekable pipe
-- **THEN** `ar.cost.stream_capability` is `SEEKABLE` in the first case and `FORWARD_ONLY` in the second
-- **AND** `ar.cost.access_cost` is `DIRECT` in both, because it describes the format layout, not the source
-
-#### Scenario: solid 7z exposes block count
-
-- **WHEN** a solid 7z archive with multiple solid folders is opened
-- **THEN** `ar.info.is_solid == True`
-- **AND** `ar.cost.access_cost == AccessCost.SOLID`
-- **AND** `ar.cost.solid_block_count` equals the number of distinct solid blocks in the archive
+| Case | Expected |
+| --- | --- |
+| Successful open | `ar.cost` populated without separate member scan/read |
+| ZIP | `listing_cost=INDEXED`, `access_cost=DIRECT` |
+| `.tar.gz` | `REQUIRES_DECOMPRESSION` + `SOLID` |
+| Same plain tar: file vs pipe | `stream_capability` SEEKABLE vs FORWARD_ONLY; `access_cost=DIRECT` both |
+| Solid 7z, multiple folders | `info.is_solid`, `access_cost=SOLID`, `solid_block_count` = folder count |
 
 ### Requirement: CostReceipt remains an immutable open-time cost description
 
-`CostReceipt` SHALL continue to describe static access properties known at open time and
-SHALL NOT retain runtime diagnostics. In particular, an actual backward seek that
-re-decompresses, or a later seek-index construction failure, SHALL be represented in the
-reader/stream operation diagnostic aggregate rather than mutating or replacing
-`CostReceipt`.
+`CostReceipt` SHALL describe static open-time properties only — not runtime
+diagnostics. Slow rewinds / seek-index failures go to reader/stream diagnostic
+aggregates (`diagnostics`). Static `notes` MAY caveat capability; SHALL NOT act as
+an occurrence log or counter.
 
-Static `notes` MAY describe a general capability/caveat, but SHALL NOT be used as an
-occurrence log or exact counter.
+#### Scenario: cost immutability matrix
 
-#### Scenario: actual slow rewind is not frozen into cost
-
-- **WHEN** a stream performs a backward seek after the reader was opened
-- **THEN** `STREAM_REWIND_REDECOMPRESSES` appears in stream/reader diagnostics and the original `CostReceipt` remains unchanged
-
-#### Scenario: failed optional index does not alter cost receipt
-
-- **WHEN** optional seek-index discovery degrades to sequential decoding at runtime
-- **THEN** `SEEK_INDEX_DEGRADED` is counted on the operation aggregate and no diagnostic field is added to `CostReceipt`
-
----
+| Case | Expected |
+| --- | --- |
+| Backward seek re-decompresses | `STREAM_REWIND_REDECOMPRESSES` on diagnostics; `CostReceipt` unchanged |
+| Optional seek-index degrades | `SEEK_INDEX_DEGRADED` on aggregate; no diagnostic field on `CostReceipt` |
 
 ### Requirement: Declared capabilities compose with the two access modes
 
-The existing `streaming: bool = False` parameter remains the only access-mode choice.
-`member_streams` declares stream capabilities within a mode; it is not a third mode and
-has no `ArchiveyConfig` equivalent:
+`streaming` SHALL remain the only access-mode choice. `member_streams` SHALL
+declare stream capabilities **within** a mode (not a third mode; no
+`ArchiveyConfig` equivalent). Ownership, leases, materialization, and free-threaded
+rules for `MemberStreams.CONCURRENT` live in `reader-concurrency`; this
+requirement only states how those flags compose with `streaming`.
 
-- **`streaming=False` (random access):** with `MemberStreams.CONCURRENT`, after member
-  materialization, concurrent `open()` calls and independent operations on different
-  returned streams are supported. Without it, one member stream may be live at a time.
-  Positioning is included only under `MemberStreams.SEEKABLE` and when the individual
-  stream supports it; otherwise normal `io.UnsupportedOperation` behavior applies.
-  Materialization/iteration/data-pass/extraction/reader-close operations remain
-  single-owner and cannot overlap actively executing worker calls. An idle stream lease is
-  not active overlap.
-- **`streaming=True` (forward-only):** random `open()`/`read()` remain unavailable. The
-  existing single progressive pass is exclusive and cannot overlap another pass,
-  materialization, extraction invocation, or reader close. `MemberStreams.CONCURRENT`
-  is incompatible with this mode (one progressive decoder exists and cannot fan out):
-  `open_archive(streaming=True, member_streams=…CONCURRENT…)` SHALL raise
-  `ArchiveyUsageError` at open time. `MemberStreams.SEEKABLE` alone MAY be declared
-  with `streaming=True` (it governs yielded-stream positioning where applicable).
+| Mode | `member_streams` composition |
+| --- | --- |
+| `streaming=False` | `CONCURRENT` and/or `SEEKABLE` MAY be declared; concurrent-open semantics are `reader-concurrency`. Without `CONCURRENT`, one live member stream (`archive-reading`). |
+| `streaming=True` | Random `open`/`read` still unavailable. Single progressive pass is exclusive. **`CONCURRENT` incompatible** → `ArchiveyUsageError` at open. `SEEKABLE` alone MAY be declared. |
 
-Random-access `stream_members()` is also an exclusive one-pass/data-path operation even
-though random `open()` is otherwise available. A caller needing simultaneous streams
-SHALL complete `members()`/`scan_members()` and use random `open()`.
+Random-access `stream_members()` remains exclusive even when random `open()` is
+otherwise available (simultaneous streams use materialize + random `open()` under
+`CONCURRENT` — see `reader-concurrency`). Detected pass/open/close overlap → later
+op `ArchiveyUsageError`; active pass stays usable. Ops after `reader.close()` →
+`ArchiveyUsageError` (idempotent `close`).
 
-Single-owner APIs use explicit operation-owner tokens. `extract_all()` MAY invoke
-`stream_members()` and operate on its yielded stream through private child scopes carrying
-the extraction token; this is composition, not a second public pass. Unrelated public calls
-have no token and remain conflicting even when made reentrantly on the owner thread.
+#### Scenario: mode × capability matrix
 
-Where the reader detects unsupported overlap, the later operation SHALL raise
-`ArchiveyUsageError` before changing state and leave the active operation/stream
-usable. Reader operations after `reader.close()` likewise raise
-`ArchiveyUsageError`, except that repeated `close()` remains idempotent.
-
-#### Scenario: streaming plus CONCURRENT is rejected at open
-
-- **WHEN** `open_archive(..., streaming=True, member_streams=MemberStreams.CONCURRENT)`
-  is called (alone or combined with `SEEKABLE`)
-- **THEN** `ArchiveyUsageError` is raised and no reader is returned
-
-#### Scenario: declared concurrency works after materialization
-
-- **WHEN** a random-access reader opened with `MemberStreams.CONCURRENT` is materialized
-  and workers concurrently open members
-- **THEN** the operation is supported; the same schedule without the declared capability
-  raises `ConcurrentAccessError` at the second overlapping open
-
-#### Scenario: overlapping pass entry leaves the active pass intact
-
-- **WHEN** one forward/data pass is active and a conflicting pass/random open/close is
-  attempted
-- **THEN** `ArchiveyUsageError` is raised at the later operation and the original
-  iterator/current stream remain usable
-
-#### Scenario: random stream_members and random open do not overlap
-
-- **WHEN** `stream_members()` is active on a random-access reader and `open()` is called
-- **THEN** `ArchiveyUsageError` is raised; simultaneous streams are instead
-  obtained through the post-materialization random-open seam under
-  `MemberStreams.CONCURRENT`
-
-#### Scenario: extraction may drive a child pass
-
-- **WHEN** `extract_all()` enters `stream_members()` and reads/closes its yielded streams
-- **THEN** the explicit extraction owner token authorizes those child scopes without allowing
-  an unrelated public pass
-
----
+| Case | Expected |
+| --- | --- |
+| `streaming=True` + `CONCURRENT` | `ArchiveyUsageError` at open; no reader |
+| RA + `CONCURRENT` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
+| Active pass + conflicting pass/open/close | Later → `ArchiveyUsageError`; original pass usable |
+| RA `stream_members` active + `open()` | `ArchiveyUsageError` |
+| `extract_all` drives child `stream_members` | Permitted composition; unrelated public pass rejected |
 
 ### Requirement: Concurrent-stream cost is informational
 
-The existing `CostReceipt` fields and format values are unchanged.
+`access_cost` / `solid_block_count` describe work (including under a declared
+simultaneous schedule). They SHALL NOT permit or deny capabilities —
+`member_streams` is the only gate (`reader-concurrency`). Solid open-*order* cost
+is reported here and steered toward `stream_members()`, not gated.
 
-`access_cost` describes work, including work caused by a declared simultaneous
-random-open schedule. `DIRECT` means members can be reached independently; `SOLID` means
-a stream may need to decode earlier bytes in its block. The library SHALL NOT use either
-value to permit or deny declared capabilities: the `member_streams` declaration is the
-only gate, and it is caller intent, not cost. `solid_block_count` helps a future
-scheduler identify independent work units. Member open-*order* cost on a solid archive
-is likewise not gated — it is reported here and steered toward `stream_members()`.
+#### Scenario: cost vs capability
 
-#### Scenario: cost does not alter declared-capability correctness
-
-- **WHEN** materialized `DIRECT` and `SOLID` readers declared with
-  `MemberStreams.CONCURRENT` each open multiple member streams
-- **THEN** both schedules are supported and byte-correct; only the reported/repeated work
-  differs
+| Case | Expected |
+| --- | --- |
+| `CONCURRENT` on `DIRECT` and `SOLID` readers, multiple streams | Both supported and byte-correct; only reported/repeated work differs |
