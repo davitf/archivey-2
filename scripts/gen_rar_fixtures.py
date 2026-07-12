@@ -218,6 +218,8 @@ def _rar_a(
         base = stem[: -len(".rar")]
         for sibling in archive.parent.glob(f"{base}.part*.rar"):
             sibling.unlink()
+        for sibling in archive.parent.glob(f"{base}.r[0-9][0-9]"):
+            sibling.unlink()
     cmd = [str(rar_bin), "a", "-idq", "-oh", "-ol", *extra, str(archive), *names]
     _run(cmd, cwd=cwd)
 
@@ -314,6 +316,25 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         print(f"wrote {part2.relative_to(REPO_ROOT)}")
 
     # --- RAR4 (needs -ma4) ---
+    # Classic extension volumes (name.rar + name.r00…): RAR4-only via -vn.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "payload.bin").write_bytes(b"ABCDEFGH" * 200)
+        out = out_dir / "tinyvol_rnn.rar"
+        _rar_a(
+            rar4_bin,
+            out,
+            ["payload.bin"],
+            cwd=root,
+            extra=("-ma4", "-m0", "-vn", "-v900b"),
+        )
+        vol0 = out_dir / "tinyvol_rnn.rar"
+        vol1 = out_dir / "tinyvol_rnn.r00"
+        if not vol0.is_file() or not vol1.is_file():
+            raise RuntimeError(f"expected {vol0.name} and {vol1.name}")
+        print(f"wrote {vol0.relative_to(REPO_ROOT)}")
+        print(f"wrote {vol1.relative_to(REPO_ROOT)}")
+
     build(rar4_bin, "basic_nonsolid__rar4.rar", _BASIC, extra=("-ma4", "-m0"))
     build(rar4_bin, "basic_solid__rar4.rar", _BASIC, extra=("-ma4", "-s", "-m3"))
     build(

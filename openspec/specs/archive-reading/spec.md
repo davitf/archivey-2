@@ -220,9 +220,11 @@ class ListingLimits:
 
 `None` on a field disables that guard. `ListingLimits.UNLIMITED` disables both.
 Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
-limit. Format-local parser bounds (e.g. 7z header-size checks) MAY still raise
-`CorruptionError` for nonsensical headers and are complementary, not a
-substitute.
+limit. Format-local parser bounds (e.g. 7z header-size checks, RAR member-count
+ceilings) MAY still raise at parse/open for nonsensical or hostile headers and
+are complementary, not a substitute. Indexed formats that build a member table
+during `open_archive()` MAY allocate up to those parser ceilings before spine
+`ListingLimits` are evaluated on materialization (`members()` / extract-prep).
 
 **Unguarded by design:** `stream_members()` / forward-only iteration MUST NOT
 enforce `ListingLimits` (O(1) escape hatch). Callers that need a full resolved

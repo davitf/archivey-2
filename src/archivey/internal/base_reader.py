@@ -252,6 +252,9 @@ class BaseArchiveReader(ArchiveReader):
         self._members_by_name_lists: dict[str, list[ArchiveMember]] | None = None
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
+        # When true, progressive registration enforces ListingLimits (scan_members).
+        # stream_members leaves this false so iteration stays the unguarded escape hatch.
+        self._progressive_enforce_listing_limits: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._pass_scanned: list[ArchiveMember] = []
         self._pass_by_name_lists: dict[str, list[ArchiveMember]] = {}
@@ -636,6 +639,11 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Assign identity and run backend-independent presentation checks once."""
         if member._member_id is not None:
+            # Already stamped (e.g. by ``_get_members_index_only``). Still re-account
+            # after a tracker ``reset()`` so totals match the member list — otherwise
+            # extract-prep then full materialization on 7z/RAR leaves the tracker at 0
+            # while the cache holds every member.
+            self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
             return
         member._member_id = idx
         member._archive_id = self._archive_id
@@ -792,6 +800,9 @@ class BaseArchiveReader(ArchiveReader):
         """Resolve all links after a streaming forward pass reaches EOF."""
         if self._members_cache is not None:
             return
+        # scan_members drains with enforcement: refuse to publish an over-limit cache.
+        if self._progressive_enforce_listing_limits:
+            self._listing_tracker.assert_within_limits()
         for member in self._pass_scanned:
             if member.is_link:
                 self._ensure_link_target(member)
@@ -805,8 +816,13 @@ class BaseArchiveReader(ArchiveReader):
         self._members_cache = self._pass_scanned
 
     def _stamp_progressive_member(self, idx: int, member: ArchiveMember) -> None:
-        # Progressive / stream_members path: account without enforcing (O(1) escape hatch).
-        self._register_member(idx, member, enforce_listing_limits=False)
+        # stream_members: account without enforcing (O(1) escape hatch).
+        # scan_members: enforce per registration via ``_progressive_enforce_listing_limits``.
+        self._register_member(
+            idx,
+            member,
+            enforce_listing_limits=self._progressive_enforce_listing_limits,
+        )
         if member.is_link and member.link_target_member is None:
             target = self._lookup_link_target_for_member(
                 member,
@@ -827,7 +843,9 @@ class BaseArchiveReader(ArchiveReader):
             self._pass_scanned = []
             self._pass_by_name_lists = {}
             self._listing_tracker.reset()
-            self._account_archive_comment(enforce=False)
+            self._account_archive_comment(
+                enforce=self._progressive_enforce_listing_limits
+            )
             self._progressive_gen = _ProgressivePassIterator(self)
         return self._progressive_gen
 
@@ -988,14 +1006,19 @@ class BaseArchiveReader(ArchiveReader):
             if self._members_cache is not None:
                 self._listing_tracker.assert_within_limits()
                 return list(self._members_cache)
-            if not self._forward_pass_started:
-                self._forward_pass_started = True
-            gen = self._begin_forward_pass()
-            for _ in gen:
-                pass
-            assert self._members_cache is not None
-            self._listing_tracker.assert_within_limits()
-            return list(self._members_cache)
+            # Enforce ListingLimits while draining; stream_members leaves this false.
+            self._progressive_enforce_listing_limits = True
+            try:
+                if not self._forward_pass_started:
+                    self._forward_pass_started = True
+                gen = self._begin_forward_pass()
+                for _ in gen:
+                    pass
+                assert self._members_cache is not None
+                self._listing_tracker.assert_within_limits()
+                return list(self._members_cache)
+            finally:
+                self._progressive_enforce_listing_limits = False
         finally:
             self._state.release_pass(token)
 
@@ -1305,7 +1328,13 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
             member = next(self._members_source)
         except StopIteration:
             self._exhausted = True
-            self._reader._finalize_pass_links()
+            try:
+                self._reader._finalize_pass_links()
+            except BaseException as exc:
+                # Listing-limit refusal (or link finalize failure) must not leave a
+                # half-published cache retryable as success via a second StopIteration.
+                self._error = exc
+                raise
             raise
         except BaseException as exc:
             self._error = exc
@@ -1316,7 +1345,8 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
             self._reader._stamp_progressive_member(idx, member)
         except BaseException as exc:
             # Registration/link bookkeeping failed mid-pass (e.g. a RAISE-disposition
-            # diagnostic): the pass state is inconsistent, so poison it the same way.
+            # diagnostic or ListingLimits): the pass state is inconsistent, so poison
+            # it the same way.
             self._error = exc
             raise
         return member

@@ -184,6 +184,17 @@ def test_multi_volume_roundtrip() -> None:
 
 
 @requires_binary("unrar")
+def test_multi_volume_rnn_roundtrip() -> None:
+    """Classic RAR4 volumes: ``name.rar`` + ``name.r00`` (``-vn`` naming)."""
+    first = _fixture("tinyvol_rnn.rar")
+    assert (_FIXTURES / "tinyvol_rnn.r00").is_file()
+    with open_archive(first) as archive:
+        assert archive.info.is_multivolume is True
+        assert archive.info.extra.get("rar.volume_count") == 2
+        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+@requires_binary("unrar")
 def test_multi_volume_stream_materialization() -> None:
     paths = [_fixture("tinyvol.part1.rar"), _FIXTURES / "tinyvol.part2.rar"]
     streams = [p.open("rb") for p in paths]
@@ -384,3 +395,21 @@ def test_header_crypto_gating(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
     with pytest.raises(PackageNotInstalledError, match="cryptography"):
         open_archive(_fixture("encrypted_header__.rar"), password="header_password")
+
+
+def test_rar_parser_bounds_member_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Member-table bombs must fail at parse, not OOM (mirrors 7z header-size bound)."""
+    import archivey.internal.backends.rar_parser as rar_parser
+
+    monkeypatch.setattr(rar_parser, "_MAX_ARCHIVE_MEMBERS", 2)
+    with pytest.raises(CorruptionError, match="member count exceeds"):
+        parse_rar_archive(_fixture("basic_nonsolid__.rar").open("rb"))
+
+
+def test_rar_members_enforces_listing_limits() -> None:
+    from archivey import ArchiveyConfig, ListingLimits, ResourceLimitError
+
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    with open_archive(_fixture("basic_nonsolid__.rar"), config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            reader.members()

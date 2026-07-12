@@ -276,6 +276,13 @@ class ExtractionCoordinator:
         members_total = len(all_members) if all_members is not None else None
         total_estimate = self._estimate_total_bytes(all_members)
 
+        # Extract-prep materialization: enforce ListingLimits before writing.
+        # Indexed backends may already have been peeked via get_members_if_available();
+        # scan-required backends (TAR, directory) would otherwise walk via unguarded
+        # stream_members() and never hit listing caps.
+        if not forward_only:
+            reader._get_members_registered(enforce_listing_limits=True)
+
         # The pass is driven through the public stream_members(), which applies the
         # selection (skipped members never surface here — they are invisible to progress
         # and results, matching the totals above). When the totals pre-filtered the free

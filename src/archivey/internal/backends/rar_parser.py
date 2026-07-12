@@ -44,6 +44,9 @@ SFX_MAX = 2 * 1024 * 1024
 _RAR_MAX_PASSWORD = 127
 _RAR_MAX_KDF_SHIFT = 24
 _RAR5_MAX_HEADER = 2 * 1024 * 1024
+# Defense-in-depth against member-table bombs at parse/open (matches default
+# ListingLimits.max_members). Spine listing caps still apply on members()/extract-prep.
+_MAX_ARCHIVE_MEMBERS = 1_048_576
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
 
@@ -278,7 +281,7 @@ def parse_rar_volumes(
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
                 else:
-                    merged.members.append(member)
+                    _append_member(merged.members, member)
 
         # Size of this volume for absolute offset adjustment.
         pos = volume.tell()
@@ -303,6 +306,14 @@ def parse_rar_volumes(
             "Incomplete RAR multi-volume set: end of archive expects another volume"
         )
     return merged
+
+
+def _append_member(members: list[RarMemberInfo], member: RarMemberInfo) -> None:
+    if len(members) >= _MAX_ARCHIVE_MEMBERS:
+        raise CorruptionError(
+            f"RAR member count exceeds {_MAX_ARCHIVE_MEMBERS} (probable metadata bomb)"
+        )
+    members.append(member)
 
 
 def _parse_rar_one(
@@ -872,9 +883,9 @@ def _parse_rar3(
                             _merge_split_member(members[-1], member)
                         else:
                             # Continuation without a prior part in this volume.
-                            members.append(member)
+                            _append_member(members, member)
                     else:
-                        members.append(member)
+                        _append_member(members, member)
                     if member.split_after:
                         needs_next_volume = True
             elif (
@@ -1219,9 +1230,9 @@ def _parse_rar5(
                     if members:
                         _merge_split_member(members[-1], member)
                     else:
-                        members.append(member)
+                        _append_member(members, member)
                 else:
-                    members.append(member)
+                    _append_member(members, member)
                 if member.split_after:
                     needs_next_volume = True
             elif (

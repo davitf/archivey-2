@@ -11,6 +11,13 @@ lacks `-ma4`, downloads a pinned RAR 6.24 linux-x64 binary into the user cache
 solely to write RAR4 fixtures). Re-run the script after changing member layouts
 or compression flags, then commit the updated binaries.
 
+Multi-volume fixtures:
+
+| Files | Notes |
+| --- | --- |
+| `tinyvol.part1.rar` / `tinyvol.part2.rar` | RAR5 `-v` / `.partN.rar` naming |
+| `tinyvol_rnn.rar` / `tinyvol_rnn.r00` | RAR4 `-ma4 -vn` classic `.rar` + `.r00` naming |
+
 ## Legacy (not regenerated)
 
 | File | Provenance |

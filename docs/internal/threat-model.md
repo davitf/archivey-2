@@ -65,7 +65,9 @@ when members are registered into a materialized / resolved list (`members()`,
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
 `stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
 hatch). Format-local parser bounds (e.g. 7z `num_files` vs header size →
-`CorruptionError`) stay as defense-in-depth.
+`CorruptionError`; RAR member-count ceiling at parse) stay as defense-in-depth.
+Indexed formats (7z/RAR) may still allocate up to those parser ceilings during
+`open_archive()` before spine listing caps apply.
 
 `read()` / `open()` stream sizes remain unbounded (follow-on); prefer chunked
 reads for untrusted member payloads.

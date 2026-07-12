@@ -108,6 +108,44 @@ def test_extract_all_config_cannot_raise_listing_limits(tmp_path: Path) -> None:
             reader.extract_all(dest, config=loose)
 
 
+def test_tar_extract_all_enforces_listing_limits(tmp_path: Path) -> None:
+    """Scan-required backends must not bypass listing caps via unguarded stream_members."""
+    import tarfile
+
+    tar_path = tmp_path / "a.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        for i in range(5):
+            info = tarfile.TarInfo(name=f"f{i}.txt")
+            payload = b"x"
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+    dest = tmp_path / "out"
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    with open_archive(tar_path, config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            reader.extract_all(dest)
+
+
+def test_streaming_scan_members_enforces_listing_limits(tmp_path: Path) -> None:
+    """scan_members on a streaming reader must enforce caps and not publish a cache."""
+    import tarfile
+
+    tar_path = tmp_path / "a.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        for i in range(5):
+            info = tarfile.TarInfo(name=f"f{i}.txt")
+            payload = b"x"
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    with open_archive(tar_path, config=cfg, streaming=True) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            reader.scan_members()
+        # Cache must stay unpublished after a limit trip.
+        assert reader._members_cache is None
+        assert reader.get_members_if_available() is None
+
+
 def test_metadata_accounting_counts_name_and_raw_name() -> None:
     member = ArchiveMember(
         type=MemberType.FILE,

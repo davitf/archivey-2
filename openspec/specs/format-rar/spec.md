@@ -67,6 +67,47 @@ member data remains RARLAB `unrar`'s responsibility.
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
 | Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
 
+### Requirement: Bound RAR parser member tables at open
+
+The native RAR header walk SHALL refuse to retain more than `1_048_576` logical
+members (same default as `ListingLimits.max_members`) and raise a typed error
+when that ceiling is crossed. This is defense-in-depth against allocation during
+`open_archive()` for indexed RAR backends that build the full member table up
+front.
+
+Spine `ListingLimits` (`archive-reading`) still apply when members are
+registered into a materialized list and raise `ResourceLimitError` when
+configured caps are exceeded. Archives within the parser ceiling but over the
+reader's `listing_limits` MUST still fail at `members()` / extract-prep
+materialization rather than requiring a separate open-time listing-limits
+failure. Open MAY therefore allocate up to the parser ceiling before listing
+caps are evaluated.
+
+#### Scenario: RAR parser bound matrix
+
+| Case | Expected |
+| --- | --- |
+| Hostile archive past the parser member ceiling | Fail during parse / open; no giant member table |
+| Archive within parser bounds but over `listing_limits.max_members` | Open may succeed; `members()` / materialization raises `ResourceLimitError` |
+| Default limits, typical archive | Open and listing succeed |
+
+### Requirement: Omit RAR5 file-version history rows from the member list
+
+RAR5 archives created with WinRAR's file-versioning feature (`-ver`) store prior
+revisions of a path as additional FILE blocks carrying the RAR5 extra type
+`0x04` (file version). The native parser SHALL treat those history rows the same
+way `rarfile` does: parse them for forward progress through the header stream,
+but **omit** them from the exposed member list. Callers see only the current
+revision of each path (blocks without that extra). Listing MUST NOT surface
+versioned history as separate `ArchiveMember` entries.
+
+#### Scenario: file-version matrix
+
+| Case | Expected |
+| --- | --- |
+| RAR5 archive with current file + older `-ver` revisions | Only the current file appears in `members()` |
+| RAR5 archive without file-version extras | All FILE members are listed as usual |
+
 ### Requirement: Use RARLAB unrar only for member data that needs it
 
 The system SHALL read stored, uncompressed, unencrypted members directly as raw
@@ -287,6 +328,7 @@ a truncated error instead of a partial result.
 | Case | Expected |
 | --- | --- |
 | Open `name.part1.rar` with complete siblings | Headers across all volumes parse as one archive |
+| Open `name.rar` with `name.r00` / `name.r01` siblings | Same as partN: one logical archive; member data spans volumes |
 | Read a member spanning volumes | Returned stream reassembles the member across boundaries |
 | Open explicit ordered stream volumes | Metadata parses in order; data reads materialize volumes for `unrar` if needed |
 | Missing or out-of-order volume | Error instead of partial or garbled output |
