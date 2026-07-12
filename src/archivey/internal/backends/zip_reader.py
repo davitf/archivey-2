@@ -469,6 +469,16 @@ class ZipReader(BaseArchiveReader):
         )
 
         modified, accessed, created, ts_issues = _zip_timestamps(info)
+        # Surface the central-directory CRC-32 as a stored digest (archive-data-model spec:
+        # "ZIP CRC32 … stored under the 'crc32' int key"), so a dedupe pass can key on it
+        # without decompressing (VISION "hashes without decompression"). Only for FILE and
+        # SYMLINK members, which have data: a directory's stored CRC is a meaningless 0.
+        # zipfile still runs its own CRC check on read; this only exposes the datum.
+        hashes: dict[str, int] = (
+            {"crc32": info.CRC & 0xFFFFFFFF}
+            if member_type in (MemberType.FILE, MemberType.SYMLINK)
+            else {}
+        )
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -483,6 +493,7 @@ class ZipReader(BaseArchiveReader):
             is_encrypted=bool(info.flag_bits & 0x1),
             comment=_decode_with_fallback(info.comment) if info.comment else None,
             create_system=create_system,
+            hashes=hashes,
             extra={"zip.compress_type": info.compress_type},
             _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )

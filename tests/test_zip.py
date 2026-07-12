@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import struct
+import zlib
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -155,6 +156,27 @@ def test_directory_member_type(simple_zip: Path) -> None:
         by_name = {m.name: m for m in ar.members()}
         # zipfile stores explicit directory entries with a trailing slash.
         assert by_name["hello.txt"].type == MemberType.FILE
+
+
+def test_file_member_exposes_stored_crc32(simple_zip: Path) -> None:
+    # archive-data-model spec: ZIP CRC32 is surfaced under hashes["crc32"] as an int,
+    # so a dedupe pass can key on it without decompressing (VISION).
+    with open_archive(simple_zip) as ar:
+        member = ar.get("hello.txt")
+        assert member is not None
+        assert member.hashes["crc32"] == zlib.crc32(b"hello world") & 0xFFFFFFFF
+
+
+def test_directory_member_has_no_crc32(tmp_path: Path) -> None:
+    path = tmp_path / "withdir.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("adir/", b"")
+        z.writestr("adir/file.txt", b"data")
+    with open_archive(path) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        # A directory's stored CRC is a meaningless 0; do not present it as a digest.
+        assert "crc32" not in by_name["adir/"].hashes
+        assert by_name["adir/file.txt"].hashes["crc32"] == zlib.crc32(b"data") & 0xFFFFFFFF
 
 
 def test_explicit_directory_entry(tmp_path: Path) -> None:
