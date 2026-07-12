@@ -184,8 +184,8 @@ def derive_sevenzip_aes_key(password: bytes, *, salt: bytes, cycles: int) -> byt
     if cycles < 0 or cycles > 0x3F:
         raise ValueError(f"NumCyclesPower out of range: {cycles}")
     if cycles == 0x3F:
-        ba = bytearray(salt + password + bytes(32))
-        return bytes(ba[:32])
+        # The 0x3f sentinel means "no hashing": key = (salt + password), zero-padded to 32.
+        return (salt + password + bytes(32))[:32]
     # Batch rounds to cut hashlib.update call overhead (same approach as py7zr).
     cat_cycle = 6
     if cycles > cat_cycle:
