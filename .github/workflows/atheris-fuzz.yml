@@ -1,0 +1,62 @@
+name: Atheris fuzz
+
+# Coverage-guided parser/entry-point fuzz (threat-model O5). Runs when main moves and
+# on manual dispatch — not on the default PR test matrix (see testing-contract).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      budget_scale:
+        description: "Multiply default per-target budgets (e.g. 3 for a longer soak)"
+        required: false
+        default: "1"
+
+concurrency:
+  group: atheris-fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Atheris (partitioned)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # fuzz = atheris; dev = fixture builders (py7zr, …); all = ISO/codecs the targets need.
+      # Python 3.12: atheris publishes current wheels here (3.11 is capped at atheris 3.0.x).
+      - name: Sync (fuzz + dev + all extras)
+        run: uv sync --python 3.12 --group fuzz --group dev --extra all
+
+      - name: Run Atheris harness
+        env:
+          ARCHIVEY_FUZZ_ARTIFACT_DIR: artifacts/atheris
+          BUDGET_SCALE: ${{ github.event.inputs.budget_scale || '1' }}
+        run: |
+          scale="${BUDGET_SCALE:-1}"
+          export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=$((55 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=$((25 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT=$((15 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_ZIP_TAR=$((15 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_ISO=$((10 * scale))
+          echo "Budgets: header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER open=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN detect=$ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT zip_tar=$ARCHIVEY_FUZZ_BUDGET_ZIP_TAR iso=$ARCHIVEY_FUZZ_BUDGET_ISO"
+          uv run --python 3.12 --no-sync python -m tests.atheris_fuzz
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atheris-crashes
+          path: artifacts/atheris/
+          if-no-files-found: ignore
+          retention-days: 30

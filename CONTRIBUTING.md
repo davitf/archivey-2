@@ -136,6 +136,31 @@ everyday environment.)
   **fails**; then make it pass with the fix. The failing test is the proof the bug
   existed and that you fixed *that* bug.
 
+### Coverage-guided fuzz (Atheris)
+
+Atheris is **not** part of the everyday `pytest` / PR matrix. It lives in the PEP 735
+`fuzz` dependency group (`atheris`) and runs as a separate main-branch gate
+(`.github/workflows/atheris-fuzz.yml`: `push` to `main` + `workflow_dispatch`,
+partitioned ~120s). Mutation fuzz (`tests/test_mutation_fuzz.py`) and
+`ARCHIVEY_FUZZ=1` / `tests/fuzz_sevenzip_parser.py` stay as they are.
+
+Local smoke (Linux; needs corpus fixture builders). Prefer Python 3.12 for current
+Atheris wheels; on 3.11 ``uv`` resolves ``atheris`` 3.0.x::
+
+    uv sync --group fuzz --group dev --extra all
+    uv run --no-sync python -m tests.atheris_fuzz --smoke
+
+    # or explicitly:
+    uv sync --python 3.12 --group fuzz --group dev --extra all
+    uv run --python 3.12 --no-sync python -m tests.atheris_fuzz --smoke
+
+Deepen one target (budget seconds via env, e.g. `ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=60`)::
+
+    uv run --no-sync python -m tests.atheris_fuzz --target sevenzip_header
+
+On a crash the harness writes the input under `artifacts/atheris/` and prints a one-line
+repro command.
+
 ## Working with the specs (please read)
 
 When you hit a **discrepancy** — specs disagreeing with the prose docs, the specs

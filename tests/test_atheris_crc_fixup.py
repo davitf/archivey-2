@@ -1,0 +1,134 @@
+"""Unit tests for Atheris CRC mutate-then-fixup helpers (no atheris import required)."""
+
+from __future__ import annotations
+
+import io
+import struct
+import zlib
+from pathlib import Path
+
+import pytest
+
+from archivey.exceptions import ArchiveyError, CorruptionError
+from archivey.internal.backends.sevenzip_parser import (
+    SevenZipFolder,
+    parse_sevenzip_archive,
+)
+from archivey.internal.backends.sevenzip_reader import decode_folder_to_bytes
+from archivey.internal.streams.crypto import SevenZipKeyCache
+from tests.atheris_fuzz.crc_fixup import (
+    fixup_sevenzip_header_crcs,
+    fixup_zip_local_and_cd_crc,
+)
+from tests.sample_archives import CORPUS, corpus_archive_path
+
+
+def _crc32(data: bytes) -> int:
+    return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def _decode_folder(
+    source: object,
+    folder: SevenZipFolder,
+    compressed_size: int,
+    uncompressed_size: int,
+) -> bytes:
+    return decode_folder_to_bytes(
+        source,  # type: ignore[arg-type]
+        folder,
+        compressed_size=compressed_size,
+        uncompressed_size=uncompressed_size,
+        password=None,
+        key_cache=SevenZipKeyCache(),
+    )
+
+
+@pytest.fixture(scope="module")
+def basic_7z(tmp_path_factory: pytest.TempPathFactory) -> bytes:
+    pytest.importorskip("py7zr")
+    entry = next(e for e in CORPUS if e.id == "basic" and "7z" in e.formats)
+    path = corpus_archive_path(entry, "7z", tmp_path_factory.mktemp("crc-7z"))
+    return path.read_bytes()
+
+
+def _next_header_slice(data: bytes) -> tuple[int, int]:
+    off, size, _crc = struct.unpack("<QQI", data[12:32])
+    start = 32 + off
+    return start, start + size
+
+
+def test_fixup_sevenzip_restores_crcs_after_bitflip(basic_7z: bytes) -> None:
+    start, end = _next_header_slice(basic_7z)
+    assert end > start
+    data = bytearray(basic_7z)
+    # Flip a byte inside the next-header body (the CRC-gated region).
+    data[start] ^= 0x01
+    broken = bytes(data)
+
+    # Without fixup the next-header CRC must fail.
+    with pytest.raises(CorruptionError, match="next header CRC"):
+        parse_sevenzip_archive(io.BytesIO(broken), decode_folder=_decode_folder)
+
+    fixed = fixup_sevenzip_header_crcs(broken, broken=False)
+    # Signature + next-header CRCs must match recomputed values.
+    start_header = fixed[12:32]
+    assert int.from_bytes(fixed[8:12], "little") == _crc32(start_header)
+    off, size, nh_crc = struct.unpack("<QQI", start_header)
+    header = fixed[32 + off : 32 + off + size]
+    assert nh_crc == _crc32(header)
+
+    # Fixed-up blob must pass the CRC gate (may still raise typed errors for content).
+    try:
+        parse_sevenzip_archive(io.BytesIO(fixed), decode_folder=_decode_folder)
+    except CorruptionError as exc:
+        assert "next header CRC" not in str(exc)
+        assert "signature header CRC" not in str(exc)
+    except ArchiveyError:
+        pass
+
+
+def test_fixup_sevenzip_broken_mode_still_rejects(basic_7z: bytes) -> None:
+    start, _end = _next_header_slice(basic_7z)
+    flipped = bytearray(basic_7z)
+    flipped[start] ^= 0x02
+    fixed_broken = fixup_sevenzip_header_crcs(bytes(flipped), broken=True)
+    with pytest.raises(CorruptionError, match="next header CRC"):
+        parse_sevenzip_archive(io.BytesIO(fixed_broken), decode_folder=_decode_folder)
+
+
+def test_fixup_sevenzip_noop_on_non_magic() -> None:
+    blob = b"not a 7z archive" + b"\x00" * 64
+    assert fixup_sevenzip_header_crcs(blob, broken=False) == blob
+
+
+def test_fixup_sevenzip_known_good_header_unchanged(basic_7z: bytes) -> None:
+    # Re-patching a valid archive should yield byte-identical CRCs (body untouched).
+    fixed = fixup_sevenzip_header_crcs(basic_7z, broken=False)
+    assert fixed[12:] == basic_7z[12:]  # start_header + body identical
+    assert fixed[8:12] == basic_7z[8:12]
+
+
+def test_fixup_zip_stored_member_crc(tmp_path: Path) -> None:
+    import zipfile
+
+    path = tmp_path / "stored.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.txt", b"hello zip crc")
+    data = path.read_bytes()
+
+    # Corrupt the central-directory CRC field, then fix it back.
+    eocd = data.rfind(b"PK\x05\x06")
+    cd_offset = int.from_bytes(data[eocd + 16 : eocd + 20], "little")
+    assert data[cd_offset : cd_offset + 4] == b"PK\x01\x02"
+    corrupted = bytearray(data)
+    corrupted[cd_offset + 16] ^= 0xFF
+    restored = fixup_zip_local_and_cd_crc(bytes(corrupted), broken=False)
+    assert (
+        restored[cd_offset + 16 : cd_offset + 20]
+        == data[cd_offset + 16 : cd_offset + 20]
+    )
+
+    broken = fixup_zip_local_and_cd_crc(data, broken=True)
+    assert (
+        broken[cd_offset + 16 : cd_offset + 20] != data[cd_offset + 16 : cd_offset + 20]
+    )

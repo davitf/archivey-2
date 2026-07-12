@@ -119,5 +119,17 @@ def test_pyzstd_and_python_xz_are_not_in_any_extra() -> None:
         )
 
 
+def test_atheris_is_fuzz_group_not_runtime_extra() -> None:
+    """atheris is CI-only (PEP 735 ``fuzz`` group), never a user-facing extra / ``[all]``."""
+    with open(_PYPROJECT, "rb") as f:
+        data = tomllib.load(f)
+    leaves = _leaf_packages(data["project"]["optional-dependencies"])
+    assert "atheris" not in leaves
+    fuzz = data.get("dependency-groups", {}).get("fuzz", [])
+    assert any(_requirement_dist_name(req) == "atheris" for req in fuzz), (
+        "atheris must be declared in the PEP 735 fuzz dependency group"
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover - convenience for manual runs
     sys.exit(pytest.main([__file__, "-v"]))

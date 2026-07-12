@@ -584,3 +584,54 @@ def test_files_info_count_is_bounded_against_header_size() -> None:
     buffer = io.BytesIO(b"\xff" + huge)  # a 9-byte "header" claiming 2**40 files
     with pytest.raises(CorruptionError, match="exceeds the .* header"):
         _read_files_info(buffer)
+
+
+def test_next_header_offset_overflow_is_typed_corruption() -> None:
+    """Huge nextHeaderOffset must not raise OverflowError on seek (Atheris finding)."""
+    import struct
+    import zlib
+
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import (
+        MAGIC_7Z,
+        parse_sevenzip_archive,
+    )
+
+    # Valid signature CRC over a start_header that claims an absurd next-header offset.
+    next_offset = (1 << 64) - 1
+    next_size = 16
+    next_crc = 0
+    start_header = struct.pack("<QQI", next_offset, next_size, next_crc)
+    start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
+    blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
+
+    def _boom(*_a: object, **_k: object) -> bytes:
+        raise AssertionError("decode_folder must not be reached")
+
+    with pytest.raises(CorruptionError, match="next-header offset"):
+        parse_sevenzip_archive(io.BytesIO(blob), decode_folder=_boom)  # type: ignore[arg-type]
+
+
+def test_next_header_size_cap_is_typed_corruption() -> None:
+    import struct
+    import zlib
+
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import (
+        _MAX_NEXT_HEADER_SIZE,
+        MAGIC_7Z,
+        parse_sevenzip_archive,
+    )
+
+    next_offset = 0
+    next_size = _MAX_NEXT_HEADER_SIZE + 1
+    next_crc = 0
+    start_header = struct.pack("<QQI", next_offset, next_size, next_crc)
+    start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
+    blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
+
+    def _boom(*_a: object, **_k: object) -> bytes:
+        raise AssertionError("decode_folder must not be reached")
+
+    with pytest.raises(CorruptionError, match="next-header size"):
+        parse_sevenzip_archive(io.BytesIO(blob), decode_folder=_boom)  # type: ignore[arg-type]

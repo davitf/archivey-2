@@ -119,6 +119,14 @@ docs = [
     "mkdocs-material>=9.6.0",
     "griffe-fieldz>=0.2.1",
 ]
+# Coverage-guided fuzz harness (Atheris / libFuzzer). CI-only: never a user-facing
+# runtime extra and never folded into `[all]` — see packaging-and-extras + threat-model O5.
+# Install with `uv sync --group fuzz` (plus `--group dev --extra all` for seed fixtures).
+fuzz = [
+    # 3.1+ drops cp311 wheels; keep 3.0.x on 3.11, allow latest on 3.12+.
+    "atheris>=3.0.0,<3.1; python_version < '3.12'",
+    "atheris>=3.0.0; python_version >= '3.12'",
+]
 
 [tool.hatch.version]
 path = "src/archivey/__init__.py"
