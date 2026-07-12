@@ -18,7 +18,6 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, cast
@@ -64,6 +63,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     read_exact,
 )
+from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.zipcrypto import (
     parallel_plaintext_crc32,
     password_matches_check_byte,
@@ -140,38 +140,11 @@ def _is_candidate_integrity_failure(exc: Exception) -> bool:
     )
 
 
-# Seconds between the NTFS FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
-_NTFS_EPOCH_OFFSET = 11_644_473_600
-
-
-@dataclass(frozen=True)
-class _TimestampIssue:
-    field: str
-    source: str
-    value_repr: str
-    message: str
-
-
-def _filetime_to_datetime(
-    value: int, filename: str, *, field: str
-) -> tuple[datetime | None, _TimestampIssue | None]:
-    """An NTFS FILETIME (100 ns ticks since 1601, UTC) as a datetime; 0 means "not set"."""
-    if value == 0:
-        return None, None
-    try:
-        return (
-            datetime.fromtimestamp(
-                value / 10_000_000 - _NTFS_EPOCH_OFFSET, tz=timezone.utc
-            ),
-            None,
-        )
-    except (ValueError, OverflowError, OSError):
-        return None, _TimestampIssue(
-            field=field,
-            source="ntfs",
-            value_repr=repr(value),
-            message=f"Invalid NTFS timestamp for {filename!r}: {value!r}",
-        )
+# NTFS FILETIME conversion + the shared TimestampIssue type live in internal.timestamps
+# (also used by the native 7z reader, and RAR later). Local aliases keep this module's
+# call sites — including the DOS date_time issue below — unchanged.
+_TimestampIssue = TimestampIssue
+_filetime_to_datetime = filetime_to_datetime
 
 
 def _zip_timestamps(

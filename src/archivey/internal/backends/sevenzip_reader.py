@@ -8,7 +8,7 @@ import stat
 import zlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
@@ -84,6 +84,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.streams.verify import VerifyingStream
+from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -137,7 +138,11 @@ _SINGLE_STAGE_CODECS: dict[bytes, Codec] = {
 }
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-_NTFS_EPOCH_OFFSET = 11_644_473_600
+
+# NTFS FILETIME conversion + the shared TimestampIssue type live in internal.timestamps.
+# Local aliases keep this module's call sites (and the test import) unchanged.
+_TimestampIssue = TimestampIssue
+_filetime_to_datetime = filetime_to_datetime
 
 
 @dataclass(frozen=True)
@@ -154,36 +159,6 @@ def _password_to_kdf_bytes(password: bytes) -> bytes:
         return password
 
 
-@dataclass(frozen=True)
-class _TimestampIssue:
-    field: str
-    value_repr: str
-    message: str
-
-
-def _filetime_to_datetime(
-    value: int | None, filename: str, *, field: str
-) -> tuple[datetime | None, _TimestampIssue | None]:
-    """An NTFS FILETIME (100 ns ticks since 1601 UTC) as a datetime; 0/None means "unset"."""
-    if value is None or value == 0:
-        return None, None
-    try:
-        return (
-            datetime.fromtimestamp(
-                value / 10_000_000 - _NTFS_EPOCH_OFFSET, tz=timezone.utc
-            ),
-            None,
-        )
-    except (ValueError, OverflowError, OSError):
-        # fromtimestamp rejects out-of-range values with ValueError/OverflowError, and on
-        # some platforms (notably Windows) with OSError for negative/huge inputs.
-        return None, _TimestampIssue(
-            field=field,
-            value_repr=repr(value),
-            message=f"Invalid NTFS timestamp for {filename!r}: {value!r}",
-        )
-
-
 def _is_lzma_family(coder: SevenZipCoder) -> bool:
     return (
         coder.method in (_METHOD_LZMA, _METHOD_LZMA2, _METHOD_DELTA)
@@ -198,7 +173,9 @@ def _is_lzma_family(coder: SevenZipCoder) -> bool:
 # Previously an AttributeError here was caught and turned into a per-member CorruptionError,
 # which would silently mislabel every valid LZMA/LZMA2 7z member as corrupt.
 _raw_decode_filter_properties = getattr(lzma, "_decode_filter_properties", None)
-if _raw_decode_filter_properties is None:  # pragma: no cover - guards a future stdlib change
+if (
+    _raw_decode_filter_properties is None
+):  # pragma: no cover - guards a future stdlib change
     raise ImportError(
         "This Python's `lzma` module no longer exposes `_decode_filter_properties`, which "
         "archivey's native 7z reader needs to decode raw LZMA1/LZMA2 coder properties. "
