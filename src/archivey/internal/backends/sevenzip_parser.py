@@ -28,6 +28,11 @@ _SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
 _MAX_UTF16_CHARS = 65536
 _MAX_NUM_STREAMS = 65536
+# Hostile archives can claim a multi-EiB next-header offset/size. Cap before seek/read so we
+# never OverflowError on C ssize_t conversion or allocate a multi-GiB header buffer. Real 7z
+# headers are kilobytes; tens of MiB is already far past any legitimate archive.
+_MAX_NEXT_HEADER_SIZE = 64 << 20
+_MAX_SEEK_OFFSET = (1 << 63) - 1 - _SIGNATURE_HEADER_SIZE
 # 7z coder method IDs. Single source of truth: the reader imports these.
 _METHOD_COPY = b"\x00"
 _METHOD_LZMA = b"\x03\x01\x01"
@@ -204,9 +209,23 @@ def parse_sevenzip_archive(
     next_header_offset, next_header_size, next_header_crc = struct.unpack(
         "<QQI", start_header
     )
+    if next_header_offset > _MAX_SEEK_OFFSET:
+        raise CorruptionError(
+            f"7z next-header offset {next_header_offset} exceeds the seekable range"
+        )
+    if next_header_size > _MAX_NEXT_HEADER_SIZE:
+        raise CorruptionError(
+            f"7z next-header size {next_header_size} exceeds the "
+            f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
+        )
 
     # Offsets in the header are relative to the end of the 32-byte signature header.
-    fp.seek(_SIGNATURE_HEADER_SIZE + next_header_offset)
+    try:
+        fp.seek(_SIGNATURE_HEADER_SIZE + next_header_offset)
+    except (OSError, OverflowError) as exc:
+        raise CorruptionError(
+            f"7z next-header seek failed at offset {next_header_offset}"
+        ) from exc
     header_data = _read_exact(fp, next_header_size, "7z next header")
     if _crc32(header_data) != next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")

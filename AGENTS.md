@@ -43,3 +43,7 @@ Non-obvious gotchas:
   `--no-dev` / lowest-resolution leg, restore the everyday env with
   `uv sync --group dev --extra all`.
 - Docs (optional): `uv run --group docs mkdocs build --strict`.
+- **Atheris fuzz** is a separate main-push / `workflow_dispatch` job (not the PR matrix).
+  Install with `uv sync --group fuzz --group dev --extra all`, then
+  `uv run --no-sync python -m tests.atheris_fuzz --smoke`. Mutation /
+  `ARCHIVEY_FUZZ` harnesses are unchanged. See `CONTRIBUTING.md` ("Coverage-guided fuzz").
