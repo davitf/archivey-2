@@ -23,10 +23,23 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.sevenzip_parser import (
+    _METHOD_AES,
+    _METHOD_BCJ2,
+    _METHOD_BROTLI,
+    _METHOD_BZIP2,
+    _METHOD_COPY,
+    _METHOD_DEFLATE,
+    _METHOD_DEFLATE64,
+    _METHOD_DELTA,
+    _METHOD_LZMA,
+    _METHOD_LZMA2,
+    _METHOD_PPMD,
+    _METHOD_ZSTD,
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFileRecord,
     SevenZipFolder,
+    _method_hex,
     compression_method_for_coder,
     compute_is_current,
     folder_is_encrypted,
@@ -76,19 +89,6 @@ from archivey.types import (
     MemberStreams,
     MemberType,
 )
-
-_METHOD_COPY = b"\x00"
-_METHOD_LZMA = b"\x03\x01\x01"
-_METHOD_LZMA2 = b"\x21"
-_METHOD_AES = b"\x06\xf1\x07\x01"
-_METHOD_BCJ2 = b"\x03\x03\x01\x1b"
-_METHOD_DELTA = b"\x03"
-_METHOD_DEFLATE = b"\x04\x01\x08"
-_METHOD_DEFLATE64 = b"\x04\x01\x09"
-_METHOD_BZIP2 = b"\x04\x02\x02"
-_METHOD_ZSTD = b"\x04\xf7\x11\x01"
-_METHOD_BROTLI = b"\x04\xf7\x11\x02"
-_METHOD_PPMD = b"\x03\x04\x01"
 
 _BCJ_METHODS: dict[bytes, Codec] = {
     b"\x04": Codec.BCJ_X86,
@@ -164,10 +164,6 @@ class _LimitedFolderReader(ReadOnlyIOStream):
             chunk = self.read(min(self._remaining, 1024 * 1024))
             if not chunk:
                 break
-
-
-def _method_hex(method: bytes) -> str:
-    return "0x" + method.hex()
 
 
 def _password_to_kdf_bytes(password: bytes) -> bytes:
