@@ -269,7 +269,7 @@ def open_stream(
     seekable: bool = False,
     config: ArchiveyConfig | None = None,
 ) -> ArchiveStream:
-    """Open a single-file compressed stream and return the decompressed bytes.
+    """Open a single-file compressed stream and return a decompressing stream.
 
     This is the compressed-streams entry point for a bare ``.gz`` / ``.bz2`` / ``.xz`` /
     … payload (no archive container). Concurrency is not a concept here — the call
