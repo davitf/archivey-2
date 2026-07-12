@@ -27,7 +27,9 @@ block count). This spec is the **canonical** access-mode × method table;
 | `streaming=False` (default) | **Random access.** Load indexes when available. Fail fast at open if the source is non-seekable and the format cannot adapt — never silently degrade to forward-only. Seek points for single-stream formats are built **lazily** on first `seek()`. |
 | `streaming=True` | **Forward-only, single pass.** Disable index loading where possible; works on non-seekable sources. Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `get_members_if_available()` stays callable (never scans). |
 
-Non-seekable + need random access → caller buffers (file/`BytesIO`) and reopens.
+Non-seekable sources are never given random access: with `streaming=False` the
+library fails fast at open when the format needs seek (it does not buffer the
+source into memory or a temp file). Use `streaming=True` for pipes/sockets.
 Eager seek-point building is not exposed.
 
 #### Scenario: open mode matrix
@@ -36,7 +38,7 @@ Eager seek-point building is not exposed.
 | --- | --- |
 | `streaming=False` on indexed ZIP | Central directory loaded; random access available |
 | `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
-| `streaming=False` on non-seekable source that needs seek | Error at open (before member data); use `streaming=True` or buffer |
+| `streaming=False` on non-seekable source that needs seek | Error at open (before member data); caller must use `streaming=True` (or supply a seekable source) — library does not buffer |
 
 ### Requirement: Access-mode enforcement — streaming is forward-only
 
