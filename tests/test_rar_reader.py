@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import struct
 import zlib
@@ -17,7 +18,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends import rar_unrar
-from archivey.internal.backends.rar_parser import RAR_ID, parse_rar_archive
+from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID, parse_rar_archive
 from archivey.types import MemberType
 from tests.conftest import requires, requires_binary
 
@@ -271,6 +272,90 @@ def test_extract_version_20_payload_accepted() -> None:
     assert member.extract_version == 20
     assert member.file_size == 2
     assert member.compress_size == 2
+
+
+def test_rar5_hostile_packed_size_is_corruption() -> None:
+    """Atheris: huge RAR5 vint add_size must not raise raw OverflowError on seek."""
+    import zlib
+
+    def vint(n: int) -> bytes:
+        out = bytearray()
+        while True:
+            b = n & 0x7F
+            n >>= 7
+            if n:
+                out.append(b | 0x80)
+            else:
+                out.append(b)
+                return bytes(out)
+
+    def block(body: bytes) -> bytes:
+        header_wo_crc = vint(len(body)) + body
+        crc = zlib.crc32(header_wo_crc) & 0xFFFFFFFF
+        return struct.pack("<I", crc) + header_wo_crc
+
+    main = block(vint(1) + vint(0) + vint(0))  # MAIN, no flags, main_flags=0
+    hostile = block(vint(99) + vint(0x02) + vint(1 << 70))  # unknown + DATA + huge
+    blob = RAR5_ID + main + hostile
+    with pytest.raises(CorruptionError, match="seekable range|packed size"):
+        parse_rar_archive(io.BytesIO(blob))
+
+
+def test_rar5_out_of_range_windowstime_is_tolerated() -> None:
+    """Atheris: hostile FILETIME must not raise raw ValueError from fromtimestamp."""
+    from archivey.internal.backends.rar_parser import _load_windowstime
+
+    # FILETIME ticks far beyond datetime's year range.
+    buf = struct.pack("<II", 0xFFFFFFFF, 0x7FFFFFFF)
+    dt, pos = _load_windowstime(buf, 0)
+    assert dt is None
+    assert pos == 8
+
+
+def test_rar_reader_masks_hostile_unix_mode() -> None:
+    """Atheris: huge RAR5 mode vint must not OverflowError in ``stat.S_IMODE``."""
+    from archivey.internal.backends.rar_parser import RarMemberInfo
+    from archivey.internal.backends.rar_reader import RarReader
+
+    info = RarMemberInfo(
+        filename="a.txt",
+        orig_filename=b"a.txt",
+        file_size=0,
+        compress_size=0,
+        compress_type=0x30,
+        crc32=None,
+        blake2sp_hash=None,
+        mtime=None,
+        mode=(1 << 80) | 0o100644,
+        host_os=3,
+        flags=0,
+        file_redir=None,
+        file_encryption=None,
+        header_offset=0,
+        header_size=0,
+        data_offset=0,
+        extract_version=50,
+        file_solid=False,
+        is_directory=False,
+        is_symlink=False,
+        is_hardlink_or_copy=False,
+        is_encrypted=False,
+        volume_index=0,
+        split_before=False,
+        split_after=False,
+    )
+    # Build a reader without opening a real archive — call the mapper directly.
+    reader = object.__new__(RarReader)
+    reader._diagnostics_collector = None
+    reader._archive_name = "<test>"
+    member = RarReader._to_member(reader, info)
+    assert member.mode == 0o0644
+
+    # Win32 attrs are masked to 32 bits (FILE_ATTRIBUTE_* width).
+    info_win = dataclasses.replace(info, host_os=2, mode=(1 << 40) | 0x20)
+    member_win = RarReader._to_member(reader, info_win)
+    assert member_win.mode is None
+    assert member_win.windows_attrs == 0x20
 
 
 def test_non_rarlab_unrar_rejected(

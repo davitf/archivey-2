@@ -132,3 +132,90 @@ def test_fixup_zip_stored_member_crc(tmp_path: Path) -> None:
     assert (
         broken[cd_offset + 16 : cd_offset + 20] != data[cd_offset + 16 : cd_offset + 20]
     )
+
+
+@pytest.fixture(scope="module")
+def basic_rar5() -> bytes:
+    return (
+        Path(__file__).parent / "fixtures" / "rar" / "basic_nonsolid__.rar"
+    ).read_bytes()
+
+
+@pytest.fixture(scope="module")
+def basic_rar4() -> bytes:
+    return (
+        Path(__file__).parent / "fixtures" / "rar" / "basic_nonsolid__rar4.rar"
+    ).read_bytes()
+
+
+@pytest.fixture(scope="module")
+def comment_rar4() -> bytes:
+    return (
+        Path(__file__).parent / "fixtures" / "rar" / "rar15-comment.rar"
+    ).read_bytes()
+
+
+def test_fixup_rar5_restores_crcs_after_bitflip(basic_rar5: bytes) -> None:
+    from archivey.internal.backends.rar_parser import parse_rar_archive
+    from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
+
+    flipped = bytearray(basic_rar5)
+    flipped[24] ^= 0x01
+    broken = bytes(flipped)
+    with pytest.raises(CorruptionError, match="RAR5 header CRC"):
+        parse_rar_archive(io.BytesIO(broken))
+
+    fixed = fixup_rar_header_crcs(broken, broken=False)
+    arc = parse_rar_archive(io.BytesIO(fixed))
+    assert arc.version == 5
+    assert len(arc.members) >= 1
+
+
+def test_fixup_rar5_broken_mode_still_rejects(basic_rar5: bytes) -> None:
+    from archivey.internal.backends.rar_parser import parse_rar_archive
+    from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
+
+    fixed_broken = fixup_rar_header_crcs(basic_rar5, broken=True)
+    with pytest.raises(CorruptionError, match="RAR5 header CRC"):
+        parse_rar_archive(io.BytesIO(fixed_broken))
+
+
+def test_fixup_rar3_restores_crcs_after_bitflip(basic_rar4: bytes) -> None:
+    from archivey.internal.backends.rar_parser import parse_rar_archive
+    from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
+
+    # Corrupt the MAIN block CRC16 (first two bytes after the 7-byte RAR3 magic).
+    flipped = bytearray(basic_rar4)
+    flipped[7] ^= 0xFF
+    broken = bytes(flipped)
+    with pytest.raises(CorruptionError, match="RAR3 .*CRC"):
+        parse_rar_archive(io.BytesIO(broken))
+
+    fixed = fixup_rar_header_crcs(broken, broken=False)
+    arc = parse_rar_archive(io.BytesIO(fixed))
+    assert arc.version == 4
+    assert len(arc.members) >= 1
+
+
+def test_fixup_rar3_comment_archive_crc_pos(comment_rar4: bytes) -> None:
+    """Comment subblocks: CRC must not cover the full header_size."""
+    from archivey.internal.backends.rar_parser import parse_rar_archive
+    from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
+
+    assert fixup_rar_header_crcs(comment_rar4, broken=False) == comment_rar4
+    flipped = bytearray(comment_rar4)
+    flipped[30] ^= 0x01
+    fixed = fixup_rar_header_crcs(bytes(flipped), broken=False)
+    try:
+        parse_rar_archive(io.BytesIO(fixed))
+    except CorruptionError as exc:
+        assert "CRC" not in str(exc)
+    except ArchiveyError:
+        pass
+
+
+def test_fixup_rar_noop_on_non_magic() -> None:
+    from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
+
+    blob = b"not a rar archive" + b"\x00" * 64
+    assert fixup_rar_header_crcs(blob, broken=False) == blob

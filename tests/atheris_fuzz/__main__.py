@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
 
         for name in TARGET_NAMES:
             skip = ""
-            if name == "rar" and not rar_available():
+            if name.startswith("rar") and not rar_available():
                 skip = " (skipped: RAR backend not registered)"
             print(f"{name:20s} default={DEFAULT_BUDGETS[name]}s{skip}")
         return 0

@@ -10,14 +10,15 @@ from __future__ import annotations
 
 __all__ = ["TARGET_NAMES", "DEFAULT_BUDGETS"]
 
-# Default main-push partition (~120s). Overridable via ARCHIVEY_FUZZ_BUDGET_<NAME>.
+# Default main-push partition (~150s). Overridable via ARCHIVEY_FUZZ_BUDGET_<NAME>.
 DEFAULT_BUDGETS: dict[str, int] = {
-    "sevenzip_header": 55,
-    "sevenzip_open": 25,
-    "detect_format": 15,
-    "zip_tar": 15,
-    "iso": 10,
-    "rar": 0,  # scaffold; skipped until backend registers
+    "sevenzip_header": 45,
+    "sevenzip_open": 20,
+    "detect_format": 12,
+    "zip_tar": 12,
+    "iso": 8,
+    "rar_header": 30,
+    "rar": 15,  # open+list once native RAR is registered
 }
 
 TARGET_NAMES: tuple[str, ...] = tuple(DEFAULT_BUDGETS)

@@ -173,6 +173,256 @@ def fixup_zip_local_and_cd_crc(data: bytes, *, broken: bool | None = None) -> by
     return bytes(buf)
 
 
+# ---------------------------------------------------------------------------
+# RAR3 / RAR5 header CRC fixup
+# ---------------------------------------------------------------------------
+
+_RAR3_ID = b"Rar!\x1a\x07\x00"
+_RAR5_ID = b"Rar!\x1a\x07\x01\x00"
+_RAR_SFX_NEEDLE = b"Rar!\x1a\x07"
+_RAR_SFX_MAX = 2 * 1024 * 1024
+
+_RAR3_MARK = 0x72
+_RAR3_MAIN = 0x73
+_RAR3_FILE = 0x74
+_RAR3_SUB = 0x7A
+_RAR3_ENDARC = 0x7B
+_RAR3_LONG_BLOCK = 0x8000
+_RAR3_MAIN_ENCRYPTVER = 0x0200
+_RAR3_MAIN_PASSWORD = 0x0080
+_RAR3_FILE_LARGE = 0x0100
+_RAR3_FILE_SALT = 0x0400
+_RAR3_FILE_EXTTIME = 0x1000
+
+_RAR5_ENDARC = 5
+_RAR5_ENCRYPTION = 4
+_RAR5_FLAG_EXTRA = 0x01
+_RAR5_FLAG_DATA = 0x02
+_RAR5_MAX_HEADER = 2 * 1024 * 1024
+
+_S_RAR3_BLK = struct.Struct("<HBHH")  # crc16, type, flags, header_size
+_S_RAR3_FILE = struct.Struct("<LLBLLBBHL")
+
+
+def _find_rar_magic(data: bytes) -> tuple[int, bool] | None:
+    """Return ``(offset, is_rar5)`` for the first RAR magic within the SFX scan limit."""
+    limit = min(len(data), _RAR_SFX_MAX + len(_RAR5_ID))
+    if data.startswith(_RAR5_ID):
+        return 0, True
+    if data.startswith(_RAR3_ID):
+        return 0, False
+    pos = 0
+    while pos < limit:
+        idx = data.find(_RAR_SFX_NEEDLE, pos, limit)
+        if idx < 0:
+            return None
+        if data[idx : idx + len(_RAR5_ID)] == _RAR5_ID:
+            return idx, True
+        if data[idx : idx + len(_RAR3_ID)] == _RAR3_ID:
+            return idx, False
+        pos = idx + len(_RAR_SFX_NEEDLE)
+    return None
+
+
+def _load_vint_at(buf: bytes | bytearray, pos: int) -> tuple[int, int] | None:
+    limit = min(pos + 11, len(buf))
+    res = ofs = 0
+    while pos < limit:
+        b = buf[pos]
+        res += (b & 0x7F) << ofs
+        pos += 1
+        ofs += 7
+        if b < 0x80:
+            return res, pos
+    return None
+
+
+def _rar3_ext_time_end(hdata: bytes, pos: int) -> int | None:
+    """Advance past a RAR3 extended-time field; ``None`` if truncated."""
+    if pos + 2 > len(hdata):
+        return None
+    flags = struct.unpack_from("<H", hdata, pos)[0]
+    pos += 2
+    for shift in (12, 8, 4, 0):
+        flag = (flags >> shift) & 0xF
+        if not (flag & 8):
+            continue
+        # First field may reuse DOS mtime (basetime present) and only store rem;
+        # later fields include a DOS stamp when basetime is absent. Mirror parser:
+        # mtime slot has basetime; others do not.
+        has_basetime = shift == 12
+        if not has_basetime:
+            if pos + 4 > len(hdata):
+                return None
+            pos += 4
+        cnt = flag & 3
+        if pos + cnt > len(hdata):
+            return None
+        pos += cnt
+    return pos
+
+
+def _rar3_file_crc_pos(hdata: bytes, flags: int, *, is_service: bool) -> int | None:
+    """Mirror ``rar_parser._parse_rar3_file_header`` CRC coverage end, or ``None``."""
+    pos = _S_RAR3_BLK.size
+    if flags & _RAR3_LONG_BLOCK:
+        if pos + 4 > len(hdata):
+            return None
+        pos += 4
+    # FILE re-reads pack_size as first field when LONG_BLOCK was set.
+    file_pos = pos - 4 if (flags & _RAR3_LONG_BLOCK) else pos
+    if file_pos + _S_RAR3_FILE.size > len(hdata):
+        return None
+    fld = _S_RAR3_FILE.unpack_from(hdata, file_pos)
+    pos = file_pos + _S_RAR3_FILE.size
+    name_size = fld[7]
+    if flags & _RAR3_FILE_LARGE:
+        if pos + 8 > len(hdata):
+            return None
+        pos += 8
+    if pos + name_size > len(hdata):
+        return None
+    pos += name_size
+    if flags & _RAR3_FILE_SALT:
+        if pos + 8 > len(hdata):
+            return None
+        pos += 8
+    if flags & _RAR3_FILE_EXTTIME:
+        end = _rar3_ext_time_end(hdata, pos)
+        if end is None:
+            return None
+        pos = end
+    header_size = _S_RAR3_BLK.unpack_from(hdata, 0)[3]
+    return header_size if is_service else pos
+
+
+def _fixup_rar3_headers(buf: bytearray, start: int, *, broken: bool) -> None:
+    pos = start + len(_RAR3_ID)
+    # Cap walks so a hostile chain cannot hang the fixup itself.
+    for _ in range(10_000):
+        if pos + _S_RAR3_BLK.size > len(buf):
+            return
+        _header_crc, block_type, flags, header_size = _S_RAR3_BLK.unpack_from(buf, pos)
+        if header_size < _S_RAR3_BLK.size or pos + header_size > len(buf):
+            return
+        hdata = memoryview(buf)[pos : pos + header_size]
+        add_size = 0
+        field_pos = _S_RAR3_BLK.size
+        if flags & _RAR3_LONG_BLOCK:
+            if field_pos + 4 > header_size:
+                return
+            add_size = struct.unpack_from("<I", hdata, field_pos)[0]
+            field_pos += 4
+
+        crc_pos: int | None
+        if block_type == _RAR3_MAIN:
+            field_pos += 6
+            if flags & _RAR3_MAIN_ENCRYPTVER:
+                field_pos += 1
+            crc_pos = field_pos
+        elif block_type == _RAR3_ENDARC:
+            crc_pos = header_size
+        elif block_type in (_RAR3_FILE, _RAR3_SUB):
+            crc_pos = _rar3_file_crc_pos(
+                bytes(hdata), flags, is_service=(block_type == _RAR3_SUB)
+            )
+        elif block_type == _RAR3_MARK:
+            crc_pos = None  # leave MARK CRC alone
+        else:
+            # Unknown skippable: CRC usually covers [2:header_size].
+            crc_pos = header_size
+
+        if crc_pos is not None and 2 <= crc_pos <= header_size:
+            new_crc = _crc32(bytes(hdata[2:crc_pos])) & 0xFFFF
+            if broken:
+                new_crc ^= 1
+            struct.pack_into("<H", buf, pos, new_crc)
+
+        next_pos = pos + header_size + add_size
+        if next_pos <= pos:
+            return
+        pos = next_pos
+        if block_type == _RAR3_ENDARC:
+            return
+        # Encrypted headers: ciphertext follows; stop rather than mis-patch.
+        if block_type == _RAR3_MAIN and (flags & _RAR3_MAIN_PASSWORD):
+            return
+
+
+def _fixup_rar5_headers(buf: bytearray, start: int, *, broken: bool) -> None:
+    pos = start + len(_RAR5_ID)
+    for _ in range(10_000):
+        if pos + 5 > len(buf):
+            return
+        vint = _load_vint_at(buf, pos + 4)
+        if vint is None:
+            return
+        hdrlen, after_vint = vint
+        if hdrlen > _RAR5_MAX_HEADER:
+            return
+        header_size = (after_vint - pos) + hdrlen
+        if header_size < 5 or pos + header_size > len(buf):
+            return
+
+        new_crc = _crc32(bytes(buf[pos + 4 : pos + header_size]))
+        if broken:
+            new_crc ^= 1
+        struct.pack_into("<I", buf, pos, new_crc)
+
+        # Decode type/flags/add_size to skip packed data and stop at end/encryption.
+        cursor = after_vint
+        block_type_v = _load_vint_at(buf, cursor)
+        if block_type_v is None:
+            return
+        block_type, cursor = block_type_v
+        flags_v = _load_vint_at(buf, cursor)
+        if flags_v is None:
+            return
+        block_flags, cursor = flags_v
+        if block_flags & _RAR5_FLAG_EXTRA:
+            extra_v = _load_vint_at(buf, cursor)
+            if extra_v is None:
+                return
+            _extra, cursor = extra_v
+        add_size = 0
+        if block_flags & _RAR5_FLAG_DATA:
+            add_v = _load_vint_at(buf, cursor)
+            if add_v is None:
+                return
+            add_size, cursor = add_v
+
+        next_pos = pos + header_size + add_size
+        if next_pos <= pos:
+            return
+        pos = next_pos
+        if block_type in (_RAR5_ENDARC, _RAR5_ENCRYPTION):
+            return
+
+
+def fixup_rar_header_crcs(data: bytes, *, broken: bool | None = None) -> bytes:
+    """Recompute RAR3/RAR5 block header CRCs (or leave them broken).
+
+    RAR5: CRC32 over the header bytes after the CRC field (exact).
+    RAR3: CRC16 over ``hdata[2:crc_pos]`` using the same ``crc_pos`` rules as
+    ``rar_parser`` (MAIN fields / FILE field walk / full ENDARC). Encrypted-header
+    archives stop before the ciphertext so we do not invent plaintext CRCs.
+    """
+    located = _find_rar_magic(data)
+    if located is None:
+        return data
+
+    if broken is None:
+        broken = should_break_crc(data)
+
+    start, is_rar5 = located
+    buf = bytearray(data)
+    if is_rar5:
+        _fixup_rar5_headers(buf, start, broken=broken)
+    else:
+        _fixup_rar3_headers(buf, start, broken=broken)
+    return bytes(buf)
+
+
 FixupFn = Callable[[bytes], bytes]
 
 

@@ -123,11 +123,11 @@ not the in-tree gate:
    (`tests/test_property_safety.py` — `normalize_member_name`, `check_universal`,
    `resolve_link_target_name`, volume discovery, detection over arbitrary prefixes).
 3. **Landed:** coverage-guided **Atheris** harness (`tests/atheris_fuzz/`) over native 7z
-   header parse (CRC mutate-then-fixup), 7z open+members, `detect_format`, shallow
-   ZIP/TAR/ISO open+list, and a RAR scaffold that skips until the backend registers. CI
-   runs on **push to `main`** + **`workflow_dispatch`** (partitioned ~120s; not the PR
-   matrix; not always-on nightly). `atheris` lives in the PEP 735 `fuzz` dependency group
-   only — never a runtime extra. See `openspec/specs/testing-contract/spec.md`.
+   and RAR header parse (CRC mutate-then-fixup), 7z/RAR open+members, `detect_format`,
+   and shallow ZIP/TAR/ISO open+list. CI runs on **push to `main`** + **`workflow_dispatch`**
+   (partitioned ~150s; not the PR matrix; not always-on nightly). `atheris` lives in the
+   PEP 735 `fuzz` dependency group only — never a runtime extra. See
+   `openspec/specs/testing-contract/spec.md`.
 4. **Still open (public release):** OSS-Fuzz onboarding; `SECURITY.md` with a disclosure
    process. Accelerator hang sandbox (below) remains a separate follow-up.
 

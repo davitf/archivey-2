@@ -44,14 +44,15 @@ jobs:
           BUDGET_SCALE: ${{ github.event.inputs.budget_scale || '1' }}
         run: |
           scale="${BUDGET_SCALE:-1}"
-          export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=$((55 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=$((25 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT=$((15 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_ZIP_TAR=$((15 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_ISO=$((10 * scale))
-          echo "Budgets: header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER open=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN detect=$ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT zip_tar=$ARCHIVEY_FUZZ_BUDGET_ZIP_TAR iso=$ARCHIVEY_FUZZ_BUDGET_ISO"
+          export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=$((45 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=$((20 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT=$((12 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_ZIP_TAR=$((12 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_ISO=$((8 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=$((30 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_RAR=$((15 * scale))
+          echo "Budgets: header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER open=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN detect=$ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT zip_tar=$ARCHIVEY_FUZZ_BUDGET_ZIP_TAR iso=$ARCHIVEY_FUZZ_BUDGET_ISO rar_header=$ARCHIVEY_FUZZ_BUDGET_RAR_HEADER rar=$ARCHIVEY_FUZZ_BUDGET_RAR"
           uv run --python 3.12 --no-sync python -m tests.atheris_fuzz
-
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v4
