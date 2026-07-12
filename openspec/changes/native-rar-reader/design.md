@@ -173,7 +173,8 @@ bytes (packaging contract).
 | `unrar-free` on PATH | Identify RARLAB; `PackageNotInstalledError` naming RARLAB `unrar` |
 | Windows argv limits | Irrelevant for v1 (≤1 path arg); `@listfile` noted for later |
 | Solid random open cost | Named `unrar` or declared `unrar x` tempdir; warn toward `stream_members` |
-| RAR2 / exotic blocks | `UnsupportedFeatureError` (extract version ≤ 20) |
+| RAR 1.5 / 2.x / `unp_ver≤20` | Supported: same RAR3-style header walk; data via `unrar` (do not gate on extract version — false-positives on RAR3 stored members) |
+| Exotic / unreadable blocks | Typed `UnsupportedFeatureError` / `CorruptionError` when headers cannot be parsed |
 
 ## Open Questions
 

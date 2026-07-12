@@ -1,4 +1,4 @@
-"""Native RAR4/RAR5 metadata parser.
+"""Native RAR metadata parser (RAR 1.5 / 2.x through RAR5).
 
 Parses archive headers into :class:`RarArchive` / :class:`RarMemberInfo` without
 decompressing member data and without importing ``rarfile``. Header encryption uses
@@ -829,17 +829,11 @@ def _parse_rar3(
                 )
 
             if block_type == _RAR3_FILE:
-                # Directory/symlink entries in modern RAR3/4 often carry extract
-                # version 20; only reject legacy RAR2 *file* payloads.
-                if (
-                    member.is_payload_file()
-                    and member.extract_version is not None
-                    and member.extract_version <= 20
-                ):
-                    raise UnsupportedFeatureError(
-                        f"RAR extract version {member.extract_version} is not supported "
-                        f"(RAR2 and earlier)"
-                    )
+                # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we
+                # care about; member data is always left to RARLAB ``unrar``.
+                # Do not reject extract_version ≤ 20 — that also false-positives
+                # modern RAR3 archives whose stored/small members advertise
+                # unp_ver=20.
                 if not (flags & _RAR3_FILE_VERSION):
                     if member.split_before:
                         if members:

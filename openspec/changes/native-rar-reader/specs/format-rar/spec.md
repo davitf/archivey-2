@@ -126,3 +126,37 @@ desynchronize sizes).
 | Repeated random opens in solid RAR | Backend may use one tempdir extraction and remove it on close |
 | `extract_all()` | Backend may use one-shot `unrar x` |
 | Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
+
+### Requirement: Parse RAR headers natively (RAR 1.5 through RAR5)
+
+The system SHALL parse RAR archive headers natively — including RAR 1.5 / 2.x
+archives that advertise extract version ≤ 20, RAR3/RAR4, and RAR5 — to produce
+the full member list and per-member metadata. Extract version ≤ 20 MUST NOT by
+itself cause rejection: those archives share the same header block layout the
+parser already understands, and member data remains RARLAB `unrar`'s
+responsibility. RAR3 archives whose stored/small members advertise `unp_ver=20`
+MUST list successfully.
+
+#### Scenario: legacy extract-version matrix
+
+| Case | Expected |
+| --- | --- |
+| Open RAR 1.5 / 2.x archive (extract version ≤ 20) | Members list from native headers; data via `unrar` |
+| Open RAR3 archive with a member `unp_ver=20` | Listing and reads succeed |
+| Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
+
+### Requirement: Reject unsupported RAR variants clearly
+
+Multi-volume RAR sets SHALL be supported by the volume contract, not rejected as
+an unsupported variant. Opening a later volume before the first volume of a set
+SHALL raise `UnsupportedFeatureError` (or a truncated/out-of-order error) rather
+than silently mis-joining members. Legacy RAR 1.5 / 2.x archives MUST NOT be
+rejected solely for extract version ≤ 20.
+
+#### Scenario: unsupported variant matrix
+
+| Case | Expected |
+| --- | --- |
+| Multi-volume RAR4/RAR5 set is opened from volume 1 | Handled by the multi-volume requirement |
+| Multi-volume set opened from a later volume first | `UnsupportedFeatureError` or truncated/out-of-order error |
+| RAR 1.5 / 2.x archive is opened | Listing succeeds; not rejected for extract version |

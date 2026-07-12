@@ -15,7 +15,6 @@ from archivey.exceptions import (
     EncryptionError,
     PackageNotInstalledError,
     TruncatedError,
-    UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_unrar
 from archivey.internal.backends.rar_parser import RAR_ID, parse_rar_archive
@@ -203,52 +202,75 @@ def test_incomplete_multi_volume_raises() -> None:
         open_archive(io.BytesIO(part1))
 
 
-def test_rar2_extract_version_rejected() -> None:
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("rar15-comment.rar", {"FILE1.TXT": b"foooo\r\n", "FILE2.TXT": b"baaaar\r\n"}),
+        (
+            "rar202-comment-nopsw.rar",
+            {"FILE1.TXT": b"file1\r\n", "FILE2.TXT": b"file2\r\n"},
+        ),
+    ],
+)
+def test_rar15_and_rar2_list_and_read(name: str, expected: dict[str, bytes]) -> None:
+    """RAR 1.5 / 2.x archives list and read via native headers + unrar."""
+    with open_archive(_fixture(name)) as archive:
+        files = {m.name: m for m in archive.members() if m.is_file}
+        assert set(files) == set(expected)
+        for member_name, payload in expected.items():
+            assert archive.read(files[member_name]) == payload
+
+
+def test_extract_version_20_payload_accepted() -> None:
     """Craft a RAR3 archive whose payload FILE declares extract version 20."""
-    # Minimal RAR3: mark + main + one stored file (unp_ver=20) + endarc.
-    # Header CRCs are computed so the parser accepts the blocks.
+    from archivey.internal.backends.rar_parser import _RAR3_LONG_BLOCK, _crc32
+
     name = b"x.txt"
     payload = b"hi"
-    # FILE header fields after the 7-byte block header (no LONG_BLOCK add_size yet):
-    # pack_size, unp_size, host_os, crc, dostime, unp_ver, method, name_size, attr
-    file_body = struct.pack(
+    # FILE fields include pack_size as the first le32; with LONG_BLOCK that
+    # field is also the block add_size so the parser skips the payload.
+    file_fields = struct.pack(
         "<LLBLLBBHL",
         len(payload),
         len(payload),
         3,  # Unix
         zlib.crc32(payload) & 0xFFFFFFFF,
         0,
-        20,  # extract version → RAR2-era
+        20,  # extract version → also used by RAR2-era and some RAR3 stored members
         0x30,  # M0
         len(name),
         0o100644,
     )
-    file_body += name
-    # Omit LONG_BLOCK: pack_size lives only in the fixed FILE fields.
-    flags = 0
+    file_fields += name
+    flags = _RAR3_LONG_BLOCK
     header_without_crc = struct.pack(
         "<BHH",
         0x74,
         flags,
-        7 + len(file_body),
+        7 + len(file_fields),
     )
-    header_without_crc += file_body
-    file_crc = zlib.crc32(header_without_crc) & 0xFFFF
+    header_without_crc += file_fields
+    file_crc = _crc32(header_without_crc) & 0xFFFF
     file_hdr = struct.pack("<H", file_crc) + header_without_crc
 
     main_body = b"\x00" * 6  # reserved
     main_without_crc = struct.pack("<BHH", 0x73, 0, 7 + len(main_body)) + main_body
-    # CRC covers from type through crc_pos (after reserved); match parser.
-    main_crc = zlib.crc32(main_without_crc) & 0xFFFF
+    main_crc = _crc32(main_without_crc) & 0xFFFF
     main_hdr = struct.pack("<H", main_crc) + main_without_crc
 
     end_without_crc = struct.pack("<BHH", 0x7B, 0, 7)
-    end_crc = zlib.crc32(end_without_crc) & 0xFFFF
+    end_crc = _crc32(end_without_crc) & 0xFFFF
     end_hdr = struct.pack("<H", end_crc) + end_without_crc
 
     blob = RAR_ID + main_hdr + file_hdr + payload + end_hdr
-    with pytest.raises(UnsupportedFeatureError, match="extract version 20"):
-        parse_rar_archive(io.BytesIO(blob))
+    archive = parse_rar_archive(io.BytesIO(blob))
+    assert len(archive.members) == 1
+    member = archive.members[0]
+    assert member.filename == "x.txt"
+    assert member.extract_version == 20
+    assert member.file_size == 2
+    assert member.compress_size == 2
 
 
 def test_non_rarlab_unrar_rejected(

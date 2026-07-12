@@ -6,9 +6,8 @@ directory (clone https://github.com/markokr/rarfile and use ``…/test/files``):
     ARCHIVEY_RARFILE_TEST_FILES=/path/to/rarfile/test/files \\
       uv run --no-sync pytest tests/test_rarfile_corpus.py -q
 
-Archives that Archivey intentionally rejects (RAR2 / extract version ≤ 20) are
-asserted to raise ``UnsupportedFeatureError``. SFX archives are opened with an
-explicit ``format=ArchiveFormat.RAR`` because ``.sfx`` is not a registered
+Includes RAR 1.5 / 2.x archives (extract version ≤ 20). SFX archives are opened
+with an explicit ``format=ArchiveFormat.RAR`` because ``.sfx`` is not a registered
 extension and the magic may sit past offset 0.
 """
 
@@ -21,27 +20,12 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveFormat, MemberType, open_archive
-from archivey.exceptions import UnsupportedFeatureError
 from tests.conftest import requires, requires_binary
 
 _ENV = "ARCHIVEY_RARFILE_TEST_FILES"
 
 # Password used throughout rarfile's own test suite for *psw* / *hpsw* fixtures.
 _PASSWORD = "password"
-
-# RAR2-era / extract_version ≤ 20 archives Archivey rejects by design.
-_UNSUPPORTED_RAR2 = frozenset(
-    {
-        "rar15-comment-lock.rar",
-        "rar15-comment.rar",
-        "rar202-comment-nopsw.rar",
-        "rar202-comment-psw.rar",
-        "rar3-old.rar",
-        "rar3-seektest.sfx",
-        "rar3-vols.part1.rar",
-        "seektest.rar",
-    }
-)
 
 # Continuation volumes — open via the first volume only.
 _SKIP_NAMES = frozenset(
@@ -138,15 +122,6 @@ def test_native_matches_rarfile_on_rarfile_corpus(
 ) -> None:
     rarfile = rarfile_mod
     password = _password_for(archive.name)
-
-    if archive.name in _UNSUPPORTED_RAR2:
-        with pytest.raises(UnsupportedFeatureError, match="extract version|RAR2"):
-            open_archive(
-                archive,
-                password=password,
-                format=ArchiveFormat.RAR if archive.suffix.lower() == ".sfx" else None,
-            )
-        return
 
     # Header-encrypted archives need cryptography.
     if "hpsw" in archive.name:

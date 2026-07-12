@@ -2,10 +2,10 @@
 
 ## Purpose
 
-Archivey parses RAR4 and RAR5 metadata natively with no `rarfile` dependency.
-Listing uses the native parser only; reading compressed or encrypted member data
-delegates to the system RARLAB `unrar` binary. RAR is read-only, and `rarfile` is
-only a test oracle.
+Archivey parses RAR metadata natively (RAR 1.5 / 2.x through RAR5) with no
+`rarfile` dependency. Listing uses the native parser only; reading compressed or
+encrypted member data delegates to the system RARLAB `unrar` binary. RAR is
+read-only, and `rarfile` is only a test oracle.
 
 This native-metadata/system-decompressor split follows the `archivey-dev`
 `rar-native-metadata-reader` exploration. A full native RAR decompressor is out
@@ -30,7 +30,7 @@ The RAR backend SHALL expose these properties:
 
 | Property | Value |
 | --- | --- |
-| Read dependency (metadata) | None; native RAR4/RAR5 header parser |
+| Read dependency (metadata) | None; native RAR 1.5–RAR5 header parser |
 | Read dependency (data) | RARLAB `unrar` binary on `PATH` |
 | Listing cost | O(1); headers parsed natively, no member-data decompression |
 | Access cost | `SOLID` for solid archives; `DIRECT` otherwise |
@@ -45,17 +45,23 @@ The RAR backend SHALL expose these properties:
 | Open from a non-seekable source | Open fails because RAR header parsing requires seek |
 | Attempt to create/write RAR | `UnsupportedOperationError` |
 
-### Requirement: Parse RAR4 and RAR5 headers natively
+### Requirement: Parse RAR headers natively (RAR 1.5 through RAR5)
 
-The system SHALL parse RAR4 and RAR5 archive headers natively to produce the full
-member list and per-member metadata: names, packed/unpacked sizes, timestamps,
-mode, flags, solid state, RAR5 redirect (`file_redir`) records, encryption flags,
-and integrity hashes. Listing SHALL not import `rarfile` or invoke `unrar`.
+The system SHALL parse RAR archive headers natively — including RAR 1.5 / 2.x
+archives that advertise extract version ≤ 20, RAR3/RAR4, and RAR5 — to produce
+the full member list and per-member metadata: names, packed/unpacked sizes,
+timestamps, mode, flags, solid state, RAR5 redirect (`file_redir`) records,
+encryption flags, and integrity hashes. Listing SHALL not import `rarfile` or
+invoke `unrar`. Extract version ≤ 20 MUST NOT by itself cause rejection: those
+archives share the same header block layout the parser already understands, and
+member data remains RARLAB `unrar`'s responsibility.
 
 #### Scenario: native header matrix
 
 | Case | Expected |
 | --- | --- |
+| Open RAR 1.5 / 2.x archive (extract version ≤ 20) | Members and metadata come from native headers; no `UnsupportedFeatureError` for extract version alone |
+| Open RAR3/RAR4 archive whose members advertise extract version 20 | Listing succeeds (stored/small members often carry `unp_ver=20`) |
 | Open RAR4 archive | Members and metadata come from native headers |
 | Open RAR5 archive | Members, flags, hashes, and redirect metadata come from native headers |
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
@@ -182,16 +188,19 @@ SHALL set `ArchiveInfo.is_encrypted` to `True`.
 
 ### Requirement: Reject unsupported RAR variants clearly
 
-The native parser SHALL raise `UnsupportedFeatureError` for legacy RAR2 archives
-(extract version <= 20) rather than mis-parsing them. Multi-volume RAR sets SHALL
-be supported by the volume contract, not rejected as an unsupported variant.
+Multi-volume RAR sets SHALL be supported by the volume contract, not rejected as
+an unsupported variant. Opening a later volume before the first volume of a set
+SHALL raise `UnsupportedFeatureError` (or a truncated/out-of-order error) rather
+than silently mis-joining members. Truly unreadable layouts (corrupt headers,
+unknown required crypto without the extra) continue to raise typed errors from
+their existing requirements.
 
 #### Scenario: unsupported variant matrix
 
 | Case | Expected |
 | --- | --- |
-| RAR2-era archive is opened | `UnsupportedFeatureError` |
-| Multi-volume RAR4/RAR5 set is opened | Handled by the multi-volume requirement |
+| Multi-volume RAR4/RAR5 set is opened from volume 1 | Handled by the multi-volume requirement |
+| Multi-volume set opened from a later volume first | `UnsupportedFeatureError` or truncated/out-of-order error |
 
 ### Requirement: Support multi-volume RAR sets
 
