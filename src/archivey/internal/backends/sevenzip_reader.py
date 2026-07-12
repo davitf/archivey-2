@@ -19,6 +19,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
+    PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -72,6 +73,7 @@ from archivey.internal.streams.crypto import (
     SevenZipKeyCache,
     open_aes_decrypt_stream,
 )
+from archivey.internal.streams.decompress import BcjFilterStream
 from archivey.internal.streams.streamtools import (
     SharedSource,
     SlicingStream,
@@ -106,6 +108,23 @@ _BCJ_METHODS: dict[bytes, Codec] = {
     b"\x03\x03\x05\x01": Codec.BCJ_ARM,
     b"\x03\x03\x07\x01": Codec.BCJ_ARMT,
     b"\x03\x03\x08\x05": Codec.BCJ_SPARC,
+}
+
+# pybcj (import name ``bcj``) decoder class attribute per BCJ method ID. Used only for
+# LZMA1+BCJ staging — LZMA2+BCJ stays on stdlib liblzma filters.
+_BCJ_PYBCJ_DECODERS: dict[bytes, str] = {
+    b"\x04": "BCJDecoder",
+    b"\x03\x03\x01\x03": "BCJDecoder",
+    b"\x05": "PPCDecoder",
+    b"\x03\x03\x02\x05": "PPCDecoder",
+    b"\x06": "IA64Decoder",
+    b"\x03\x03\x04\x01": "IA64Decoder",
+    b"\x07": "ARMDecoder",
+    b"\x03\x03\x05\x01": "ARMDecoder",
+    b"\x08": "ARMTDecoder",
+    b"\x03\x03\x07\x01": "ARMTDecoder",
+    b"\x09": "SparcDecoder",
+    b"\x03\x03\x08\x05": "SparcDecoder",
 }
 
 _SINGLE_STAGE_CODECS: dict[bytes, Codec] = {
@@ -243,7 +262,7 @@ def _open_aes_stage(
     return open_aes_decrypt_stream(source, params)
 
 
-def _open_lzma_run(
+def _open_lzma_combined(
     source: BinaryIO,
     run: list[SevenZipCoder],
     *,
@@ -253,13 +272,6 @@ def _open_lzma_run(
 ) -> BinaryIO:
     has_lzma1 = any(coder.method == _METHOD_LZMA for coder in run)
     has_lzma2 = any(coder.method == _METHOD_LZMA2 for coder in run)
-    has_bcj = any(coder.method in _BCJ_METHODS for coder in run)
-    if has_lzma1 and has_lzma2:
-        raise UnsupportedFeatureError(
-            "Mixed LZMA1+LZMA2 7z coder chains are unsupported"
-        )
-    if has_lzma1 and has_bcj:
-        raise UnsupportedFeatureError("LZMA1+BCJ 7z coder chains are unsupported")
     # A 7z filter run lists coders in decode order (outer filter first); liblzma wants
     # them in the reverse (encode) order, hence ``reversed(run)``.
     filters = [_lzma_filter(coder) for coder in reversed(run)]
@@ -269,6 +281,98 @@ def _open_lzma_run(
         source,
         config=stream_config,
         params=CodecParams(filters=filters),
+        collector=collector,
+        seekable=seekable,
+    )
+
+
+def _require_pybcj() -> None:
+    try:
+        import bcj  # noqa: F401
+    except ImportError as exc:
+        raise PackageNotInstalledError(
+            "The 'pybcj' package is required for LZMA1+BCJ 7z folders "
+            "(install the '7z' extra)."
+        ) from exc
+
+
+def _open_bcj_stage(
+    source: BinaryIO,
+    coder: SevenZipCoder,
+    *,
+    unpack_size: int,
+    seekable: bool,
+) -> BinaryIO:
+    decoder_attr = _BCJ_PYBCJ_DECODERS.get(coder.method)
+    if decoder_attr is None:
+        raise UnsupportedFeatureError(
+            f"Unsupported 7z BCJ coder {_method_hex(coder.method)}"
+        )
+    return BcjFilterStream(
+        source,
+        decoder_attr=decoder_attr,
+        unpack_size=unpack_size,
+        seekable=seekable,
+    )
+
+
+def _open_lzma_run(
+    source: BinaryIO,
+    run: list[SevenZipCoder],
+    unpack_sizes: list[int],
+    *,
+    stream_config: StreamConfig,
+    collector: DiagnosticCollector | None,
+    seekable: bool,
+) -> BinaryIO:
+    if len(run) != len(unpack_sizes):
+        raise CorruptionError("7z LZMA-family run length does not match unpack sizes")
+    has_lzma1 = any(coder.method == _METHOD_LZMA for coder in run)
+    has_lzma2 = any(coder.method == _METHOD_LZMA2 for coder in run)
+    has_bcj = any(coder.method in _BCJ_METHODS for coder in run)
+    if has_lzma1 and has_lzma2:
+        raise UnsupportedFeatureError(
+            "Mixed LZMA1+LZMA2 7z coder chains are unsupported"
+        )
+    if has_lzma1 and has_bcj:
+        # liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS (BPO-21872 /
+        # xz-devel guidance). Stage like py7zr: stdlib LZMA1 (+ Delta, etc.), then pybcj.
+        _require_pybcj()
+        stream: BinaryIO = source
+        index = 0
+        while index < len(run):
+            coder = run[index]
+            if coder.method in _BCJ_METHODS:
+                stream = _open_bcj_stage(
+                    stream,
+                    coder,
+                    unpack_size=unpack_sizes[index],
+                    seekable=seekable,
+                )
+                index += 1
+                continue
+            sub_run: list[SevenZipCoder] = []
+            while index < len(run) and run[index].method not in _BCJ_METHODS:
+                sub_run.append(run[index])
+                index += 1
+            stream = _open_lzma_combined(
+                stream,
+                sub_run,
+                stream_config=stream_config,
+                collector=collector,
+                seekable=seekable,
+            )
+            # Cap at the sub-run output size so LZMA1-without-EOS does not raise on
+            # a trailing read when the BCJ stage asks for a large chunk.
+            stream = SlicingStream(
+                stream, length=unpack_sizes[index - 1], own_source=True
+            )
+            continue
+        return stream
+    return _open_lzma_combined(
+        source,
+        run,
+        stream_config=stream_config,
         collector=collector,
         seekable=seekable,
     )
@@ -324,12 +428,15 @@ def open_folder_pipeline(
             continue
         if _is_lzma_family(coder):
             run: list[SevenZipCoder] = []
+            run_sizes: list[int] = []
             while index < len(folder.coders) and _is_lzma_family(folder.coders[index]):
                 run.append(folder.coders[index])
+                run_sizes.append(folder.unpack_sizes[index])
                 index += 1
             stream = _open_lzma_run(
                 stream,
                 run,
+                run_sizes,
                 stream_config=config,
                 collector=collector,
                 seekable=seekable,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import struct
 import subprocess
 import zlib
@@ -141,13 +142,40 @@ def test_header_encrypted_archive_requires_password(tmp_path: Path) -> None:
     _assert_roundtrip(archive, _FILES, password="secret")
 
 
-def test_lzma1_bcj_fixture_is_rejected(tmp_path: Path) -> None:
+@requires("bcj")
+def test_lzma1_bcj_fixture_roundtrip(tmp_path: Path) -> None:
+    """py7zr LZMA1+BCJ archives decode via staged pybcj (not combined liblzma)."""
     archive = tmp_path / "lzma1-bcj.7z"
     _write_py7zr_archive(archive, _FILES, filters=_filters("X86", "LZMA"))
+    _assert_roundtrip(archive, _FILES)
 
-    with open_archive(archive) as reader:
-        with pytest.raises(UnsupportedFeatureError, match=r"LZMA1\+BCJ"):
-            reader.read("alpha.txt")
+
+@requires("bcj")
+@requires_binary("7z")
+def test_7z_cli_lzma1_bcj_avoids_liblzma_truncation(tmp_path: Path) -> None:
+    """7-Zip CLI LZMA1+BCJ can silently truncate under combined liblzma filters.
+
+    A ~12800-byte payload with 0xE8 call patterns reproduces the look-ahead flush
+    failure (output 12796 instead of 12800). Staged pybcj must return full bytes.
+    """
+    payload = bytearray(os.urandom(12800))
+    for offset in range(0, 12800 - 5, 40):
+        payload[offset] = 0xE8
+    payload_bytes = bytes(payload)
+    src = tmp_path / "payload.bin"
+    src.write_bytes(payload_bytes)
+    archive = tmp_path / "lzma1-bcj-cli.7z"
+    result = subprocess.run(
+        ["7z", "a", "-t7z", "-m0=BCJ", "-m1=LZMA", str(archive), src.name, "-y"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot write LZMA1+BCJ fixtures: {result.stderr}")
+
+    _assert_roundtrip(archive, {src.name: payload_bytes})
 
 
 @requires_binary("7z")
