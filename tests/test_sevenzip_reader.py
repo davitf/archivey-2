@@ -222,7 +222,7 @@ def test_7z_multi_password_rejects_wrong_candidate_via_crc(
     first_kdf = "first".encode("utf-16le")
     garbage = b"\x05\x7f\xc6\x01\xebI\x03j\x88\x93\x8e\xe5\xb5"
 
-    def pipeline_with_wrong_first(self, source, folder, *, password):
+    def pipeline_with_wrong_first(self, source, folder, *, password, seekable=False):
         # After the first folder unlocks, known-good "first" is tried on the second
         # folder. Simulate a decompressor that yields plausible garbage of the
         # expected length instead of raising, so only the CRC confirm rejects it.
@@ -232,7 +232,9 @@ def test_7z_multi_password_rejects_wrong_candidate_via_crc(
                     garbage
                 ):
                     return io.BytesIO(garbage)
-        return original_pipeline(self, source, folder, password=password)
+        return original_pipeline(
+            self, source, folder, password=password, seekable=seekable
+        )
 
     monkeypatch.setattr(
         SevenZipReader, "_open_folder_pipeline", pipeline_with_wrong_first
