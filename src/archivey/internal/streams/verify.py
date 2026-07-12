@@ -14,6 +14,9 @@ digests (``ArchiveMember.hashes``) against the bytes actually read. Per the
 - An algorithm whose backend is missing (or that is unknown) is **skipped with a
   ``DIGEST_UNVERIFIABLE`` diagnostic** rather than failing the read; algorithms that can
   be computed (always including CRC32 via stdlib) are still verified.
+- ``close()`` also verifies when the inner stream is already at clean EOF, so a single
+  ``read()`` that consumed the whole member (as ``ArchiveReader.read`` does) still
+  checks digests.
 
 This is distinct from a codec's own internal integrity check (gzip trailer CRC, xz stream
 check) — those are surfaced by the codec backend; this verifies the *container's* digest
@@ -166,5 +169,10 @@ class VerifyingStream(ReadOnlyIOStream):
 
     def close(self) -> None:
         if not self.closed:
+            # ``archive.read()`` often does a single ``read()`` that returns all
+            # bytes without a follow-up empty read, so verify here when the inner
+            # stream is already at clean EOF (partial reads still skip verification).
+            if not self._verified and not self._inner.read(1):
+                self._verify()
             self._inner.close()
             super().close()

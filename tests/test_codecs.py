@@ -361,6 +361,14 @@ def test_verify_partial_read_is_not_verified() -> None:
     stream.close()  # abandoned before EOF — must not raise
 
 
+def test_verify_on_close_after_full_single_read() -> None:
+    """A single read()-to-end must still verify when the stream is closed."""
+    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) ^ 0xFFFF})
+    assert stream.read() == CONTENT
+    with pytest.raises(CorruptionError, match="crc32"):
+        stream.close()
+
+
 def test_verify_unverifiable_algorithm_skipped_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

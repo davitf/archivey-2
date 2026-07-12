@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import lzma
 import stat
+import zlib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -546,15 +547,10 @@ class SevenZipReader(BaseArchiveReader):
                 decoded = read_exact(stream, total)
                 if len(decoded) != total:
                     raise EncryptionError("Wrong password or corrupt 7z folder")
-                if folder.digest_defined:
-                    verifier = VerifyingStream(
-                        io.BytesIO(decoded),
-                        {"crc32": folder.crc if folder.crc is not None else 0},
-                        collector=self._diagnostics_collector,
-                        archive_name=self._archive_name,
-                    )
-                    verifier.read()
-                    verifier.read()
+                # LZMA can occasionally emit the expected length for a wrong key;
+                # require a CRC match before accepting the candidate. Prefer the
+                # folder digest when present; otherwise check per-member digests.
+                self._verify_folder_plaintext(folder_index, decoded)
                 return kdf_password
             except ArchiveyError as exc:
                 raise EncryptionError("Wrong password or corrupt 7z folder") from exc
@@ -569,6 +565,35 @@ class SevenZipReader(BaseArchiveReader):
             ) from exc
         self._folder_passwords[folder_index] = password
         return password
+
+    def _verify_folder_plaintext(self, folder_index: int, decoded: bytes) -> None:
+        """Raise ``EncryptionError`` when decoded folder bytes fail CRC checks."""
+        folder = self._archive.folders[folder_index]
+        if folder.digest_defined:
+            expected = (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
+            if zlib.crc32(decoded) & 0xFFFFFFFF != expected:
+                raise EncryptionError("Wrong password or corrupt 7z folder")
+            return
+
+        offset = 0
+        for folder_member in self._folder_members.get(folder_index, []):
+            size = _member_stream_size(folder_member)
+            chunk = decoded[offset : offset + size]
+            offset += size
+            raw_expected = (
+                folder_member.hashes.get("crc32") if folder_member.hashes else None
+            )
+            if raw_expected is None:
+                continue
+            if isinstance(raw_expected, bytes):
+                expected = int.from_bytes(raw_expected, "big") & 0xFFFFFFFF
+            else:
+                expected = raw_expected & 0xFFFFFFFF
+            if zlib.crc32(chunk) & 0xFFFFFFFF != expected:
+                raise EncryptionError("Wrong password or corrupt 7z folder")
+        # When no digests are present we can only rely on the decompressor rejecting
+        # wrong-key ciphertext (same as before); do not treat that as confirmation
+        # failure on its own.
 
     def _open_folder_pipeline(
         self,

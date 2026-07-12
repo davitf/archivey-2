@@ -196,6 +196,55 @@ def test_7z_cli_multi_password_archive_roundtrip(tmp_path: Path) -> None:
 
 
 @requires_binary("7z")
+@requires("cryptography")
+def test_7z_multi_password_rejects_wrong_candidate_via_crc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wrong keys that decompress to the right length must still lose on CRC."""
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_bytes(b"first secret")
+    second.write_bytes(b"second secret")
+    archive = tmp_path / "multi-password-crc.7z"
+    for command in (
+        ["7z", "a", "-t7z", str(archive), first.name, "-pfirst", "-y"],
+        ["7z", "a", "-t7z", str(archive), second.name, "-psecond", "-y"],
+    ):
+        result = subprocess.run(
+            command, cwd=tmp_path, check=False, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            pytest.skip(
+                f"7z CLI cannot build multi-password 7z fixture: {result.stderr}"
+            )
+
+    original_pipeline = SevenZipReader._open_folder_pipeline
+    first_kdf = "first".encode("utf-16le")
+    garbage = b"\x05\x7f\xc6\x01\xebI\x03j\x88\x93\x8e\xe5\xb5"
+
+    def pipeline_with_wrong_first(self, source, folder, *, password):
+        # After the first folder unlocks, known-good "first" is tried on the second
+        # folder. Simulate a decompressor that yields plausible garbage of the
+        # expected length instead of raising, so only the CRC confirm rejects it.
+        if password == first_kdf:
+            for index, candidate in enumerate(self._archive.folders):
+                if candidate is folder and self._folder_unpack_size(index) == len(
+                    garbage
+                ):
+                    return io.BytesIO(garbage)
+        return original_pipeline(self, source, folder, password=password)
+
+    monkeypatch.setattr(
+        SevenZipReader, "_open_folder_pipeline", pipeline_with_wrong_first
+    )
+
+    with open_archive(archive, password=["first", "second"]) as reader:
+        members = {member.name: member for member in reader.members() if member.is_file}
+        assert reader.read(members["first.txt"]) == b"first secret"
+        assert reader.read(members["second.txt"]) == b"second secret"
+
+
+@requires_binary("7z")
 def test_7z_cli_multi_volume_archive_roundtrip(tmp_path: Path) -> None:
     payload = tmp_path / "large.bin"
     payload.write_bytes(bytes(range(256)) * 1200)
