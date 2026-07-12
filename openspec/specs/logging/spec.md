@@ -2,9 +2,8 @@
 
 ## Purpose
 
-Standard-library logging projection for Archivey events. The library emits records
-through the `archivey` logger hierarchy without configuring handlers, levels,
-filters, or formatters; applications own output policy.
+Standard-library logging projection for Archivey events. The library emits through
+the `archivey` hierarchy and never configures output policy.
 
 ## Related specs
 
@@ -20,8 +19,8 @@ filters, or formatters; applications own output policy.
 
 ### Requirement: Logging under the archivey logger hierarchy
 
-The system SHALL emit all log messages via `logging.getLogger("archivey")` and its
-named children. It MUST NOT configure handlers, levels, filters, or formatters.
+The system SHALL emit all log messages via `logging.getLogger("archivey")` and
+children. It MUST NOT configure handlers, levels, filters, or formatters.
 
 | Logger | Events |
 | --- | --- |
@@ -40,20 +39,19 @@ named children. It MUST NOT configure handlers, levels, filters, or formatters.
 
 ### Requirement: Warning logs are ordered projections of diagnostics
 
-Every library advisory logged at WARNING SHALL originate as a `Diagnostic`; logging
-MUST NOT be a second source of truth. For `COLLECT` and `RAISE`, the WARNING record
-SHALL emit after exact counts/retention update and before diagnostic callback or
-escalation. For `IGNORE`, no WARNING record SHALL emit.
+Every WARNING advisory SHALL originate as a `Diagnostic`; logging MUST NOT be a
+second source of truth. For `COLLECT` and `RAISE`, the WARNING SHALL emit after
+counts/retention update and before callback/escalation. For `IGNORE`, no WARNING
+record SHALL emit.
 
-The record SHALL use the existing named `archivey.*` logger for the event and SHALL
-expose `diagnostic_code` as the code string and `diagnostic_occurrence_id` as the
-opaque id in `LogRecord.extra`. Human message text is not a byte-for-byte
-compatibility contract.
+The record SHALL use the event's named `archivey.*` logger and expose
+`diagnostic_code` plus `diagnostic_occurrence_id` in `LogRecord.extra`. Human text
+is not a byte-for-byte compatibility contract.
 
-Logging handlers are application code. The system SHALL hold no diagnostic
-collector, reader, stream, backend, or registry lock while invoking handlers. If a
-handler raises, normal Python logging semantics apply: the exception propagates and
-later callback/escalation steps for that occurrence do not run.
+The system SHALL hold no diagnostic collector, reader, stream, backend, or registry
+lock while invoking application logging handlers. If a handler raises, normal
+Python logging semantics apply: the exception propagates and later
+callback/escalation steps for that occurrence do not run.
 
 #### Scenario: diagnostic-log matrix
 

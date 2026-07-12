@@ -2,9 +2,7 @@
 
 ## Purpose
 
-Shell interface for inspecting, verifying, and extracting archives. The `archivey`
-command exposes `list`, `test`, and `extract` subcommands, fnmatch member filters,
-and optional I/O instrumentation while keeping CLI-only dependencies out of core.
+Shell interface for inspecting, verifying, and extracting archives with fnmatch filters and optional I/O instrumentation; CLI-only deps stay out of core.
 
 ## Related specs
 
@@ -12,8 +10,6 @@ and optional I/O instrumentation while keeping CLI-only dependencies out of core
 | --- | --- |
 | `archive-reading` | Listing, member filtering, digest verification reads |
 | `safe-extraction` | Default safe extraction policy used by `extract` |
-| `diagnostics` | Advisory data that may be surfaced by CLI output |
-| `logging` | CLI may rely on standard logging configuration |
 | `packaging-and-extras` | `[cli]` extra supplies `tqdm`; core remains importable without it |
 | `access-mode-and-cost` | Optional I/O instrumentation/cost reporting |
 
@@ -21,17 +17,11 @@ and optional I/O instrumentation while keeping CLI-only dependencies out of core
 
 ### Requirement: archivey command with list, test, and extract subcommands
 
-The system SHALL provide an `archivey` command with at minimum `list`, `test`, and
-`extract` subcommands. The command SHALL support fnmatch filename patterns for
-filtering members and a `--track-io` flag for I/O instrumentation. Progress output
-SHALL depend on `tqdm` from the `[cli]` extra; the core library MUST NOT have a hard
-dependency on `tqdm`.
+The system SHALL provide an `archivey` command with `list`, `test`, and `extract`. It SHALL support fnmatch member filters and `--track-io`. Progress output SHALL use `tqdm` from `[cli]`; core MUST NOT depend on `tqdm`.
 
-`list` SHALL print archive members to stdout. `test` SHALL read every selected
-member fully and verify stored digests through the shared verification stage,
-including CRC32 and Blake2sp where supported. `extract` SHALL extract selected
-members to the destination directory using the library's default safe-extraction
-policy.
+`list` SHALL print members to stdout. `test` SHALL fully read selected members and
+verify stored digests through the shared verification stage, including CRC32 and
+Blake2sp where supported. `extract` SHALL use the default safe-extraction policy.
 
 #### Scenario: CLI behavior matrix
 
