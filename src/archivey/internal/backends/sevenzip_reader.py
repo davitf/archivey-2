@@ -75,7 +75,6 @@ from archivey.internal.streams.crypto import (
 )
 from archivey.internal.streams.decompress import BcjFilterStream
 from archivey.internal.streams.streamtools import (
-    ReadOnlyIOStream,
     SharedSource,
     SlicingStream,
     SolidBlockReader,
@@ -297,35 +296,6 @@ def _require_pybcj() -> None:
         ) from exc
 
 
-class _BoundedReadStream(ReadOnlyIOStream):
-    """Return at most ``size`` bytes from ``inner``, then EOF without further reads.
-
-    LZMA1 streams from the 7-Zip CLI often lack an end-of-stream marker. ``lzma.LZMAFile``
-    then raises ``EOFError`` on any read past the known unpack size; capping reads at that
-    size lets the staged BCJ filter finish cleanly.
-    """
-
-    def __init__(self, inner: BinaryIO, size: int) -> None:
-        super().__init__()
-        self._inner = inner
-        self._remaining = size
-
-    def read(self, n: int = -1, /) -> bytes:
-        if self._remaining <= 0:
-            return b""
-        if n is None or n < 0:
-            n = self._remaining
-        else:
-            n = min(n, self._remaining)
-        data = self._inner.read(n)
-        self._remaining -= len(data)
-        return data
-
-    def close(self) -> None:
-        self._inner.close()
-        super().close()
-
-
 def _open_bcj_stage(
     source: BinaryIO,
     coder: SevenZipCoder,
@@ -394,7 +364,9 @@ def _open_lzma_run(
             )
             # Cap at the sub-run output size so LZMA1-without-EOS does not raise on
             # a trailing read when the BCJ stage asks for a large chunk.
-            stream = _BoundedReadStream(stream, unpack_sizes[index - 1])
+            stream = SlicingStream(
+                stream, length=unpack_sizes[index - 1], own_source=True
+            )
             continue
         return stream
     return _open_lzma_combined(
