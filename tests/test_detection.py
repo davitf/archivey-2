@@ -230,6 +230,30 @@ def test_weak_zlib_magic_without_valid_stream_falls_through(tmp_path: Path) -> N
     assert info.detected_by == "extension"
 
 
+def test_lzma_alone_detected_by_content_probe() -> None:
+    import lzma
+
+    data = lzma.compress(b"lzma alone payload " * 20, format=lzma.FORMAT_ALONE)
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.confidence == DetectionConfidence.PROBABLE
+    assert info.detected_by == "content_probe"
+
+
+def test_lzma_alone_probe_does_not_claim_lzip() -> None:
+    from tests.streams_util import make_lzip_member
+
+    info = detect_format(io.BytesIO(make_lzip_member(b"lzip payload")))
+    assert info.format == ArchiveFormat.LZIP
+    assert info.detected_by == "magic"
+
+
+def test_lzma_alone_probe_does_not_steal_zlib() -> None:
+    data = zlib.compress(b"zlib payload that must stay zlib")
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.ZLIB
+
+
 # ---------------------------------------------------------------------------
 # Stage 3: inner-TAR probe over a single-file compressor
 # ---------------------------------------------------------------------------
@@ -295,6 +319,41 @@ def test_unix_compress_without_inner_tar_stays_bare_z() -> None:
     info = detect_format(io.BytesIO(data))
     assert info.format == ArchiveFormat.Z
     assert info.detected_by == "magic"
+
+
+def test_inner_tar_over_lzma_alone_is_tar_lzma() -> None:
+    import lzma
+
+    from archivey.types import ContainerFormat, StreamFormat
+
+    data = lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE)
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
+
+
+def test_tlz_lzip_stays_tar_lzip(tmp_path: Path) -> None:
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.types import ContainerFormat, StreamFormat
+    from tests.streams_util import make_lzip_member
+
+    path = tmp_path / "compat_lzip.tlz"
+    path.write_bytes(make_lzip_member(_tar_bytes()))
+    info = detect_format(path)
+    assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP)
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT not in info.diagnostics.counts
+
+
+def test_tlz_alone_content_wins_with_extension_conflict(tmp_path: Path) -> None:
+    import lzma
+
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.types import ContainerFormat, StreamFormat
+
+    path = tmp_path / "compat_lzma.tlz"
+    path.write_bytes(lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE))
+    info = detect_format(path)
+    assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
 
 
 def _large_block_tar_bz2() -> bytes:

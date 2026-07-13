@@ -94,6 +94,15 @@ def test_name_strips_known_compression_extension(tmp_path: Path) -> None:
         assert ar.members()[0].name == "data.txt"
 
 
+def test_name_strips_lzma_alone_extension(tmp_path: Path) -> None:
+    path = tmp_path / "data.txt.lzma"
+    path.write_bytes(lzma.compress(b"content", format=lzma.FORMAT_ALONE))
+    with open_archive(path) as ar:
+        assert ar.format == ArchiveFormat.LZMA_ALONE
+        assert ar.members()[0].name == "data.txt"
+        assert ar.read(ar.members()[0]) == b"content"
+
+
 def test_name_appends_uncompressed_for_unknown_extension(tmp_path: Path) -> None:
     # Identified by content (gzip magic), but ".bin" is not a compression extension, so the
     # extension is preserved and ".uncompressed" appended rather than discarding info.
@@ -214,6 +223,49 @@ def test_lzip_size_from_trailer(tmp_path: Path) -> None:
         assert ar.members()[0].size == 777
     with open_archive(path) as ar:
         assert ar.members()[0].size is None
+
+
+def test_lzma_alone_size_from_header_when_known(tmp_path: Path) -> None:
+    payload = b"z" * 321
+    # stdlib FORMAT_ALONE always writes the unknown-size marker. Patching the 8-byte
+    # size field is enough to exercise extract_metadata; do not round-trip the patched
+    # bytes — some liblzma builds (notably Windows/macOS 3.14 CI) treat that header
+    # rewrite as corrupt because the encoder produced an unknown-size end marker.
+    compressed = lzma.compress(payload, format=lzma.FORMAT_ALONE)
+    compressed = compressed[:5] + len(payload).to_bytes(8, "little") + compressed[13:]
+    path = tmp_path / "data.lzma"
+    path.write_bytes(compressed)
+    with open_archive(path) as ar:
+        assert ar.members()[0].size == 321
+
+
+def test_lzma_alone_size_none_when_unknown_marker(tmp_path: Path) -> None:
+    payload = b"z" * 321
+    path = tmp_path / "data.lzma"
+    path.write_bytes(lzma.compress(payload, format=lzma.FORMAT_ALONE))
+    with open_archive(path) as ar:
+        assert ar.members()[0].size is None
+        assert ar.read(ar.members()[0]) == payload
+
+
+def test_tar_lzma_alone_roundtrip(tmp_path: Path) -> None:
+    import tarfile
+
+    from archivey.types import ContainerFormat, StreamFormat
+
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+        info = tarfile.TarInfo("nested.txt")
+        payload = b"nested alone tar"
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    path = tmp_path / "archive.tar.lzma"
+    path.write_bytes(lzma.compress(tar_buf.getvalue(), format=lzma.FORMAT_ALONE))
+    with open_archive(path) as ar:
+        assert ar.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
+        member = next(m for m in ar if m.is_file)
+        assert member.name == "nested.txt"
+        assert ar.read(member) == b"nested alone tar"
 
 
 # ---------------------------------------------------------------------------

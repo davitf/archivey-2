@@ -69,8 +69,9 @@ from archivey.types import (
 )
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
-# standalone stream codec (gz/bz2/xz/zst/lz4/lzip/zlib/brotli/unix-compress). The common
-# ones have named ArchiveFormat constants; the rest are equal-by-value on-demand instances.
+# standalone stream codec (gz/bz2/xz/zst/lz4/lzip/lzma-alone/zlib/brotli/unix-compress).
+# The common ones have named ArchiveFormat constants; the rest are equal-by-value
+# on-demand instances.
 _TAR_COMPRESSED: tuple[ArchiveFormat, ...] = tuple(
     ArchiveFormat(ContainerFormat.TAR, codec.stream_format)
     for codec in SINGLE_FILE_CODECS
