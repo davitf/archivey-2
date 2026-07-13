@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import io
 import logging
-from unittest import mock
 
 import pytest
 
@@ -69,11 +68,22 @@ def test_accelerator_modes_honored_via_config(
 
     import archivey.internal.backends.tar_reader as tar_reader_module
 
+    # open_codec_stream is stubbed so we can assert the config it received, but the
+    # stub must still yield a real uncompressed tar: tar_reader wraps it in
+    # BufferedReader, and on Python 3.14 (esp. macOS) a bare MagicMock's readinto()
+    # recurses through __index__ until pytest-timeout kills the test.
+    uncompressed = io.BytesIO()
+    with tarfile.open(fileobj=uncompressed, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        t.addfile(info, io.BytesIO(b"x"))
+    tar_bytes = uncompressed.getvalue()
+
     captured: list[object] = []
 
     def _capture_open(codec, source, *, config, stamp=None, collector=None):
         captured.append(config)
-        return mock.MagicMock(__enter__=lambda s: s, __exit__=lambda *a: None)
+        return io.BytesIO(tar_bytes)
 
     monkeypatch.setattr(tar_reader_module, "open_codec_stream", _capture_open)
     cfg = ArchiveyConfig(

@@ -42,10 +42,10 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
 
     @abc.abstractmethod
     def read(self, n: int = -1, /) -> bytes:
-        # @abstractmethod is an intent/static-check signal that subclasses must provide read().
-        # It does NOT prevent instantiation here: io.RawIOBase's C-level __new__ ignores
-        # __abstractmethods__ (a subclass without read() still constructs), so this body is the
-        # actual runtime guard — a forgotten read() fails loudly instead of looping via RawIOBase.
+        # @abstractmethod marks the subclass contract. On Python 3.12+ ABCMeta already
+        # rejects constructing a subclass that omits read(); on 3.11, io.RawIOBase's C
+        # __new__ still allows construction, so this body is the runtime guard — a
+        # forgotten read() fails loudly instead of looping via RawIOBase.
         raise NotImplementedError
 
     def readinto(self, b: "WriteableBuffer", /) -> int:

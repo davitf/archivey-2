@@ -92,7 +92,8 @@ dev = [
     # libarchive-c is a dev-only cross-validation oracle for optional corpus tests
     # (tests/test_libarchive_corpus.py); it is not a runtime backend.
     "libarchive-c>=5.0.0",
-    "backports.zstd>=1.0.0",
+    # Stdlib compression.zstd on 3.14+; backports only needed below that.
+    "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
     "brotli>=1.1.0",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so

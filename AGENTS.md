@@ -47,3 +47,7 @@ Non-obvious gotchas:
   Install with `uv sync --group fuzz --group dev --extra all`, then
   `uv run --no-sync python -m tests.atheris_fuzz --smoke`. Mutation /
   `ARCHIVEY_FUZZ` harnesses are unchanged. See `CONTRIBUTING.md` ("Coverage-guided fuzz").
+- **CI matrix Python versions**: repo `.python-version` pins local/default envs to 3.11.
+  The test matrix in `.github/workflows/ci.yml` must pass `--python <matrix>` (and set
+  `UV_PYTHON`) on every `uv sync` / `uv run`, or "py3.12/3.13/3.14" legs silently re-test
+  3.11. The free-threaded and atheris jobs already did this; the main `test` job must too.
