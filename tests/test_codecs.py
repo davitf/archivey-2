@@ -7,7 +7,6 @@ import gzip
 import hashlib
 import importlib.util
 import io
-import warnings
 import zlib
 
 import pytest
@@ -314,9 +313,7 @@ def test_unix_compress_truncated_yields_short_read_without_truncated_error() -> 
     compressed = make_unix_compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            data = stream.read()
+        data = stream.read()
     assert len(data) < len(CONTENT)
 
 

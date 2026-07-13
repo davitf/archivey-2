@@ -1011,10 +1011,8 @@ class UnixCompressCodec(StreamCodec):
         return UnixCompressDecompressorStream(source, seekable=config.seekable)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        # The .Z format carries no length or checksum trailer, so truncation is
-        # undetectable — a cut stream just yields fewer bytes with no TruncatedError.
-        if isinstance(exc, ValueError):
-            return CorruptionError(f"Error reading unix-compress (.Z) stream: {exc!r}")
+        # Native LZW raises CorruptionError directly (like xz/lzip). `.Z` has no
+        # length/checksum trailer, so truncation is never a TruncatedError.
         return None
 
 

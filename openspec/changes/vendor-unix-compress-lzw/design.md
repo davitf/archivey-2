@@ -59,7 +59,7 @@ After the 3-byte header, resume origin is `SeekPoint(0, 3)`. `_make_decompressor
 
 ### Truncation / finished semantics
 
-`DecompressorStream._read_decompressed_chunk` raises `TruncatedError` unless `_is_decompressor_finished()` is true at source EOF. `.Z` has no end marker; today’s codec intentionally never raises truncation. The unix-compress stream MUST treat input EOF as finished (optional soft warning for a partial trailing code, matching uncompresspy’s `warn_truncation`, but not a typed truncation error).
+`DecompressorStream._read_decompressed_chunk` raises `TruncatedError` unless `_is_decompressor_finished()` is true at source EOF. `.Z` has no end marker; today’s codec intentionally never raises truncation. The unix-compress stream MUST treat input EOF as finished. A partial trailing code is accepted silently (not `TruncatedError`, and not a soft `warnings.warn` — see decision 5).
 
 ### Packaging / zero-dep
 
@@ -102,7 +102,7 @@ compressed chunk
 - Owns dictionary, bit buffer, code-width growth, KwKwK, and CLEAR realignment via a bounded in-memory buffer (never `seek`s a file).
 - Counts *logically consumed* compressed bytes (including CLEAR discard) so units’ `comp_size` are accurate even when the outer read chunk overshot.
 - Knows nothing about `SeekPoint`, absolute offsets, or files.
-- On first feed, parse the 3-byte header (or accept pre-parsed params); corruption → raise typed/`ValueError` for the codec translator.
+- On first feed, parse the 3-byte header (or accept pre-parsed params); format errors raise `CorruptionError` directly (same pattern as native xz/lzip — no stdlib `ValueError` for the codec translator).
 
 **`UnixCompressDecompressorStream`:**
 
@@ -142,9 +142,11 @@ Drop the extra from `pyproject.toml`, `[recommended-lite]` composition, and miss
 
 Keep `ncompress` in the `dev` group only.
 
-### 5. Error translation
+### 5. Error taxonomy (no soft warnings)
 
-Invalid magic / invalid codes / bad header → `CorruptionError`. No `StreamNotSeekableError` from the codec for `.Z` pipes. No `PackageNotInstalledError` for unix-compress. Partial final code at EOF → optional warning only; not `TruncatedError`.
+Invalid magic / invalid codes / bad header → raise `CorruptionError` from the LZW kernel (not stdlib `ValueError` + codec `translate`). Constructor misuse (`max_width`/`block_mode` only one set) is an `assert` — unreachable from public paths. No `StreamNotSeekableError` from the codec for `.Z` pipes. No `PackageNotInstalledError` for unix-compress.
+
+Partial final code at EOF and reserved header bits (0x60) are **silent**: `.Z` has no trailer to confirm truncation, and Archivey’s diagnostic taxonomy has no fitting code for “unknown compress flags” / “partial trailing LZW code.” Emitting `warnings.warn` would bypass the collector; inventing a new `DiagnosticCode` is a cross-cutting diagnostics change deferred until a caller needs those advisories. Not `TruncatedError`.
 
 ### 6. Docs / IDEAS cleanup in the same change
 

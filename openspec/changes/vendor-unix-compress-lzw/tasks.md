@@ -3,6 +3,7 @@
 - [x] 1.1 Add `LzwState` (`feed`/`flush`/`is_finished`, CLEAR in-memory realignment, relative segment units) adapted from uncompresspy with BSD-3-Clause attribution
 - [x] 1.2 Implement `UnixCompressDecompressorStream(SegmentedDecompressorStream)`: cursors, CLEAR units → `SeekPoint` after advance, EOF-finished (no `TruncatedError`), no trailer `_build_index`
 - [x] 1.3 Point `UnixCompressCodec.open` at the native stream (`seekable=config.seekable`); drop `uncompresspy` import, requirement, and seekable-only error translation
+- [x] 1.4 Align errors/advisories with Archivey: LZW raises `CorruptionError` (not stdlib `ValueError`); drop soft `warnings.warn` (no suitable `DiagnosticCode` yet for reserved header bits / partial trailing codes)
 
 ## 2. Packaging + docs
 

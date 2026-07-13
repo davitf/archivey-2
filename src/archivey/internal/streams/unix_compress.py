@@ -10,9 +10,9 @@ and forward decode never requires a seekable source.
 from __future__ import annotations
 
 import os
-import warnings
 from typing import BinaryIO
 
+from archivey.exceptions import CorruptionError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
@@ -26,32 +26,29 @@ _MAGIC_BYTE0 = 0x1F
 _MAGIC_BYTE1 = 0x9D
 _BLOCK_MODE_FLAG = 0x80
 _CODE_WIDTH_FLAG = 0x1F
-_UNKNOWN_FLAGS = 0x60
 _HEADER_SIZE = 3
 
 
 def _parse_header(header: bytes) -> tuple[int, bool]:
     """Validate the 3-byte ``.Z`` header → ``(max_width, block_mode)``."""
     if len(header) < _HEADER_SIZE:
-        raise ValueError("File too short, missing header.")
+        raise CorruptionError("unix-compress (.Z) stream is too short (missing header)")
     if header[0] != _MAGIC_BYTE0 or header[1] != _MAGIC_BYTE1:
-        raise ValueError(
-            f"Invalid file header: Magic bytes do not match (expected {_MAGIC_BYTE0:02x} "
-            f"{_MAGIC_BYTE1:02x}, got {header[0]:02x} {header[1]:02x})."
+        raise CorruptionError(
+            f"unix-compress (.Z) magic mismatch (expected {_MAGIC_BYTE0:02x} "
+            f"{_MAGIC_BYTE1:02x}, got {header[0]:02x} {header[1]:02x})"
         )
     flag_byte = header[2]
     max_width = flag_byte & _CODE_WIDTH_FLAG
     if max_width < _INITIAL_CODE_WIDTH:
-        raise ValueError(
-            f"Invalid file header: Max code width less than the minimum of "
-            f"{_INITIAL_CODE_WIDTH}."
+        raise CorruptionError(
+            f"unix-compress (.Z) max code width {max_width} is below the minimum "
+            f"of {_INITIAL_CODE_WIDTH}"
         )
-    if flag_byte & _UNKNOWN_FLAGS:
-        warnings.warn(
-            "File header contains unknown flags, decompression may be incorrect.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    # Classic compress header bits 0x60 are reserved. Real compressors leave them
+    # clear; if set we still decode — a broken bitstream surfaces as CorruptionError
+    # from invalid codes. Soft advisories would need a new DiagnosticCode (none fits
+    # today); do not emit stdlib warnings.warn.
     block_mode = bool(flag_byte & _BLOCK_MODE_FLAG)
     return max_width, block_mode
 
@@ -62,6 +59,10 @@ class LzwState:
     Each CLEAR ends a segment unit ``(decompressed_size, compressed_size)`` measured
     from the previous CLEAR (or from just after the header). Absolute offsets and
     :class:`SeekPoint` registration belong to the stream wrapper.
+
+    Format errors raise :class:`CorruptionError` directly (same pattern as native
+    xz/lzip). ``.Z`` has no length/checksum trailer, so EOF always finishes — a
+    partial trailing code is accepted silently rather than as :class:`TruncatedError`.
     """
 
     def __init__(
@@ -69,9 +70,7 @@ class LzwState:
         *,
         max_width: int | None = None,
         block_mode: bool | None = None,
-        warn_truncation: bool = True,
     ) -> None:
-        self._warn_truncation = warn_truncation
         self._buf = bytearray()
         self._finished = False
         self._header_params: tuple[int, bool] | None = None
@@ -80,8 +79,7 @@ class LzwState:
         self._seg_decomp = 0
         self._pending_skip = 0
         if not self._need_header:
-            if max_width is None or block_mode is None:
-                raise ValueError("max_width and block_mode are required together")
+            assert max_width is not None and block_mode is not None
             self._init_dictionary(max_width, block_mode)
             self._header_params = (max_width, block_mode)
 
@@ -98,17 +96,9 @@ class LzwState:
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         out, units = self._process(eof=True)
-        if (
-            self._warn_truncation
-            and self._header_params is not None
-            and self._bits_in_buffer >= 8
-        ):
-            warnings.warn(
-                "Bitstream ended in a partial code, file may be truncated.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        # Release dictionary growth; .Z has no end marker so EOF always finishes.
+        # Partial trailing bits (bits_in_buffer >= 8) can mean a cut bitstream, but
+        # `.Z` has no trailer to confirm that — accept EOF as finished (no TruncatedError,
+        # no warning). Matches the format-single-file-compressors truncation contract.
         if self._header_params is not None:
             del self._dictionary[self._starting_code :]
         self._finished = True
@@ -141,7 +131,9 @@ class LzwState:
         if self._need_header:
             if len(self._buf) < _HEADER_SIZE:
                 if eof and self._buf:
-                    raise ValueError("File too short, missing header.")
+                    raise CorruptionError(
+                        "unix-compress (.Z) stream is too short (missing header)"
+                    )
                 return b"", []
             header = bytes(self._buf[:_HEADER_SIZE])
             del self._buf[:_HEADER_SIZE]
@@ -238,14 +230,16 @@ class LzwState:
                 except IndexError:
                     if code == next_code:
                         if prev_entry is None:
-                            raise ValueError(
-                                f"Invalid code {code} encountered in bitstream. "
-                                "Expected a literal character."
+                            # First code after CLEAR/start must be a literal; KwKwK
+                            # needs a previous entry. Corrupt or non-block-mode abuse.
+                            raise CorruptionError(
+                                f"unix-compress (.Z) invalid code {code} "
+                                "(expected a literal)"
                             ) from None
                         entry = prev_entry + prev_entry[:1]
                     else:
-                        raise ValueError(
-                            f"Invalid code {code} encountered in bitstream."
+                        raise CorruptionError(
+                            f"unix-compress (.Z) invalid code {code} in bitstream"
                         ) from None
 
                 output.extend(entry)
