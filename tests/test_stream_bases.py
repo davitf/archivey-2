@@ -35,12 +35,13 @@ def test_readonly_base_derives_readinto_readall_and_flags() -> None:
 
 
 def test_readonly_base_read_is_the_runtime_guard() -> None:
-    # read() is @abstractmethod (a static/intent signal) but io.RawIOBase's C __new__ does not
-    # enforce it, so the NotImplementedError body is the real guard if a subclass calls super().
+    # read() is @abstractmethod. On Python 3.12+ ABCMeta rejects construction of a
+    # subclass that omits it (TypeError). On 3.11, io.RawIOBase's C __new__ still lets
+    # the instance form, so the NotImplementedError body in read() is the runtime guard.
     class _ForgotRead(ReadOnlyIOStream):
         pass
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises((TypeError, NotImplementedError)):
         _ForgotRead().read()
 
 

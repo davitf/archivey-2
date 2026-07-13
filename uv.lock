@@ -18,6 +18,7 @@ source = { editable = "." }
     { name = "brotli" },
     { name = "cryptography" },
     { name = "inflate64" },
+    { name = "lz4" },
     { name = "pybcj" },
     { name = "pyppmd" },
 ]
@@ -92,7 +93,7 @@ zstd = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "backports-zstd" },
+    { name = "backports-zstd", marker = "python_full_version < '3.14'" },
     { name = "brotli" },
     { name = "coverage", extra = ["toml"] },
     { name = "cryptography" },
@@ -138,6 +139,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=45.0.0" },
     { name = "cryptography", marker = "extra == 'rar'", specifier = ">=45.0.0" },
     { name = "inflate64", marker = "extra == '7z'", specifier = ">=1.0.0" },
+    { name = "lz4", marker = "extra == '7z'", specifier = ">=4.4.5" },
     { name = "lz4", marker = "extra == 'lz4'", specifier = ">=4.4.5" },
     { name = "py7zr", marker = "extra == '7z-write'", specifier = ">=1.0.0" },
     { name = "pybcj", marker = "extra == '7z'", specifier = ">=1.0.6" },
@@ -151,7 +153,7 @@ provides-extras = ["7z", "rar", "crypto", "7z-write", "iso", "zstd", "lz4", "uni
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "backports-zstd", specifier = ">=1.0.0" },
+    { name = "backports-zstd", marker = "python_full_version < '3.14'", specifier = ">=1.0.0" },
     { name = "brotli", specifier = ">=1.1.0" },
     { name = "coverage", extras = ["toml"], specifier = ">=7.6.0" },
     { name = "cryptography", specifier = ">=45.0.0" },
