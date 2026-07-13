@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import BinaryIO
 
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
@@ -26,6 +26,7 @@ _MAGIC_BYTE0 = 0x1F
 _MAGIC_BYTE1 = 0x9D
 _BLOCK_MODE_FLAG = 0x80
 _CODE_WIDTH_FLAG = 0x1F
+_RESERVED_FLAGS = 0x60
 _HEADER_SIZE = 3
 
 
@@ -39,16 +40,18 @@ def _parse_header(header: bytes) -> tuple[int, bool]:
             f"{_MAGIC_BYTE1:02x}, got {header[0]:02x} {header[1]:02x})"
         )
     flag_byte = header[2]
+    reserved = flag_byte & _RESERVED_FLAGS
+    if reserved:
+        raise UnsupportedFeatureError(
+            f"unix-compress (.Z) header has unknown reserved flags "
+            f"(0x{reserved:02x} in flag byte 0x{flag_byte:02x})"
+        )
     max_width = flag_byte & _CODE_WIDTH_FLAG
     if max_width < _INITIAL_CODE_WIDTH:
         raise CorruptionError(
             f"unix-compress (.Z) max code width {max_width} is below the minimum "
             f"of {_INITIAL_CODE_WIDTH}"
         )
-    # Classic compress header bits 0x60 are reserved. Real compressors leave them
-    # clear; if set we still decode — a broken bitstream surfaces as CorruptionError
-    # from invalid codes. Soft advisories would need a new DiagnosticCode (none fits
-    # today); do not emit stdlib warnings.warn.
     block_mode = bool(flag_byte & _BLOCK_MODE_FLAG)
     return max_width, block_mode
 
@@ -61,8 +64,9 @@ class LzwState:
     :class:`SeekPoint` registration belong to the stream wrapper.
 
     Format errors raise :class:`CorruptionError` directly (same pattern as native
-    xz/lzip). ``.Z`` has no length/checksum trailer, so EOF always finishes — a
-    partial trailing code is accepted silently rather than as :class:`TruncatedError`.
+    xz/lzip). Unknown reserved header flags raise :class:`UnsupportedFeatureError`.
+    At EOF, nonzero leftover bits after the last complete code are a best-effort
+    truncation signal (:attr:`truncated`); zero padding is normal for finished streams.
     """
 
     def __init__(
@@ -73,6 +77,7 @@ class LzwState:
     ) -> None:
         self._buf = bytearray()
         self._finished = False
+        self._truncated = False
         self._header_params: tuple[int, bool] | None = None
         self._need_header = max_width is None
         self._seg_comp = 0
@@ -88,6 +93,11 @@ class LzwState:
         """``(max_width, block_mode)`` once the header is known, else ``None``."""
         return self._header_params
 
+    @property
+    def truncated(self) -> bool:
+        """True after ``flush`` when leftover bits after the last code were nonzero."""
+        return self._truncated
+
     def feed(self, data: bytes) -> tuple[bytes, list[tuple[int, int]]]:
         if self._finished:
             return b"", []
@@ -96,9 +106,13 @@ class LzwState:
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         out, units = self._process(eof=True)
-        # Partial trailing bits (bits_in_buffer >= 8) can mean a cut bitstream, but
-        # `.Z` has no trailer to confirm that — accept EOF as finished (no TruncatedError,
-        # no warning). Matches the format-single-file-compressors truncation contract.
+        # Finished compressors zero-pad the last incomplete code slot. Nonzero leftover
+        # bits are a best-effort truncation / corrupt-padding signal (exact mid-code
+        # cuts that leave only zero bits remain undetectable — no length trailer).
+        if self._header_params is not None and self._bits_in_buffer > 0:
+            leftover = self._bit_buffer & ((1 << self._bits_in_buffer) - 1)
+            if leftover:
+                self._truncated = True
         if self._header_params is not None:
             del self._dictionary[self._starting_code :]
         self._finished = True
@@ -294,6 +308,7 @@ class UnixCompressDecompressorStream(SegmentedDecompressorStream[LzwState]):
         self._max_width: int | None = None
         self._block_mode: bool | None = None
         self._header_committed = False
+        self._pending_truncated: TruncatedError | None = None
         super().__init__(
             path, collector=collector, codec_name="unix_compress", seekable=seekable
         )
@@ -314,6 +329,26 @@ class UnixCompressDecompressorStream(SegmentedDecompressorStream[LzwState]):
         data, units = self._decompressor.flush()
         self._commit_header_if_needed()
         self._on_completed_segments(units)
+        # Deliver all decoded bytes first; raise TruncatedError on the next empty read.
+        if self._decompressor.truncated:
+            self._pending_truncated = TruncatedError(
+                "unix-compress (.Z) stream is truncated (nonzero leftover bits after "
+                "the last complete LZW code)"
+            )
+        return data
+
+    def _reset_to_seek_point(self, point: SeekPoint) -> None:
+        self._pending_truncated = None
+        super()._reset_to_seek_point(point)
+
+    def read(self, n: int = -1, /) -> bytes:
+        if n == 0:
+            return b""
+        data = super().read(n)
+        if not data and self._pending_truncated is not None:
+            err = self._pending_truncated
+            self._pending_truncated = None
+            raise err
         return data
 
     def _commit_header_if_needed(self) -> None:

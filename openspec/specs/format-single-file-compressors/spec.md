@@ -94,7 +94,7 @@ format-specific reliability limits:
 | Codec | `member.size` behavior |
 | --- | --- |
 | GZ | Always `None`; stored ISIZE is modulo 2^32 and may be wrong |
-| BZ2, ZLIB, BR, Z | `None` until full decompression; `.Z` also has no truncation signal |
+| BZ2, ZLIB, BR, Z | `None` until full decompression; `.Z` has no size trailer (best-effort truncation via nonzero leftover bits) |
 | XZ, ZST | Header size when encoder wrote it; otherwise `None` |
 | LZ4 | Frame content-size field when present; otherwise `None` |
 | LZIP | Available from the trailer through the seekable lzip backend |
@@ -113,7 +113,7 @@ updated to that byte count.
 | `.lz` opened through seekable lzip backend | Size is available from the trailer |
 | Alone stream with known header size | `member.size` equals that size |
 | Alone stream with unknown-size marker | Size is `None` until EOF may update it |
-| Truncated `.Z` | Decoder may yield fewer bytes with no truncation error |
+| Truncated `.Z` with nonzero leftover bits | Available bytes delivered; next `read()` raises `TruncatedError` |
 
 ### Requirement: Surface gzip stored metadata without trusting it as the name
 

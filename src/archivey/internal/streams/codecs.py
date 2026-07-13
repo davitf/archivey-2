@@ -1011,8 +1011,8 @@ class UnixCompressCodec(StreamCodec):
         return UnixCompressDecompressorStream(source, seekable=config.seekable)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        # Native LZW raises CorruptionError directly (like xz/lzip). `.Z` has no
-        # length/checksum trailer, so truncation is never a TruncatedError.
+        # Native LZW raises CorruptionError / UnsupportedFeatureError / TruncatedError
+        # directly (like xz/lzip). No third-party exception remapping.
         return None
 
 

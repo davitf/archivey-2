@@ -17,6 +17,7 @@ from archivey.exceptions import (
     CorruptionError,
     PackageNotInstalledError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.config import (
     AcceleratorMode,
@@ -309,12 +310,33 @@ def test_unix_compress_non_seekable_source_streams() -> None:
 
 
 @requires("ncompress")
-def test_unix_compress_truncated_yields_short_read_without_truncated_error() -> None:
+def test_unix_compress_truncated_raises_on_next_read() -> None:
     compressed = make_unix_compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
         data = stream.read()
-    assert len(data) < len(CONTENT)
+        assert len(data) < len(CONTENT)
+        with pytest.raises(TruncatedError, match="leftover bits"):
+            stream.read()
+
+
+@requires("ncompress")
+def test_unix_compress_reserved_header_flags_unsupported() -> None:
+    compressed = bytearray(make_unix_compress(CONTENT))
+    compressed[2] |= 0x60  # classic compress reserved flag bits
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(bytes(compressed))) as stream:
+        with pytest.raises(UnsupportedFeatureError, match="reserved flags"):
+            stream.read()
+
+
+@requires("ncompress")
+def test_unix_compress_valid_stream_has_zero_leftover_padding() -> None:
+    """Finished compressors zero-pad; a full read must not arm TruncatedError."""
+    compressed = make_unix_compress(CONTENT)
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
+        assert stream.read() == CONTENT
+        assert stream.read() == b""
+        assert stream.read() == b""
 
 
 @requires("ncompress")

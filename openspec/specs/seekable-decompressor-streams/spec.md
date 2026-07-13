@@ -174,9 +174,15 @@ declared, the system SHALL NOT retain a CLEAR seek-point table. When the source
 is not seekable, the decompressor stream SHALL report `seekable() is False` and
 `seek` SHALL raise `io.UnsupportedOperation`.
 
-Unix-compress has no length or checksum trailer: source EOF SHALL end the stream
-successfully even if a partial trailing code remains; the system MUST NOT raise
-`TruncatedError` solely because the bitstream ended mid-code.
+Unix-compress has no length or checksum trailer. At source EOF, after all
+decoded bytes have been delivered, the system SHALL best-effort detect
+truncation: if any leftover bits remain after the last complete LZW code and
+those bits are nonzero (finished compressors zero-pad), the next `read()` SHALL
+raise `TruncatedError`. Zero leftover bits (including a cut exactly on a code
+boundary) SHALL end successfully — such truncation remains undetectable.
+
+Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
+`UnsupportedFeatureError` when the header is parsed.
 
 #### Scenario: unix-compress seek matrix
 
@@ -185,5 +191,7 @@ successfully even if a partial trailing code remains; the system MUST NOT raise
 | Seekable `.Z`, `seekable=True`, seek backward across a CLEAR | Resumes from CLEAR/`SeekPoint`; no rewind diagnostic |
 | Seekable `.Z`, `seekable=False` | Forward-only; no CLEAR table retained |
 | Non-seekable `.Z` pipe, forward read | Decompresses; `seekable()` false |
-| Truncated `.Z` (cut bitstream) | Yields fewer bytes; no `TruncatedError` |
+| Truncated `.Z` with nonzero leftover bits | Yields available bytes; next `read()` raises `TruncatedError` |
+| Truncated `.Z` with only zero leftover bits | Yields fewer bytes; no `TruncatedError` (undetectable) |
+| Header flag byte has reserved bits `0x60` set | `UnsupportedFeatureError` |
 | Corrupt LZW codes | `CorruptionError` |

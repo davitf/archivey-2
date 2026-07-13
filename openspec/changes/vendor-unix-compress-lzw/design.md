@@ -16,7 +16,7 @@ License: archivey is MIT; uncompresspy 0.4.1 is BSD-3-Clause (Copyright 2025 Tia
 - Seekable source without declared seekability → forward-only (no seek-point table), matching other codecs.
 - Non-seekable source → `seekable()` false; `seek` unsupported.
 - Move `.Z` into zero-dep core; remove `[unix-compress]` / `uncompresspy`.
-- Preserve behavioral parity with today’s decoder on the existing corpus / `ncompress` fixtures (corruption → `CorruptionError`; truncation still undetectable).
+- Preserve behavioral parity with today’s decoder on the existing corpus / `ncompress` fixtures (corruption → `CorruptionError`; reserved header flags → `UnsupportedFeatureError`; best-effort nonzero-leftover truncation → `TruncatedError` after delivering bytes).
 
 **Non-Goals:**
 
@@ -24,7 +24,7 @@ License: archivey is MIT; uncompresspy 0.4.1 is BSD-3-Clause (Copyright 2025 Tia
 - Upstreaming the streaming fix to uncompresspy as the primary path.
 - Rewriting the algorithm from `ncompress` or another reference (kept as a rejected alternative).
 - Changing detection magic (`1F 9D`) or TAR+`.Z` composition rules.
-- Emitting `TruncatedError` for cut `.Z` streams (format has no length/checksum).
+- Guaranteeing detection of every truncated `.Z` (cuts that leave only zero leftover bits remain silent).
 
 ## Investigations
 
@@ -59,7 +59,7 @@ After the 3-byte header, resume origin is `SeekPoint(0, 3)`. `_make_decompressor
 
 ### Truncation / finished semantics
 
-`DecompressorStream._read_decompressed_chunk` raises `TruncatedError` unless `_is_decompressor_finished()` is true at source EOF. `.Z` has no end marker; today’s codec intentionally never raises truncation. The unix-compress stream MUST treat input EOF as finished. A partial trailing code is accepted silently (not `TruncatedError`, and not a soft `warnings.warn` — see decision 5).
+`DecompressorStream._read_decompressed_chunk` raises `TruncatedError` unless `_is_decompressor_finished()` is true at source EOF. `.Z` has no end marker, so the unix-compress stream MUST still mark finished at input EOF (otherwise every valid file would raise). Best-effort truncation: after flush, if leftover bits after the last complete code are nonzero, deliver decoded bytes then raise `TruncatedError` on the next empty `read()` (see decision 5).
 
 ### Packaging / zero-dep
 
@@ -142,11 +142,11 @@ Drop the extra from `pyproject.toml`, `[recommended-lite]` composition, and miss
 
 Keep `ncompress` in the `dev` group only.
 
-### 5. Error taxonomy (no soft warnings)
+### 5. Error taxonomy
 
-Invalid magic / invalid codes / bad header → raise `CorruptionError` from the LZW kernel (not stdlib `ValueError` + codec `translate`). Constructor misuse (`max_width`/`block_mode` only one set) is an `assert` — unreachable from public paths. No `StreamNotSeekableError` from the codec for `.Z` pipes. No `PackageNotInstalledError` for unix-compress.
+Invalid magic / invalid codes / bad header width → raise `CorruptionError` from the LZW kernel (not stdlib `ValueError` + codec `translate`). Unknown reserved header flag bits (`0x60`) → `UnsupportedFeatureError` at header parse. Constructor misuse (`max_width`/`block_mode` only one set) is an `assert` — unreachable from public paths. No `StreamNotSeekableError` from the codec for `.Z` pipes. No `PackageNotInstalledError` for unix-compress.
 
-Partial final code at EOF and reserved header bits (0x60) are **silent**: `.Z` has no trailer to confirm truncation, and Archivey’s diagnostic taxonomy has no fitting code for “unknown compress flags” / “partial trailing LZW code.” Emitting `warnings.warn` would bypass the collector; inventing a new `DiagnosticCode` is a cross-cutting diagnostics change deferred until a caller needs those advisories. Not `TruncatedError`.
+Truncation is best-effort only (no length/checksum trailer). Finished compressors zero-pad after the last complete LZW code; at source EOF, if leftover bits are nonzero, deliver all decoded bytes then raise `TruncatedError` on the next empty `read()`. Zero leftover bits (including cuts exactly on a code boundary) end successfully — undetectable. Do not invent soft `warnings.warn` / new `DiagnosticCode`s for this.
 
 ### 6. Docs / IDEAS cleanup in the same change
 
@@ -158,7 +158,7 @@ Update `docs/internal/library-analysis.md`, remove the IDEAS “non-seekable uni
 | --- | --- |
 | Behavioral drift vs uncompresspy on edge CLEAR/alignment cases | Keep existing corpus + `ncompress` roundtrips; add explicit CLEAR-heavy / multi-block seek tests |
 | Incorrect compressed_offset on SeekPoints when feeding large chunks | Unit-test CLEAR seek resumes byte-identical to forward decode from that offset; compare against full re-decode |
-| `DecompressorStream` EOF → `TruncatedError` | Override finished/flush semantics for `.Z` as above; regression test truncated fixture yields short data without error |
+| `DecompressorStream` EOF → `TruncatedError` | Mark finished at EOF; arm best-effort nonzero-leftover `TruncatedError` for the next empty read; regression: valid files never raise; truncated-with-nonzero-leftover raises after delivering bytes |
 | License attribution missed | File-level BSD-3 header + third-party notice in package metadata/docs |
 | Slightly larger core wheel | ~200–300 lines pure Python; acceptable vs an extra dependency |
 

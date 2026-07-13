@@ -29,3 +29,16 @@ unix-compress, `indexed_bzip2`, `rapidgzip`, seekable zstd), not an archive-leve
 | Non-seekable source with `streaming=False` | `StreamNotSeekableError` |
 | Non-seekable source with `streaming=True` (including `.Z`) | Opens and `stream_members()` yields data |
 | Seekable `.Z` with declared member-stream seekability | Member stream is seekable via CLEAR seek points |
+
+### Requirement: Report member size with codec caveats
+
+The system SHALL populate `member.size` according to codec metadata and
+format-specific reliability limits. For unix-compress `.Z`, size SHALL remain
+`None` until full decompression (no size trailer), and truncation SHALL be
+detected best-effort via nonzero leftover bits after the last complete LZW code.
+
+#### Scenario: size matrix
+
+| Case | Expected |
+| --- | --- |
+| Truncated `.Z` with nonzero leftover bits | Available bytes delivered; next `read()` raises `TruncatedError` |
