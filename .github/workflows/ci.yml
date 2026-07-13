@@ -60,7 +60,8 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Build docs (strict)
-        run: uv run --group docs mkdocs build --strict
+        # --python overrides repo `.python-version` (3.11) so docs actually run on 3.12.
+        run: uv run --python 3.12 --group docs mkdocs build --strict
 
   test:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
@@ -68,6 +69,10 @@ jobs:
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
     timeout-minutes: 20
+    # Force every uv sync/run in this job onto the matrix interpreter. Without this,
+    # `.python-version` (3.11) wins and "py3.12/3.13/3.14" legs silently re-test 3.11.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       fail-fast: false
       matrix:
@@ -107,11 +112,11 @@ jobs:
       # the zero-dep core works and that no third-party runtime package is present.
       - name: Install core only (no extras, no dev group)
         if: matrix.install == 'core-only'
-        run: uv sync --no-dev
+        run: uv sync --python ${{ matrix.python-version }} --no-dev
 
       - name: Assert zero-dependency core
         if: matrix.install == 'core-only'
-        run: uv run --no-sync python tests/check_zero_dep_core.py
+        run: uv run --python ${{ matrix.python-version }} --no-sync python tests/check_zero_dep_core.py
 
       # Run the full suite against the zero-dep core too. pytest (+pytest-cov) is
       # layered in ephemerally with --with so the optional FORMAT libraries stay
@@ -119,12 +124,15 @@ jobs:
       # `requires` helper in tests/conftest.py), which is exactly what this leg proves.
       - name: Run tests (core-only)
         if: matrix.install == 'core-only'
-        run: uv run --no-sync --with pytest --with pytest-cov --with pytest-timeout pytest tests/ -q
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          --with pytest --with pytest-cov --with pytest-timeout
+          pytest tests/ -q
 
       # ---- [all]: full extras + dev group; run the whole suite.
       - name: Install all extras + dev group
         if: matrix.install == 'all'
-        run: uv sync --group dev --extra all
+        run: uv sync --python ${{ matrix.python-version }} --group dev --extra all
 
       # ---- [all-lowest]: same extras, but every declared dependency pinned to its minimum
       # allowed version (--resolution lowest-direct), so the suite runs against the floor of
@@ -132,17 +140,26 @@ jobs:
       # versions); the shared test step below uses --no-sync so this resolution stands.
       - name: Install all extras + dev group (minimum versions)
         if: matrix.install == 'all-lowest'
-        run: uv sync --group dev --extra all --resolution lowest-direct
+        run: >
+          uv sync --python ${{ matrix.python-version }}
+          --group dev --extra all --resolution lowest-direct
 
       - name: Install unrar (Linux only, for RAR data tests)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar || true
 
+      - name: Assert synced venv Python matches matrix
+        # Catch regressions where `.python-version` silently overrides the matrix again.
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync python -c
+          "import sys; exp=tuple(map(int, '${{ matrix.python-version }}'.split('.')));
+          got=sys.version_info[:2]; assert got==exp, (got, exp); print(sys.version)"
+
       - name: Run tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         # --no-sync so the all-lowest leg keeps its minimum-version resolution instead of
         # re-syncing back to the locked (current) versions.
-        run: uv run --no-sync pytest tests/ -q
+        run: uv run --python ${{ matrix.python-version }} --no-sync pytest tests/ -q
 
   # Free-threaded correctness for the declared MemberStreams.CONCURRENT seam (core backends).
   # Optional extras are not claimed covered here — skips do not count as free-threaded support.

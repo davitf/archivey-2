@@ -59,6 +59,11 @@ These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three mus
 green. (After the core-only leg, `uv sync --group dev --extra all` to restore your
 everyday environment.)
 
+CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 on
+macOS/Windows). Repo `.python-version` pins the default local env to 3.11, so the
+workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /
+`uv run` in the test job — otherwise newer-version legs silently re-test 3.11.
+
 ## Tooling decisions
 
 - **Type-checking is Pyrefly + ty** — the library is kept clean on **both**. We do
