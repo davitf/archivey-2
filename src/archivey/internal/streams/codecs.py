@@ -169,6 +169,7 @@ class Codec(Enum):
     BZIP2 = "bzip2"
     XZ = "xz"
     LZIP = "lzip"
+    LZMA_ALONE = "lzma_alone"  # legacy LZMA Alone file format (FORMAT_ALONE)
     LZMA = "lzma"  # raw LZMA1 (FORMAT_RAW + properties)
     LZMA2 = "lzma2"  # raw LZMA2 (FORMAT_RAW + properties)
     DEFLATE = "deflate"  # raw deflate (zlib -15)
@@ -333,6 +334,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
 # How many gzip header bytes to peek for cheap metadata (FNAME/mtime). Longer stored names
 # beyond this are simply not surfaced.
 _GZIP_HEADER_PEEK = 512
+_ALONE_HEADER_SIZE = 13
+# Alone header marks unknown uncompressed size with all-ones uint64.
+_ALONE_UNKNOWN_SIZE = (1 << 64) - 1
 
 # Bytes fed to a content probe — enough to trip a malformed-stream error without
 # decompressing the whole payload.
@@ -753,6 +757,81 @@ class LzipCodec(_SizedLzmaCodec):
         return LzipDecompressorStream(source, seekable=config.seekable)
 
 
+def _alone_props_plausible(props: int) -> bool:
+    """Whether ``props`` encodes a valid Alone ``(lc, lp, pb)`` triple."""
+    # props = (pb * 5 + lp) * 9 + lc with lc∈[0,8], lp∈[0,4], pb∈[0,4]
+    if props > (4 * 5 + 4) * 9 + 8:
+        return False
+    lc = props % 9
+    rest = props // 9
+    lp = rest % 5
+    pb = rest // 5
+    return lc <= 8 and lp <= 4 and pb <= 4
+
+
+def _alone_header_plausible(prefix: bytes) -> bool:
+    """Cheap Alone header gate before a decode probe (rejects zero-filled prefixes)."""
+    if len(prefix) < _ALONE_HEADER_SIZE or not _alone_props_plausible(prefix[0]):
+        return False
+    dict_size = int.from_bytes(prefix[1:5], "little")
+    # Real Alone encoders never write dictionary size 0; rejecting it also keeps the
+    # zero-filled ISO system area (and similar padding) from decoding as an empty Alone
+    # stream before far-magic ISO detection runs.
+    if dict_size == 0:
+        return False
+    # CMF=0x78 is a valid Alone props encoding but also zlib's common header — leave
+    # those streams to the zlib probe so Alone does not steal them.
+    if prefix[:2] in _ZLIB_HEADERS:
+        return False
+    if prefix.startswith(b"LZIP") or prefix.startswith(b"\xfd7zXZ\x00"):
+        return False
+    return True
+
+
+class LzmaAloneCodec(_LzmaErrorCodec):
+    """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW."""
+
+    codec = Codec.LZMA_ALONE
+    stream_format = StreamFormat.LZMA_ALONE
+    # No exact magic: the properties byte is too weak; recognition is by content probe.
+
+    def open(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO:
+        # stdlib LZMAFile seeks by re-decompressing from the start; the outer ArchiveStream
+        # warns on rewind (see rewind_warning).
+        return ensure_binaryio(
+            lzma.LZMAFile(source, mode="rb", format=lzma.FORMAT_ALONE)
+        )
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        return RewindWarning("lzma")
+
+    def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
+        header = ctx.peek_header(_ALONE_HEADER_SIZE)
+        if len(header) < _ALONE_HEADER_SIZE:
+            return
+        size = int.from_bytes(header[5:13], "little")
+        if size != _ALONE_UNKNOWN_SIZE:
+            member.size = size
+
+    def content_probe(self, prefix: bytes) -> bool:
+        """Recognize LZMA Alone: plausible 13-byte header that then yields decode output."""
+        if not _alone_header_plausible(prefix) or not self.available:
+            return False
+        try:
+            with open_codec_stream(
+                self.codec, io.BytesIO(prefix[:_PROBE_PREFIX])
+            ) as stream:
+                out = stream.read(_PROBE_PREFIX)
+            # An empty successful read (e.g. usize=0) is not a positive Alone claim.
+            return len(out) > 0
+        except TruncatedError:
+            return True  # started decoding, ran out of the bounded prefix
+        except ArchiveyError:
+            return False
+
+
 class _RawLzmaCodec(_LzmaErrorCodec):
     """Raw LZMA1/LZMA2 (FORMAT_RAW + properties); container-only (no standalone stream)."""
 
@@ -1044,6 +1123,7 @@ STREAM_CODECS: tuple[StreamCodec, ...] = (
     Bzip2Codec(),
     XzCodec(),
     LzipCodec(),
+    LzmaAloneCodec(),
     LzmaCodec(),
     Lzma2Codec(),
     DeflateCodec(),

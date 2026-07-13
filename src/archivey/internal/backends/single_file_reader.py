@@ -1,12 +1,13 @@
 """Single-file compressor backend — one multi-format reader for every standalone codec.
 
-A bare ``.gz`` / ``.bz2`` / ``.xz`` / ``.zst`` / ``.lz4`` / ``.lz`` (lzip) / ``.zz`` (zlib)
-/ ``.br`` (brotli) / ``.Z`` (unix-compress) stream is presented as a one-member
+A bare ``.gz`` / ``.bz2`` / ``.xz`` / ``.zst`` / ``.lz4`` / ``.lz`` (lzip) /
+``.lzma`` (LZMA Alone) / ``.zz`` (zlib) / ``.br`` (brotli) / ``.Z`` (unix-compress)
+stream is presented as a one-member
 pseudo-archive: a single ``FILE`` member whose name is inferred from the source filename,
 decompressed through the ``compressed-streams`` codec layer. The backend is codec-agnostic;
 the only per-format logic lives in small **per-codec metadata hooks** (gzip's stored
-filename/mtime, xz/lzip decompressed size), so a new standalone codec becomes readable by
-adding the codec + enum + detection entry — no new backend class (see
+filename/mtime, xz/lzip/lzma-alone decompressed size), so a new standalone codec becomes
+readable by adding the codec + enum + detection entry — no new backend class (see
 ``format-single-file-compressors``).
 
 ZST and LZ4 are first-class standalone formats here (their codecs already exist from

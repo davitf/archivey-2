@@ -53,6 +53,7 @@ class StreamFormat(str, Enum):
     ZSTD = "zst"
     LZ4 = "lz4"
     LZIP = "lz"
+    LZMA_ALONE = "lzma"  # legacy LZMA Alone file format (not raw FORMAT_RAW)
     ZLIB = "zz"
     BROTLI = "br"
     UNIX_COMPRESS = "Z"
@@ -78,6 +79,7 @@ class ArchiveFormat:
     ZST: ClassVar[ArchiveFormat]
     LZ4: ClassVar[ArchiveFormat]
     LZIP: ClassVar[ArchiveFormat]
+    LZMA_ALONE: ClassVar[ArchiveFormat]
     ZLIB: ClassVar[ArchiveFormat]
     BROTLI: ClassVar[ArchiveFormat]
     Z: ClassVar[ArchiveFormat]
@@ -127,6 +129,9 @@ ArchiveFormat.XZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)
 ArchiveFormat.ZST = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)
 ArchiveFormat.LZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZ4)
 ArchiveFormat.LZIP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP)
+ArchiveFormat.LZMA_ALONE = ArchiveFormat(
+    ContainerFormat.RAW_STREAM, StreamFormat.LZMA_ALONE
+)
 ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
 ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)

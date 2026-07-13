@@ -58,6 +58,15 @@ def test_default_gzip_backend_roundtrip() -> None:
         assert stream.read() == CONTENT
 
 
+def test_default_lzma_alone_backend_roundtrip() -> None:
+    import lzma
+
+    compressed = lzma.compress(CONTENT, format=lzma.FORMAT_ALONE)
+    with open_codec_stream(Codec.LZMA_ALONE, io.BytesIO(compressed)) as stream:
+        assert stream.read() == CONTENT
+    assert codec_for_stream_format(StreamFormat.LZMA_ALONE) is Codec.LZMA_ALONE
+
+
 def test_raw_lzma2_backend_for_7z_folder() -> None:
     """A 7z folder's LZMA2 stream decompresses via lzma FORMAT_RAW."""
     compressed = compress_lzma2_raw(CONTENT)

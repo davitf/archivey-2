@@ -36,12 +36,24 @@ def test_standalone_lzip_has_named_format() -> None:
     assert ArchiveFormat.LZIP.stream == StreamFormat.LZIP
 
 
+def test_standalone_lzma_alone_has_named_format() -> None:
+    assert ArchiveFormat.LZMA_ALONE.container == ContainerFormat.RAW_STREAM
+    assert ArchiveFormat.LZMA_ALONE.stream == StreamFormat.LZMA_ALONE
+    assert ArchiveFormat.LZMA_ALONE.file_extension() == "lzma"
+    assert StreamFormat.LZMA_ALONE.value == "lzma"
+
+
 def test_uncommon_container_codec_built_on_demand() -> None:
     # tar.lz has no predefined TAR_LZIP constant, but is constructed on demand and compares
     # equal to any other instance with the same (container, stream) pair.
     fmt = ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP)
     assert fmt == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP)
     assert fmt.file_extension() == "tar.lz"
+
+
+def test_tar_lzma_alone_built_on_demand() -> None:
+    fmt = ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
+    assert fmt.file_extension() == "tar.lzma"
 
 
 def test_file_extension_examples() -> None:

@@ -144,7 +144,8 @@ class BackendRegistry:
 
         Drawn from the backends and from the stream codecs that override the no-op base
         content probe (Brotli, which has no magic; zlib, whose 2-byte header is too
-        unspecific to trust on its own).
+        unspecific to trust on its own; LZMA Alone, whose properties byte is similarly
+        too weak for exact magic).
         """
         probes: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
         for cls in self._reader_classes:
