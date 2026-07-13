@@ -53,7 +53,6 @@ _SKIP_NAMES = frozenset(
 _XFAIL: dict[str, tuple[bool, str]] = {}
 
 
-
 def _files_dir() -> Path | None:
     raw = os.environ.get(_ENV)
     if not raw:

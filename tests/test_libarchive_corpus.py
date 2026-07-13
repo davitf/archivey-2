@@ -22,12 +22,11 @@ fuzz/crash fixtures, and formats Archivey does not implement.
 
 from __future__ import annotations
 
+import binascii
 import io
 import os
 import re
 import shutil
-import uu
-import warnings
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -153,21 +152,44 @@ def _cache_dir() -> Path:
 
 
 def _decode_uu(source: Path, dest: Path) -> None:
+    """Decode a classic ``begin … end`` uuencode file without stdlib ``uu``.
+
+    ``uu`` was removed in Python 3.13; ``binascii.a2b_uu`` remains. Libarchive's
+    ``*.uu`` fixtures use the traditional format this helper understands.
+    """
     if dest.exists() and dest.stat().st_size > 0:
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    buffer = io.BytesIO()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        with source.open("rb") as encoded:
-            uu.decode(encoded, buffer)
-    dest.write_bytes(buffer.getvalue())
+    started = False
+    out = io.BytesIO()
+    with source.open("rb") as encoded:
+        for raw_line in encoded:
+            line = raw_line.rstrip(b"\r\n")
+            if not started:
+                if line.startswith(b"begin "):
+                    started = True
+                continue
+            if line == b"end" or line.startswith(b"end "):
+                break
+            if not line:
+                continue
+            try:
+                out.write(binascii.a2b_uu(line))
+            except binascii.Error as exc:
+                # Some encoders write a length byte that overstates trailing
+                # padding; tolerate a short final fragment like stdlib uu did.
+                nbytes = (line[0] - 32) & 63
+                if nbytes:
+                    raise ValueError(f"uu decode failed on {source.name}") from exc
+    if not started:
+        raise ValueError(f"no uu begin line in {source.name}")
+    dest.write_bytes(out.getvalue())
 
 
 def _safe_decode_uu(source: Path, dest: Path) -> bool:
     try:
         _decode_uu(source, dest)
-    except (OSError, ValueError, uu.Error):
+    except (OSError, ValueError, binascii.Error):
         if dest.exists():
             dest.unlink(missing_ok=True)
         return False
