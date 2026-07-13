@@ -276,7 +276,7 @@ def test_inner_tar_over_xz_is_tar_xz() -> None:
 
 @requires("uncompresspy", "ncompress")
 def test_inner_tar_over_unix_compress_is_tar_z() -> None:
-    """unix-compress needs seek; the probe uses a seekable prefix with accelerators OFF."""
+    """unix-compress needs seek; the bounded peek reader is seekable within its limit."""
     from archivey.types import ContainerFormat, StreamFormat
     from tests.streams_util import make_unix_compress
 
