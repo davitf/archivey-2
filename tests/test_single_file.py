@@ -227,21 +227,25 @@ def test_lzip_size_from_trailer(tmp_path: Path) -> None:
 
 def test_lzma_alone_size_from_header_when_known(tmp_path: Path) -> None:
     payload = b"z" * 321
-    # stdlib FORMAT_ALONE writes the unknown-size marker; patch in a known size.
+    # stdlib FORMAT_ALONE always writes the unknown-size marker. Patching the 8-byte
+    # size field is enough to exercise extract_metadata; do not round-trip the patched
+    # bytes — some liblzma builds (notably Windows/macOS 3.14 CI) treat that header
+    # rewrite as corrupt because the encoder produced an unknown-size end marker.
     compressed = lzma.compress(payload, format=lzma.FORMAT_ALONE)
     compressed = compressed[:5] + len(payload).to_bytes(8, "little") + compressed[13:]
     path = tmp_path / "data.lzma"
     path.write_bytes(compressed)
     with open_archive(path) as ar:
         assert ar.members()[0].size == 321
-        assert ar.read(ar.members()[0]) == payload
 
 
 def test_lzma_alone_size_none_when_unknown_marker(tmp_path: Path) -> None:
+    payload = b"z" * 321
     path = tmp_path / "data.lzma"
-    path.write_bytes(lzma.compress(b"z" * 50, format=lzma.FORMAT_ALONE))
+    path.write_bytes(lzma.compress(payload, format=lzma.FORMAT_ALONE))
     with open_archive(path) as ar:
         assert ar.members()[0].size is None
+        assert ar.read(ar.members()[0]) == payload
 
 
 def test_tar_lzma_alone_roundtrip(tmp_path: Path) -> None:
