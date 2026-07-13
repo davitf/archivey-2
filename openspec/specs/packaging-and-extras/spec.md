@@ -58,13 +58,13 @@ ISO, extra compression formats, seeking accelerators, and the CLI.
 | Extra | Pulls in | Enables |
 | --- | --- | --- |
 | *(none)* | stdlib only + native parsers | ZIP, TAR + stdlib compressed TAR variants, GZ, BZ2, XZ, directory, 7z read for common codecs (including LZMA2+BCJ), RAR metadata/listing; RAR data still needs RARLAB `unrar` |
-| `[7z]` | `pyppmd`, `inflate64`, `backports.zstd` on Python <3.14, `brotli`, `cryptography`, `pybcj` | All 7z reading features: PPMd, Deflate64, Zstd, Brotli, AES, LZMA1+BCJ |
+| `[7z]` | `pyppmd`, `inflate64`, `backports.zstd` on Python <3.14, `brotli`, `lz4`, `cryptography`, `pybcj` | All 7z reading features: PPMd, Deflate64, Zstd, Brotli, LZ4, AES, LZMA1+BCJ |
 | `[rar]` | `cryptography`, Blake2sp backend | Header-encrypted RAR5 and Blake2sp checksum verification; RAR data still needs RARLAB `unrar` |
 | `[crypto]` | `cryptography` | AES/crypto backend subset used by `[7z]` / `[rar]` |
 | `[7z-write]` | `py7zr` | 7z writing only; reading remains native |
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
 | `[zstd]` | `backports.zstd` on Python <3.14 | Standalone Zstandard (`.zst`, `.tar.zst`); Python 3.14+ uses stdlib `compression.zstd` |
-| `[lz4]` | `lz4` | LZ4 (`.tar.lz4`) |
+| `[lz4]` | `lz4` | Standalone LZ4 (`.lz4`, `.tar.lz4`) and 7z LZ4 folders (`0x04f71104`) |
 | `[unix-compress]` | `uncompresspy` | Unix-compress (`.Z`, `.tar.Z`) LZW decompression |
 | `[cli]` | `tqdm` | `archivey` command-line interface progress output |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access into gz/bz2 streams via rapidgzip / bundled `IndexedBzip2File` |
@@ -106,7 +106,8 @@ SHALL live in the PEP 735 `dev` dependency group, not in user-facing runtime ext
 | `pip install archivey[recommended]` | Every optional format/codec and CLI capability plus `[seekable]`; no redundant xz/zstd alternative backend |
 | `pip install archivey[recommended-lite]` after `[recommended]` cannot build `rapidgzip` | Every format/codec still works; only gz/bz2 seeking and speed boost are absent |
 | `pip install archivey[all]` | Installs `[recommended]` plus current alternatives; currently exactly `[recommended]` |
-| `pip install archivey[7z]` | Installs `pybcj` (import name `bcj`) so LZMA1+BCJ 7z members decode |
+| `pip install archivey[7z]` | Installs `pybcj` (import name `bcj`) and `lz4` so LZMA1+BCJ and LZ4 7z members decode |
+| `pip install archivey[lz4]` | Standalone `.lz4` / `.tar.lz4` and 7z LZ4 folders work without requiring unrelated extras |
 | RAR5 data with only Blake2sp hashes and no `[rar]` | Bytes are returned unverified with a warning; no hard failure solely for skipped Blake2sp |
 | 7z member uses BCJ2 | Unsupported-codec error; no extra enables it |
 | RAR data without RARLAB `unrar` | `PackageNotInstalledError`; no alternate-tool extra exists |
