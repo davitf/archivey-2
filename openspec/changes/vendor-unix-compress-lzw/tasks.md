@@ -18,5 +18,5 @@
 
 ## 4. Verify
 
-- [ ] 4.1 Targeted pytest for unix-compress / codecs / single-file / seek behavior
-- [ ] 4.2 `openspec validate --strict vendor-unix-compress-lzw`
+- [x] 4.1 Targeted pytest for unix-compress / codecs / single-file / seek behavior
+- [x] 4.2 `openspec validate --strict vendor-unix-compress-lzw`

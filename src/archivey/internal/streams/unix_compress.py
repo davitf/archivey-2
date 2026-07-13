@@ -78,6 +78,7 @@ class LzwState:
         self._need_header = max_width is None
         self._seg_comp = 0
         self._seg_decomp = 0
+        self._pending_skip = 0
         if not self._need_header:
             if max_width is None or block_mode is None:
                 raise ValueError("max_width and block_mode are required together")
@@ -129,6 +130,9 @@ class LzwState:
         self._prev_entry: bytes | None = None
         self._code_width = _INITIAL_CODE_WIDTH
         self._current_mask = _INITIAL_MASK
+        self._bytes_in_era = 0
+        self._codes_in_era = 0
+        self._pending_skip = 0
 
     def _process(self, *, eof: bool) -> tuple[bytes, list[tuple[int, int]]]:
         output = bytearray()
@@ -146,6 +150,13 @@ class LzwState:
             self._header_params = (max_width, block_mode)
             self._need_header = False
 
+        if self._pending_skip:
+            skip = min(self._pending_skip, len(self._buf))
+            del self._buf[:skip]
+            self._pending_skip -= skip
+            if self._pending_skip:
+                return b"", []
+
         # Local aliases — hot path (same trick as uncompresspy, ~2x).
         bit_buffer = self._bit_buffer
         bits_in_buffer = self._bits_in_buffer
@@ -159,41 +170,49 @@ class LzwState:
         starting_code = self._starting_code
         seg_comp = self._seg_comp
         seg_decomp = self._seg_decomp
+        # Bytes/codes since the last CLEAR or code-width bump (era start). uncompresspy
+        # reads one era-block of size code_width * 2**(code_width-4) at a time; we process
+        # push chunks byte-by-byte but keep the same alignment and width-bump rules.
+        bytes_in_era = self._bytes_in_era
+        codes_in_era = self._codes_in_era
+        codes_per_era = 1 << (code_width - 1)
 
-        while True:
-            block_size = code_width * (1 << (code_width - 4))
-            if not self._buf:
-                break
-            if len(self._buf) < block_size and not eof:
-                break
+        buf_i = 0
+        while buf_i < len(self._buf):
+            cur_byte = self._buf[buf_i]
+            buf_i += 1
+            bytes_in_era += 1
+            bit_buffer += cur_byte << bits_in_buffer
+            bits_in_buffer += 8
+            seg_comp += 1
 
-            cur_chunk = bytes(self._buf[:block_size])
-            del self._buf[: len(cur_chunk)]
             cleared = False
-
-            for i, cur_byte in enumerate(cur_chunk):
-                bit_buffer += cur_byte << bits_in_buffer
-                bits_in_buffer += 8
-
-                if bits_in_buffer < code_width:
-                    continue
-
+            while bits_in_buffer >= code_width:
                 code = bit_buffer & current_mask
                 bit_buffer >>= code_width
                 bits_in_buffer -= code_width
+                codes_in_era += 1
 
                 if code == _CLEAR_CODE and block_mode:
-                    # Realign to the next code_width-byte boundary within this chunk,
+                    # Realign to the next code_width-byte boundary within this era,
                     # then unread the remainder (in-memory stand-in for file.seek).
+                    # bytes_in_era is the 1-based count of bytes consumed in the era;
+                    # uncompresspy's `i` is 0-based within the current read chunk, which
+                    # always starts at an era boundary — so i == bytes_in_era - 1.
+                    i = bytes_in_era - 1
                     if advanced := i % code_width:
                         i += code_width - advanced
-                    # Bytes 0..i-1 of cur_chunk are consumed; put i.. back.
-                    self._buf[0:0] = cur_chunk[i:]
-                    seg_comp += i
+                    era_start = buf_i - bytes_in_era
+                    target = era_start + i
+                    # Padding forward, or re-read the CLEAR-completing byte when it
+                    # already sits on a code_width boundary (matches uncompresspy).
+                    if target > buf_i:
+                        seg_comp += target - buf_i
+                    elif target < buf_i:
+                        seg_comp -= buf_i - target
                     units.append((seg_decomp, seg_comp))
                     seg_comp = 0
                     seg_decomp = 0
-                    # Mirror uncompresspy reset (dict / width / bitbuf).
                     del dictionary[starting_code:]
                     next_code = starting_code
                     code_width = _INITIAL_CODE_WIDTH
@@ -201,6 +220,16 @@ class LzwState:
                     bit_buffer = 0
                     bits_in_buffer = 0
                     prev_entry = None
+                    bytes_in_era = 0
+                    codes_in_era = 0
+                    codes_per_era = 1 << (code_width - 1)
+                    if target > len(self._buf):
+                        # CLEAR realignment extends past this feed — skip the rest
+                        # of the padding at the start of the next feed.
+                        self._pending_skip = target - len(self._buf)
+                        buf_i = len(self._buf)
+                    else:
+                        buf_i = target
                     cleared = True
                     break
 
@@ -227,20 +256,23 @@ class LzwState:
                     next_code += 1
 
                 prev_entry = entry
-            else:
-                # Full/partial chunk consumed without CLEAR — count all bytes.
-                seg_comp += len(cur_chunk)
-                if code_width < max_width and len(cur_chunk) == block_size:
+
+                if codes_in_era >= codes_per_era and code_width < max_width:
                     code_width += 1
                     current_mask = (1 << code_width) - 1
                     bit_buffer = 0
                     bits_in_buffer = 0
+                    bytes_in_era = 0
+                    codes_in_era = 0
+                    codes_per_era = 1 << (code_width - 1)
+                    # Remainder bits from the current byte are discarded (matches
+                    # uncompresspy clearing the bit buffer at a width bump).
+                    break
 
             if cleared:
                 continue
-            if len(cur_chunk) < block_size:
-                # Short final chunk at EOF — stop (matches uncompresspy's short read).
-                break
+
+        del self._buf[:buf_i]
 
         self._bit_buffer = bit_buffer
         self._bits_in_buffer = bits_in_buffer
@@ -250,6 +282,8 @@ class LzwState:
         self._prev_entry = prev_entry
         self._seg_comp = seg_comp
         self._seg_decomp = seg_decomp
+        self._bytes_in_era = bytes_in_era
+        self._codes_in_era = codes_in_era
         return bytes(output), units
 
 
@@ -305,9 +339,7 @@ class UnixCompressDecompressorStream(SegmentedDecompressorStream[LzwState]):
         for decomp_size, comp_size in units:
             self._comp_cursor += comp_size
             self._decomp_cursor += decomp_size
-            self.add_seek_points(
-                [SeekPoint(self._decomp_cursor, self._comp_cursor)]
-            )
+            self.add_seek_points([SeekPoint(self._decomp_cursor, self._comp_cursor)])
 
 
 # ---------------------------------------------------------------------------
