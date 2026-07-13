@@ -14,11 +14,11 @@
 
 - [x] 3.1 Detection/open round-trip for bare `.lzma` Alone and TAR×Alone (`.tar.lzma`)
 - [x] 3.2 `.tlz` matrix: lzip fixtures stay TAR×LZIP; Alone fixtures detect as TAR×LZMA_ALONE with extension conflict and read members
-- [x] 3.3 Drop or convert the libarchive corpus xfails for `test_compat_lzma_{1,2,3}.tlz` once they pass
+- [x] 3.3 Drop or convert the libarchive corpus xfails for `test_compat_lzma_{1,2,3}.tlz` once they pass (N/A on this branch: main corpus triage is 7z-only; Alone `.tlz` covered by unit tests)
 - [x] 3.4 Member naming/size: strip `.lzma`; header size when known, `None` for unknown-size marker
 
 ## 4. Verify
 
-- [ ] 4.1 `uv run --no-sync pytest` on detection / codecs / single-file / libarchive corpus filters for the Alone fixtures
-- [ ] 4.2 `uv run --no-sync ruff check` / `ruff format --check` and `pyrefly check` / `ty check` on touched files
-- [ ] 4.3 `openspec validate --strict support-lzma-alone`
+- [x] 4.1 `uv run --no-sync pytest` on detection / codecs / single-file / libarchive corpus filters for the Alone fixtures
+- [x] 4.2 `uv run --no-sync ruff check` / `ruff format --check` and `pyrefly check` / `ty check` on touched files
+- [x] 4.3 `openspec validate --strict support-lzma-alone`
