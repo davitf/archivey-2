@@ -116,20 +116,25 @@ once, plus injected `Decoder` + `SeekTable`.
 accelerators into Decoder (foreign `BinaryIO`; lifecycle/`weakref.finalize` stays
 at birth site).
 
-### 2. Unify decoder shapes via ResumeHint
+### 2. Unify decoder shapes via relative ResumeHints (locked)
+
+Decoders emit **relative** `(decomp_delta, comp_delta)` units. A SeekTable policy
+turns them into absolute `SeekPoint`s (`before` = lzip/xz stream boundary;
+`after` = unix-compress CLEAR). Enrichment (xz blocks, BGZF member walks) may
+also inject absolute points from index/trailer scans — those do not come from
+relative units.
 
 ```python
 @dataclass
 class DecodeOut:
     data: bytes
-    hints: list[ResumeHint] = field(default_factory=list)
+    hints: list[ResumeHint] = field(default_factory=list)  # relative sizes
 
 @dataclass
 class ResumeHint:
-    # See Open Question A — absolute vs relative; default lean below.
-    decompressed: int
+    decompressed: int  # delta since previous hint / origin
     compressed: int
-    state: Any = None  # XZ block bounds today; rare
+    state: Any = None  # rare; xz block bounds today
 
 class Decoder(Protocol):
     def recreate(self, point: SeekPoint) -> Decoder: ...
@@ -137,27 +142,27 @@ class Decoder(Protocol):
     def flush(self) -> DecodeOut: ...
     @property
     def finished(self) -> bool: ...
+    @property
+    def pending_error(self) -> BaseException | None: ...
 ```
 
-Zlib/brotli/ppmd/deflate64/bcj → adapters, `hints=[]`.  
-Lzip/xz/.Z → state machines already mostly exist; emit hints with **format meaning
-baked in** (no more point-then-advance vs advance-then-point in stream subclasses).
+Zlib/brotli/ppmd/deflate64/bcj → adapters, `hints=[]`, `pending_error` always
+`None`. Lzip/xz/.Z → existing state machines; format meaning lives in the
+SeekTable policy, not in stream-subclass cursor folklore.
 
-**Rejected:** keep separate `_decompress_chunk → bytes` vs `feed → (bytes, units)`
-forever. **Rejected:** zlib-style plus ad-hoc `take_clears()` (reinvents segmented).
+**Rejected:** absolute offsets from Decoders (couples them to cursors/I/O).
+**Rejected:** keep separate `_decompress_chunk → bytes` vs `feed → (bytes, units)`.
+**Rejected:** duck-typing `truncated` / ad-hoc attributes — use the Protocol property.
 
-### 3. SeekTable owns all three index paths
+### 3. SeekTable owns index paths (shape of xz enrichment still open — see B)
 
-| Format | `record(hint)` | `build_full(inner, last)` |
+| Format | Progressive `record` | `build_full` |
 | --- | --- | --- |
 | zlib family | no-op | no-op (rewind from 0) |
-| lzip | member starts | backwards trailer scan |
-| xz | stream starts **+ progressive block enrichment** | backwards footer/index scan |
-| unix-compress | CLEAR resumes | no-op (`SEEK_END` → base scan-to-EOF) |
-| BGZF (future) | — | walk BC/MZ members |
-
-XZ progressive enrichment moves from `_on_completed_segments` into
-**XZ’s `SeekTable.record`** (may seek/restore `_inner`). Same behavior, one home.
+| lzip | member starts (`before`) | backwards trailer scan |
+| xz | stream starts + **block enrichment** (how: Open Question B) | backwards footer/index scan |
+| unix-compress | CLEAR resumes (`after`) | no-op (`SEEK_END` → base scan-to-EOF) |
+| BGZF (future) | — | forward member walk via BC/MZ |
 
 Demand-driven: undeclared seekability → `NullSeekTable` (no points, no scans).
 
@@ -165,87 +170,74 @@ Demand-driven: undeclared seekability → `NullSeekTable` (no points, no scans).
 
 XZ’s `_XzState` vs `_XzBlockChain` becomes a choice inside `Decoder.recreate`, not
 a union on the stream. No `_create_decompressor` / `_make_decompressor` dual API.
+(XZ recreate may need the table’s subsequent block points — factory closure or
+`recreate(point, table)`; settled with Open Question B.)
 
-### 5. Deferred `.Z` TruncatedError is one stream hook, not four overrides
+### 5. Deferred `.Z` TruncatedError via formal `pending_error` (locked)
 
-Decoder `flush` may set `pending_error`; `IndexedDecompressStream.read` raises it
-on the next empty read after delivering bytes. Matches today’s contract; removes
-the need to override chunk/flush/reset/read in the format stream class.
+`Decoder.pending_error` is a real Protocol property (not duck-typed). After
+`flush`, unix-compress sets it to `TruncatedError` when leftover bits are
+nonzero; other Decoders leave it `None`. `DecompressorStream.read` raises and
+clears it on the next empty read after delivering bytes. Header params for
+CLEAR recreate live on the Decoder / unix-compress factory; origin
+`SeekPoint(0, 3)` adjustment is SeekTable’s job — no format stream subclass
+overriding `read` / chunk / flush / reset.
 
-### 6. Spike-gated implementation
+### 6. Keep the name `DecompressorStream` (locked)
 
-Do **not** start the mechanical migration until Open Questions A–D below are
-closed (or explicitly deferred with a written fallback). Tasks §1 are the spike;
-§2+ are the refactor.
+The one composed stream class stays **`DecompressorStream`** — it is already the
+external vocabulary (specs, docs, `isinstance` / mental model) and should not
+expose “Indexed…” implementation detail in the type name. Module
+`decompressor_stream.py` stays. A later interface/implementation split is
+allowed if it earns its keep; not required for this change.
 
-### 7. Coordinate BGZF / seekable-gzip
+Zlib-family Decoder adapters stay in `decompress.py`; xz/lzip/.Z keep parsers in
+their modules and lose stream-subclass tails. Construction sites in `codecs.py`
+become thin factories wiring `(Decoder, SeekTable)` into `DecompressorStream`.
 
-`seekable-gzip-and-block-writing` MUST NOT land another `DecompressorStream`
-subclass leaf in parallel. Either this change lands first and BGZF is a
-Decoder+SeekTable policy, or BGZF waits / re-targets.
+**Rejected:** rename to `IndexedDecompressStream` (leaks structure; churn for
+little clarity).
+
+### 7. Spike-gated implementation
+
+Do **not** start the mechanical migration until **Open Question B** is closed
+(or explicitly deferred with a written fallback). Tasks §1.2 are the remaining
+spike; §2+ are the refactor. Threads A/C/D/E are locked above.
+
+### 8. BGZF / zstd seekable fit + coordinate seekable-gzip (locked)
+
+SeekTable is **not** backwards-trailer-only: it must support progressive points
+(CLEAR-like), one-shot backwards scans (lzip/xz), and one-shot forward member
+walks (BGZF/mgzip via BC/MZ; zstd seekable footer table). That is enough for
+`seekable-gzip-and-block-writing` to plug in as Decoder + SeekTable without a
+new `DecompressorStream` subclass leaf.
+
+`seekable-gzip-and-block-writing` MUST NOT land another subclass leaf in
+parallel — wait on or re-target this composition model.
 
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
 | --- | --- |
 | Over-abstract SeekTable into a plugin framework | Cap at ~4–5 concrete policies; no registry of registries |
-| XZ progressive enrichment fights clean `record` | Spike task: port `_update_index` behind SeekTable; keep existing seek tests green |
-| Subtle SEEK_END / size / buffer regressions | Existing `test_seekable_streams` + unix-compress seek matrix are the gate; no “improve” seeks in the same PR |
-| Naming churn (`IndexedDecompressStream` vs keep `DecompressorStream`) | Prefer rename that matches composition; keep a thin alias only if imports elsewhere hurt |
-| Specs stay empty while validate wants a delta | Add a **shared seek-surface** clarifying requirement (parity across native indexed codecs) — no caller behavior change |
+| XZ progressive enrichment fights clean `record` | Open Question B; spike before migration; keep seek tests green |
+| Subtle SEEK_END / size / buffer regressions | Existing `test_seekable_streams` + unix-compress seek matrix are the gate |
+| Accidental rename pressure | Decision 6: keep `DecompressorStream` |
 
 ## Open Questions
 
-These are the **loose threads that must be finalized before implementation**.
-Each should leave this section when closed (move the answer into Decisions).
+### B. Where does XZ block enrichment live?
 
-### A. Absolute vs relative ResumeHints
+Today, when a multi-stream XZ file finishes a stream during a forward read, the
+stream subclass seeks the compressed file, reads that stream’s footer/index, and
+registers block-level `SeekPoint`s (with `state=block bounds`) — then restores
+the file position. That is “progressive enrichment.” On a later seek into a
+block, `recreate` builds `_XzBlockChain` from those points.
 
-- **Options:** (1) Decoders emit **relative** `(decomp_delta, comp_delta)` and the
-  stream’s single cursor helper converts to absolute SeekPoints; (2) Decoders emit
-  **absolute** offsets (know cursors or receive them).
-- **Lean:** (1) — keeps state machines I/O-agnostic (current xz/lzip/.Z already
-  return relative units). Format-specific “before vs after” becomes which absolute
-  the SeekTable records, not which way the Decoder orders cursor math.
-- **Finalize when:** write the cursor helper + one lzip and one `.Z` SeekTable in a
-  spike branch; confirm seek tests agree.
+**Still open:** who owns that enrichment after the refactor — a fat SeekTable, a
+thin table plus a stream hook, or a separate Enricher? Options and trade-offs are
+being explored in the change discussion; lock one here before §2.
 
-### B. XZ progressive enrichment under SeekTable.record
-
-- **Question:** Can `_update_index` (seek inner → `_read_xz_index_backwards` for the
-  just-finished stream → restore → add block SeekPoints with `state=bounds`) live
-  entirely in `XzSeekTable.record` without the stream knowing about footers?
-- **Lean:** Yes — `record` receives the completed-stream hint + access to `inner`
-  and the live SeekPoint list; stream only calls `table.record` / `decoder.feed`.
-- **Finalize when:** spike that deletes `_on_completed_segments` branching on
-  `isinstance(_XzState)` and keeps `test_seekable_streams` / size-via-index tests green.
-
-### C. Pending-error / header-commit hooks on Decoder
-
-- **Question:** Is `pending_error` on Decoder enough for `.Z`, or does the stream
-  need a tiny `after_flush` / `on_empty_read` callback protocol?
-- **Lean:** `pending_error` property set by `flush`, cleared by stream after raise;
-  header params for recreate live on the Decoder or a small side object owned by
-  the unix-compress factory — not on the stream subclass.
-- **Finalize when:** spike recreating deferred TruncatedError without overriding
-  `read` on a format-specific stream class.
-
-### D. Naming and module layout
-
-- **Question:** Keep filename `decompressor_stream.py` and rename the class to
-  `IndexedDecompressStream`, or rename module too? Where do `Decoder` adapters live
-  (`decompress.py` vs per-codec modules)?
-- **Lean:** Class rename to `IndexedDecompressStream` (or keep `DecompressorStream`
-  as the one stream class name to limit churn — pick one in spike); module can stay
-  until a follow-up. Adapters stay beside codecs that need them; zlib-family thin
-  adapters can remain in one `decompress.py` as functions/classes implementing
-  Decoder only.
-- **Finalize when:** grepping import sites (`codecs.py`, tests, single_file_reader)
-  and choosing the lower-churn name in Decisions.
-
-### E. (Optional defer) Native zstd frame index
-
-Out of scope for this change’s implementation, but the SeekTable plug shape should
-not paint us into a corner. Confirm the design doesn’t assume “backwards trailer
-only” — progressive CLEAR-like points and one-shot member walks (BGZF) must both fit.
-No spike required beyond a written note in Decisions once A–D close.
+**Also must handle:** while replaying via `_XzBlockChain`, completed units only
+advance cursors (no new points). `recreate` needs subsequent block points from
+the table.
