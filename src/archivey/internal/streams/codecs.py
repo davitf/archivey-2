@@ -779,12 +779,6 @@ def _alone_header_plausible(prefix: bytes) -> bool:
     # stream before far-magic ISO detection runs.
     if dict_size == 0:
         return False
-    # CMF=0x78 is a valid Alone props encoding but also zlib's common header — leave
-    # those streams to the zlib probe so Alone does not steal them.
-    if prefix[:2] in _ZLIB_HEADERS:
-        return False
-    if prefix.startswith(b"LZIP") or prefix.startswith(b"\xfd7zXZ\x00"):
-        return False
     return True
 
 
