@@ -933,14 +933,14 @@ def test_empty_archive_opens_with_zero_members() -> None:
 def test_infer_nameless_member_name_matrix() -> None:
     from archivey.internal.backends.sevenzip_reader import _infer_nameless_member_name
 
-    assert _infer_nameless_member_name(None) == "contents"
+    assert _infer_nameless_member_name(None) == "data"
     assert _infer_nameless_member_name("/tmp/github_14.7z") == "github_14"
     assert _infer_nameless_member_name("GitHub_14.7Z") == "GitHub_14"
     assert _infer_nameless_member_name("archive.7z.001") == "archive"
     assert _infer_nameless_member_name("archive.7z.002") == "archive"
-    assert _infer_nameless_member_name("foo.bin") == "foo"
-    assert _infer_nameless_member_name("noext") == "contents"
-    assert _infer_nameless_member_name("") == "contents"
+    assert _infer_nameless_member_name("foo.bin") == "foo.bin.uncompressed"
+    assert _infer_nameless_member_name("noext") == "noext.uncompressed"
+    assert _infer_nameless_member_name("") == "data"
 
 
 @requires_binary("7z")

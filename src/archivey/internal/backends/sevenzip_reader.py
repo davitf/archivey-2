@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import lzma
-import os
 import re
 import stat
 import zlib
@@ -58,7 +57,11 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
-from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.naming import (
+    emit_member_name_normalized,
+    infer_member_name_from_archive,
+    normalize_member_name,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
@@ -299,26 +302,10 @@ _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
 
 
 def _infer_nameless_member_name(archive_name: str | None) -> str:
-    """Synthesize a member filename when the 7z NAME property is absent.
-
-    Matches the 7-Zip CLI / py7zr convention: use the archive basename with a
-    trailing ``.7z`` (or ``.7z.NNN`` volume suffix) stripped. Anonymous sources
-    (no usable stem) fall back to ``contents``.
-    """
-    if archive_name is None:
-        return "contents"
-    base = os.path.basename(archive_name.rstrip("/"))
-    if not base or base in {".", ".."}:
-        return "contents"
-    stem = _SEVENZIP_STEM_SUFFIX_RE.sub("", base)
-    if stem and stem != base:
-        return stem
-    # Not a .7z-named archive — strip the last suffix if present (e.g. foo.bin).
-    if "." in base and not base.startswith("."):
-        stem = base.rsplit(".", 1)[0]
-        if stem:
-            return stem
-    return "contents"
+    """Synthesize a member filename when the 7z NAME property is absent."""
+    return infer_member_name_from_archive(
+        archive_name, strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE
+    )
 
 
 def _open_bcj_stage(

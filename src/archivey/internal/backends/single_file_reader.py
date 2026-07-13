@@ -30,6 +30,7 @@ from archivey.exceptions import ArchiveyError, StreamNotSeekableError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.naming import infer_member_name_from_archive
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
@@ -66,13 +67,9 @@ _COMPRESSION_EXTS: frozenset[str] = frozenset(
 
 def _infer_member_name(archive_name: str | None) -> str:
     """Infer the single member's name from the source filename (see the spec)."""
-    if archive_name is None:
-        return "data"
-    base = os.path.basename(archive_name)
-    root, ext = os.path.splitext(base)
-    if ext.lower() in _COMPRESSION_EXTS and root:
-        return root
-    return base + ".uncompressed"
+    return infer_member_name_from_archive(
+        archive_name, strip_suffixes=_COMPRESSION_EXTS
+    )
 
 
 class SingleFileReader(BaseArchiveReader):

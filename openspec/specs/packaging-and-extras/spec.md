@@ -64,7 +64,7 @@ ISO, extra compression formats, seeking accelerators, and the CLI.
 | `[7z-write]` | `py7zr` | 7z writing only; reading remains native |
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
 | `[zstd]` | `backports.zstd` on Python <3.14 | Standalone Zstandard (`.zst`, `.tar.zst`); Python 3.14+ uses stdlib `compression.zstd` |
-| `[lz4]` | `lz4` | Standalone LZ4 (`.lz4`, `.tar.lz4`) and 7z LZ4 folders (`0x04f71104`) |
+| `[lz4]` | `lz4` | Standalone LZ4 (`.lz4`, `.tar.lz4`) and 7z LZ4 folders |
 | `[unix-compress]` | `uncompresspy` | Unix-compress (`.Z`, `.tar.Z`) LZW decompression |
 | `[cli]` | `tqdm` | `archivey` command-line interface progress output |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access into gz/bz2 streams via rapidgzip / bundled `IndexedBzip2File` |
