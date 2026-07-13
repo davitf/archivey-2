@@ -1,7 +1,7 @@
 ## 1. LZW kernel + stream
 
-- [ ] 1.1 Add internal LZW module (header + decode + CLEAR in-memory realignment) adapted from uncompresspy with BSD-3-Clause attribution
-- [ ] 1.2 Implement `UnixCompressDecompressorStream(DecompressorStream)`: push feed, EOF-finished (no `TruncatedError`), CLEAR → `add_seek_points` when index enabled
+- [ ] 1.1 Add `LzwState` (`feed`/`flush`/`is_finished`, CLEAR in-memory realignment, relative segment units) adapted from uncompresspy with BSD-3-Clause attribution
+- [ ] 1.2 Implement `UnixCompressDecompressorStream(SegmentedDecompressorStream)`: cursors, CLEAR units → `SeekPoint` after advance, EOF-finished (no `TruncatedError`), no trailer `_build_index`
 - [ ] 1.3 Point `UnixCompressCodec.open` at the native stream (`seekable=config.seekable`); drop `uncompresspy` import, requirement, and seekable-only error translation
 
 ## 2. Packaging + docs
