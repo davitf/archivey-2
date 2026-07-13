@@ -274,6 +274,29 @@ def test_inner_tar_over_xz_is_tar_xz() -> None:
     assert info.format == ArchiveFormat.TAR_XZ
 
 
+@requires("uncompresspy", "ncompress")
+def test_inner_tar_over_unix_compress_is_tar_z() -> None:
+    """unix-compress needs a seekable source; the inner-TAR probe must still upgrade .tar.Z."""
+    from archivey.types import ContainerFormat, StreamFormat
+    from tests.streams_util import make_unix_compress
+
+    data = make_unix_compress(_tar_bytes())
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS)
+    assert info.confidence == DetectionConfidence.PROBABLE
+    assert info.detected_by == "content_probe"
+
+
+@requires("uncompresspy", "ncompress")
+def test_unix_compress_without_inner_tar_stays_bare_z() -> None:
+    from tests.streams_util import make_unix_compress
+
+    data = make_unix_compress(b"just some bytes, definitely not a tar header region")
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.Z
+    assert info.detected_by == "magic"
+
+
 def _large_block_tar_bz2() -> bytes:
     """A ``.tar.bz2`` whose first bzip2 block is far larger than the detection prefix.
 

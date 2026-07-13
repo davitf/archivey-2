@@ -11,13 +11,41 @@ Reference ``.uu`` blobs are decoded into ``ARCHIVEY_TEST_CACHE`` on first use.
 Skips archives libarchive cannot open, non-primary split volumes, libarchive
 fuzz/crash fixtures, and formats Archivey does not implement.
 
-7z triage (2026-07, vs libarchive ``libarchive/test``) — known 7z failures marked
+Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
 ``xfail``:
 
+**7z**
 * **SPEC** ``*_bcj2_*`` — BCJ2 multi-packed-stream folders correctly raise
   ``UnsupportedFeatureError`` (format-7z rejects BCJ2).
 * **GAP** ``*_arm64`` (method ``0x0a``) — newer ARM64 BCJ filter not in our
   method table; correctly raises ``UnsupportedFeatureError`` today.
+
+**Compress / filter**
+* **GAP** legacy LZ4 frame variants (``test_compat_lz4_{2,3}``) — ``lz4`` frame
+  decoder rejects non-modern frame types.
+* **GAP** gzip trailing junk after a complete member (``test_compat_gzip_2``) —
+  stdlib ``gzip`` raises ``BadGzipFile``; libarchive tolerates trailing bytes.
+* **GAP** ``.tlz`` with raw LZMA Alone payloads — extension maps to TAR+lzip;
+  Archivey has no TAR+LZMA-Alone stream format.
+* **HARNESS** bare ``.lz`` that libarchive does not list as an archive
+  (``test_compat_lzip_3``).
+
+**ZIP**
+* **GAP** WinZip AES (method 99) / ZIPX PPMd/Zstd/XZ — stdlib ``zipfile`` does
+  not decode these; Archivey surfaces ``UnsupportedFeatureError``.
+* **GAP** ZIP members whose payload exceeds the declared size (libarchive
+  fixtures) — stdlib CRC/size checks reject them.
+* **GAP** assorted ZIP edge cases (extra padding, UTF-8 path presentation,
+  MSDOS directory typing).
+
+**TAR / sparse / nested**
+* **GAP** GNU sparse variants / PAX edge headers that stdlib ``tarfile`` rejects.
+* **NESTED** ``*.iso.Z`` / ``*.cpio.gz`` — outer compress around a non-TAR
+  container Archivey does not compose (skipped, not xfail).
+
+**RAR**
+* **GAP** some RAR5 extra-field / crypt-only headers; multi-volume sets need
+  sibling volumes (skipped like other split volumes).
 """
 
 from __future__ import annotations
@@ -33,7 +61,7 @@ from pathlib import Path
 import pytest
 
 from archivey import FormatDetectionError, MemberType, detect_format, open_archive
-from archivey.types import ContainerFormat
+from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, requires
 
 _ENV = "ARCHIVEY_LIBARCHIVE_TEST_FILES"
@@ -43,6 +71,14 @@ _CACHE_SUBDIR = "libarchive-corpus"
 _PASSWORDS: dict[str, str] = {
     "test_read_format_7zip_encryption.7z": "12345678",
     "test_read_format_zip_zipx_encrypted.zipx": "test_password_zipx",
+    "test_read_format_zip_traditional_encryption_data.zip": "12345678",
+    "test_read_format_zip_encryption_data.zip": "12345678",
+    "test_read_format_zip_encryption_header.zip": "12345678",
+    "test_read_format_zip_encryption_partially.zip": "12345678",
+    "test_read_format_zip_winzip_aes128.zip": "password",
+    "test_read_format_zip_winzip_aes256.zip": "password",
+    "test_read_format_zip_winzip_aes256_large.zip": "password",
+    "test_read_format_zip_winzip_aes256_stored.zip": "password",
 }
 
 # Try these when an archive name hints at encryption but has no explicit mapping.
@@ -63,6 +99,28 @@ _SKIP_NAMES = frozenset(
         "test_splitted_rar_seek_support_ab",
         "test_splitted_rar_seek_support_ac",
         "test_splitted_rar_seek_support_aa",
+        # RAR5 multiarchive fixtures need sibling volumes beside part01.
+        "test_read_format_rar5_multiarchive.part01.rar",
+        "test_read_format_rar5_multiarchive_solid.part01.rar",
+        # Nested: outer unix-compress / gzip around ISO or cpio (no composed format).
+        "test_read_format_iso.iso.Z",
+        "test_read_format_iso_2.iso.Z",
+        "test_read_format_iso_3.iso.Z",
+        "test_read_format_iso_joliet.iso.Z",
+        "test_read_format_iso_joliet_by_nero.iso.Z",
+        "test_read_format_iso_joliet_long.iso.Z",
+        "test_read_format_iso_joliet_rockridge.iso.Z",
+        "test_read_format_iso_multi_extent.iso.Z",
+        "test_read_format_iso_rockridge.iso.Z",
+        "test_read_format_iso_rockridge_ce.iso.Z",
+        "test_read_format_iso_rockridge_ce_loop.iso.Z",
+        "test_read_format_iso_rockridge_new.iso.Z",
+        "test_read_format_iso_rockridge_rr_moved.iso.Z",
+        "test_read_format_iso_xorriso.iso.Z",
+        "test_read_format_iso_zisofs.iso.Z",
+        "test_write_disk_appledouble.cpio.gz",
+        # GNU sparse skip-entry OOMs/segfaults the process — skip rather than xfail.
+        "test_read_format_gtar_sparse_skip_entry.tar.Z",
     }
 )
 
@@ -71,8 +129,9 @@ _PART_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Triaged 7z divergences. Values are (strict, reason).
-_XFAIL_7Z: dict[str, tuple[bool, str]] = {
+# Triaged divergences. Values are (strict, reason).
+_XFAIL: dict[str, tuple[bool, str]] = {
+    # --- 7z ---
     "test_read_format_7zip_bcj2_bzip2.7z": (
         True,
         "SPEC: BCJ2 multi-packed-stream folders are unsupported",
@@ -116,6 +175,150 @@ _XFAIL_7Z: dict[str, tuple[bool, str]] = {
     "test_read_format_7zip_lzma2_arm64.7z": (
         True,
         "GAP: ARM64 BCJ method 0x0a not in method table",
+    ),
+    # --- compress / filter ---
+    "test_compat_gzip_2.tgz": (
+        True,
+        "GAP: stdlib gzip rejects trailing junk after a complete member",
+    ),
+    "test_compat_lz4_2.tar.lz4": (
+        True,
+        "GAP: legacy LZ4 frame type not accepted by lz4.frame",
+    ),
+    "test_compat_lz4_3.tar.lz4": (
+        True,
+        "GAP: legacy LZ4 frame type not accepted by lz4.frame",
+    ),
+    "test_compat_lzma_1.tlz": (
+        True,
+        "GAP: .tlz extension maps to TAR+lzip; payload is raw LZMA Alone",
+    ),
+    "test_compat_lzma_2.tlz": (
+        True,
+        "GAP: .tlz extension maps to TAR+lzip; payload is raw LZMA Alone",
+    ),
+    "test_compat_lzma_3.tlz": (
+        True,
+        "GAP: .tlz extension maps to TAR+lzip; payload is raw LZMA Alone",
+    ),
+    "test_compat_lzip_3.lz": (
+        True,
+        "HARNESS: libarchive lists no members for this bare lzip fixture",
+    ),
+    # --- ZIP ---
+    "test_read_format_zip_ppmd8.zipx": (
+        True,
+        "GAP: ZIPX PPMd8 unsupported by stdlib zipfile",
+    ),
+    "test_read_format_zip_ppmd8_multi.zipx": (
+        True,
+        "GAP: ZIPX PPMd8 unsupported by stdlib zipfile",
+    ),
+    "test_read_format_zip_xz_multi.zipx": (
+        True,
+        "GAP: ZIPX XZ unsupported by stdlib zipfile",
+    ),
+    "test_read_format_zip_zstd.zipx": (
+        True,
+        "GAP: ZIPX Zstd unsupported by stdlib zipfile",
+    ),
+    "test_read_format_zip_zstd_multi.zipx": (
+        True,
+        "GAP: ZIPX Zstd unsupported by stdlib zipfile",
+    ),
+    "test_read_format_zip_winzip_aes128.zip": (
+        True,
+        "GAP: WinZip AES (method 99) unsupported by stdlib zipfile",
+    ),
+    "test_read_format_zip_winzip_aes256.zip": (
+        True,
+        "GAP: WinZip AES (method 99) unsupported by stdlib zipfile",
+    ),
+    "test_read_format_zip_winzip_aes256_large.zip": (
+        True,
+        "GAP: WinZip AES (method 99) unsupported by stdlib zipfile",
+    ),
+    "test_read_format_zip_winzip_aes256_stored.zip": (
+        True,
+        "GAP: WinZip AES (method 99) unsupported by stdlib zipfile",
+    ),
+    "test_read_data_into_fd_size_exceeds_declared_deflate.zip": (
+        True,
+        "GAP: stdlib zipfile rejects payload larger than declared size",
+    ),
+    "test_read_data_into_fd_size_exceeds_declared_stored.zip": (
+        True,
+        "GAP: stdlib zipfile rejects payload larger than declared size",
+    ),
+    "test_read_format_zip_size_exceeds_declared_deflate.zip": (
+        True,
+        "GAP: stdlib zipfile rejects payload larger than declared size",
+    ),
+    "test_read_format_zip_size_exceeds_declared_stored.zip": (
+        True,
+        "GAP: stdlib zipfile rejects payload larger than declared size",
+    ),
+    "test_read_format_zip.zip": (
+        True,
+        "GAP: libarchive ZIP fixture trips stdlib CRC check on file2",
+    ),
+    "test_read_format_zip_extra_padding.zip": (
+        True,
+        "GAP: ZIP with extra padding rejected by stdlib zipfile",
+    ),
+    "test_read_format_zip_7075_utf8_paths.zip": (
+        True,
+        "GAP: UTF-8 path presentation differs from libarchive",
+    ),
+    "test_read_format_zip_msdos.zip": (
+        True,
+        "GAP: MSDOS directory entry typed as FILE vs DIRECTORY",
+    ),
+    # --- TAR / sparse / PAX ---
+    "test_read_format_gtar_sparse_1_17_posix10_modified.tar": (
+        True,
+        "GAP: modified GNU sparse header not handled by stdlib tarfile",
+    ),
+    "test_read_format_tar_V_negative_size.tar": (
+        True,
+        "GAP: negative TAR size / invalid offset rejected by stdlib tarfile",
+    ),
+    "test_read_pax_empty_val_no_nl.tar": (
+        True,
+        "GAP: empty PAX value without newline rejected by stdlib tarfile",
+    ),
+    "test_read_format_tar_empty_with_gnulabel.tar": (
+        True,
+        "GAP: empty TAR with GNU label member-set differs from libarchive",
+    ),
+    "test_read_format_gtar_redundant_L.tar.Z": (
+        True,
+        "GAP: GNU long-name (L) handling differs from libarchive",
+    ),
+    "test_read_format_gtar_sparse_length.tar.Z": (
+        True,
+        "GAP: GNU sparse length / hole presentation differs from libarchive",
+    ),
+    "test_read_format_tar_empty_pax.tar.Z": (
+        True,
+        "GAP: empty PAX TAR over unix-compress rejected by stdlib tarfile",
+    ),
+    # --- RAR ---
+    "test_read_format_rar5_only_crypt_exfld.rar": (
+        True,
+        "GAP: RAR5 crypt-only extra field parsing",
+    ),
+    "test_read_format_rar5_unsupported_exfld.rar": (
+        True,
+        "GAP: RAR5 unsupported extra field parsing",
+    ),
+    "test_read_format_rar_unbound_staticdata.rar": (
+        True,
+        "GAP: RAR3 unbound static data / zero header size",
+    ),
+    "test_read_format_rar5_extra_field_version.rar": (
+        True,
+        "GAP: RAR5 version extra-field member naming",
     ),
 }
 
@@ -214,6 +417,15 @@ def _materialize_archive(uu_path: Path) -> Path | None:
         if dest.exists():
             dest.unlink(missing_ok=True)
         return None
+    # Nested outer-compress around ISO/cpio: detect as bare compressor, not a
+    # composed Archivey format. Skip rather than compare against libarchive's
+    # multi-filter open.
+    if info.format.container is ContainerFormat.RAW_STREAM and (
+        base.lower().endswith(".iso.z")
+        or base.lower().endswith(".cpio.gz")
+        or base.lower().endswith(".cpio.z")
+    ):
+        return None
     return dest
 
 
@@ -225,6 +437,16 @@ def _password_candidates(archive_name: str) -> tuple[str | None, ...]:
     if any(hint in lower for hint in _ENCRYPTION_NAME_HINTS):
         return (None, *_FALLBACK_PASSWORDS)
     return (None,)
+
+
+def _archivey_password(archive_name: str) -> str | tuple[str, ...] | None:
+    """Password argument for ``open_archive`` (omit bare ``None`` candidates)."""
+    cands = [p for p in _password_candidates(archive_name) if p is not None]
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+    return tuple(cands)
 
 
 def _normalize_name(name: str) -> str:
@@ -289,7 +511,7 @@ def _collect_libarchive_oracle(
 
 def _uu_param(path: Path) -> pytest.ParameterSet:
     name = path.name[:-3]
-    xfail = _XFAIL_7Z.get(name)
+    xfail = _XFAIL.get(name)
     if xfail is None:
         return pytest.param(path, id=name)
     strict, reason = xfail
@@ -336,8 +558,10 @@ def test_native_matches_libarchive_on_libarchive_corpus(
     except Exception as exc:  # noqa: BLE001 — oracle may reject unsupported fixtures
         pytest.skip(f"libarchive cannot open {archive.name}: {exc}")
 
-    password = _PASSWORDS.get(archive.name)
-    if password is not None and archive.name.endswith(".7z"):
+    password = _archivey_password(archive.name)
+    if password is not None and (
+        archive.name.endswith(".7z") or "aes" in archive.name.lower()
+    ):
         pytest.importorskip("cryptography")
 
     with open_archive(archive, password=password) as native:
@@ -380,3 +604,16 @@ def test_libarchive_corpus_discovered_archives() -> None:
         or "test_read_format_zip.zip" in names
         or any(name.endswith(".zip") for name in names)
     )
+
+
+def test_tar_z_detection_upgrades_via_inner_probe() -> None:
+    """Regression: unix-compress inner-TAR probe must upgrade ``*.tar.Z`` fixtures."""
+    if _ROOT is None:
+        pytest.skip(f"set {_ENV} to run")
+    uu = _ROOT / "test_compat_mac-1.tar.Z.uu"
+    if not uu.exists():
+        pytest.skip("libarchive fixture test_compat_mac-1.tar.Z.uu not present")
+    archive = _materialize_archive(uu)
+    assert archive is not None
+    info = detect_format(archive)
+    assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS)

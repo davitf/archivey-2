@@ -24,6 +24,7 @@ feed in later stages.
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -202,17 +203,37 @@ def _probe_inner_tar(
     if not is_codec_available(codec):
         return False
 
-    # The sequential backend is forced (streaming=True): the rapidgzip accelerator expects a
-    # complete/seekable source and rejects a bounded, non-seekable view, which would mis-defer
-    # a .tar.gz to bare .gz.
-    source = _BoundedPeekReader(peek_more, _INNER_TAR_MAX_PROBE_BYTES)
-    try:
-        with open_codec_stream(
-            codec, source, config=StreamConfig(streaming=True, seekable=False)
-        ) as stream:
-            head = stream.read(_INNER_TAR_PROBE_BYTES)
-    except (ArchiveyError, OSError, ValueError):
-        # Not decodable as this codec, or truncated before a full block -> not an inner tar.
+    def _read_tar_header(
+        source: BinaryIO, *, streaming: bool, seekable: bool
+    ) -> bytes | None:
+        try:
+            with open_codec_stream(
+                codec,
+                source,
+                config=StreamConfig(streaming=streaming, seekable=seekable),
+            ) as stream:
+                return stream.read(_INNER_TAR_PROBE_BYTES)
+        except (ArchiveyError, OSError, ValueError):
+            # Not decodable as this codec, or truncated before a full block.
+            return None
+
+    # Prefer a non-seekable bounded peek with streaming=True: the rapidgzip accelerator
+    # expects a complete/seekable source and would otherwise reject the probe view, which
+    # would mis-defer a .tar.gz to bare .gz.
+    head = _read_tar_header(
+        _BoundedPeekReader(peek_more, _INNER_TAR_MAX_PROBE_BYTES),
+        streaming=True,
+        seekable=False,
+    )
+    if head is None:
+        # unix-compress (LZW) requires a seekable source. Retry against a bounded
+        # BytesIO copy of the peeked prefix so .tar.Z still upgrades to TAR_Z.
+        head = _read_tar_header(
+            io.BytesIO(peek_more(_INNER_TAR_MAX_PROBE_BYTES)),
+            streaming=False,
+            seekable=True,
+        )
+    if head is None:
         return False
     return head[257:262] == b"ustar"
 
