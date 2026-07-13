@@ -324,7 +324,9 @@ def test_unix_compress_truncated_raises_on_next_read() -> None:
 def test_unix_compress_reserved_header_flags_unsupported() -> None:
     compressed = bytearray(make_unix_compress(CONTENT))
     compressed[2] |= 0x60  # classic compress reserved flag bits
-    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(bytes(compressed))) as stream:
+    with open_codec_stream(
+        Codec.UNIX_COMPRESS, io.BytesIO(bytes(compressed))
+    ) as stream:
         with pytest.raises(UnsupportedFeatureError, match="reserved flags"):
             stream.read()
 
