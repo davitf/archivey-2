@@ -32,9 +32,9 @@ Provenance: explore session that mapped the hierarchy and proposed composition
 **Goals:**
 
 - Lock the target architecture (composition over inheritance) and every open thread
-  that would block a safe refactor.
-- Run small spikes where a thread is empirically uncertain (esp. XZ progressive
-  enrichment) and record the decision in this file before mechanical migration.
+  that would block a safe refactor. **A/C/D/E locked; B (XZ enrichment placement)
+  still open.**
+- Spike Open Question B and record the decision here before mechanical migration.
 - After decisions: behavior-preserving refactor; delete `SegmentedDecompressorStream`
   and per-format stream subclasses; keep format parsers/state machines.
 - Leave a clear plug shape for BGZF / future native zstd frame index.
