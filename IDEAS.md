@@ -57,6 +57,20 @@
   into archivey or send a fix upstream so `.Z` works on non-seekable streams like the other
   single-file compressors.
 
+- **UU / Base64 transport encodings as single-file wrappers** — classic `uuencode`
+  (`.uu` / `.uue`, including `begin-base64`) shows up in old mail/Usenet drops and some
+  vendor corpora; libarchive treats it as a filter and stores many of its own test
+  fixtures uu-encoded (authoring hygiene, not end-user demand). Fits the existing
+  one-member `SingleFileBackend` shape: peel one wrapper, yield opaque payload bytes
+  (same pattern as `.iso.xz` — no general filter stacking). Decoder is trivial pure
+  Python / zero-dep; the non-trivial bits are weak line-oriented detection (`begin `),
+  trusting the embedded name/mode like gzip `FNAME`, and ratio-guard assumptions that
+  expect compression to *shrink*. Scope as bare single-file only — not transparent
+  `uu → gz → tar`. Same “legacy wrapper / open anything in old backups” niche as `.Z`;
+  lower priority than anything on the native 7z/RAR / CLI path. Sibling encodings
+  (xxencode, BinHex, yEnc) only if a real corpus itch appears. Promote when a backup
+  corpus actually wants `detect_format` / `open_archive` to Just Work on `.uu`.
+
 ## API & ergonomics
 
 - **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
