@@ -88,6 +88,9 @@ dev = [
     "coverage[toml]>=7.6.0",
     "py7zr>=1.0.0",
     "rarfile>=4.2",
+    # libarchive-c is a dev-only cross-validation oracle for optional corpus tests
+    # (tests/test_libarchive_corpus.py); it is not a runtime backend.
+    "libarchive-c>=5.0.0",
     "backports.zstd>=1.0.0",
     "lz4>=4.4.5",
     "brotli>=1.1.0",
