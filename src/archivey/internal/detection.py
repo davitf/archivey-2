@@ -29,7 +29,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable
 
-from archivey.config import DEFAULT_ARCHIVEY_CONFIG
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticSummary,
@@ -142,15 +142,17 @@ def _match_extension(
 
 
 class _BoundedPeekReader(ReadOnlyIOStream):
-    """A forward, non-consuming reader over a ``peek_more`` callable, capped at ``limit`` bytes.
+    """A bounded, non-consuming reader over a ``peek_more`` callable.
 
-    ``peek_more(n)`` returns the source's first ``n`` bytes without consuming them (idempotent,
-    growing supersets — see :func:`_peek_prefix`). Reads walk an internal offset over
-    successive peeks (caching the last buffer so growth stays linear), letting a codec pull
-    exactly as much of the source as it needs to decode the probed region — and never more than
-    ``limit`` (one maximum compressor block). Read-only and non-seekable, so it behaves like the
-    streaming pipe the sequential backend expects and leaves the source untouched, working
-    uniformly whether that source is a path, a seekable stream, or a ``PeekableStream``.
+    ``peek_more(n)`` returns the source's first ``n`` bytes without consuming them
+    (idempotent, growing supersets — see :func:`_peek_prefix`). Reads walk an
+    internal offset over successive peeks (caching the last buffer so growth stays
+    linear), letting a codec pull exactly as much compressed input as it needs and
+    never more than ``limit`` (one maximum compressor block).
+
+    Seekable within the bound so codecs that require seek (unix-compress) can still
+    probe; seeking never pulls bytes beyond ``limit``, and peeks still grow only on
+    demand when a read needs more of the prefix.
     """
 
     def __init__(self, peek_more: Callable[[int], bytes], limit: int) -> None:
@@ -159,6 +161,30 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         self._limit = limit
         self._offset = 0
         self._buf = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self, /) -> int:
+        return self._offset
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        if whence == 0:  # SEEK_SET
+            new_pos = offset
+        elif whence == 1:  # SEEK_CUR
+            new_pos = self._offset + offset
+        elif whence == 2:  # SEEK_END — end of the bounded window, not the real source
+            new_pos = self._limit + offset
+        else:
+            raise ValueError(f"invalid whence: {whence!r}")
+        if new_pos < 0:
+            raise ValueError(f"negative seek position {new_pos}")
+        # Cap at the bound; reads past the peeked prefix already return b"".
+        self._offset = min(new_pos, self._limit)
+        return self._offset
 
     def read(self, n: int = -1, /) -> bytes:
         end = self._limit if n < 0 else min(self._offset + n, self._limit)
@@ -183,6 +209,12 @@ def _probe_inner_tar(
     block-transform codec (bzip2), which emits nothing until a whole block is read, pulls up to
     one maximum block (``_INNER_TAR_MAX_PROBE_BYTES``).
 
+    The peek reader is seekable within that bound so unix-compress (LZW) can probe.
+    Accelerators are forced ``OFF``: ``seekable=True`` must not flip AUTO rapidgzip /
+    IndexedBzip2File on for a short detection peek (those paths reject incomplete
+    sources and can leak raw C++ exceptions on corrupt prefixes). Prefer that over
+    the older ``seekable=False`` workaround for keeping accelerators off the probe.
+
     Returns ``False`` (deferring the determination to open time) when the codec backend is
     absent, the source is not decodable as this codec, or the decoded output carries no TAR
     header.
@@ -202,13 +234,17 @@ def _probe_inner_tar(
     if not is_codec_available(codec):
         return False
 
-    # The sequential backend is forced (streaming=True): the rapidgzip accelerator expects a
-    # complete/seekable source and rejects a bounded, non-seekable view, which would mis-defer
-    # a .tar.gz to bare .gz.
     source = _BoundedPeekReader(peek_more, _INNER_TAR_MAX_PROBE_BYTES)
     try:
         with open_codec_stream(
-            codec, source, config=StreamConfig(streaming=True, seekable=False)
+            codec,
+            source,
+            config=StreamConfig(
+                streaming=True,
+                seekable=True,
+                use_rapidgzip=AcceleratorMode.OFF,
+                use_indexed_bzip2=AcceleratorMode.OFF,
+            ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
     except (ArchiveyError, OSError, ValueError):
