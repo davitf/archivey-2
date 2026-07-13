@@ -23,7 +23,7 @@ from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFo
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.streams import codecs, crypto
-from archivey.types import MemberType
+from archivey.types import CompressionAlgorithm, MemberType
 from tests.conftest import requires, requires_binary, requires_zstd
 
 _FILES = {
@@ -993,3 +993,35 @@ def test_copy_bcj_folder_roundtrip(tmp_path: Path) -> None:
         filters=_filters("X86", "COPY"),
     )
     _assert_roundtrip(archive, {"x.bin": payload})
+
+
+_LZ4_7Z_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sevenzip" / "lz4.7z"
+
+
+@requires("lz4")
+def test_lz4_7z_fixture_reads_members() -> None:
+    """7z method 0x04f71104 decodes via shared Codec.LZ4 (py7zr/7z CLI cannot extract)."""
+    assert _LZ4_7Z_FIXTURE.is_file(), f"missing fixture {_LZ4_7Z_FIXTURE}"
+    with open_archive(_LZ4_7Z_FIXTURE) as archive:
+        files = {m.name: m for m in archive.members() if m.is_file}
+        assert set(files) == {"scripts/py7zr", "setup.cfg", "setup.py"}
+        assert files["setup.cfg"].size == 58
+        assert files["setup.py"].size == 559
+        assert files["scripts/py7zr"].size == 111
+        for member in files.values():
+            assert CompressionAlgorithm.LZ4 in {
+                method.algo for method in member.compression
+            }
+            data = archive.read(member)
+            assert len(data) == member.size
+            # Header CRC (when present) is checked by VerifyingStream on read.
+
+
+def test_lz4_without_lz4_package_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = _reader_for_unit_tests()
+    monkeypatch.setattr(codecs, "_lz4_frame", None)
+
+    with pytest.raises(PackageNotInstalledError, match="lz4"):
+        reader._open_folder_pipeline(  # noqa: SLF001 - focused reader unit test
+            io.BytesIO(b""), _folder(b"\x04\xf7\x11\x04"), password=None
+        )

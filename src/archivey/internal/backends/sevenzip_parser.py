@@ -45,6 +45,7 @@ _METHOD_DEFLATE64 = b"\x04\x01\x09"
 _METHOD_BZIP2 = b"\x04\x02\x02"
 _METHOD_ZSTD = b"\x04\xf7\x11\x01"
 _METHOD_BROTLI = b"\x04\xf7\x11\x02"
+_METHOD_LZ4 = b"\x04\xf7\x11\x04"
 _METHOD_PPMD = b"\x03\x04\x01"
 
 
@@ -1058,6 +1059,7 @@ _METHOD_ALGORITHMS: dict[bytes, CompressionAlgorithm] = {
     _METHOD_BZIP2: CompressionAlgorithm.BZIP2,
     _METHOD_ZSTD: CompressionAlgorithm.ZSTD,
     _METHOD_BROTLI: CompressionAlgorithm.BROTLI,
+    _METHOD_LZ4: CompressionAlgorithm.LZ4,
     _METHOD_PPMD: CompressionAlgorithm.PPMD,
     _METHOD_AES: CompressionAlgorithm.UNKNOWN,
 }

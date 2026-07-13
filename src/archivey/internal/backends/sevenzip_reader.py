@@ -35,6 +35,7 @@ from archivey.internal.backends.sevenzip_parser import (
     _METHOD_DEFLATE,
     _METHOD_DEFLATE64,
     _METHOD_DELTA,
+    _METHOD_LZ4,
     _METHOD_LZMA,
     _METHOD_LZMA2,
     _METHOD_PPMD,
@@ -136,6 +137,7 @@ _SINGLE_STAGE_CODECS: dict[bytes, Codec] = {
     _METHOD_BZIP2: Codec.BZIP2,
     _METHOD_ZSTD: Codec.ZSTD,
     _METHOD_BROTLI: Codec.BROTLI,
+    _METHOD_LZ4: Codec.LZ4,
     _METHOD_PPMD: Codec.PPMD,
 }
 
