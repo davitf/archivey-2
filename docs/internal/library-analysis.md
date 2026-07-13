@@ -55,7 +55,7 @@ Two recurring notes:
 | zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[zstd]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
 | lz4 | `lz4` | `[lz4]` | no (rewind) | yes | yes |
 | brotli | `brotli` | `[7z]` | no (rewind) | yes | partial² |
-| unix-compress (`.Z`) | `uncompresspy` | `[unix-compress]` | yes (random-access decoder) | yes | no³ |
+| unix-compress (`.Z`) | native `unix_compress.py` (LZW) | core | **yes** (CLEAR seek points) | yes | no³ |
 | Deflate64 | `inflate64` | `[7z]` | no | yes | yes |
 | PPMd (var.H) | `pyppmd` | `[7z]` | no | yes | yes |
 
@@ -294,13 +294,13 @@ caught only by "never finished at EOF". Pulled by the `[7z]` bundle (7z can use 
 for standalone `.br`. The `brotlicffi` fork is an alternative for PyPy but adds nothing on
 CPython.
 
-### unix-compress (`.Z`) — `uncompresspy`
+### unix-compress (`.Z`) — native LZW
 
-LZW (`.Z`) decode via `uncompresspy`. It decodes via random access, so it currently **requires a
-seekable source** (a `.Z` pipe reports `StreamNotSeekableError`); making it forward-only is an
-idea in `IDEAS.md`. The format has no length/checksum, so truncation is undetectable. Chosen
-because it is the maintained pure-Python `.Z` *decoder*; `ncompress` is a *compressor* only (used
-as a test-fixture generator in the `dev` group, not a runtime decoder).
+LZW (`.Z`) decode via Archivey's native `LzwState` / `UnixCompressDecompressorStream`
+(adapted from uncompresspy under BSD-3-Clause attribution). Forward decode works on
+non-seekable sources; on a seekable source with seekability declared, CLEAR boundaries
+become `SeekPoint`s. The format has no length/checksum, so truncation is undetectable.
+`ncompress` remains a *compressor* only (test-fixture generator in the `dev` group).
 
 ### Deflate64 — `inflate64`
 
@@ -319,8 +319,8 @@ missing-dependency gating are already wired.)
 
 These live in the `dev` dependency group, never an extra (`packaging-and-extras`): `py7zr` and
 `rarfile` (decode **oracles** to cross-check the native 7z reader and RAR metadata parser),
-`ncompress` (an LZW **compressor** to generate `.Z` fixtures, since `uncompresspy` only
-decodes). The active suite uses `backports.zstd` (or stdlib `compression.zstd` on 3.14+) for
+`ncompress` (an LZW **compressor** to generate `.Z` fixtures for the native unix-compress
+decoder). The active suite uses `backports.zstd` (or stdlib `compression.zstd` on 3.14+) for
 zstd fixture generation.
 
 A guard test (`tests/test_extras_imported.py`) asserts that every package pinned in a

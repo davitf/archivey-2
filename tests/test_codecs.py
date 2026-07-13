@@ -7,15 +7,16 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import warnings
 import zlib
 
 import pytest
 
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
-    StreamNotSeekableError,
     TruncatedError,
 )
 from archivey.internal.config import (
@@ -87,9 +88,9 @@ def test_brotli_backend_roundtrip() -> None:
         assert stream.read() == CONTENT
 
 
-@requires("uncompresspy", "ncompress")
+@requires("ncompress")
 def test_unix_compress_backend_roundtrip() -> None:
-    """A unix-compress (.Z) stream decompresses via the uncompresspy backend."""
+    """A unix-compress (.Z) stream decompresses via the native LZW backend."""
     compressed = make_unix_compress(CONTENT)
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
         assert stream.read() == CONTENT
@@ -143,15 +144,6 @@ def test_ppmd_without_pyppmd_raises() -> None:
 def test_brotli_without_brotli_raises() -> None:
     with pytest.raises(PackageNotInstalledError, match="brotli"):
         open_codec_stream(Codec.BROTLI, io.BytesIO(b""))
-
-
-@pytest.mark.skipif(
-    importlib.util.find_spec("uncompresspy") is not None,
-    reason="uncompresspy is installed; the missing-backend path cannot be exercised",
-)
-def test_unix_compress_without_uncompresspy_raises() -> None:
-    with pytest.raises(PackageNotInstalledError, match="uncompresspy"):
-        open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(b""))
 
 
 def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -297,7 +289,7 @@ def test_truncated_zstd_translates_to_truncated() -> None:
             stream.read()
 
 
-@requires("uncompresspy", "ncompress")
+@requires("ncompress")
 def test_corrupt_unix_compress_translates_to_corruption() -> None:
     corrupt = bytearray(make_unix_compress(CONTENT))
     corrupt[10] ^= 0xFF  # break the LZW bitstream
@@ -306,13 +298,55 @@ def test_corrupt_unix_compress_translates_to_corruption() -> None:
             stream.read()
 
 
-@requires("uncompresspy", "ncompress")
-def test_unix_compress_non_seekable_source_translates() -> None:
-    """uncompresspy needs random access; a non-seekable source is reported, not leaked."""
+@requires("ncompress")
+def test_unix_compress_non_seekable_source_streams() -> None:
+    """Native LZW forward-decodes a non-seekable source; the stream is not seekable."""
     compressed = make_unix_compress(CONTENT)
-    # The seekable requirement is enforced at open time (eager), so the open call raises.
-    with pytest.raises(StreamNotSeekableError):
-        open_codec_stream(Codec.UNIX_COMPRESS, NonSeekableBytesIO(compressed))
+    with open_codec_stream(
+        Codec.UNIX_COMPRESS, NonSeekableBytesIO(compressed)
+    ) as stream:
+        assert not stream.seekable()
+        assert stream.read() == CONTENT
+
+
+@requires("ncompress")
+def test_unix_compress_truncated_yields_short_read_without_truncated_error() -> None:
+    compressed = make_unix_compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            data = stream.read()
+    assert len(data) < len(CONTENT)
+
+
+@requires("ncompress")
+def test_unix_compress_clear_seek_points() -> None:
+    """CLEAR boundaries become SeekPoints; random access resumes without rewind diagnostics."""
+    # Distinct words force dictionary growth until classic compress emits CLEAR.
+    payload = b"".join(i.to_bytes(4, "big") for i in range(50_000))
+    compressed = make_unix_compress(payload)
+    config = StreamConfig(seekable=True)
+    with open_codec_stream(
+        Codec.UNIX_COMPRESS, io.BytesIO(compressed), config=config
+    ) as stream:
+        assert stream.seekable()
+        # Drive a full pass so CLEAR points accumulate, then seek via ArchiveStream.
+        assert stream.read() == payload
+        stream.seek(0)
+        assert stream.read(16) == payload[:16]
+        mid = len(payload) // 2
+        stream.seek(mid)
+        assert stream.read(8) == payload[mid : mid + 8]
+        stream.seek(100)
+        assert stream.read(4) == payload[100:104]
+        # Indexed CLEAR seeks must not emit the O(n) rewind diagnostic.
+        assert (
+            stream.diagnostics.counts.get(
+                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES, 0
+            )
+            == 0
+        )
 
 
 def test_translated_error_is_stamped() -> None:

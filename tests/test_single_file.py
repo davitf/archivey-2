@@ -1,7 +1,7 @@
 """Single-file compressor backend tests — Stage 2.
 
 Covers name inference, the one-member shape, the gzip stored-name surface, per-format
-size rules, DIRECT/INDEXED cost, the unix-compress non-seekable rule, and the
+size rules, DIRECT/INDEXED cost, non-seekable streaming (including `.Z`), and the
 password-rejection rule. ZST/LZ4 standalone are first-class here; only their
 seekable-decompressor refinements remain for Phase 8.
 """
@@ -304,8 +304,8 @@ def test_non_seekable_gzip_requires_streaming_mode() -> None:
 
 
 def test_non_seekable_gzip_streams_fine() -> None:
-    # Single-file formats (except .Z) stream from a non-seekable source under
-    # streaming=True (the mode a non-seekable source requires).
+    # Single-file formats stream from a non-seekable source under streaming=True
+    # (the mode a non-seekable source requires).
     data = gzip.compress(b"streamed payload")
     with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
         # Read while the generator is live: exhaustion closes the current stream.
@@ -321,14 +321,26 @@ def test_non_seekable_gzip_streams_fine() -> None:
             assert stream.read() == b"streamed payload"
 
 
-@requires("uncompresspy", "ncompress")
-def test_unix_compress_non_seekable_raises() -> None:
+@requires("ncompress")
+def test_unix_compress_non_seekable_requires_streaming_mode() -> None:
+    """Random access still needs a seekable source — same rule as gzip."""
     data = make_unix_compress(b"lzw payload")
     with pytest.raises(StreamNotSeekableError):
         open_archive(NonSeekableBytesIO(data), format=ArchiveFormat.Z)
 
 
-@requires("uncompresspy", "ncompress")
+@requires("ncompress")
+def test_unix_compress_non_seekable_streams_fine() -> None:
+    data = make_unix_compress(b"lzw payload")
+    with open_archive(
+        NonSeekableBytesIO(data), format=ArchiveFormat.Z, streaming=True
+    ) as ar:
+        for _member, stream in ar.stream_members():
+            assert stream is not None
+            assert stream.read() == b"lzw payload"
+
+
+@requires("ncompress")
 def test_unix_compress_seekable_reads(tmp_path: Path) -> None:
     path = tmp_path / "data.Z"
     path.write_bytes(make_unix_compress(b"lzw payload"))

@@ -88,7 +88,7 @@ The system SHALL decompress supported codecs through these default backends:
 | zstd | stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14) | optional `[zstd]` before 3.14; core on 3.14+ |
 | lz4 | `lz4` | optional `[lz4]` |
 | Brotli | `brotli` | optional `[7z]` |
-| unix-compress `.Z` | `uncompresspy` | optional `[unix-compress]` |
+| unix-compress `.Z` | native LZW `DecompressorStream` | core |
 | PPMd var.H | `pyppmd` | optional `[7z]` |
 | Deflate64 | `inflate64` | optional `[7z]` |
 | AES-256 decrypt stage | wrapped crypto backend | optional `[crypto]` |
@@ -106,6 +106,8 @@ raw LZMA1/LZMA2 remain container-only.
 | Default zstd on Python 3.11-3.13 with `backports.zstd` | `backports.zstd` using the same API |
 | Standalone `.lzma` / Alone stream | `lzma` in `FORMAT_ALONE` mode |
 | 7z folder LZMA2 raw stream | `lzma` in `FORMAT_RAW` mode |
+| Default unix-compress `.Z` stream | native LZW stream; no `uncompresspy` import |
+| Core-only install opens `.Z` | Succeeds without optional extras |
 
 ### Requirement: AES decryption is one wrapped pipeline stage
 

@@ -59,3 +59,17 @@ with tempfile.TemporaryDirectory() as d:
             sys.exit(f"FAIL: directory backend read wrong data: {data!r}")
 
 print("directory backend round-trip OK")
+
+# 3. Native unix-compress (.Z) is core — no third-party decoder.
+# Precomputed ncompress fixture for b"hi" (avoids needing ncompress in core-only).
+_Z_HI = bytes.fromhex("1f9d9068d200")
+with tempfile.TemporaryDirectory() as d:
+    zpath = os.path.join(d, "hi.Z")
+    with open(zpath, "wb") as f:
+        f.write(_Z_HI)
+    with open_archive(zpath) as ar:
+        data = ar.read(ar.members()[0])
+        if data != b"hi":
+            sys.exit(f"FAIL: unix-compress core decode wrong data: {data!r}")
+
+print("unix-compress (.Z) core decode OK")

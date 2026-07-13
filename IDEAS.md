@@ -50,13 +50,6 @@
   wheels won't install but CLI tools are on PATH. Forward-only; needs availability
   detection and careful subprocess/error handling. Low-priority backend tier.
 
-- **Non-seekable unix-compress (`.Z`)** — the `uncompresspy` backend currently requires a
-  **seekable** source (it decodes via random access), so archivey reports
-  `StreamNotSeekableError` for a `.Z` pipe/socket. The library's decode path looks
-  straightforward to make forward-only; low-priority task to either fork the relevant bit
-  into archivey or send a fix upstream so `.Z` works on non-seekable streams like the other
-  single-file compressors.
-
 - **UU / Base64 transport encodings as single-file wrappers** — classic `uuencode`
   (`.uu` / `.uue`, including `begin-base64`) shows up in old mail/Usenet drops and some
   vendor corpora; libarchive treats it as a filter and stores many of its own test
