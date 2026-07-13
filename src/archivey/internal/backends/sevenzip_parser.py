@@ -45,6 +45,7 @@ _METHOD_DEFLATE64 = b"\x04\x01\x09"
 _METHOD_BZIP2 = b"\x04\x02\x02"
 _METHOD_ZSTD = b"\x04\xf7\x11\x01"
 _METHOD_BROTLI = b"\x04\xf7\x11\x02"
+_METHOD_LZ4 = b"\x04\xf7\x11\x04"
 _METHOD_PPMD = b"\x03\x04\x01"
 
 
@@ -217,6 +218,28 @@ def parse_sevenzip_archive(
         raise CorruptionError(
             f"7z next-header size {next_header_size} exceeds the "
             f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
+        )
+
+    # Empty archive: nextHeaderSize == 0 (and typically offset/CRC are also 0).
+    # py7zr and the 7z CLI open these as zero-member archives.
+    if next_header_size == 0:
+        if next_header_crc != 0 and next_header_crc != _crc32(b""):
+            raise CorruptionError("7z empty next-header CRC mismatch")
+        return SevenZipArchive(
+            major_version=major_version,
+            minor_version=minor_version,
+            pack_pos=_SIGNATURE_HEADER_SIZE,
+            pack_sizes=[],
+            pack_positions=[],
+            folders=[],
+            num_unpackstreams_folders=[],
+            unpack_sizes=[],
+            digests=[],
+            files=[],
+            comment=None,
+            is_solid=False,
+            is_header_encrypted=False,
+            has_encrypted_folders=False,
         )
 
     # Offsets in the header are relative to the end of the 32-byte signature header.
@@ -1036,6 +1059,7 @@ _METHOD_ALGORITHMS: dict[bytes, CompressionAlgorithm] = {
     _METHOD_BZIP2: CompressionAlgorithm.BZIP2,
     _METHOD_ZSTD: CompressionAlgorithm.ZSTD,
     _METHOD_BROTLI: CompressionAlgorithm.BROTLI,
+    _METHOD_LZ4: CompressionAlgorithm.LZ4,
     _METHOD_PPMD: CompressionAlgorithm.PPMD,
     _METHOD_AES: CompressionAlgorithm.UNKNOWN,
 }

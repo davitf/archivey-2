@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import lzma
+import re
 import stat
 import zlib
 from collections.abc import Callable, Iterator, Mapping
@@ -33,6 +34,7 @@ from archivey.internal.backends.sevenzip_parser import (
     _METHOD_DEFLATE,
     _METHOD_DEFLATE64,
     _METHOD_DELTA,
+    _METHOD_LZ4,
     _METHOD_LZMA,
     _METHOD_LZMA2,
     _METHOD_PPMD,
@@ -55,7 +57,11 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
-from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.naming import (
+    emit_member_name_normalized,
+    infer_member_name_from_archive,
+    normalize_member_name,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
@@ -134,6 +140,7 @@ _SINGLE_STAGE_CODECS: dict[bytes, Codec] = {
     _METHOD_BZIP2: Codec.BZIP2,
     _METHOD_ZSTD: Codec.ZSTD,
     _METHOD_BROTLI: Codec.BROTLI,
+    _METHOD_LZ4: Codec.LZ4,
     _METHOD_PPMD: Codec.PPMD,
 }
 
@@ -291,6 +298,16 @@ def _require_pybcj() -> None:
         ) from exc
 
 
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
+
+
+def _infer_nameless_member_name(archive_name: str | None) -> str:
+    """Synthesize a member filename when the 7z NAME property is absent."""
+    return infer_member_name_from_archive(
+        archive_name, strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE
+    )
+
+
 def _open_bcj_stage(
     source: BinaryIO,
     coder: SevenZipCoder,
@@ -329,11 +346,29 @@ def _open_lzma_run(
         raise UnsupportedFeatureError(
             "Mixed LZMA1+LZMA2 7z coder chains are unsupported"
         )
+    if has_bcj and not has_lzma1 and not has_lzma2:
+        # BCJ alone (or after COPY / Deflate / BZip2 / Zstd): not a liblzma chain.
+        # Stage each BCJ filter via pybcj — same helper as LZMA1+BCJ.
+        _require_pybcj()
+        stream: BinaryIO = source
+        for index, coder in enumerate(run):
+            if coder.method not in _BCJ_METHODS:
+                raise UnsupportedFeatureError(
+                    f"Unsupported non-LZMA 7z coder in BCJ run "
+                    f"{_method_hex(coder.method)}"
+                )
+            stream = _open_bcj_stage(
+                stream,
+                coder,
+                unpack_size=unpack_sizes[index],
+                seekable=seekable,
+            )
+        return stream
     if has_lzma1 and has_bcj:
         # liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS (BPO-21872 /
         # xz-devel guidance). Stage like py7zr: stdlib LZMA1 (+ Delta, etc.), then pybcj.
         _require_pybcj()
-        stream: BinaryIO = source
+        stream = source
         index = 0
         while index < len(run):
             coder = run[index]
@@ -646,8 +681,13 @@ class SevenZipReader(BaseArchiveReader):
         self, record: SevenZipFileRecord, *, is_current: bool
     ) -> ArchiveMember:
         member_type = self._member_type(record)
+        # Empty stored filename (NAME property omitted): synthesize from archive stem
+        # before normalize_member_name would turn "" into ".". raw_name stays empty.
+        presented_name = record.filename
+        if presented_name == "":
+            presented_name = _infer_nameless_member_name(self._archive_name)
         name = normalize_member_name(
-            record.filename,
+            presented_name,
             member_type,
             backslash_is_separator=True,
         )
@@ -680,7 +720,7 @@ class SevenZipReader(BaseArchiveReader):
             ("created", record.creation_time),
         ):
             timestamps[field], issue = _filetime_to_datetime(
-                value, record.filename, field=field
+                value, presented_name, field=field
             )
             if issue is not None:
                 ts_issues.append(issue)
@@ -708,7 +748,7 @@ class SevenZipReader(BaseArchiveReader):
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
-            presented_name=record.filename,
+            presented_name=presented_name,
             archive_name=self._archive_name,
         )
         for issue in ts_issues:

@@ -19,7 +19,11 @@ from contextlib import nullcontext
 from typing import BinaryIO, Callable, ContextManager
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
-from archivey.internal.streams.streamtools.binaryio import is_seekable, source_byte_size
+from archivey.internal.streams.streamtools.binaryio import (
+    is_seekable,
+    read_exact,
+    source_byte_size,
+)
 
 
 class SlicingStream(ReadOnlyIOStream):
@@ -118,6 +122,11 @@ class SlicingStream(ReadOnlyIOStream):
 
     def read(self, n: int = -1, /) -> bytes:
         self._check_open()
+        # Bounded ``read()`` / ``read(-1)`` means drain the remaining slice. Short
+        # underlying reads must be retried (via ``read_exact``) until the bound is
+        # filled or EOF; a single ``read(remaining)`` may legally return a partial
+        # chunk. Unbounded slices still pass ``read(-1)`` through unchanged.
+        drain_bounded = n < 0 and self._length is not None
         n = self._compute_bytes_to_read(n)
         if n == 0:
             return b""
@@ -129,7 +138,9 @@ class SlicingStream(ReadOnlyIOStream):
             if self._seek_before_read:
                 assert self._start is not None  # re-seek views are always seekable
                 self._stream.seek(self._start + self._pos)
-            data = self._stream.read(n)
+            data = (
+                read_exact(self._stream, n) if drain_bounded else self._stream.read(n)
+            )
             self._pos += len(data)
             return data
 

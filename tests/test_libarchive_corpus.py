@@ -1,0 +1,382 @@
+"""Compare Archivey against libarchive on libarchive's own uuencoded test archives.
+
+Off by default. Point ``ARCHIVEY_LIBARCHIVE_TEST_FILES`` at libarchive's
+``libarchive/test`` directory (clone https://github.com/libarchive/libarchive and
+use ``…/libarchive/test``)::
+
+    ARCHIVEY_LIBARCHIVE_TEST_FILES=/path/to/libarchive/libarchive/test \\
+      uv run --no-sync pytest tests/test_libarchive_corpus.py -q
+
+Reference ``.uu`` blobs are decoded into ``ARCHIVEY_TEST_CACHE`` on first use.
+Skips archives libarchive cannot open, non-primary split volumes, libarchive
+fuzz/crash fixtures, and formats Archivey does not implement.
+
+7z triage (2026-07, vs libarchive ``libarchive/test``) — known 7z failures marked
+``xfail``:
+
+* **SPEC** ``*_bcj2_*`` — BCJ2 multi-packed-stream folders correctly raise
+  ``UnsupportedFeatureError`` (format-7z rejects BCJ2).
+* **GAP** ``*_arm64`` (method ``0x0a``) — newer ARM64 BCJ filter not in our
+  method table; correctly raises ``UnsupportedFeatureError`` today.
+"""
+
+from __future__ import annotations
+
+import binascii
+import io
+import os
+import re
+import shutil
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+from archivey import FormatDetectionError, MemberType, detect_format, open_archive
+from archivey.types import ContainerFormat
+from tests.conftest import ARCHIVEY_TEST_CACHE, requires
+
+_ENV = "ARCHIVEY_LIBARCHIVE_TEST_FILES"
+_CACHE_SUBDIR = "libarchive-corpus"
+
+# Passwords documented beside libarchive's own read tests.
+_PASSWORDS: dict[str, str] = {
+    "test_read_format_7zip_encryption.7z": "12345678",
+    "test_read_format_zip_zipx_encrypted.zipx": "test_password_zipx",
+}
+
+# Try these when an archive name hints at encryption but has no explicit mapping.
+_ENCRYPTION_NAME_HINTS = ("encrypt", "aes", "password", "psw")
+_FALLBACK_PASSWORDS = ("password", "test_password_zipx", "12345678", "secret")
+
+# Continuation volumes — open via the first part only.
+_SKIP_NAMES = frozenset(
+    {
+        "test_read_splitted_rar_ab",
+        "test_read_splitted_rar_ac",
+        "test_read_splitted_rar_ad",
+        "test_read_splitted_rar_aa",
+        "test_read_large_splitted_rar_ab",
+        "test_read_large_splitted_rar_ac",
+        "test_read_large_splitted_rar_ad",
+        "test_read_large_splitted_rar_ae",
+        "test_splitted_rar_seek_support_ab",
+        "test_splitted_rar_seek_support_ac",
+        "test_splitted_rar_seek_support_aa",
+    }
+)
+
+_PART_RE = re.compile(
+    r"\.part(?P<num>[2-9]\d*)\.rar$|\.part0*(?P<num2>[2-9]\d*)\.rar$",
+    re.IGNORECASE,
+)
+
+# Triaged 7z divergences. Values are (strict, reason).
+_XFAIL_7Z: dict[str, tuple[bool, str]] = {
+    "test_read_format_7zip_bcj2_bzip2.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_copy_1.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_copy_2.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_copy_lzma.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_deflate.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_lzma1_1.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_lzma1_2.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_lzma2_1.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_lzma2_2.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_deflate_arm64.7z": (
+        True,
+        "GAP: ARM64 BCJ method 0x0a not in method table",
+    ),
+    "test_read_format_7zip_lzma2_arm64.7z": (
+        True,
+        "GAP: ARM64 BCJ method 0x0a not in method table",
+    ),
+}
+
+# libarchive's own robustness/fuzz fixtures — not conformance oracles for Archivey.
+_SKIP_SUBSTRINGS = (
+    "fuzz",
+    "oom",
+    "malformed",
+    "overflow",
+    "crash",
+    "invalid",
+    "truncat",
+    "corrupt",
+    "endarc_huge",
+    "newsub_huge",
+    "symlink_huge",
+    "distance_overflow",
+    "readtables_overflow",
+)
+
+
+def _files_dir() -> Path | None:
+    raw = os.environ.get(_ENV)
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path if path.is_dir() else None
+
+
+def _cache_dir() -> Path:
+    root = Path(ARCHIVEY_TEST_CACHE) / _CACHE_SUBDIR
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _decode_uu(source: Path, dest: Path) -> None:
+    """Decode a classic ``begin … end`` uuencode file without stdlib ``uu``.
+
+    ``uu`` was removed in Python 3.13; ``binascii.a2b_uu`` remains. Libarchive's
+    ``*.uu`` fixtures use the traditional format this helper understands.
+    """
+    if dest.exists() and dest.stat().st_size > 0:
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    started = False
+    out = io.BytesIO()
+    with source.open("rb") as encoded:
+        for raw_line in encoded:
+            line = raw_line.rstrip(b"\r\n")
+            if not started:
+                if line.startswith(b"begin "):
+                    started = True
+                continue
+            if line == b"end" or line.startswith(b"end "):
+                break
+            if not line:
+                continue
+            try:
+                out.write(binascii.a2b_uu(line))
+            except binascii.Error as exc:
+                # Some encoders write a length byte that overstates trailing
+                # padding; tolerate a short final fragment like stdlib uu did.
+                nbytes = (line[0] - 32) & 63
+                if nbytes:
+                    raise ValueError(f"uu decode failed on {source.name}") from exc
+    if not started:
+        raise ValueError(f"no uu begin line in {source.name}")
+    dest.write_bytes(out.getvalue())
+
+
+def _safe_decode_uu(source: Path, dest: Path) -> bool:
+    try:
+        _decode_uu(source, dest)
+    except (OSError, ValueError, binascii.Error):
+        if dest.exists():
+            dest.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _materialize_archive(uu_path: Path) -> Path | None:
+    name = uu_path.name
+    if not name.endswith(".uu"):
+        return None
+    base = name[:-3]
+    dest = _cache_dir() / base
+    if not _safe_decode_uu(uu_path, dest):
+        return None
+    try:
+        info = detect_format(dest)
+    except (FormatDetectionError, OSError, ValueError):
+        if dest.exists():
+            dest.unlink(missing_ok=True)
+        return None
+    if info.format.container is ContainerFormat.UNKNOWN:
+        if dest.exists():
+            dest.unlink(missing_ok=True)
+        return None
+    return dest
+
+
+def _password_candidates(archive_name: str) -> tuple[str | None, ...]:
+    explicit = _PASSWORDS.get(archive_name)
+    if explicit is not None:
+        return (explicit,)
+    lower = archive_name.lower()
+    if any(hint in lower for hint in _ENCRYPTION_NAME_HINTS):
+        return (None, *_FALLBACK_PASSWORDS)
+    return (None,)
+
+
+def _normalize_name(name: str) -> str:
+    normalized = name.replace("\\", "/").lstrip("./").rstrip("/")
+    return normalized or "."
+
+
+def _libarchive_expect_type(entry: object) -> MemberType:
+    if entry.isdir:  # type: ignore[attr-defined]
+        return MemberType.DIRECTORY
+    if entry.issym:  # type: ignore[attr-defined]
+        return MemberType.SYMLINK
+    if entry.islnk:  # type: ignore[attr-defined]
+        return MemberType.HARDLINK
+    return MemberType.FILE
+
+
+def _iter_uu_sources(root: Path) -> Iterator[Path]:
+    for uu_path in sorted(root.glob("*.uu")):
+        base = uu_path.name[:-3]
+        if base in _SKIP_NAMES:
+            continue
+        lower = base.lower()
+        if any(token in lower for token in _SKIP_SUBSTRINGS):
+            continue
+        if _PART_RE.search(base):
+            continue
+        yield uu_path
+
+
+def _collect_libarchive_oracle(
+    archive: Path, libarchive_mod: object
+) -> tuple[dict[str, object], dict[str, bytes], dict[str, str | None]]:
+    libarchive = libarchive_mod
+    last_error: Exception | None = None
+    for password in _password_candidates(archive.name):
+        oracle_infos: dict[str, object] = {}
+        oracle_bytes: dict[str, bytes] = {}
+        oracle_link_targets: dict[str, str | None] = {}
+        try:
+            with libarchive.file_reader(  # type: ignore[attr-defined]
+                str(archive), passphrase=password
+            ) as entries:
+                for entry in entries:
+                    key = _normalize_name(entry.pathname)
+                    oracle_infos[key] = entry
+                    expect_type = _libarchive_expect_type(entry)
+                    if expect_type is MemberType.FILE:
+                        oracle_bytes[key] = b"".join(
+                            block for block in entry.get_blocks()
+                        )
+                    elif expect_type in (MemberType.SYMLINK, MemberType.HARDLINK):
+                        oracle_link_targets[key] = entry.linkpath or entry.linkname
+            return oracle_infos, oracle_bytes, oracle_link_targets
+        except Exception as exc:  # noqa: BLE001 — try the next passphrase candidate
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"libarchive did not attempt to open {archive.name}")
+
+
+def _uu_param(path: Path) -> pytest.ParameterSet:
+    name = path.name[:-3]
+    xfail = _XFAIL_7Z.get(name)
+    if xfail is None:
+        return pytest.param(path, id=name)
+    strict, reason = xfail
+    return pytest.param(
+        path, id=name, marks=pytest.mark.xfail(strict=strict, reason=reason)
+    )
+
+
+_ROOT = _files_dir()
+_UU_SOURCES = list(_iter_uu_sources(_ROOT)) if _ROOT is not None else []
+
+pytestmark = [
+    pytest.mark.skipif(
+        _ROOT is None,
+        reason=f"set {_ENV} to libarchive's libarchive/test directory to run this corpus",
+    ),
+    requires("libarchive"),
+]
+
+
+@pytest.fixture(scope="module")
+def libarchive_mod():
+    return pytest.importorskip("libarchive")
+
+
+@pytest.mark.parametrize(
+    "uu_source",
+    [_uu_param(p) for p in _UU_SOURCES],
+)
+def test_native_matches_libarchive_on_libarchive_corpus(
+    uu_source: Path, libarchive_mod: object
+) -> None:
+    archive = _materialize_archive(uu_source)
+    if archive is None:
+        pytest.skip(f"unsupported or undecodable fixture {uu_source.name}")
+
+    if archive.suffix.lower() == ".rar" and shutil.which("unrar") is None:
+        pytest.skip("RAR data tests require the unrar binary")
+
+    try:
+        oracle_infos, oracle_bytes, oracle_link_targets = _collect_libarchive_oracle(
+            archive, libarchive_mod
+        )
+    except Exception as exc:  # noqa: BLE001 — oracle may reject unsupported fixtures
+        pytest.skip(f"libarchive cannot open {archive.name}: {exc}")
+
+    password = _PASSWORDS.get(archive.name)
+    if password is not None and archive.name.endswith(".7z"):
+        pytest.importorskip("cryptography")
+
+    with open_archive(archive, password=password) as native:
+        native_by_name = {_normalize_name(m.name): m for m in native.members()}
+
+        assert set(native_by_name) == set(oracle_infos), (
+            f"member name mismatch for {archive.name}: "
+            f"only_native={sorted(set(native_by_name) - set(oracle_infos))} "
+            f"only_libarchive={sorted(set(oracle_infos) - set(native_by_name))}"
+        )
+
+        for key, entry in oracle_infos.items():
+            member = native_by_name[key]
+            expect_type = _libarchive_expect_type(entry)
+            assert member.type is expect_type, (
+                f"{archive.name}:{key}: type {member.type} != {expect_type}"
+            )
+            if expect_type is MemberType.FILE:
+                assert member.size == entry.size, (
+                    f"{archive.name}:{key}: size {member.size} != {entry.size}"
+                )
+                assert native.read(member) == oracle_bytes[key], (
+                    f"{archive.name}:{key}: byte mismatch"
+                )
+            elif expect_type in (MemberType.SYMLINK, MemberType.HARDLINK):
+                expected_target = oracle_link_targets.get(key)
+                assert member.link_target == expected_target, (
+                    f"{archive.name}:{key}: link_target "
+                    f"{member.link_target!r} != {expected_target!r}"
+                )
+
+
+def test_libarchive_corpus_discovered_archives() -> None:
+    """Sanity: the env-pointed directory actually contains libarchive fixtures."""
+    assert _ROOT is not None
+    assert _UU_SOURCES, f"no .uu reference archives found under {_ROOT}"
+    names = {p.name[:-3] for p in _UU_SOURCES}
+    assert (
+        "test_compat_gzip_1.tgz" in names
+        or "test_read_format_zip.zip" in names
+        or any(name.endswith(".zip") for name in names)
+    )

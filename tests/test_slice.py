@@ -126,6 +126,54 @@ class TestSlicingStream:
         with pytest.raises(io.UnsupportedOperation, match="seek on non-seekable"):
             sliced.seek(5)
 
+    def test_bounded_read_all_gathers_across_short_reads(self) -> None:
+        """``read()`` on a bounded slice must gather across short sized reads.
+
+        A bounded slice must not issue an unbounded ``read(-1)`` on the inner
+        stream (that would overshoot into the next member). Short positive
+        ``read(n)`` results are legal and must be retried until the slice is
+        drained; trailing bytes past the slice must remain unread.
+        """
+
+        class _Drip(io.RawIOBase):
+            def __init__(self, data: bytes) -> None:
+                self._data = data
+                self.pos = 0
+
+            def readable(self) -> bool:
+                return True
+
+            def read(self, size: int = -1) -> bytes:  # type: ignore[override]
+                # Bounded SlicingStream must never ask for an unbounded drain.
+                if size < 0:
+                    raise AssertionError(
+                        "bounded SlicingStream must not issue unbounded read(-1)"
+                    )
+                if self.pos >= len(self._data) or size == 0:
+                    return b""
+                # One byte at a time so a single read(remaining) would truncate.
+                chunk = self._data[self.pos : self.pos + 1]
+                self.pos += len(chunk)
+                return chunk
+
+        slice_data = DATA[5:15]
+        trailing = DATA[15:25]
+        inner = _Drip(slice_data + trailing)
+        sliced = SlicingStream(inner, length=len(slice_data))
+
+        assert sliced.read() == slice_data
+        assert sliced.tell() == len(slice_data)
+        assert sliced.read(1) == b""
+        assert inner.pos == len(slice_data)
+        # Trailing bytes past the slice are still available on the inner stream.
+        leftover = bytearray()
+        while len(leftover) < len(trailing):
+            chunk = inner.read(len(trailing) - len(leftover))
+            assert chunk, "inner stream ended before trailing payload"
+            leftover.extend(chunk)
+        assert bytes(leftover) == trailing
+        assert inner.pos == len(slice_data) + len(trailing)
+
 
 class TestFixStreamStartPosition:
     def test_at_zero_returns_same(self) -> None:

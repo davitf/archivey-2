@@ -19,6 +19,7 @@ authors = [
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "brotli>=1.1.0",
+    "lz4>=4.4.5",
     "cryptography>=45.0.0",
     # LZMA1+BCJ: liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
     # (common from the 7-Zip CLI). Stage BCJ via pybcj instead; LZMA2+BCJ stays stdlib.
@@ -88,6 +89,9 @@ dev = [
     "coverage[toml]>=7.6.0",
     "py7zr>=1.0.0",
     "rarfile>=4.2",
+    # libarchive-c is a dev-only cross-validation oracle for optional corpus tests
+    # (tests/test_libarchive_corpus.py); it is not a runtime backend.
+    "libarchive-c>=5.0.0",
     "backports.zstd>=1.0.0",
     "lz4>=4.4.5",
     "brotli>=1.1.0",

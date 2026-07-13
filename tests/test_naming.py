@@ -95,3 +95,24 @@ def test_link_target_backslash_is_literal() -> None:
         resolve_link_target_name("link", "dir\\file", MemberType.HARDLINK)
         == "dir\\file"
     )
+
+
+def test_infer_member_name_from_archive() -> None:
+    import re
+
+    from archivey.internal.naming import infer_member_name_from_archive
+
+    assert infer_member_name_from_archive(None) == "data"
+    assert infer_member_name_from_archive("") == "data"
+    assert infer_member_name_from_archive("mystery.bin") == "mystery.bin.uncompressed"
+    assert (
+        infer_member_name_from_archive("file.gz", strip_suffixes={".gz", ".bz2"})
+        == "file"
+    )
+    assert (
+        infer_member_name_from_archive(
+            "archive.7z.001",
+            strip_suffix_re=re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE),
+        )
+        == "archive"
+    )

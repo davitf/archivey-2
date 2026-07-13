@@ -10,7 +10,10 @@ archive-namespace name it refers to (see ``archive-reading``: link following).
 
 from __future__ import annotations
 
+import os
 import posixpath
+import re
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from archivey.diagnostics import (
@@ -43,6 +46,49 @@ def _warn_for_bidirectional_controls(name: str) -> None:
         logger.warning(
             "Member name contains a bidirectional control character: %r", name
         )
+
+
+def infer_member_name_from_archive(
+    archive_name: str | None,
+    *,
+    strip_suffixes: Collection[str] = (),
+    strip_suffix_re: re.Pattern[str] | None = None,
+) -> str:
+    """Infer a presented member name from the archive source path.
+
+    Shared by single-file compressors and nameless 7z members (see
+    ``format-single-file-compressors`` / ``format-7z``):
+
+    - No usable archive filename → ``\"data\"``.
+    - Basename matches ``strip_suffix_re`` or ends with a ``strip_suffixes`` entry
+      (case-insensitive; longest match wins) → remaining stem.
+    - Otherwise → ``basename + \".uncompressed\"``.
+    """
+    if archive_name is None:
+        return "data"
+    base = os.path.basename(archive_name.rstrip("/"))
+    if not base or base in {".", ".."}:
+        return "data"
+
+    if strip_suffix_re is not None:
+        stem = strip_suffix_re.sub("", base)
+        if stem and stem != base:
+            return stem
+
+    lower = base.lower()
+    best: str | None = None
+    best_len = -1
+    for suffix in strip_suffixes:
+        if not suffix:
+            continue
+        suf = suffix if suffix.startswith(".") else f".{suffix}"
+        if lower.endswith(suf.lower()) and len(suf) > best_len and len(base) > len(suf):
+            best = base[: -len(suf)]
+            best_len = len(suf)
+    if best:
+        return best
+
+    return base + ".uncompressed"
 
 
 def normalize_member_name(

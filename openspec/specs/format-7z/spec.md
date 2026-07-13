@@ -120,13 +120,14 @@ verification stage as data is read.
 | BZip2 | `0x040202` | `bz2` | core |
 | Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | core on 3.14+; otherwise `[7z]` |
 | Brotli | `0x04f71102` | `brotli` | `[7z]` |
+| LZ4 | `0x04f71104` | `lz4` frame decoder (same backend as standalone / `.tar.lz4`) | `[lz4]` (also pulled by `[7z]`) |
 | PPMd (var.H) | `0x030401` | `pyppmd` | `[7z]` |
 | Deflate64 | `0x040109` | `inflate64` | `[7z]` |
 | AES-256 / SHA-256 | `0x06f10701` | crypto backend | `[crypto]` / `[7z]` |
 | BCJ2 | `0x0303011B` | none | unsupported |
 
 The `[7z]` extra SHALL provide PPMd, Deflate64, Zstd on Python versions without
-stdlib zstd, Brotli, AES, and LZMA1+BCJ (`pybcj`) support in one install.
+stdlib zstd, Brotli, LZ4, AES, and LZMA1+BCJ (`pybcj`) support in one install.
 
 LZMA1+BCJ folders SHALL NOT be decoded via a single combined `lzma` `FORMAT_RAW`
 filter chain: liblzma can silently truncate the final BCJ look-ahead bytes when
@@ -144,6 +145,8 @@ through `pybcj`. LZMA2+BCJ remains a single stdlib filter chain in core.
 | Member with stored CRC32 | Terminal verification raises `CorruptionError` on mismatch |
 | PPMd without `[7z]` | `PackageNotInstalledError` names `pyppmd` and the `[7z]` extra |
 | AES + LZMA2 folder | Crypto stage decrypts before LZMA2 decompression |
+| LZ4 folder (`0x04f71104`) with `lz4` installed | Shared `Codec.LZ4` returns original bytes |
+| LZ4 folder without `lz4` | `PackageNotInstalledError` names `lz4` and the `[lz4]` / `[7z]` extra |
 
 ### Requirement: Reject unsupported codecs without fallback
 
@@ -262,3 +265,34 @@ order. If a POSIX attribute block is absent, `mode`, `uid`, and `gid` SHALL be
 | Every folder packs one file | `ArchiveInfo.is_solid` false; access cost is `DIRECT` |
 | BCJ pre-filter followed by LZMA2 | `member.compression` records the full chain in order |
 | No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |
+
+### Requirement: Infer presented names for nameless 7z members
+
+When the 7z `FILES_INFO` block omits the `NAME` property (every member's stored
+filename is empty), the reader SHALL infer a presented `ArchiveMember.name` from
+the archive source filename before `normalize_member_name`. `raw_name` SHALL
+remain empty so the missing NAME channel is preserved.
+
+Inference (aligned with single-file compressors via shared
+`infer_member_name_from_archive`):
+
+| Archive source | Presented name |
+| --- | --- |
+| Basename ends with `.7z` (case-insensitive), optionally followed by a numeric volume suffix such as `.001` | Strip `.7z` / `.7z.NNN`; use the remaining stem |
+| Other non-empty basename | Append `.uncompressed` (do not strip an arbitrary final suffix) |
+| Anonymous stream (no archive filename) | `data` |
+
+Every nameless member in the same archive SHALL receive the same inferred name
+(duplicate names are allowed). The reader MUST NOT invent `_1` / `(1)` suffixes
+at list time; destination collisions are an extraction/`OverwritePolicy` concern.
+
+#### Scenario: nameless-member naming matrix
+
+| Case | Expected |
+| --- | --- |
+| Open `github_14.7z` (no NAME property, one file) | One `FILE` member named `github_14`; `raw_name` empty |
+| Open `github_14_multi.7z` (no NAME, two files) | Two `FILE` members both named `github_14_multi`; `raw_name` empty |
+| Open `archive.7z.001` with no NAME | Stem is `archive` (volume suffix stripped with `.7z`) |
+| Open `foo.bin` (no NAME, not a `.7z` name) | Member name `foo.bin.uncompressed` |
+| Open nameless 7z from an anonymous stream | Member name `data` |
+| Open a 7z that stores NAME normally | Stored names unchanged; no stem synthesis |
