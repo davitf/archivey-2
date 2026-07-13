@@ -221,3 +221,9 @@ an explicit behavioral checklist.
 
 None blocking. Optional follow-up: short decision note beside ADR 0001 documenting
 the methods/pipeline/reader split (docs-only; not required to apply).
+
+**Line-count note (post-implement):** landed ~2.3k across the four modules vs ~2.1k
+before. The half-size aspiration was not met — module-boundary + two-phase API
+overhead offset the table collapse — but the structural goals (one registry, no
+`decode_folder` DI, registry-driven pipeline) landed. Further shrinkage would cut
+into the irreducible header walk or safety comments; deferred.

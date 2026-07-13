@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import io
-import lzma
 import re
 import stat
 import zlib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,41 +19,36 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
-    PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.sevenzip_methods import (
+    METHOD_AES,
+    compression_method_for_coder,
+    folder_is_encrypted,
+)
 from archivey.internal.backends.sevenzip_parser import (
-    _METHOD_AES,
-    _METHOD_BCJ2,
-    _METHOD_BROTLI,
-    _METHOD_BZIP2,
-    _METHOD_COPY,
-    _METHOD_DEFLATE,
-    _METHOD_DEFLATE64,
-    _METHOD_DELTA,
-    _METHOD_LZ4,
-    _METHOD_LZMA,
-    _METHOD_LZMA2,
-    _METHOD_PPMD,
-    _METHOD_ZSTD,
+    EncodedHeader,
+    PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFileRecord,
     SevenZipFolder,
-    _method_hex,
-    compression_method_for_coder,
     compute_is_current,
-    folder_is_encrypted,
-    parse_sevenzip_archive,
+    empty_archive,
+    materialize_archive,
+    parse_header_block,
+    read_signature_and_next_header,
+)
+from archivey.internal.backends.sevenzip_pipeline import (
+    decode_encoded_header,
+    decode_folder_to_bytes,
+    encoded_header_needs_password,
+    open_folder_pipeline,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.internal.config import (
-    DEFAULT_STREAM_CONFIG,
-    StreamConfig,
-    stream_config_from_archivey,
-)
+from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import (
@@ -69,17 +63,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.codecs import (
-    LZMA_FILTER_IDS,
-    Codec,
-    CodecParams,
-    open_codec_stream,
-)
-from archivey.internal.streams.crypto import (
-    SevenZipKeyCache,
-    open_aes_decrypt_stream,
-)
-from archivey.internal.streams.decompress import BcjFilterStream
+from archivey.internal.streams.crypto import SevenZipKeyCache
 from archivey.internal.streams.streamtools import (
     SharedSource,
     SlicingStream,
@@ -102,52 +86,10 @@ from archivey.types import (
     MemberType,
 )
 
-_BCJ_METHODS: dict[bytes, Codec] = {
-    b"\x04": Codec.BCJ_X86,
-    b"\x05": Codec.BCJ_PPC,
-    b"\x06": Codec.BCJ_IA64,
-    b"\x07": Codec.BCJ_ARM,
-    b"\x08": Codec.BCJ_ARMT,
-    b"\x09": Codec.BCJ_SPARC,
-    b"\x03\x03\x01\x03": Codec.BCJ_X86,
-    b"\x03\x03\x02\x05": Codec.BCJ_PPC,
-    b"\x03\x03\x04\x01": Codec.BCJ_IA64,
-    b"\x03\x03\x05\x01": Codec.BCJ_ARM,
-    b"\x03\x03\x07\x01": Codec.BCJ_ARMT,
-    b"\x03\x03\x08\x05": Codec.BCJ_SPARC,
-}
-
-# pybcj (import name ``bcj``) decoder class attribute per BCJ method ID. Used only for
-# LZMA1+BCJ staging — LZMA2+BCJ stays on stdlib liblzma filters.
-_BCJ_PYBCJ_DECODERS: dict[bytes, str] = {
-    b"\x04": "BCJDecoder",
-    b"\x03\x03\x01\x03": "BCJDecoder",
-    b"\x05": "PPCDecoder",
-    b"\x03\x03\x02\x05": "PPCDecoder",
-    b"\x06": "IA64Decoder",
-    b"\x03\x03\x04\x01": "IA64Decoder",
-    b"\x07": "ARMDecoder",
-    b"\x03\x03\x05\x01": "ARMDecoder",
-    b"\x08": "ARMTDecoder",
-    b"\x03\x03\x07\x01": "ARMTDecoder",
-    b"\x09": "SparcDecoder",
-    b"\x03\x03\x08\x05": "SparcDecoder",
-}
-
-_SINGLE_STAGE_CODECS: dict[bytes, Codec] = {
-    _METHOD_DEFLATE: Codec.DEFLATE,
-    _METHOD_DEFLATE64: Codec.DEFLATE64,
-    _METHOD_BZIP2: Codec.BZIP2,
-    _METHOD_ZSTD: Codec.ZSTD,
-    _METHOD_BROTLI: Codec.BROTLI,
-    _METHOD_LZ4: Codec.LZ4,
-    _METHOD_PPMD: Codec.PPMD,
-}
-
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
 
-# NTFS FILETIME conversion + the shared TimestampIssue type live in internal.timestamps.
-# Local aliases keep this module's call sites (and the test import) unchanged.
+# Local aliases keep test imports of these private names working.
 _TimestampIssue = TimestampIssue
 _filetime_to_datetime = filetime_to_datetime
 
@@ -166,61 +108,9 @@ def _password_to_kdf_bytes(password: bytes) -> bytes:
         return password
 
 
-def _is_lzma_family(coder: SevenZipCoder) -> bool:
-    return (
-        coder.method in (_METHOD_LZMA, _METHOD_LZMA2, _METHOD_DELTA)
-        or coder.method in _BCJ_METHODS
-    )
-
-
-# stdlib exposes no *public* decoder for a raw LZMA1/LZMA2 property blob → filter dict;
-# py7zr relies on the same private `lzma._decode_filter_properties`, so there is no public
-# replacement to switch to. Bind it once at import and fail loud if a future CPython removes
-# it — a missing function is "archivey needs updating", NOT "every LZMA member is corrupt".
-# Previously an AttributeError here was caught and turned into a per-member CorruptionError,
-# which would silently mislabel every valid LZMA/LZMA2 7z member as corrupt.
-_raw_decode_filter_properties = getattr(lzma, "_decode_filter_properties", None)
-if (
-    _raw_decode_filter_properties is None
-):  # pragma: no cover - guards a future stdlib change
-    raise ImportError(
-        "This Python's `lzma` module no longer exposes `_decode_filter_properties`, which "
-        "archivey's native 7z reader needs to decode raw LZMA1/LZMA2 coder properties. "
-        "Please report this to archivey (with your Python version)."
-    )
-_decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
-
-
-def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
-    if coder.properties is None:
-        return {"id": filter_id}
-    try:
-        return _decode_filter_properties(filter_id, coder.properties)
-    except (lzma.LZMAError, ValueError) as exc:
-        # A genuine malformed property blob (bad dict-size byte, wrong length) — archive
-        # corruption. AttributeError is no longer caught here: the function is bound above,
-        # so its absence fails loud at import rather than masquerading as corruption.
-        raise CorruptionError(
-            f"Malformed 7z LZMA coder properties for {_method_hex(coder.method)}"
-        ) from exc
-
-
-def _lzma_filter(coder: SevenZipCoder) -> dict:
-    if coder.method == _METHOD_LZMA:
-        return _decode_lzma_properties(coder, lzma.FILTER_LZMA1)
-    if coder.method == _METHOD_LZMA2:
-        return _decode_lzma_properties(coder, lzma.FILTER_LZMA2)
-    if coder.method == _METHOD_DELTA:
-        if coder.properties is None:
-            return {"id": lzma.FILTER_DELTA}
-        if len(coder.properties) != 1:
-            raise CorruptionError("Malformed 7z Delta coder properties")
-        return {"id": lzma.FILTER_DELTA, "dist": coder.properties[0] + 1}
-    bcj_codec = _BCJ_METHODS.get(coder.method)
-    if bcj_codec is not None:
-        return {"id": LZMA_FILTER_IDS[bcj_codec]}
-    raise UnsupportedFeatureError(
-        f"Unsupported 7z LZMA-family coder {_method_hex(coder.method)}"
+def _infer_nameless_member_name(archive_name: str | None) -> str:
+    return infer_member_name_from_archive(
+        archive_name, strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE
     )
 
 
@@ -228,301 +118,28 @@ def _member_stream_size(member: ArchiveMember) -> int:
     return member.size if member.size is not None else 0
 
 
-def _check_linear_coder_chain(folder: SevenZipFolder) -> None:
-    """Verify the folder's coders form a single linear chain in list order.
-
-    ``open_folder_pipeline`` decodes coders in list order, assuming coder 0 consumes the
-    single packed stream and each coder's output feeds the next coder's input. 7z encoders
-    emit coders in exactly that order (verified against py7zr fixtures: LZMA2, Delta+LZMA2,
-    BCJ+LZMA2, AES+LZMA2 all yield ``packed_indices == [0]`` and ``bind_pairs`` of the form
-    ``(i+1, i)``). That wiring is only *implied* by the bind pairs, though, so we validate
-    it here and raise rather than silently emit wrong bytes for an out-of-order or branching
-    coder graph.
-    """
-    expected_bind = {(i + 1, i) for i in range(len(folder.coders) - 1)}
-    if folder.packed_indices != [0] or set(folder.bind_pairs) != expected_bind:
-        raise UnsupportedFeatureError(
-            "7z folders with non-linear coder wiring are not supported"
-        )
-
-
-def _open_aes_stage(
-    source: BinaryIO,
-    coder: SevenZipCoder,
-    *,
-    password: bytes | None,
-    key_cache: SevenZipKeyCache,
-) -> BinaryIO:
-    if password is None:
-        raise EncryptionError("Password required to decrypt this 7z folder")
-    if coder.properties is None:
-        raise CorruptionError("7z AES coder is missing properties")
-    try:
-        params = key_cache.aes_params_from_properties(password, coder.properties)
-    except ValueError as exc:
-        raise CorruptionError(f"Malformed 7z AES properties: {exc}") from exc
-    return open_aes_decrypt_stream(source, params)
-
-
-def _open_lzma_combined(
-    source: BinaryIO,
-    run: list[SevenZipCoder],
-    *,
-    stream_config: StreamConfig,
-    collector: DiagnosticCollector | None,
-    seekable: bool,
-) -> BinaryIO:
-    has_lzma1 = any(coder.method == _METHOD_LZMA for coder in run)
-    has_lzma2 = any(coder.method == _METHOD_LZMA2 for coder in run)
-    # A 7z filter run lists coders in decode order (outer filter first); liblzma wants
-    # them in the reverse (encode) order, hence ``reversed(run)``.
-    filters = [_lzma_filter(coder) for coder in reversed(run)]
-    codec = Codec.LZMA if has_lzma1 and not has_lzma2 else Codec.LZMA2
-    return open_codec_stream(
-        codec,
-        source,
-        config=stream_config,
-        params=CodecParams(filters=filters),
-        collector=collector,
-        seekable=seekable,
-    )
-
-
-def _require_pybcj() -> None:
-    try:
-        import bcj  # noqa: F401
-    except ImportError as exc:
-        raise PackageNotInstalledError(
-            "The 'pybcj' package is required for LZMA1+BCJ 7z folders "
-            "(install the '7z' extra)."
-        ) from exc
-
-
-_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
-
-
-def _infer_nameless_member_name(archive_name: str | None) -> str:
-    """Synthesize a member filename when the 7z NAME property is absent."""
-    return infer_member_name_from_archive(
-        archive_name, strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE
-    )
-
-
-def _open_bcj_stage(
-    source: BinaryIO,
-    coder: SevenZipCoder,
-    *,
-    unpack_size: int,
-    seekable: bool,
-) -> BinaryIO:
-    decoder_attr = _BCJ_PYBCJ_DECODERS.get(coder.method)
-    if decoder_attr is None:
-        raise UnsupportedFeatureError(
-            f"Unsupported 7z BCJ coder {_method_hex(coder.method)}"
-        )
-    return BcjFilterStream(
-        source,
-        decoder_attr=decoder_attr,
-        unpack_size=unpack_size,
-        seekable=seekable,
-    )
-
-
-def _open_lzma_run(
-    source: BinaryIO,
-    run: list[SevenZipCoder],
-    unpack_sizes: list[int],
-    *,
-    stream_config: StreamConfig,
-    collector: DiagnosticCollector | None,
-    seekable: bool,
-) -> BinaryIO:
-    if len(run) != len(unpack_sizes):
-        raise CorruptionError("7z LZMA-family run length does not match unpack sizes")
-    has_lzma1 = any(coder.method == _METHOD_LZMA for coder in run)
-    has_lzma2 = any(coder.method == _METHOD_LZMA2 for coder in run)
-    has_bcj = any(coder.method in _BCJ_METHODS for coder in run)
-    if has_lzma1 and has_lzma2:
-        raise UnsupportedFeatureError(
-            "Mixed LZMA1+LZMA2 7z coder chains are unsupported"
-        )
-    if has_bcj and not has_lzma1 and not has_lzma2:
-        # BCJ alone (or after COPY / Deflate / BZip2 / Zstd): not a liblzma chain.
-        # Stage each BCJ filter via pybcj — same helper as LZMA1+BCJ.
-        _require_pybcj()
-        stream: BinaryIO = source
-        for index, coder in enumerate(run):
-            if coder.method not in _BCJ_METHODS:
-                raise UnsupportedFeatureError(
-                    f"Unsupported non-LZMA 7z coder in BCJ run "
-                    f"{_method_hex(coder.method)}"
-                )
-            stream = _open_bcj_stage(
-                stream,
-                coder,
-                unpack_size=unpack_sizes[index],
-                seekable=seekable,
-            )
-        return stream
-    if has_lzma1 and has_bcj:
-        # liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS (BPO-21872 /
-        # xz-devel guidance). Stage like py7zr: stdlib LZMA1 (+ Delta, etc.), then pybcj.
-        _require_pybcj()
-        stream = source
-        index = 0
-        while index < len(run):
-            coder = run[index]
-            if coder.method in _BCJ_METHODS:
-                stream = _open_bcj_stage(
-                    stream,
-                    coder,
-                    unpack_size=unpack_sizes[index],
-                    seekable=seekable,
-                )
-                index += 1
-                continue
-            sub_run: list[SevenZipCoder] = []
-            while index < len(run) and run[index].method not in _BCJ_METHODS:
-                sub_run.append(run[index])
-                index += 1
-            stream = _open_lzma_combined(
-                stream,
-                sub_run,
-                stream_config=stream_config,
-                collector=collector,
-                seekable=seekable,
-            )
-            # Cap at the sub-run output size so LZMA1-without-EOS does not raise on
-            # a trailing read when the BCJ stage asks for a large chunk.
-            stream = SlicingStream(
-                stream, length=unpack_sizes[index - 1], own_source=True
-            )
-            continue
-        return stream
-    return _open_lzma_combined(
-        source,
-        run,
-        stream_config=stream_config,
-        collector=collector,
-        seekable=seekable,
-    )
-
-
-def open_folder_pipeline(
-    source: BinaryIO,
+def _verify_decoded_folder(
     folder: SevenZipFolder,
+    decoded: bytes,
     *,
-    password: bytes | None,
-    key_cache: SevenZipKeyCache,
-    stream_config: StreamConfig | None = None,
-    collector: DiagnosticCollector | None = None,
-    seekable: bool = False,
-) -> BinaryIO:
-    """Compose a folder's coder chain into a single pull stream.
-
-    Only linear 1-in/1-out coder chains are supported; BCJ2 and multi-stream coder
-    graphs raise ``UnsupportedFeatureError``. Consecutive LZMA-family coders (LZMA,
-    LZMA2, Delta, BCJ) collapse into one liblzma filter chain; other codecs and the AES
-    stage each wrap the stream once.
-
-    ``seekable`` requests a seekable decode (backward seeks re-decode from the folder
-    start, O(n)); it is the ArchiveStream seekability hint for the codec streams. Note an
-    AES stage yields a non-seekable stream regardless, so encrypted folders stay
-    forward-only — the caller checks ``is_seekable`` on the result.
-    """
-    if any(
-        coder.num_in_streams != 1 or coder.num_out_streams != 1
-        for coder in folder.coders
-    ):
-        raise UnsupportedFeatureError(
-            "7z folders with complex coder graphs are not supported"
-        )
-    _check_linear_coder_chain(folder)
-    config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
-    stream: BinaryIO = source
-    index = 0
-    while index < len(folder.coders):
-        coder = folder.coders[index]
-        if coder.method == _METHOD_BCJ2:
-            raise UnsupportedFeatureError(
-                "BCJ2-compressed 7z folders are not supported"
-            )
-        if coder.method == _METHOD_COPY:
-            index += 1
+    member_digests: list[tuple[int, int | None]] | None = None,
+) -> None:
+    """Raise ``EncryptionError`` when decoded folder bytes fail CRC checks."""
+    if folder.digest_defined:
+        expected = (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
+        if zlib.crc32(decoded) & 0xFFFFFFFF != expected:
+            raise EncryptionError("Wrong password or corrupt 7z folder")
+        return
+    if not member_digests:
+        return
+    offset = 0
+    for size, raw_expected in member_digests:
+        chunk = decoded[offset : offset + size]
+        offset += size
+        if raw_expected is None:
             continue
-        if coder.method == _METHOD_AES:
-            stream = _open_aes_stage(
-                stream, coder, password=password, key_cache=key_cache
-            )
-            index += 1
-            continue
-        if _is_lzma_family(coder):
-            run: list[SevenZipCoder] = []
-            run_sizes: list[int] = []
-            while index < len(folder.coders) and _is_lzma_family(folder.coders[index]):
-                run.append(folder.coders[index])
-                run_sizes.append(folder.unpack_sizes[index])
-                index += 1
-            stream = _open_lzma_run(
-                stream,
-                run,
-                run_sizes,
-                stream_config=config,
-                collector=collector,
-                seekable=seekable,
-            )
-            continue
-        codec = _SINGLE_STAGE_CODECS.get(coder.method)
-        if codec is None:
-            raise UnsupportedFeatureError(
-                f"Unsupported 7z coder method {_method_hex(coder.method)}"
-            )
-        stream = open_codec_stream(
-            codec,
-            stream,
-            config=config,
-            params=CodecParams(properties=coder.properties),
-            collector=collector,
-            seekable=seekable,
-        )
-        index += 1
-    return stream
-
-
-def decode_folder_to_bytes(
-    source: BinaryIO,
-    folder: SevenZipFolder,
-    *,
-    compressed_size: int,
-    uncompressed_size: int,
-    password: bytes | None,
-    key_cache: SevenZipKeyCache,
-    stream_config: StreamConfig | None = None,
-    collector: DiagnosticCollector | None = None,
-) -> bytes:
-    """Fully decode one folder's packed stream into memory and CRC-check it.
-
-    Used to materialize the (encoded) 7z header. ``source`` must be positioned at the
-    start of the folder's packed data.
-    """
-    stream = open_folder_pipeline(
-        SlicingStream(source, 0, compressed_size),
-        folder,
-        password=password,
-        key_cache=key_cache,
-        stream_config=stream_config,
-        collector=collector,
-    )
-    try:
-        decoded = read_exact(stream, uncompressed_size)
-        if len(decoded) != uncompressed_size:
-            raise TruncatedError("7z folder is truncated after decoding")
-        if folder.digest_defined and folder.crc is not None:
-            if zlib.crc32(decoded) & 0xFFFFFFFF != folder.crc & 0xFFFFFFFF:
-                raise CorruptionError("Decoded 7z folder CRC mismatch")
-        return decoded
-    finally:
-        stream.close()
+        if zlib.crc32(chunk) & 0xFFFFFFFF != raw_expected & 0xFFFFFFFF:
+            raise EncryptionError("Wrong password or corrupt 7z folder")
 
 
 class SevenZipReader(BaseArchiveReader):
@@ -571,13 +188,52 @@ class SevenZipReader(BaseArchiveReader):
             )
         self._shared = SharedSource(source)
         self._volume_count = getattr(source, "volume_count", 1)
-        self._archive = parse_sevenzip_archive(
-            self._shared.view(0),
-            decode_folder=self._decode_header_folder,
-        )
+        self._archive = self._load_archive()
         self._folder_pack_starts = self._folder_pack_start_indices(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
+
+    def _load_archive(self) -> SevenZipArchive:
+        """Two-phase header load: parse → decode encoded → re-parse → materialize."""
+        fp = self._shared.view(0)
+        signature = read_signature_and_next_header(fp)
+        if not signature.header_data:
+            return empty_archive(signature)
+
+        block = parse_header_block(signature.header_data)
+        header_encrypted = False
+        while isinstance(block, EncodedHeader):
+            header_encrypted = header_encrypted or encoded_header_needs_password(block)
+            decoded = self._decode_encoded_header_block(fp, block)
+            block = parse_header_block(decoded)
+        assert isinstance(block, PlainHeader)
+        return materialize_archive(
+            signature, block, is_header_encrypted=header_encrypted
+        )
+
+    def _decode_encoded_header_block(
+        self, fp: BinaryIO, encoded: EncodedHeader
+    ) -> bytes:
+        needs_password = encoded_header_needs_password(encoded)
+
+        def decode(password: bytes | None) -> bytes:
+            return decode_encoded_header(
+                fp,
+                encoded,
+                password=password,
+                key_cache=self._key_cache,
+                stream_config=self._stream_config,
+                collector=self._diagnostics_collector,
+            )
+
+        try:
+            if needs_password:
+                return self._passwords.attempt(
+                    None, lambda password: decode(_password_to_kdf_bytes(password))
+                )
+            return decode(None)
+        except _PasswordCandidatesExhausted as exc:
+            raise EncryptionError("Password required to decrypt the 7z header") from exc
 
     @staticmethod
     def _folder_pack_start_indices(archive: SevenZipArchive) -> list[int]:
@@ -588,41 +244,14 @@ class SevenZipReader(BaseArchiveReader):
             index += len(folder.packed_indices)
         return starts
 
-    def _decode_header_folder(
-        self,
-        source: BinaryIO,
-        folder: SevenZipFolder,
-        compressed_size: int,
-        uncompressed_size: int,
-    ) -> bytes:
-        def decode(password: bytes | None) -> bytes:
-            source.seek(0)
-            return decode_folder_to_bytes(
-                source,
-                folder,
-                compressed_size=compressed_size,
-                uncompressed_size=uncompressed_size,
-                password=password,
-                key_cache=self._key_cache,
-                stream_config=self._stream_config,
-                collector=self._diagnostics_collector,
-            )
-
-        try:
-            if folder_is_encrypted(folder):
-                return self._passwords.attempt(
-                    None, lambda password: decode(_password_to_kdf_bytes(password))
-                )
-            return decode(None)
-        except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError("Password required to decrypt the 7z header") from exc
-
     def _build_members(self) -> list[ArchiveMember]:
         current_flags = compute_is_current(self._archive.files)
-        members: list[ArchiveMember] = []
-        for record, is_current in zip(self._archive.files, current_flags, strict=True):
-            members.append(self._to_member(record, is_current=is_current))
-        return members
+        return [
+            self._to_member(record, is_current=is_current)
+            for record, is_current in zip(
+                self._archive.files, current_flags, strict=True
+            )
+        ]
 
     def _members_by_folder(self) -> dict[int, list[ArchiveMember]]:
         grouped: dict[int, list[ArchiveMember]] = {}
@@ -637,9 +266,6 @@ class SevenZipReader(BaseArchiveReader):
         yield from self._members
 
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
-        # Solid folders decode once into a single forward-only stream; SolidBlockReader
-        # slices it into consecutive members and skips a prior member's unread tail
-        # lazily when the next member is opened (see streamtools/solid.py).
         current_folder: int | None = None
         solid: SolidBlockReader | None = None
         previous: ArchiveStream | None = None
@@ -681,8 +307,6 @@ class SevenZipReader(BaseArchiveReader):
         self, record: SevenZipFileRecord, *, is_current: bool
     ) -> ArchiveMember:
         member_type = self._member_type(record)
-        # Empty stored filename (NAME property omitted): synthesize from archive stem
-        # before normalize_member_name would turn "" into ".". raw_name stays empty.
         presented_name = record.filename
         if presented_name == "":
             presented_name = _infer_nameless_member_name(self._archive_name)
@@ -697,7 +321,7 @@ class SevenZipReader(BaseArchiveReader):
             for method in (
                 compression_method_for_coder(coder)
                 for coder in self._folder_coders(record)
-                if coder.method != _METHOD_AES
+                if coder.method != METHOD_AES.method_id
             )
             if method.algo is not CompressionAlgorithm.UNKNOWN
         )
@@ -818,10 +442,32 @@ class SevenZipReader(BaseArchiveReader):
     ) -> BinaryIO:
         folder = self._archive.folders[folder_index]
         password = self._password_for_folder(folder_index, member)
-        return self._open_folder_pipeline(
+        return open_folder_pipeline(
             self._folder_pack_view(folder_index),
             folder,
             password=password,
+            key_cache=self._key_cache,
+            stream_config=self._stream_config,
+            collector=self._diagnostics_collector,
+            seekable=seekable,
+        )
+
+    def _open_folder_pipeline(
+        self,
+        source: BinaryIO,
+        folder: SevenZipFolder,
+        *,
+        password: bytes | None,
+        seekable: bool = False,
+    ) -> BinaryIO:
+        """Compatibility shim for tests that patch/call this method."""
+        return open_folder_pipeline(
+            source,
+            folder,
+            password=password,
+            key_cache=self._key_cache,
+            stream_config=self._stream_config,
+            collector=self._diagnostics_collector,
             seekable=seekable,
         )
 
@@ -834,22 +480,36 @@ class SevenZipReader(BaseArchiveReader):
         if folder_index in self._folder_passwords:
             return self._folder_passwords[folder_index]
 
+        member_digests: list[tuple[int, int | None]] = []
+        for folder_member in self._folder_members.get(folder_index, []):
+            size = _member_stream_size(folder_member)
+            raw_expected = (
+                folder_member.hashes.get("crc32") if folder_member.hashes else None
+            )
+            if isinstance(raw_expected, bytes):
+                expected: int | None = int.from_bytes(raw_expected, "big") & 0xFFFFFFFF
+            elif isinstance(raw_expected, int):
+                expected = raw_expected & 0xFFFFFFFF
+            else:
+                expected = None
+            member_digests.append((size, expected))
+
         def confirm(password: bytes) -> bytes:
             kdf_password = _password_to_kdf_bytes(password)
-            stream = self._open_folder_pipeline(
+            stream = open_folder_pipeline(
                 self._folder_pack_view(folder_index),
                 folder,
                 password=kdf_password,
+                key_cache=self._key_cache,
+                stream_config=self._stream_config,
+                collector=self._diagnostics_collector,
             )
             try:
                 total = self._folder_unpack_size(folder_index)
                 decoded = read_exact(stream, total)
                 if len(decoded) != total:
                     raise EncryptionError("Wrong password or corrupt 7z folder")
-                # LZMA can occasionally emit the expected length for a wrong key;
-                # require a CRC match before accepting the candidate. Prefer the
-                # folder digest when present; otherwise check per-member digests.
-                self._verify_folder_plaintext(folder_index, decoded)
+                _verify_decoded_folder(folder, decoded, member_digests=member_digests)
                 return kdf_password
             except ArchiveyError as exc:
                 raise EncryptionError("Wrong password or corrupt 7z folder") from exc
@@ -865,55 +525,7 @@ class SevenZipReader(BaseArchiveReader):
         self._folder_passwords[folder_index] = password
         return password
 
-    def _verify_folder_plaintext(self, folder_index: int, decoded: bytes) -> None:
-        """Raise ``EncryptionError`` when decoded folder bytes fail CRC checks."""
-        folder = self._archive.folders[folder_index]
-        if folder.digest_defined:
-            expected = (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
-            if zlib.crc32(decoded) & 0xFFFFFFFF != expected:
-                raise EncryptionError("Wrong password or corrupt 7z folder")
-            return
-
-        offset = 0
-        for folder_member in self._folder_members.get(folder_index, []):
-            size = _member_stream_size(folder_member)
-            chunk = decoded[offset : offset + size]
-            offset += size
-            raw_expected = (
-                folder_member.hashes.get("crc32") if folder_member.hashes else None
-            )
-            if raw_expected is None:
-                continue
-            if isinstance(raw_expected, bytes):
-                expected = int.from_bytes(raw_expected, "big") & 0xFFFFFFFF
-            else:
-                expected = raw_expected & 0xFFFFFFFF
-            if zlib.crc32(chunk) & 0xFFFFFFFF != expected:
-                raise EncryptionError("Wrong password or corrupt 7z folder")
-        # When no digests are present we can only rely on the decompressor rejecting
-        # wrong-key ciphertext (same as before); do not treat that as confirmation
-        # failure on its own.
-
-    def _open_folder_pipeline(
-        self,
-        source: BinaryIO,
-        folder: SevenZipFolder,
-        *,
-        password: bytes | None,
-        seekable: bool = False,
-    ) -> BinaryIO:
-        return open_folder_pipeline(
-            source,
-            folder,
-            password=password,
-            key_cache=self._key_cache,
-            stream_config=self._stream_config,
-            collector=self._diagnostics_collector,
-            seekable=seekable,
-        )
-
     def _member_prefix(self, member: ArchiveMember) -> int:
-        """Cumulative decoded size of the members preceding ``member`` in its folder."""
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
         if raw.folder_index is None or raw.file_in_folder is None:
@@ -959,18 +571,10 @@ class SevenZipReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
-        # Directories/anti/other never reach here: BaseArchiveReader rejects them.
-        # Empty FILE members (no folder stream) still present an empty payload.
         if raw.folder_index is None:
             return self._wrap_member_stream(
                 io.BytesIO(b""), member.name, size=member.size
             )
-        # Random access re-decodes the folder from its start and slices out the member. The
-        # SlicingStream owns its private decoder (``own_source``) so closing the member stream
-        # closes the decoder. With MemberStreams.SEEKABLE and a seekable codec chain, hand back
-        # a seekable slice positioned at the member (backward seeks re-decode from the folder
-        # start, O(n)); otherwise skip forward and return a forward-only slice. VerifyingStream
-        # still checks the CRC on a pure forward read and disables itself once the caller seeks.
         want_seekable = self._stream_config.seekable
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)
@@ -1066,3 +670,11 @@ class SevenZipReadBackend(ReadBackend):
 
 
 register_reader(SevenZipReadBackend)
+
+# Re-exports used by fuzz harnesses / older imports.
+__all__ = [
+    "SevenZipReadBackend",
+    "SevenZipReader",
+    "decode_folder_to_bytes",
+    "open_folder_pipeline",
+]
