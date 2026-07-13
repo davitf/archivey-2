@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import lzma
+import os
+import re
 import stat
 import zlib
 from collections.abc import Callable, Iterator, Mapping
@@ -291,6 +293,32 @@ def _require_pybcj() -> None:
         ) from exc
 
 
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
+
+
+def _infer_nameless_member_name(archive_name: str | None) -> str:
+    """Synthesize a member filename when the 7z NAME property is absent.
+
+    Matches the 7-Zip CLI / py7zr convention: use the archive basename with a
+    trailing ``.7z`` (or ``.7z.NNN`` volume suffix) stripped. Anonymous sources
+    (no usable stem) fall back to ``contents``.
+    """
+    if archive_name is None:
+        return "contents"
+    base = os.path.basename(archive_name.rstrip("/"))
+    if not base or base in {".", ".."}:
+        return "contents"
+    stem = _SEVENZIP_STEM_SUFFIX_RE.sub("", base)
+    if stem and stem != base:
+        return stem
+    # Not a .7z-named archive — strip the last suffix if present (e.g. foo.bin).
+    if "." in base and not base.startswith("."):
+        stem = base.rsplit(".", 1)[0]
+        if stem:
+            return stem
+    return "contents"
+
+
 def _open_bcj_stage(
     source: BinaryIO,
     coder: SevenZipCoder,
@@ -329,11 +357,29 @@ def _open_lzma_run(
         raise UnsupportedFeatureError(
             "Mixed LZMA1+LZMA2 7z coder chains are unsupported"
         )
+    if has_bcj and not has_lzma1 and not has_lzma2:
+        # BCJ alone (or after COPY / Deflate / BZip2 / Zstd): not a liblzma chain.
+        # Stage each BCJ filter via pybcj — same helper as LZMA1+BCJ.
+        _require_pybcj()
+        stream: BinaryIO = source
+        for index, coder in enumerate(run):
+            if coder.method not in _BCJ_METHODS:
+                raise UnsupportedFeatureError(
+                    f"Unsupported non-LZMA 7z coder in BCJ run "
+                    f"{_method_hex(coder.method)}"
+                )
+            stream = _open_bcj_stage(
+                stream,
+                coder,
+                unpack_size=unpack_sizes[index],
+                seekable=seekable,
+            )
+        return stream
     if has_lzma1 and has_bcj:
         # liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS (BPO-21872 /
         # xz-devel guidance). Stage like py7zr: stdlib LZMA1 (+ Delta, etc.), then pybcj.
         _require_pybcj()
-        stream: BinaryIO = source
+        stream = source
         index = 0
         while index < len(run):
             coder = run[index]
@@ -646,8 +692,13 @@ class SevenZipReader(BaseArchiveReader):
         self, record: SevenZipFileRecord, *, is_current: bool
     ) -> ArchiveMember:
         member_type = self._member_type(record)
+        # Empty stored filename (NAME property omitted): synthesize from archive stem
+        # before normalize_member_name would turn "" into ".". raw_name stays empty.
+        presented_name = record.filename
+        if presented_name == "":
+            presented_name = _infer_nameless_member_name(self._archive_name)
         name = normalize_member_name(
-            record.filename,
+            presented_name,
             member_type,
             backslash_is_separator=True,
         )
@@ -680,7 +731,7 @@ class SevenZipReader(BaseArchiveReader):
             ("created", record.creation_time),
         ):
             timestamps[field], issue = _filetime_to_datetime(
-                value, record.filename, field=field
+                value, presented_name, field=field
             )
             if issue is not None:
                 ts_issues.append(issue)
@@ -708,7 +759,7 @@ class SevenZipReader(BaseArchiveReader):
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
-            presented_name=record.filename,
+            presented_name=presented_name,
             archive_name=self._archive_name,
         )
         for issue in ts_issues:

@@ -219,6 +219,28 @@ def parse_sevenzip_archive(
             f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
         )
 
+    # Empty archive: nextHeaderSize == 0 (and typically offset/CRC are also 0).
+    # py7zr and the 7z CLI open these as zero-member archives.
+    if next_header_size == 0:
+        if next_header_crc != 0 and next_header_crc != _crc32(b""):
+            raise CorruptionError("7z empty next-header CRC mismatch")
+        return SevenZipArchive(
+            major_version=major_version,
+            minor_version=minor_version,
+            pack_pos=_SIGNATURE_HEADER_SIZE,
+            pack_sizes=[],
+            pack_positions=[],
+            folders=[],
+            num_unpackstreams_folders=[],
+            unpack_sizes=[],
+            digests=[],
+            files=[],
+            comment=None,
+            is_solid=False,
+            is_header_encrypted=False,
+            has_encrypted_folders=False,
+        )
+
     # Offsets in the header are relative to the end of the 32-byte signature header.
     try:
         fp.seek(_SIGNATURE_HEADER_SIZE + next_header_offset)

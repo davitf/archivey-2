@@ -191,7 +191,11 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
             return b""
         if n is None or n < 0:
             return self.readall()
-        if len(self._buffer) < n and not self._eof:
+        # Loop until we have ``n`` bytes or hit EOF. A single compressed read may
+        # decompress to less than ``n`` (and callers like ``SlicingStream`` turn
+        # ``read()`` into a sized ``read(remaining)``), so one-shot fill would
+        # silently truncate large members.
+        while len(self._buffer) < n and not self._eof:
             self._buffer.extend(self._read_decompressed_chunk())
         data = bytes(self._buffer[:n])
         del self._buffer[:n]

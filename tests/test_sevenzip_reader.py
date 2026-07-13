@@ -916,3 +916,80 @@ def test_archive_property_payload_size_is_bounded() -> None:
 
     with pytest.raises(CorruptionError, match="(length|Truncated|parser limit)"):
         parse_sevenzip_archive(io.BytesIO(blob), decode_folder=_boom)  # type: ignore[arg-type]
+
+
+# py7zr's empty.7z: signature + start_header with nextHeaderSize == 0.
+_EMPTY_7Z = bytes.fromhex(
+    "377abcaf271c00038d9bd50f0000000000000000000000000000000000000000"
+)
+
+
+def test_empty_archive_opens_with_zero_members() -> None:
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as archive:
+        assert list(archive.members()) == []
+        assert archive.info.member_count == 0
+
+
+def test_infer_nameless_member_name_matrix() -> None:
+    from archivey.internal.backends.sevenzip_reader import _infer_nameless_member_name
+
+    assert _infer_nameless_member_name(None) == "contents"
+    assert _infer_nameless_member_name("/tmp/github_14.7z") == "github_14"
+    assert _infer_nameless_member_name("GitHub_14.7Z") == "GitHub_14"
+    assert _infer_nameless_member_name("archive.7z.001") == "archive"
+    assert _infer_nameless_member_name("archive.7z.002") == "archive"
+    assert _infer_nameless_member_name("foo.bin") == "foo"
+    assert _infer_nameless_member_name("noext") == "contents"
+    assert _infer_nameless_member_name("") == "contents"
+
+
+@requires_binary("7z")
+def test_nameless_7z_members_use_archive_stem(tmp_path: Path) -> None:
+    """7z ``-si`` archives omit NAME; list with the archive stem (no ``_1`` suffixes)."""
+    single = tmp_path / "github_14.7z"
+    result = subprocess.run(
+        ["7z", "a", "-si", "-t7z", str(single)],
+        input=b"hello nameless\n",
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot write nameless fixture: {result.stderr!r}")
+
+    with open_archive(single) as archive:
+        members = list(archive.members())
+        assert len(members) == 1
+        assert members[0].name == "github_14"
+        assert members[0].raw_name == b""
+        assert archive.read(members[0]) == b"hello nameless\n"
+
+    multi = tmp_path / "github_14_multi.7z"
+    for payload in (b"one\n", b"two\n"):
+        result = subprocess.run(
+            ["7z", "a", "-si", "-t7z", str(multi)],
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"7z CLI cannot append nameless member: {result.stderr!r}")
+
+    with open_archive(multi) as archive:
+        members = list(archive.members())
+        assert [m.name for m in members] == ["github_14_multi", "github_14_multi"]
+        assert all(m.raw_name == b"" for m in members)
+        assert [archive.read(m) for m in members] == [b"one\n", b"two\n"]
+
+
+@requires("py7zr")
+@requires("bcj")
+def test_copy_bcj_folder_roundtrip(tmp_path: Path) -> None:
+    """Standalone BCJ (no LZMA) must stage via pybcj, not the liblzma path."""
+    payload = bytes(range(256)) * 40
+    archive = tmp_path / "copy_bcj.7z"
+    _write_py7zr_archive(
+        archive,
+        {"x.bin": payload},
+        filters=_filters("X86", "COPY"),
+    )
+    _assert_roundtrip(archive, {"x.bin": payload})

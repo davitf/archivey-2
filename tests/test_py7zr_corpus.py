@@ -11,23 +11,14 @@ corrupt inputs) and continuation volumes (open the first ``.7z.001`` only).
 
 7z triage (2026-07, vs py7zr ``tests/data``) — known failures marked ``xfail``:
 
-* **BUG** ``empty.7z`` — ``nextHeaderSize==0`` should open as an empty archive;
-  parser currently raises ``CorruptionError``.
-* **BUG** ``copy_bcj_1.7z``, ``p7zip-zstd.7z`` — BCJ paired with a non-LZMA codec
-  (COPY / Zstd) is mis-routed through the LZMA-family path and raises
-  ``CorruptionError`` instead of staging BCJ via ``pybcj`` (or a clear
-  ``UnsupportedFeatureError``).
-* **BUG** ``lzma_bcj_2.7z`` — LZMA1+BCJ solid folder still silently truncates large
-  members despite ``pybcj`` staging (BPO-21872 residual).
-* **SEMANTIC** ``github_14.7z``, ``github_14_multi.7z`` — archive has no NAME
-  property; Archivey normalizes the empty name to ``"."`` (per
-  ``archive-data-model``), while py7zr synthesizes the archive stem. Not a
-  decode bug.
+*(none currently — empty archives, standalone BCJ, and nameless stem naming were
+fixed in the 2026-07 bugfix.)*
 """
 
 from __future__ import annotations
 
 import os
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -59,32 +50,8 @@ _SKIP_NAMES = frozenset(
 )
 
 # Triaged known divergences. Values are (strict, reason).
-_XFAIL: dict[str, tuple[bool, str]] = {
-    "empty.7z": (
-        True,
-        "BUG: nextHeaderSize==0 empty archive raises CorruptionError",
-    ),
-    "copy_bcj_1.7z": (
-        True,
-        "BUG: BCJ+COPY mis-routed through LZMA path (needs standalone BCJ stage)",
-    ),
-    "p7zip-zstd.7z": (
-        True,
-        "BUG: Zstd+BCJ mis-routed through LZMA path (needs standalone BCJ stage)",
-    ),
-    "lzma_bcj_2.7z": (
-        True,
-        "BUG: LZMA1+BCJ solid still truncates large members (BPO-21872 residual)",
-    ),
-    "github_14.7z": (
-        True,
-        "SEMANTIC: no NAME property → Archivey '.' vs py7zr archive-stem synthesis",
-    ),
-    "github_14_multi.7z": (
-        True,
-        "SEMANTIC: no NAME property → Archivey '.' vs py7zr archive-stem synthesis",
-    ),
-}
+_XFAIL: dict[str, tuple[bool, str]] = {}
+
 
 
 def _files_dir() -> Path | None:
@@ -182,24 +149,32 @@ def test_native_matches_py7zr_on_py7zr_corpus(
     oracle_dir = tmp_path / "py7zr"
     try:
         with py7zr.SevenZipFile(archive, "r", password=password) as oracle:  # type: ignore[attr-defined]
-            oracle_infos = {
-                _normalize_name(info.filename): info for info in oracle.list()
-            }
+            oracle_infos = list(oracle.list())
             oracle.extractall(oracle_dir)
     except Exception as exc:  # noqa: BLE001 — oracle may reject unsupported fixtures
         pytest.skip(f"py7zr cannot open {archive.name}: {exc}")
 
     with open_archive(archive, password=password) as native:
-        native_by_name = {_normalize_name(m.name): m for m in native.members()}
-
-        assert set(native_by_name) == set(oracle_infos), (
-            f"member name mismatch for {archive.name}: "
-            f"only_native={sorted(set(native_by_name) - set(oracle_infos))} "
-            f"only_py7zr={sorted(set(oracle_infos) - set(native_by_name))}"
+        native_members = list(native.members())
+        assert len(native_members) == len(oracle_infos), (
+            f"member count mismatch for {archive.name}: "
+            f"native={len(native_members)} py7zr={len(oracle_infos)}"
         )
 
-        for key, info in oracle_infos.items():
-            member = native_by_name[key]
+        # Duplicate names are allowed (e.g. nameless multi-member archives). Compare
+        # in archive order rather than collapsing into a name→member dict.
+        name_counts: dict[str, int] = {}
+        for info in oracle_infos:
+            key = _normalize_name(info.filename)
+            name_counts[key] = name_counts.get(key, 0) + 1
+
+        for index, (member, info) in enumerate(
+            zip(native_members, oracle_infos, strict=True)
+        ):
+            key = _normalize_name(info.filename)
+            assert _normalize_name(member.name) == key, (
+                f"{archive.name}[{index}]: name {member.name!r} != {key!r}"
+            )
             expect_type = _py7zr_expect_type(info)
             assert member.type is expect_type, (
                 f"{archive.name}:{key}: type {member.type} != {expect_type}"
@@ -208,10 +183,20 @@ def test_native_matches_py7zr_on_py7zr_corpus(
                 assert member.size == info.uncompressed, (
                     f"{archive.name}:{key}: size {member.size} != {info.uncompressed}"
                 )
-                oracle_path = oracle_dir / key
-                assert native.read(member) == oracle_path.read_bytes(), (
-                    f"{archive.name}:{key}: byte mismatch"
-                )
+                data = native.read(member)
+                assert len(data) == info.uncompressed
+                crc = getattr(info, "crc32", None)
+                if crc is not None:
+                    assert zlib.crc32(data) & 0xFFFFFFFF == crc & 0xFFFFFFFF, (
+                        f"{archive.name}:{key}: CRC mismatch"
+                    )
+                # Unique names: also compare against extractall path. Duplicates
+                # overwrite on disk (or get ``_0`` suffixes), so CRC is the check.
+                if name_counts[key] == 1:
+                    oracle_path = oracle_dir / key
+                    assert data == oracle_path.read_bytes(), (
+                        f"{archive.name}:{key}: byte mismatch"
+                    )
             elif expect_type is MemberType.SYMLINK:
                 expected_target = _oracle_link_target(oracle_dir, key)
                 assert member.link_target == expected_target, (

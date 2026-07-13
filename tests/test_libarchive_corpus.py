@@ -16,11 +16,6 @@ fuzz/crash fixtures, and formats Archivey does not implement.
 
 * **SPEC** ``*_bcj2_*`` — BCJ2 multi-packed-stream folders correctly raise
   ``UnsupportedFeatureError`` (format-7z rejects BCJ2).
-* **BUG** ``*_bcj_bzip2|copy|deflate``, ``*_zstd_bcj|zstd_arm`` — BCJ paired with
-  a non-LZMA codec is mis-routed through the LZMA path (same root cause as the
-  py7zr ``copy_bcj_1`` / ``p7zip-zstd`` failures).
-* **BUG** ``*_empty_archive`` — ``nextHeaderSize==0`` empty archive (same as
-  py7zr ``empty.7z``).
 * **GAP** ``*_arm64`` (method ``0x0a``) — newer ARM64 BCJ filter not in our
   method table; correctly raises ``UnsupportedFeatureError`` today.
 """
@@ -114,30 +109,6 @@ _XFAIL_7Z: dict[str, tuple[bool, str]] = {
     "test_read_format_7zip_bcj2_lzma2_2.7z": (
         True,
         "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj_bzip2.7z": (
-        True,
-        "BUG: BCJ+BZip2 mis-routed through LZMA path",
-    ),
-    "test_read_format_7zip_bcj_copy.7z": (
-        True,
-        "BUG: BCJ+COPY mis-routed through LZMA path",
-    ),
-    "test_read_format_7zip_bcj_deflate.7z": (
-        True,
-        "BUG: BCJ+Deflate mis-routed through LZMA path",
-    ),
-    "test_read_format_7zip_zstd_bcj.7z": (
-        True,
-        "BUG: Zstd+BCJ mis-routed through LZMA path",
-    ),
-    "test_read_format_7zip_zstd_arm.7z": (
-        True,
-        "BUG: Zstd+ARM-BCJ mis-routed through LZMA path",
-    ),
-    "test_read_format_7zip_empty_archive.7z": (
-        True,
-        "BUG: nextHeaderSize==0 empty archive raises CorruptionError",
     ),
     "test_read_format_7zip_deflate_arm64.7z": (
         True,
