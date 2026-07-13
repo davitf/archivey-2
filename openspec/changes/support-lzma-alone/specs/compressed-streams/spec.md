@@ -23,8 +23,8 @@ The system SHALL decompress supported codecs through these default backends:
 | AES-256 decrypt stage | wrapped crypto backend | optional `[crypto]` |
 
 LZMA Alone SHALL be a distinct stream-codec descriptor from raw LZMA1/LZMA2
-(`FORMAT_RAW` + properties). Alone is standalone (`StreamFormat.LZMA`); raw
-LZMA1/LZMA2 remain container-only.
+(`FORMAT_RAW` + properties). Alone is standalone (`StreamFormat.LZMA_ALONE`);
+raw LZMA1/LZMA2 remain container-only.
 
 #### Scenario: backend matrix
 

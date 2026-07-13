@@ -23,7 +23,7 @@ claim streams that already matched exact magic (notably lzip `LZIP` and xz
 | zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` |
 | zlib-looking header, decode fails | No zlib claim; fall through to extension / fail |
 | `.br`, Brotli extra missing | Probe skipped; extension guess `BROTLI`/`GUESS` |
-| No magic; bounded prefix decompresses as LZMA Alone | `LZMA`, `PROBABLE`, `content_probe` |
+| No magic; bounded prefix decompresses as LZMA Alone | `LZMA_ALONE`, `PROBABLE`, `content_probe` |
 | Stream starts with `LZIP` | lzip magic wins; Alone probe not claimed |
 | Alone-looking bytes that fail `FORMAT_ALONE` decode | No Alone claim; fall through |
 
@@ -55,32 +55,33 @@ compressor.
 | `.tar.bz2` with large first block (> peek prefix) | Read up to max block; `TAR_BZ2` |
 | Large-block bare `.bz2`, no `ustar` | Bounded read; `BZ2` (no false promotion) |
 | Non-seekable `.tar.bz2` needing full block | Buffered in `PeekableStream`; `TAR_BZ2`; backend can still read all |
-| Alone `.tlz` / `.tar.lzma` with `ustar`@257 | `ArchiveFormat(TAR, LZMA)` |
-| Bare Alone `.lzma`, no `ustar` | `ArchiveFormat.LZMA` |
+| Alone `.tar.lzma` / Alone `.tlz` with `ustar`@257 | `ArchiveFormat(TAR, LZMA_ALONE)` |
+| Bare Alone `.lzma`, no `ustar` | `ArchiveFormat.LZMA_ALONE` |
 
 ## ADDED Requirements
 
-### Requirement: Disambiguate `.tlz` between LZIP and LZMA Alone by content
+### Requirement: Keep `.tlz` as TAR × LZIP; Alone content still wins
 
-The system SHALL treat `.tlz` as an extension alias for
-`ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA)` (TAR × LZMA Alone),
-matching historical lzma-utils / GNU tar usage. Lzip SHALL keep `.lz` /
-`.tar.lz`. Content detection SHALL still win:
+The system SHALL keep the TAR short alias `.tlz` mapped to
+`ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP)` (same family as `.lz` /
+`.tar.lz`). Canonical Alone paths remain `.lzma` / `.tar.lzma`. Content detection
+SHALL still win over the extension alias:
 
 | Leading bytes | Detected format |
 | --- | --- |
 | Exact `LZIP` magic | LZIP (then inner-TAR probe may yield TAR × LZIP) |
-| Alone content probe match | LZMA Alone (then inner-TAR probe may yield TAR × LZMA) |
+| Alone content probe match | LZMA Alone (then inner-TAR probe may yield TAR × LZMA_ALONE) |
 
-A `.tlz` whose content is lzip SHALL emit `FORMAT_EXTENSION_CONFLICT` when the
-extension alias claims TAR × LZMA Alone. A `.tlz` whose content is Alone SHALL
-detect as TAR × LZMA without treating the stream as lzip.
+A `.tlz` whose content is LZMA Alone SHALL detect as TAR × LZMA_ALONE and emit
+`FORMAT_EXTENSION_CONFLICT` against the lzip alias. A `.tlz` whose content is
+lzip SHALL detect as TAR × LZIP with no Alone claim.
 
-#### Scenario: `.tlz` matrix
+#### Scenario: `.tlz` / Alone extension matrix
 
 | Case | Expected |
 | --- | --- |
-| `test_compat_lzma_*.tlz` (Alone payload + TAR) | `ArchiveFormat(TAR, LZMA)`; members readable |
-| `test_compat_lzip_1.tlz` (`LZIP` magic + TAR) | TAR × LZIP; `FORMAT_EXTENSION_CONFLICT` retained under default budget |
-| Extension-only `.tlz` with unreadable/empty content | GUESS `ArchiveFormat(TAR, LZMA)` |
-| Bare `.lzma` Alone, no TAR | `ArchiveFormat.LZMA` |
+| `test_compat_lzip_1.tlz` (`LZIP` magic + TAR) | TAR × LZIP; no Alone claim |
+| `test_compat_lzma_*.tlz` (Alone payload + TAR) | `ArchiveFormat(TAR, LZMA_ALONE)`; members readable; `FORMAT_EXTENSION_CONFLICT` retained under default budget |
+| Extension-only `.tlz` with unreadable/empty content | GUESS `ArchiveFormat(TAR, LZIP)` |
+| Bare `.lzma` Alone, no TAR | `ArchiveFormat.LZMA_ALONE` |
+| `.tar.lzma` Alone + TAR | `ArchiveFormat(TAR, LZMA_ALONE)` |
