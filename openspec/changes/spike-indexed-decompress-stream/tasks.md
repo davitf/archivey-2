@@ -10,9 +10,9 @@
 
 - [x] 1.1 **Thread A (ResumeHint absolute vs relative):** locked — relative units +
       SeekTable before/after policy; enrichment may inject absolute points.
-- [ ] 1.2 **Thread B (XZ progressive enrichment):** still open — choose fat SeekTable /
-      thin+hook / Enricher (see design Open Question B). Spike the chosen shape so
-      `isinstance(_XzState)` branching leaves the stream; keep
+- [ ] 1.2 **Thread B (SeekTable Model 1 vs 2):** still open — per-format SeekTable
+      (lean) vs generic store with format push (see design Open Question B). Spike the
+      chosen shape for lzip one-shot end-index + xz progressive enrichment; keep
       `tests/test_seekable_streams.py` green. Record under Decisions; delete Open Question B.
 - [x] 1.3 **Thread C (deferred TruncatedError):** locked — formal `Decoder.pending_error`
       Protocol property (not duck-typed); stream raises on next empty read.

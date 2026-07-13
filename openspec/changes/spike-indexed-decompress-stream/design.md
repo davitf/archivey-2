@@ -147,31 +147,38 @@ class Decoder(Protocol):
 ```
 
 Zlib/brotli/ppmd/deflate64/bcj → adapters, `hints=[]`, `pending_error` always
-`None`. Lzip/xz/.Z → existing state machines; format meaning lives in the
-SeekTable policy, not in stream-subclass cursor folklore.
+`None`. Lzip/xz/.Z → existing state machines; before/after / enrichment semantics
+live in the index-wiring layer (Open Question B), not in stream-subclass cursor
+folklore.
 
 **Rejected:** absolute offsets from Decoders (couples them to cursors/I/O).
 **Rejected:** keep separate `_decompress_chunk → bytes` vs `feed → (bytes, units)`.
 **Rejected:** duck-typing `truncated` / ad-hoc attributes — use the Protocol property.
 
-### 3. SeekTable owns index paths (shape of xz enrichment still open — see B)
+### 3. Seek / index discovery wiring (open — see B)
 
-| Format | Progressive `record` | `build_full` |
+Two viable framings for where format knowledge lives vs where points are stored —
+**Model 1 (per-format SeekTable)** vs **Model 2 (generic store; format pushes)**.
+Not locked; maintainer lean is Model 1 (cleaner), still open. See Open Question B.
+
+Whichever model wins, the *behaviors* to cover are:
+
+| Format | Progressive (during decode) | One-shot (`build_full` / end index) |
 | --- | --- | --- |
-| zlib family | no-op | no-op (rewind from 0) |
+| zlib family | none | none (rewind from 0) |
 | lzip | member starts (`before`) | backwards trailer scan |
-| xz | stream starts + **block enrichment** (how: Open Question B) | backwards footer/index scan |
-| unix-compress | CLEAR resumes (`after`) | no-op (`SEEK_END` → base scan-to-EOF) |
+| xz | stream starts + **block enrichment from footer** | backwards footer/index scan |
+| unix-compress | CLEAR resumes (`after`) | none (`SEEK_END` → base scan-to-EOF) |
 | BGZF (future) | — | forward member walk via BC/MZ |
 
-Demand-driven: undeclared seekability → `NullSeekTable` (no points, no scans).
+Demand-driven: undeclared seekability → no points / no scans.
 
 ### 4. `recreate(point)` is the resume strategy
 
 XZ’s `_XzState` vs `_XzBlockChain` becomes a choice inside `Decoder.recreate`, not
 a union on the stream. No `_create_decompressor` / `_make_decompressor` dual API.
-(XZ recreate may need the table’s subsequent block points — factory closure or
-`recreate(point, table)`; settled with Open Question B.)
+(XZ recreate may need subsequent block points from the store — factory closure or
+passing the table; settled with Open Question B.)
 
 ### 5. Deferred `.Z` TruncatedError via formal `pending_error` (locked)
 
@@ -180,8 +187,8 @@ a union on the stream. No `_create_decompressor` / `_make_decompressor` dual API
 nonzero; other Decoders leave it `None`. `DecompressorStream.read` raises and
 clears it on the next empty read after delivering bytes. Header params for
 CLEAR recreate live on the Decoder / unix-compress factory; origin
-`SeekPoint(0, 3)` adjustment is SeekTable’s job — no format stream subclass
-overriding `read` / chunk / flush / reset.
+`SeekPoint(0, 3)` adjustment lives with index wiring (Open Question B) — no
+format stream subclass overriding `read` / chunk / flush / reset.
 
 ### 6. Keep the name `DecompressorStream` (locked)
 
@@ -193,7 +200,7 @@ allowed if it earns its keep; not required for this change.
 
 Zlib-family Decoder adapters stay in `decompress.py`; xz/lzip/.Z keep parsers in
 their modules and lose stream-subclass tails. Construction sites in `codecs.py`
-become thin factories wiring `(Decoder, SeekTable)` into `DecompressorStream`.
+become thin factories wiring Decoder + index policy into `DecompressorStream`.
 
 **Rejected:** rename to `IndexedDecompressStream` (leaks structure; churn for
 little clarity).
@@ -219,25 +226,93 @@ parallel — wait on or re-target this composition model.
 
 | Risk | Mitigation |
 | --- | --- |
-| Over-abstract SeekTable into a plugin framework | Cap at ~4–5 concrete policies; no registry of registries |
-| XZ progressive enrichment fights clean `record` | Open Question B; spike before migration; keep seek tests green |
+| Over-abstract index discovery into a plugin maze | Cap at a few concrete policies; Open Question B must pick Model 1 or 2 first |
+| XZ progressive enrichment / end-index wiring | Open Question B; spike before migration; keep seek tests green |
 | Subtle SEEK_END / size / buffer regressions | Existing `test_seekable_streams` + unix-compress seek matrix are the gate |
 | Accidental rename pressure | Decision 6: keep `DecompressorStream` |
 
 ## Open Questions
 
-### B. Where does XZ block enrichment live?
+### B. Per-format SeekTable vs generic store (format pushes)
 
-Today, when a multi-stream XZ file finishes a stream during a forward read, the
-stream subclass seeks the compressed file, reads that stream’s footer/index, and
-registers block-level `SeekPoint`s (with `state=block bounds`) — then restores
-the file position. That is “progressive enrichment.” On a later seek into a
-block, `recreate` builds `_XzBlockChain` from those points.
+Two jobs got conflated earlier: **(1) store** seek points, and **(2) discover**
+extra points by reading format structures (lzip trailers, xz footers). Today
+those already split in spirit: a generic `_seek_points` list on the stream, plus
+format scanners (`_read_index_backwards`, `_read_xz_index_backwards`) wired by
+the stream subclass’s `_build_index`. Lzip only uses the **one-shot** end-index
+path (`SEEK_END` / past frontier → `_ensure_index_built` → scan). XZ also does
+**progressive** discovery (as each stream finishes during forward read, scan that
+stream’s footer for block points).
 
-**Still open:** who owns that enrichment after the refactor — a fat SeekTable, a
-thin table plus a stream hook, or a separate Enricher? Options and trade-offs are
-being explored in the change discussion; lock one here before §2.
+**Still open:** which composition model owns format knowledge after the refactor.
 
-**Also must handle:** while replaying via `_XzBlockChain`, completed units only
-advance cursors (no new points). `recreate` needs subsequent block points from
-the table.
+#### Model 1 — Per-format SeekTable (format knowledge in the table)
+
+The stream talks only to a `SeekTable` protocol. Each format supplies a subclass
+that knows how to parse its end index / progressive enrichment. The table may
+read `inner` inside `build_full` (and, for xz, during progressive `record`).
+
+```python
+class SeekTable(Protocol):
+    def record(self, hints: list[ResumeHint]) -> None: ...
+    def build_full(self, inner: BinaryIO) -> int | None: ...  # may I/O
+    def best_at(self, pos: int) -> SeekPoint: ...
+
+class LzipSeekTable:
+    def build_full(self, inner):
+        bounds = _read_index_backwards(inner, ...)
+        self._points.extend(...)
+        return total_size
+
+class XzSeekTable:
+    def record(self, hints):  # stream boundaries + may enrich from footer
+        ...
+    def build_full(self, inner):
+        ...
+```
+
+- **Pros:** one object per format; stream loop identical for all codecs; matches
+  “SeekTable policy” language; end-index + progressive live in one place for xz.
+- **Cons:** table is not a pure in-memory store — format I/O and diagnostics live
+  here too.
+
+**Maintainer lean:** Model 1 feels cleaner — not settled.
+
+#### Model 2 — Generic store; format pushes
+
+`SeekTable` is only a point list (`add` / `best_at`). Format modules own scanners
+(as today) and **push** points in. The stream (or a tiny wiring helper) calls the
+format loader when an index is needed; xz progressive push is also format code
+calling `table.add(block_points)`.
+
+```python
+class SeekTable:  # no format, no file I/O
+    def add(self, points: list[SeekPoint]) -> None: ...
+    def best_at(self, pos: int) -> SeekPoint: ...
+
+def load_lzip_index(inner) -> tuple[list[SeekPoint], int]:
+    bounds = _read_index_backwards(inner, ...)
+    return points, total_size
+
+# stream / wiring:
+points, size = load_lzip_index(self._inner)
+table.add(points)
+```
+
+- **Pros:** closest to today’s split; table never touches the file; scanners stay
+  next to parsers; “store vs discover” is obvious.
+- **Cons:** stream (or another helper) must know *when* to call which loader;
+  xz progressive enrichment needs an explicit push hook somewhere outside the
+  table — slightly more moving parts at the call site.
+
+#### What either model must still handle
+
+- XZ block-chain **replay**: completed units advance cursors but do not add points.
+- XZ `recreate`: needs subsequent block points from the store.
+- Recoverable scan failure → `SEEK_INDEX_DEGRADED` + sequential fallback (today’s
+  `_build_index_backwards` behavior).
+
+**Finalize when:** pick Model 1 or 2, spike xz progressive + lzip one-shot under
+that shape, keep `tests/test_seekable_streams.py` green, then move the choice
+into Decisions and delete this section.
+
