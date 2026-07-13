@@ -298,9 +298,9 @@ def test_inner_tar_over_xz_is_tar_xz() -> None:
     assert info.format == ArchiveFormat.TAR_XZ
 
 
-@requires("uncompresspy", "ncompress")
+@requires("ncompress")
 def test_inner_tar_over_unix_compress_is_tar_z() -> None:
-    """unix-compress needs seek; the bounded peek reader is seekable within its limit."""
+    """Bounded peek reader is seekable within its limit for inner-TAR upgrade."""
     from archivey.types import ContainerFormat, StreamFormat
     from tests.streams_util import make_unix_compress
 
@@ -311,7 +311,7 @@ def test_inner_tar_over_unix_compress_is_tar_z() -> None:
     assert info.detected_by == "content_probe"
 
 
-@requires("uncompresspy", "ncompress")
+@requires("ncompress")
 def test_unix_compress_without_inner_tar_stays_bare_z() -> None:
     from tests.streams_util import make_unix_compress
 

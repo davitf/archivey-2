@@ -134,10 +134,9 @@ def make_multiblock_xz(data: bytes, block_size: int) -> bytes:
 def make_unix_compress(data: bytes) -> bytes:
     """LZW-compress ``data`` into a standard unix-compress (`.Z`) stream.
 
-    The runtime decoder (``uncompresspy``) only decompresses, so fixtures are produced
-    with ``ncompress`` (a separate LZW *compressor*) — giving a genuine cross-
-    implementation roundtrip. Imported lazily so this module still imports in the
-    core-only test leg, where ncompress is absent (callers guard with ``requires``).
+    Fixtures are produced with ``ncompress`` (an LZW *compressor*); Archivey decodes
+    natively. Imported lazily so this module still imports in the core-only test leg,
+    where ncompress is absent (callers guard with ``requires``).
     """
     import ncompress
 

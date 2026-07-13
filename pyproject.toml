@@ -46,9 +46,6 @@ zstd = [
 lz4 = [
     "lz4>=4.4.5",
 ]
-unix-compress = [
-    "uncompresspy>=0.4.0",
-]
 cli = [
     "tqdm>=4.67.0",
 ]
@@ -60,7 +57,7 @@ seekable = [
     "rapidgzip>=0.16.0",
 ]
 recommended-lite = [
-    "archivey[7z,rar,7z-write,iso,zstd,lz4,unix-compress,cli]",
+    "archivey[7z,rar,7z-write,iso,zstd,lz4,cli]",
 ]
 recommended = [
     "archivey[recommended-lite,seekable]",
@@ -101,9 +98,8 @@ dev = [
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
     # there and the zero-dep core / graceful-degradation paths are still exercised.
     "pycdlib>=1.16.0",
-    # uncompresspy is the runtime decoder for unix-compress (.Z); ncompress is a test-only
-    # LZW *compressor* (uncompresspy only decompresses) used to generate .Z fixtures.
-    "uncompresspy>=0.4.0",
+    # ncompress is a test-only LZW *compressor* used to generate .Z fixtures for the
+    # native unix-compress decoder (core; decode-only).
     "ncompress>=1.0.0",
     "cryptography>=45.0.0",
     # Exercise real third-party stream objects in tests/test_stream_inputs.py: urllib3 is

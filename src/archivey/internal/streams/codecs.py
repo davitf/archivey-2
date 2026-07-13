@@ -56,6 +56,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     fix_stream_start_position,
 )
+from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.types import (
     ArchiveFormat,
@@ -95,7 +96,6 @@ def _optional_zstd() -> ModuleType | None:
 _zstd = _optional_zstd()
 _lz4_frame = _optional("lz4.frame")
 _brotli = _optional("brotli")
-_uncompresspy = _optional("uncompresspy")
 _pyppmd = _optional("pyppmd")
 _inflate64 = _optional("inflate64")
 _rapidgzip = _optional("rapidgzip")
@@ -1002,37 +1002,17 @@ class UnixCompressCodec(StreamCodec):
     codec = Codec.UNIX_COMPRESS
     stream_format = StreamFormat.UNIX_COMPRESS
     magic = (MagicSignature(0, b"\x1f\x9d", ArchiveFormat.Z),)
-    requirement = MissingComponent(
-        "uncompresspy", "pip install archivey[unix-compress]", ("unix_compress",)
-    )
-
-    def _backend_present(self) -> bool:
-        return _uncompresspy is not None
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if _uncompresspy is None:
-            raise PackageNotInstalledError(
-                "The 'uncompresspy' package is required for unix-compress (.Z) streams "
-                "(install the 'unix-compress' extra)."
-            )
-        # uncompresspy.LZWFile accepts a path or a (seekable) file object and is itself a
-        # RawIOBase, so ensure_binaryio passes it through unchanged.
-        src = os.fspath(source) if isinstance(source, (str, os.PathLike)) else source
-        return ensure_binaryio(_uncompresspy.LZWFile(src))
+        # Native LZW over DecompressorStream: forward decode works on non-seekable
+        # sources; CLEAR boundaries become SeekPoints when config.seekable is true.
+        return UnixCompressDecompressorStream(source, seekable=config.seekable)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        # uncompresspy raises ValueError both for a non-seekable input (it needs random
-        # access to decode) and for a corrupt LZW bitstream. The .Z format carries no length
-        # or checksum trailer, so truncation is undetectable — a cut stream just yields fewer
-        # bytes with no error (there is intentionally no TruncatedError path here).
-        if isinstance(exc, ValueError):
-            if "seekable" in str(exc):
-                return StreamNotSeekableError(
-                    "uncompresspy does not support non-seekable streams"
-                )
-            return CorruptionError(f"Error reading unix-compress (.Z) stream: {exc!r}")
+        # Native LZW raises CorruptionError / UnsupportedFeatureError / TruncatedError
+        # directly (like xz/lzip). No third-party exception remapping.
         return None
 
 

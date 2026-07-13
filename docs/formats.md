@@ -17,7 +17,7 @@ most often surprise callers. Authoritative detail lives in `openspec/specs/forma
 | ISO | no | `[iso]` (`pycdlib`) | indexed | direct | Seekable source required |
 | `.zst` / `.tar.zst` | 3.14+ core; else `[zstd]` | `[zstd]` → `backports.zstd` | — | rewind seek unless indexed later | |
 | `.lz4` / `.tar.lz4` | no | `[lz4]` | — | rewind seek | |
-| `.Z` / `.tar.Z` | no | `[unix-compress]` | — | special | Truncation undetectable |
+| `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
 Recommended installs: `archivey[recommended]` or `archivey[recommended-lite]` (no
 `rapidgzip`). Full codec rationale: [library analysis](internal/library-analysis.md).
@@ -87,8 +87,10 @@ Recommended installs: `archivey[recommended]` or `archivey[recommended-lite]` (n
 
 - One synthetic member (name from the source path, or `data` for anonymous streams).
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
-- `.Z` (unix-compress) needs `[unix-compress]`; truncation cannot be detected (format
-  carries no length/checksum).
+- `.Z` (unix-compress) is core (native LZW). Truncation is best-effort: nonzero leftover
+  bits after the last complete code raise `TruncatedError` on the next `read()` after
+  delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
+  non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 

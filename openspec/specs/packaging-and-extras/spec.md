@@ -26,9 +26,9 @@ format specs.
 
 The system SHALL install with no third-party runtime dependencies when no extras are
 requested. Bare `pip install archivey` MUST fully support every native or
-stdlib-backed reader: ZIP, TAR including `tar.gz` / `tar.bz2` / `tar.xz`, single-file
-GZ / BZ2 / XZ, directories, and 7z reading for common codecs
-(LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/STORED) with CRC32 verification.
+stdlib-backed reader: ZIP, TAR including `tar.gz` / `tar.bz2` / `tar.xz` / `tar.Z`,
+single-file GZ / BZ2 / XZ / Z (unix-compress), directories, and 7z reading for common
+codecs (LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/STORED) with CRC32 verification.
 
 The system SHALL parse RAR metadata/listing natively in core with CRC32
 verification. Reading RAR member data additionally requires the external `unrar`
@@ -43,7 +43,8 @@ The build SHALL use `hatchling` and the distribution name `archivey`.
 | Case | Expected |
 | --- | --- |
 | `pip install archivey` with no extras | No third-party runtime packages installed |
-| Core read of ZIP/TAR/GZ/BZ2/XZ/directory/common-codec 7z | Fully functional |
+| Core read of ZIP/TAR/GZ/BZ2/XZ/Z/directory/common-codec 7z | Fully functional |
+| Core read of `.tar.Z` / bare `.Z` | Native LZW decode; no `uncompresspy` |
 | Core RAR listing | Native metadata/listing works |
 | Core RAR data read with no `unrar` on `PATH` | Clear error says the external `unrar` tool is required |
 | Core-only 7z write | Unavailable until `[7z-write]`; 7z reading still works |
@@ -57,7 +58,7 @@ ISO, extra compression formats, seeking accelerators, and the CLI.
 
 | Extra | Pulls in | Enables |
 | --- | --- | --- |
-| *(none)* | stdlib only + native parsers | ZIP, TAR + stdlib compressed TAR variants, GZ, BZ2, XZ, directory, 7z read for common codecs (including LZMA2+BCJ), RAR metadata/listing; RAR data still needs RARLAB `unrar` |
+| *(none)* | stdlib only + native parsers | ZIP, TAR + stdlib compressed TAR variants including `.tar.Z`, GZ, BZ2, XZ, Z (unix-compress), directory, 7z read for common codecs (including LZMA2+BCJ), RAR metadata/listing; RAR data still needs RARLAB `unrar` |
 | `[7z]` | `pyppmd`, `inflate64`, `backports.zstd` on Python <3.14, `brotli`, `lz4`, `cryptography`, `pybcj` | All 7z reading features: PPMd, Deflate64, Zstd, Brotli, LZ4, AES, LZMA1+BCJ |
 | `[rar]` | `cryptography`, Blake2sp backend | Header-encrypted RAR5 and Blake2sp checksum verification; RAR data still needs RARLAB `unrar` |
 | `[crypto]` | `cryptography` | AES/crypto backend subset used by `[7z]` / `[rar]` |
@@ -65,10 +66,9 @@ ISO, extra compression formats, seeking accelerators, and the CLI.
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
 | `[zstd]` | `backports.zstd` on Python <3.14 | Standalone Zstandard (`.zst`, `.tar.zst`); Python 3.14+ uses stdlib `compression.zstd` |
 | `[lz4]` | `lz4` | Standalone LZ4 (`.lz4`, `.tar.lz4`) and 7z LZ4 folders |
-| `[unix-compress]` | `uncompresspy` | Unix-compress (`.Z`, `.tar.Z`) LZW decompression |
 | `[cli]` | `tqdm` | `archivey` command-line interface progress output |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access into gz/bz2 streams via rapidgzip / bundled `IndexedBzip2File` |
-| `[recommended-lite]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[unix-compress]` + `[cli]` | Every broadly wheeled format/codec dependency; excludes build-finicky C++ seek libs |
+| `[recommended-lite]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[cli]` | Every broadly wheeled format/codec dependency; excludes build-finicky C++ seek libs |
 | `[recommended]` | `[recommended-lite]` + `[seekable]` | Recommended install: every primary backend plus gz/bz2 seeking and speed |
 | `[all]` | `[recommended]` plus every alternative/secondary backend, currently none | Everything; currently resolves exactly to `[recommended]` |
 
@@ -97,6 +97,7 @@ wrapper.
 
 Development tools, oracle libraries, and fixture generators such as `ncompress`
 SHALL live in the PEP 735 `dev` dependency group, not in user-facing runtime extras.
+The system SHALL NOT list `uncompresspy` in any user-facing extra or the `dev` group.
 
 #### Scenario: extras matrix
 
@@ -104,10 +105,11 @@ SHALL live in the PEP 735 `dev` dependency group, not in user-facing runtime ext
 | --- | --- |
 | `pip install archivey[iso]` | Installs `pycdlib`; `.iso` works; unrelated optional deps are not pulled in |
 | `pip install archivey[recommended]` | Every optional format/codec and CLI capability plus `[seekable]`; no redundant xz/zstd alternative backend |
-| `pip install archivey[recommended-lite]` after `[recommended]` cannot build `rapidgzip` | Every format/codec still works; only gz/bz2 seeking and speed boost are absent |
+| `pip install archivey[recommended-lite]` after `[recommended]` cannot build `rapidgzip` | Every format/codec still works; only gz/bz2 seeking and speed boost are absent; unix-compress needs no extra |
 | `pip install archivey[all]` | Installs `[recommended]` plus current alternatives; currently exactly `[recommended]` |
 | `pip install archivey[7z]` | Installs `pybcj` (import name `bcj`) and `lz4` so LZMA1+BCJ and LZ4 7z members decode |
 | `pip install archivey[lz4]` | Standalone `.lz4` / `.tar.lz4` and 7z LZ4 folders work without requiring unrelated extras |
+| Bare install | `.Z` / `.tar.Z` readable; no `[unix-compress]` extra exists |
 | RAR5 data with only Blake2sp hashes and no `[rar]` | Bytes are returned unverified with a warning; no hard failure solely for skipped Blake2sp |
 | 7z member uses BCJ2 | Unsupported-codec error; no extra enables it |
 | RAR data without RARLAB `unrar` | `PackageNotInstalledError`; no alternate-tool extra exists |

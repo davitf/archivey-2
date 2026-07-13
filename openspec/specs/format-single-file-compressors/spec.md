@@ -10,8 +10,8 @@ name is inferred from the source filename.
 This capability is the standalone-stream side of `compressed-streams`. Raw
 Deflate and raw LZMA1/LZMA2 are not standalone formats because they lack
 self-framing; they appear only inside containers such as ZIP or 7z. Unix-compress
-(`.Z`, LZW) is supported through `uncompresspy` via `[unix-compress]`, requires a
-seekable source, and cannot signal truncation because the format has no length or
+(`.Z`, LZW) is decoded natively in core, streams from non-seekable sources under
+`streaming=True`, and cannot signal truncation because the format has no length or
 checksum trailer.
 
 ## Related specs
@@ -22,7 +22,7 @@ checksum trailer.
 | `access-mode-and-cost` | Listing/access cost and non-seekable legality |
 | `compressed-streams` | Codec descriptors, decoder availability, metadata hooks |
 | `format-detection` | Bare stream detection and combined TAR-compressor detection |
-| `packaging-and-extras` | Optional codec extras such as `[unix-compress]`, Brotli, LZ4, Zstd |
+| `packaging-and-extras` | Optional codec extras such as Brotli, LZ4, Zstd |
 
 ## Requirements
 
@@ -65,17 +65,17 @@ The backend SHALL expose these properties for every single-file compressor:
 | Listing cost | `INDEXED`; exactly one member |
 | Access cost | `DIRECT`; no inter-member dependency exists |
 | Supports write | Yes |
-| Requires seek | Random access (`streaming=False`) requires seek; forward-only `streaming=True` accepts non-seekable sources except `.Z` |
+| Requires seek | Random access (`streaming=False`) requires seek; forward-only `streaming=True` accepts non-seekable sources for every supported single-file codec including `.Z` |
 
 Random access over a non-seekable source SHALL fail fast at open with
 `StreamNotSeekableError`; the backend MUST NOT buffer an unbounded source to
-simulate repeatable reads. Under `streaming=True`, non-`.Z` codecs SHALL stream
-from non-seekable sources. Unix-compress `.Z` SHALL require seek in both modes
-because its decoder does.
+simulate repeatable reads. Under `streaming=True`, every supported single-file
+codec including unix-compress `.Z` SHALL stream from non-seekable sources.
 
-Member-stream seekability is a stream-level property from accelerator-backed
-decoders (for example xz indexes, `indexed_bzip2`, `rapidgzip`, seekable zstd),
-not an archive-level `CostReceipt` field.
+Member-stream seekability is a stream-level property from index- or
+accelerator-backed decoders (for example xz indexes, CLEAR seek points for
+unix-compress, `indexed_bzip2`, `rapidgzip`, seekable zstd), not an archive-level
+`CostReceipt` field.
 
 #### Scenario: property matrix
 
@@ -83,8 +83,8 @@ not an archive-level `CostReceipt` field.
 | --- | --- |
 | Open any supported single-file compressor | `listing_cost=INDEXED`; `access_cost=DIRECT` |
 | Non-seekable source with `streaming=False` | `StreamNotSeekableError` |
-| Non-`.Z` non-seekable source with `streaming=True` | Opens and `stream_members()` yields data |
-| `.Z` non-seekable source in either mode | `StreamNotSeekableError` |
+| Non-seekable source with `streaming=True` (including `.Z`) | Opens and `stream_members()` yields data |
+| Seekable `.Z` with declared member-stream seekability | Member stream is seekable via CLEAR seek points |
 
 ### Requirement: Report member size with codec caveats
 
@@ -94,7 +94,7 @@ format-specific reliability limits:
 | Codec | `member.size` behavior |
 | --- | --- |
 | GZ | Always `None`; stored ISIZE is modulo 2^32 and may be wrong |
-| BZ2, ZLIB, BR, Z | `None` until full decompression; `.Z` also has no truncation signal |
+| BZ2, ZLIB, BR, Z | `None` until full decompression; `.Z` has no size trailer (best-effort truncation via nonzero leftover bits) |
 | XZ, ZST | Header size when encoder wrote it; otherwise `None` |
 | LZ4 | Frame content-size field when present; otherwise `None` |
 | LZIP | Available from the trailer through the seekable lzip backend |
@@ -113,7 +113,7 @@ updated to that byte count.
 | `.lz` opened through seekable lzip backend | Size is available from the trailer |
 | Alone stream with known header size | `member.size` equals that size |
 | Alone stream with unknown-size marker | Size is `None` until EOF may update it |
-| Truncated `.Z` | Decoder may yield fewer bytes with no truncation error |
+| Truncated `.Z` with nonzero leftover bits | Available bytes delivered; next `read()` raises `TruncatedError` |
 
 ### Requirement: Surface gzip stored metadata without trusting it as the name
 

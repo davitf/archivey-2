@@ -150,9 +150,10 @@ class _BoundedPeekReader(ReadOnlyIOStream):
     linear), letting a codec pull exactly as much compressed input as it needs and
     never more than ``limit`` (one maximum compressor block).
 
-    Seekable within the bound so codecs that require seek (unix-compress) can still
-    probe; seeking never pulls bytes beyond ``limit``, and peeks still grow only on
-    demand when a read needs more of the prefix.
+    Seekable within the bound so codecs that use seek during a probe (or need a
+    repositionable view of the peeked prefix) can still run; seeking never pulls
+    bytes beyond ``limit``, and peeks still grow only on demand when a read needs
+    more of the prefix.
     """
 
     def __init__(self, peek_more: Callable[[int], bytes], limit: int) -> None:
@@ -209,7 +210,8 @@ def _probe_inner_tar(
     block-transform codec (bzip2), which emits nothing until a whole block is read, pulls up to
     one maximum block (``_INNER_TAR_MAX_PROBE_BYTES``).
 
-    The peek reader is seekable within that bound so unix-compress (LZW) can probe.
+    The peek reader is seekable within that bound so codecs can reposition inside
+    the peeked prefix during a probe.
     Accelerators are forced ``OFF``: ``seekable=True`` must not flip AUTO rapidgzip /
     IndexedBzip2File on for a short detection peek (those paths reject incomplete
     sources and can leak raw C++ exceptions on corrupt prefixes). Prefer that over

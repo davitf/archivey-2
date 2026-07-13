@@ -341,8 +341,7 @@ class SingleFileBackend(ReadBackend):
         if c.single_file_format is not None
     )
     # A compressed stream decodes front-to-back, so streaming=True works on a
-    # non-seekable source (except unix-compress, whose codec itself needs seek and
-    # rejects it at open). Random access always needs a seekable source.
+    # non-seekable source. Random access always needs a seekable source.
     SUPPORTS_STREAMING_NON_SEEKABLE = True
 
     def open_read(
