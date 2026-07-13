@@ -37,7 +37,6 @@ all = [
     { name = "pyppmd" },
     { name = "rapidgzip" },
     { name = "tqdm" },
-    { name = "uncompresspy" },
 ]
 cli = [
     { name = "tqdm" },
@@ -66,7 +65,6 @@ recommended = [
     { name = "pyppmd" },
     { name = "rapidgzip" },
     { name = "tqdm" },
-    { name = "uncompresspy" },
 ]
 recommended-lite = [
     { name = "backports-zstd", marker = "python_full_version < '3.14'" },
@@ -79,13 +77,9 @@ recommended-lite = [
     { name = "pycdlib" },
     { name = "pyppmd" },
     { name = "tqdm" },
-    { name = "uncompresspy" },
 ]
 seekable = [
     { name = "rapidgzip" },
-]
-unix-compress = [
-    { name = "uncompresspy" },
 ]
 zstd = [
     { name = "backports-zstd", marker = "python_full_version < '3.14'" },
@@ -112,7 +106,6 @@ dev = [
     { name = "rarfile" },
     { name = "ruff" },
     { name = "ty" },
-    { name = "uncompresspy" },
     { name = "urllib3" },
 ]
 docs = [
@@ -129,7 +122,7 @@ fuzz = [
 
 [package.metadata]
 requires-dist = [
-    { name = "archivey", extras = ["7z", "rar", "7z-write", "iso", "zstd", "lz4", "unix-compress", "cli"], marker = "extra == 'recommended-lite'" },
+    { name = "archivey", extras = ["7z", "rar", "7z-write", "iso", "zstd", "lz4", "cli"], marker = "extra == 'recommended-lite'" },
     { name = "archivey", extras = ["recommended"], marker = "extra == 'all'" },
     { name = "archivey", extras = ["recommended-lite", "seekable"], marker = "extra == 'recommended'" },
     { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == '7z'", specifier = ">=1.0.0" },
@@ -147,9 +140,8 @@ requires-dist = [
     { name = "pyppmd", marker = "extra == '7z'", specifier = ">=1.1.0" },
     { name = "rapidgzip", marker = "extra == 'seekable'", specifier = ">=0.16.0" },
     { name = "tqdm", marker = "extra == 'cli'", specifier = ">=4.67.0" },
-    { name = "uncompresspy", marker = "extra == 'unix-compress'", specifier = ">=0.4.0" },
 ]
-provides-extras = ["7z", "rar", "crypto", "7z-write", "iso", "zstd", "lz4", "unix-compress", "cli", "seekable", "recommended-lite", "recommended", "all"]
+provides-extras = ["7z", "rar", "crypto", "7z-write", "iso", "zstd", "lz4", "cli", "seekable", "recommended-lite", "recommended", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -172,7 +164,6 @@ dev = [
     { name = "rarfile", specifier = ">=4.2" },
     { name = "ruff", specifier = ">=0.11.0" },
     { name = "ty", specifier = ">=0.0.1a13" },
-    { name = "uncompresspy", specifier = ">=0.4.0" },
     { name = "urllib3", specifier = ">=2.0.0" },
 ]
 docs = [
@@ -1969,15 +1960,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
-]
-
-[[package]]
-name = "uncompresspy"
-version = "0.4.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/eb/fb/8c892ae2d7eb746bfc11f46f475674d2912226d8df966709d66202c88fd0/uncompresspy-0.4.1.tar.gz", hash = "sha256:e79ead66eaed8d42364d807c0ba3f3a8aef0e0087a9beaf1a60f23a808a6c147", size = 10826, upload-time = "2025-10-11T22:42:41.097Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/06/ba/baf49db30801e20a741388a9d456b7330011f45f7c7560cb2c7ab3c3fa0d/uncompresspy-0.4.1-py3-none-any.whl", hash = "sha256:b7afd3c67ec39608bfd86f2c0832deaa1ff89ed0741a2e23cdba7819ee2a47d5", size = 10076, upload-time = "2025-10-11T22:42:39.947Z" },
 ]
 
 [[package]]

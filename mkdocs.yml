@@ -10,6 +10,7 @@ nav:
   - Formats and extras: formats.md
   - Safe extraction: safe-extraction.md
   - API reference: api.md
+  - Acknowledgements: acknowledgements.md
   - Decisions:
       - Overview: decisions/index.md
       - Native 7z (not py7zr): decisions/0001-native-7z-not-py7zr.md

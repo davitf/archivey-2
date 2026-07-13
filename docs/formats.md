@@ -21,6 +21,7 @@ most often surprise callers. Authoritative detail lives in `openspec/specs/forma
 
 Recommended installs: `archivey[recommended]` or `archivey[recommended-lite]` (no
 `rapidgzip`). Full codec rationale: [library analysis](internal/library-analysis.md).
+Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledgements.md).
 
 ## ZIP
 

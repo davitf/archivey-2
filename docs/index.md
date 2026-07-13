@@ -19,6 +19,7 @@ with archivey.open_archive("photos.zip") as reader:
 4. **[Formats and extras](formats.md)** — per-format quirks, required libraries, limitations
 5. **[Safe extraction](safe-extraction.md)** — what “safe by default” means in practice
 6. **[API reference](api.md)** — generated from source
+7. **[Acknowledgements](acknowledgements.md)** — libraries, oracles, and design references
 
 ## For contributors
 
