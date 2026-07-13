@@ -10,6 +10,15 @@ License texts for adapted kernels live next to the code
 `src/archivey/internal/backends/rar_parser.py`). Packaging extras and codec rationale:
 [Formats](formats.md), [library analysis](internal/library-analysis.md).
 
+## Thanks
+
+Thanks to the maintainers and contributors of every project below — especially those
+whose work Archivey learned from without taking as a dependency. Where we built our own
+parsers and stream layers instead of wrapping a library, it is so the code can plug into
+Archivey’s architecture and use modes (streaming vs random access, seekability,
+concurrency, cost reporting, diagnostics) and keep one consistent API and behaviour
+across formats. If something is missing from this list, please open an issue or PR.
+
 ## Adapted source
 
 | Project | Role in Archivey | License |
@@ -82,9 +91,3 @@ Declared in the PEP 735 `dev` / `docs` / `fuzz` groups (not user-facing extras):
 | `ruff`, `pyrefly`, `ty`, `pre-commit` | Lint and type-check |
 | `mkdocs`, `mkdocs-material`, `mkdocstrings`, … | Docs site (`docs` group) |
 | [atheris](https://github.com/google/atheris) | Coverage-guided fuzz (`fuzz` group; CI-only) |
-
-## Thanks
-
-Thanks to the maintainers and contributors of every project above — especially those
-whose work Archivey learned from without taking as a dependency. If something is missing
-from this list, please open an issue or PR.
