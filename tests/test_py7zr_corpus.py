@@ -8,6 +8,21 @@ directory (clone https://github.com/miurahr/py7zr and use ``…/tests/data``)::
 
 Skips archives py7zr cannot open (BCJ2, some LZ4/Brotli fixtures, intentionally
 corrupt inputs) and continuation volumes (open the first ``.7z.001`` only).
+
+7z triage (2026-07, vs py7zr ``tests/data``) — known failures marked ``xfail``:
+
+* **BUG** ``empty.7z`` — ``nextHeaderSize==0`` should open as an empty archive;
+  parser currently raises ``CorruptionError``.
+* **BUG** ``copy_bcj_1.7z``, ``p7zip-zstd.7z`` — BCJ paired with a non-LZMA codec
+  (COPY / Zstd) is mis-routed through the LZMA-family path and raises
+  ``CorruptionError`` instead of staging BCJ via ``pybcj`` (or a clear
+  ``UnsupportedFeatureError``).
+* **BUG** ``lzma_bcj_2.7z`` — LZMA1+BCJ solid folder still silently truncates large
+  members despite ``pybcj`` staging (BPO-21872 residual).
+* **SEMANTIC** ``github_14.7z``, ``github_14_multi.7z`` — archive has no NAME
+  property; Archivey normalizes the empty name to ``"."`` (per
+  ``archive-data-model``), while py7zr synthesizes the archive stem. Not a
+  decode bug.
 """
 
 from __future__ import annotations
@@ -42,6 +57,34 @@ _SKIP_NAMES = frozenset(
         "archive.7z.002",
     }
 )
+
+# Triaged known divergences. Values are (strict, reason).
+_XFAIL: dict[str, tuple[bool, str]] = {
+    "empty.7z": (
+        True,
+        "BUG: nextHeaderSize==0 empty archive raises CorruptionError",
+    ),
+    "copy_bcj_1.7z": (
+        True,
+        "BUG: BCJ+COPY mis-routed through LZMA path (needs standalone BCJ stage)",
+    ),
+    "p7zip-zstd.7z": (
+        True,
+        "BUG: Zstd+BCJ mis-routed through LZMA path (needs standalone BCJ stage)",
+    ),
+    "lzma_bcj_2.7z": (
+        True,
+        "BUG: LZMA1+BCJ solid still truncates large members (BPO-21872 residual)",
+    ),
+    "github_14.7z": (
+        True,
+        "SEMANTIC: no NAME property → Archivey '.' vs py7zr archive-stem synthesis",
+    ),
+    "github_14_multi.7z": (
+        True,
+        "SEMANTIC: no NAME property → Archivey '.' vs py7zr archive-stem synthesis",
+    ),
+}
 
 
 def _files_dir() -> Path | None:
@@ -96,6 +139,16 @@ def _iter_archives(root: Path) -> Iterator[Path]:
             yield path
 
 
+def _archive_param(path: Path) -> pytest.ParameterSet:
+    xfail = _XFAIL.get(path.name)
+    if xfail is None:
+        return pytest.param(path, id=path.name)
+    strict, reason = xfail
+    return pytest.param(
+        path, id=path.name, marks=pytest.mark.xfail(strict=strict, reason=reason)
+    )
+
+
 _ROOT = _files_dir()
 _ARCHIVES = list(_iter_archives(_ROOT)) if _ROOT is not None else []
 
@@ -115,7 +168,7 @@ def py7zr_mod():
 
 @pytest.mark.parametrize(
     "archive",
-    [pytest.param(p, id=p.name) for p in _ARCHIVES],
+    [_archive_param(p) for p in _ARCHIVES],
 )
 def test_native_matches_py7zr_on_py7zr_corpus(
     archive: Path, py7zr_mod: object, tmp_path: Path

@@ -10,6 +10,19 @@ use ``…/libarchive/test``)::
 Reference ``.uu`` blobs are decoded into ``ARCHIVEY_TEST_CACHE`` on first use.
 Skips archives libarchive cannot open, non-primary split volumes, libarchive
 fuzz/crash fixtures, and formats Archivey does not implement.
+
+7z triage (2026-07, vs libarchive ``libarchive/test``) — known 7z failures marked
+``xfail``:
+
+* **SPEC** ``*_bcj2_*`` — BCJ2 multi-packed-stream folders correctly raise
+  ``UnsupportedFeatureError`` (format-7z rejects BCJ2).
+* **BUG** ``*_bcj_bzip2|copy|deflate``, ``*_zstd_bcj|zstd_arm`` — BCJ paired with
+  a non-LZMA codec is mis-routed through the LZMA path (same root cause as the
+  py7zr ``copy_bcj_1`` / ``p7zip-zstd`` failures).
+* **BUG** ``*_empty_archive`` — ``nextHeaderSize==0`` empty archive (same as
+  py7zr ``empty.7z``).
+* **GAP** ``*_arm64`` (method ``0x0a``) — newer ARM64 BCJ filter not in our
+  method table; correctly raises ``UnsupportedFeatureError`` today.
 """
 
 from __future__ import annotations
@@ -63,6 +76,78 @@ _PART_RE = re.compile(
     r"\.part(?P<num>[2-9]\d*)\.rar$|\.part0*(?P<num2>[2-9]\d*)\.rar$",
     re.IGNORECASE,
 )
+
+# Triaged 7z divergences. Values are (strict, reason).
+_XFAIL_7Z: dict[str, tuple[bool, str]] = {
+    "test_read_format_7zip_bcj2_bzip2.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_copy_1.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_copy_2.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_copy_lzma.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_deflate.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_lzma1_1.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_lzma1_2.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_lzma2_1.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj2_lzma2_2.7z": (
+        True,
+        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
+    ),
+    "test_read_format_7zip_bcj_bzip2.7z": (
+        True,
+        "BUG: BCJ+BZip2 mis-routed through LZMA path",
+    ),
+    "test_read_format_7zip_bcj_copy.7z": (
+        True,
+        "BUG: BCJ+COPY mis-routed through LZMA path",
+    ),
+    "test_read_format_7zip_bcj_deflate.7z": (
+        True,
+        "BUG: BCJ+Deflate mis-routed through LZMA path",
+    ),
+    "test_read_format_7zip_zstd_bcj.7z": (
+        True,
+        "BUG: Zstd+BCJ mis-routed through LZMA path",
+    ),
+    "test_read_format_7zip_zstd_arm.7z": (
+        True,
+        "BUG: Zstd+ARM-BCJ mis-routed through LZMA path",
+    ),
+    "test_read_format_7zip_empty_archive.7z": (
+        True,
+        "BUG: nextHeaderSize==0 empty archive raises CorruptionError",
+    ),
+    "test_read_format_7zip_deflate_arm64.7z": (
+        True,
+        "GAP: ARM64 BCJ method 0x0a not in method table",
+    ),
+    "test_read_format_7zip_lzma2_arm64.7z": (
+        True,
+        "GAP: ARM64 BCJ method 0x0a not in method table",
+    ),
+}
 
 # libarchive's own robustness/fuzz fixtures — not conformance oracles for Archivey.
 _SKIP_SUBSTRINGS = (
@@ -209,6 +294,17 @@ def _collect_libarchive_oracle(
     raise RuntimeError(f"libarchive did not attempt to open {archive.name}")
 
 
+def _uu_param(path: Path) -> pytest.ParameterSet:
+    name = path.name[:-3]
+    xfail = _XFAIL_7Z.get(name)
+    if xfail is None:
+        return pytest.param(path, id=name)
+    strict, reason = xfail
+    return pytest.param(
+        path, id=name, marks=pytest.mark.xfail(strict=strict, reason=reason)
+    )
+
+
 _ROOT = _files_dir()
 _UU_SOURCES = list(_iter_uu_sources(_ROOT)) if _ROOT is not None else []
 
@@ -228,7 +324,7 @@ def libarchive_mod():
 
 @pytest.mark.parametrize(
     "uu_source",
-    [pytest.param(p, id=p.name[:-3]) for p in _UU_SOURCES],
+    [_uu_param(p) for p in _UU_SOURCES],
 )
 def test_native_matches_libarchive_on_libarchive_corpus(
     uu_source: Path, libarchive_mod: object
