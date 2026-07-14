@@ -437,9 +437,26 @@ def test_verify_unverifiable_algorithm_skipped_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     with caplog.at_level("WARNING", logger="archivey.integrity"):
-        stream = VerifyingStream(io.BytesIO(CONTENT), {"blake2sp": b"\x00" * 32})
+        stream = VerifyingStream(
+            io.BytesIO(CONTENT), {"not_a_real_digest_algo": b"\x00" * 32}
+        )
         assert stream.read() == CONTENT  # no raise: the algorithm is just skipped
-    assert any("blake2sp" in rec.message for rec in caplog.records)
+    assert any("not_a_real_digest_algo" in rec.message for rec in caplog.records)
+
+
+def test_verify_blake2sp_match() -> None:
+    from archivey.internal.hashing.blake2sp import blake2sp
+
+    expected = {"blake2sp": blake2sp(CONTENT)}
+    stream = VerifyingStream(io.BytesIO(CONTENT), expected)
+    assert stream.read() == CONTENT
+
+
+def test_verify_blake2sp_mismatch_raises() -> None:
+    stream = VerifyingStream(io.BytesIO(CONTENT), {"blake2sp": b"\x00" * 32})
+    with pytest.raises(CorruptionError, match="blake2sp"):
+        while stream.read(64):
+            pass
 
 
 def test_verify_crc32_accepts_bytes_form() -> None:

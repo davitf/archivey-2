@@ -173,6 +173,58 @@ def test_blake2sp_only_hash() -> None:
 
 
 @requires_binary("unrar")
+def test_blake2sp_verified_no_unverifiable_diagnostic(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="archivey.integrity"):
+        with open_archive(_fixture("blake2sp.rar")) as archive:
+            member = next(m for m in archive.members() if m.is_file)
+            assert archive.read(member) == b"stored payload"
+            assert archive.diagnostics.total_count == 0
+    assert not any(
+        "Cannot verify digest 'blake2sp'" in rec.message for rec in caplog.records
+    )
+
+
+@requires_binary("unrar")
+def test_blake2sp_corrupt_payload_raises(tmp_path: Path) -> None:
+    raw = _fixture("blake2sp.rar").read_bytes()
+    payload = b"stored payload"
+    offset = raw.find(payload)
+    assert offset >= 0
+    mutated = bytearray(raw)
+    mutated[offset] ^= 0x01
+    corrupt = tmp_path / "blake2sp_corrupt.rar"
+    corrupt.write_bytes(mutated)
+    with open_archive(corrupt) as archive:
+        member = next(m for m in archive.members() if m.is_file)
+        assert "blake2sp" in member.hashes
+        with pytest.raises(CorruptionError, match="blake2sp"):
+            archive.read(member)
+
+
+@requires_binary("unrar")
+def test_blake2sp_unrar_oracle_crosscheck() -> None:
+    import shutil
+    import subprocess
+
+    if shutil.which("unrar") is None:
+        pytest.skip("unrar unavailable")
+    fixture = _fixture("blake2sp.rar")
+    with open_archive(fixture) as archive:
+        member = next(m for m in archive.members() if m.is_file)
+        native = archive.read(member)
+    proc = subprocess.run(
+        ["unrar", "p", "-inul", str(fixture)],
+        check=True,
+        capture_output=True,
+    )
+    assert proc.stdout == native == b"stored payload"
+
+
+@requires_binary("unrar")
 def test_multi_volume_roundtrip() -> None:
     part1 = _fixture("tinyvol.part1.rar")
     assert (_FIXTURES / "tinyvol.part2.rar").is_file()

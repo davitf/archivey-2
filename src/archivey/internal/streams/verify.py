@@ -18,7 +18,8 @@ digests (``ArchiveMember.hashes``) against the bytes actually read. Per the
   ``CorruptionError`` instead of the final empty read.
 - An algorithm whose backend is missing (or that is unknown) is **skipped with a
   ``DIGEST_UNVERIFIABLE`` diagnostic** rather than failing the read; algorithms that can
-  be computed (always including CRC32 via stdlib) are still verified.
+  be computed (always including CRC32 via stdlib, and BLAKE2sp via the internal hasher)
+  are still verified.
 - ``close()`` also verifies when the inner stream is already at clean EOF, so a single
   ``read()`` that consumed the whole member (as ``ArchiveReader.read`` does) still
   checks digests.
@@ -40,6 +41,7 @@ from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
 )
+from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
 
@@ -76,6 +78,9 @@ def _make_hasher(algorithm: str) -> Callable[[], _IncrementalHasher] | None:
     name = algorithm.lower()
     if name == "crc32":
         return _Crc32Hasher
+    if name == "blake2sp":
+        # RAR5 BLAKE2sp — not in hashlib; zero-dep tree hash on blake2s (see hashing/).
+        return Blake2sp
     if name in hashlib.algorithms_available:
         return lambda: hashlib.new(name)
     return None
