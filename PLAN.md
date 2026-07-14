@@ -81,7 +81,7 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
    Windows-reserved / trailing-dot-space / `:` rejection under STRICT (O3/O4), and the
    **open decision** of how to handle unrepresentable names (O7: reject vs reversible
    portable-escape). O2/O3/O4 can land before the O7 scheme is settled. Coordinates with
-   the in-flight `adversarial-string-corpus-contract` (bidi/NUL) — no overlap. **Includes
+   the archived `adversarial-string-corpus-contract` (bidi/NUL) — no overlap. **Includes
    `OverwritePolicy.RENAME`** (`name (1)`), which reuses the O2 collision map — sequence
    this **before the CLI** so `extract` can offer rename-on-collision (parity with `unzip`).
 4. **`zip-native-codec-streams`** → then **`zip-aes-decryption`** — route ZIP member

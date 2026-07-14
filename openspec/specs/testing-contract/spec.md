@@ -41,10 +41,9 @@ and consumed by the assertion helper, not silently excluded.
 
 ### Requirement: Adversarial corpus coverage
 
-The system SHALL include a committed adversarial corpus under
-`tests/fixtures/adversarial/` and regenerable fixture tooling in
-`tests/create_adversarial.py`. The suite MUST exercise every documented attack
-category and assert the correct exception, warning, or limit behavior.
+The system SHALL include an adversarial test corpus that exercises every documented
+attack category and verifies that the correct exception is raised or limit is
+enforced in each case. The required adversarial cases are:
 
 | Case | Expected outcome |
 | --- | --- |
@@ -58,6 +57,16 @@ category and assert the correct exception, warning, or limit behavior.
 | Unicode bombs: null bytes, RTL override characters | Null bytes rejected as traversal; RTL warns or rejects |
 | Giant claimed size: member claims 1 TiB while archive is 1 KiB | Extraction aborts cleanly before exhausting resources |
 
+Regenerable adversarial archives SHALL be generated deterministically in memory or on
+demand by `tests/create_adversarial.py` and SHALL NOT be committed. A hostile archive that
+cannot be generated in the test environment MAY be committed under
+`tests/fixtures/adversarial/` only with the fixture-policy JSON sidecar and an explicit
+rationale.
+
+The RTL warning/rejection outcome applies to every `ArchiveMember` presented by any
+backend, including directory and single-file pseudo-archives. A backend SHALL NOT emit
+duplicate warnings for one presentation of the same member.
+
 #### Scenario: adversarial-behavior matrix
 
 | Case | Expected |
@@ -65,6 +74,11 @@ category and assert the correct exception, warning, or limit behavior.
 | Zip bomb extracted with default limits | `ExtractionError` before configured byte or ratio limit is exceeded |
 | Archive member named `../evil` is extracted | `PathTraversalError`; destination outside tree remains untouched |
 | Truncated or CRC-invalid archive is read | `CorruptionError` or `TruncatedError`; original exception is `__cause__` |
+
+#### Scenario: RTL warning is backend-independent
+
+- **WHEN** any backend presents a member whose name contains U+202E RIGHT-TO-LEFT OVERRIDE
+- **THEN** the member is rejected or exactly one warning is emitted for that presentation
 
 ### Requirement: Round-trip test for every writable format
 
