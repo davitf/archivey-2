@@ -18,5 +18,5 @@
 ## 4. Spec + verify
 
 - [x] 4.1 Confirm the `compressed-streams` digest-matrix reconciliation (blake2sp computable; unknown-algorithm example) matches behavior
-- [ ] 4.2 Run across `[all]`, `[all-lowest]`, `core-only` (BLAKE2sp path must work with no extras)
-- [ ] 4.3 `openspec validate --strict rar-blake2sp-verification`
+- [x] 4.2 Run across `[all]`, `[all-lowest]`, `core-only` (BLAKE2sp path must work with no extras)
+- [x] 4.3 `openspec validate --strict rar-blake2sp-verification`
