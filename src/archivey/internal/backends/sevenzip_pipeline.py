@@ -53,39 +53,144 @@ if _raw_decode_filter_properties is None:  # pragma: no cover
 _decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
 
 
-@dataclass(frozen=True, slots=True)
-class _CoderStage:
-    """One pipeline stage: a single coder or a batched LZMA-family run."""
-
-    kind: MethodKind
-    coders: tuple[SevenZipCoder, ...]
-    unpack_sizes: tuple[int, ...]
+# A folder's coder chain is decoded in two phases: `plan_folder` resolves it into an
+# ordered list of these concrete stages (pure — no streams opened), then `execute`
+# folds each stage onto the packed source. Keeping the branchy LZMA1+BCJ staging in
+# the planner makes the decode flow inspectable and keeps I/O out of the decision.
 
 
-def group_coders(folder: SevenZipFolder) -> list[_CoderStage]:
-    """Group folder coders into pipeline stages (COPY skipped; LZMA_FAMILY batched)."""
-    stages: list[_CoderStage] = []
+@dataclass
+class _AesStage:
+    """AES-256 decryption of the stream."""
+
+    coder: SevenZipCoder
+
+
+@dataclass
+class _CodecStage:
+    """A single self-contained codec (Deflate, BZip2, Zstd, PPMd, …)."""
+
+    codec: Codec
+    properties: bytes | None
+
+
+@dataclass
+class _LzmaChainStage:
+    """One liblzma raw-filter chain (LZMA1/LZMA2 with any Delta/BCJ filters).
+
+    ``cap_size`` bounds the decoded output with a ``SlicingStream``; it is set only
+    for the stdlib LZMA1 runs inside an LZMA1+BCJ chain, where LZMA1-without-EOS can
+    otherwise over-read on a trailing BCJ look-ahead (BPO-21872). ``None`` means no cap.
+    """
+
+    codec: Codec
+    filters: list[dict]
+    cap_size: int | None
+
+
+@dataclass
+class _BcjStage:
+    """A single BCJ branch filter staged through pybcj (LZMA1+BCJ / BCJ-alone)."""
+
+    pybcj_attr: str
+    unpack_size: int
+
+
+_Stage = _AesStage | _CodecStage | _LzmaChainStage | _BcjStage
+
+
+def plan_folder(folder: SevenZipFolder) -> list[_Stage]:
+    """Resolve a folder's coder chain into ordered decode stages, opening no streams.
+
+    Runs all wiring validation (1-in/1-out, linear chain, BCJ2 reject) and groups the
+    coders; ``execute`` turns the returned plan into a stream.
+    """
+    if any(
+        coder.num_in_streams != 1 or coder.num_out_streams != 1
+        for coder in folder.coders
+    ):
+        raise UnsupportedFeatureError(
+            "7z folders with complex coder graphs are not supported"
+        )
+    _check_linear_coder_chain(folder)
+
+    stages: list[_Stage] = []
     index = 0
-    while index < len(folder.coders):
-        coder = folder.coders[index]
-        method = require(coder.method)
+    coders = folder.coders
+    while index < len(coders):
+        method = require(coders[index].method)
         if method.kind is MethodKind.COPY:
             index += 1
             continue
-        if method.kind is MethodKind.LZMA_FAMILY:
-            run: list[SevenZipCoder] = []
-            sizes: list[int] = []
-            while index < len(folder.coders) and is_lzma_family(
-                folder.coders[index].method
-            ):
-                run.append(folder.coders[index])
-                sizes.append(folder.unpack_sizes[index])
-                index += 1
-            stages.append(_CoderStage(MethodKind.LZMA_FAMILY, tuple(run), tuple(sizes)))
+        if method.kind is MethodKind.BCJ2:
+            raise UnsupportedFeatureError(
+                "BCJ2-compressed 7z folders are not supported"
+            )
+        if method.kind is MethodKind.AES:
+            stages.append(_AesStage(coders[index]))
+            index += 1
             continue
-        stages.append(_CoderStage(method.kind, (coder,), (folder.unpack_sizes[index],)))
-        index += 1
+        if method.kind is MethodKind.SINGLE:
+            assert method.codec is not None
+            stages.append(_CodecStage(method.codec, coders[index].properties))
+            index += 1
+            continue
+        # LZMA_FAMILY (LZMA1/LZMA2/Delta/BCJ): batch the contiguous run, then plan it.
+        run: list[SevenZipCoder] = []
+        sizes: list[int] = []
+        while index < len(coders) and is_lzma_family(coders[index].method):
+            run.append(coders[index])
+            sizes.append(folder.unpack_sizes[index])
+            index += 1
+        stages.extend(_plan_lzma_family(run, sizes))
     return stages
+
+
+def _plan_lzma_family(
+    run: list[SevenZipCoder], unpack_sizes: list[int]
+) -> list[_Stage]:
+    if len(run) != len(unpack_sizes):
+        raise CorruptionError("7z LZMA-family run length does not match unpack sizes")
+    has_lzma1 = any(lookup(c.method) is METHOD_LZMA for c in run)
+    has_lzma2 = any(lookup(c.method) is METHOD_LZMA2 for c in run)
+    has_bcj = any(is_bcj(c.method) for c in run)
+    if has_lzma1 and has_lzma2:
+        raise UnsupportedFeatureError(
+            "Mixed LZMA1+LZMA2 7z coder chains are unsupported"
+        )
+
+    if has_bcj and not has_lzma1 and not has_lzma2:
+        # BCJ alone (or after COPY / Deflate / …): each BCJ is its own pybcj stage.
+        stages: list[_Stage] = []
+        for coder, size in zip(run, unpack_sizes, strict=True):
+            if not is_bcj(coder.method):
+                raise UnsupportedFeatureError(
+                    f"Unsupported non-LZMA 7z coder in BCJ run "
+                    f"{_method_hex(coder.method)}"
+                )
+            stages.append(_bcj_stage(coder, size))
+        return stages
+
+    if has_lzma1 and has_bcj:
+        # liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
+        # (BPO-21872). Stage each stdlib LZMA1 (+ Delta, …) run capped to its output
+        # size, then each BCJ through pybcj — never one combined liblzma chain.
+        staged: list[_Stage] = []
+        index = 0
+        while index < len(run):
+            if is_bcj(run[index].method):
+                staged.append(_bcj_stage(run[index], unpack_sizes[index]))
+                index += 1
+                continue
+            sub_run: list[SevenZipCoder] = []
+            while index < len(run) and not is_bcj(run[index].method):
+                sub_run.append(run[index])
+                index += 1
+            staged.append(_lzma_chain_stage(sub_run, cap_size=unpack_sizes[index - 1]))
+        return staged
+
+    # LZMA2 (± Delta ± BCJ) or LZMA1 (± Delta) with no separate BCJ staging: one chain.
+    return [_lzma_chain_stage(run, cap_size=None)]
 
 
 def _check_linear_coder_chain(folder: SevenZipFolder) -> None:
@@ -154,115 +259,66 @@ def _open_aes_stage(
     return open_aes_decrypt_stream(source, params)
 
 
-def _open_bcj_stage(
-    source: BinaryIO,
-    coder: SevenZipCoder,
-    *,
-    unpack_size: int,
-    seekable: bool,
-) -> BinaryIO:
+def _bcj_stage(coder: SevenZipCoder, unpack_size: int) -> _BcjStage:
     method = require(coder.method)
     if method.pybcj_attr is None:
         raise UnsupportedFeatureError(
             f"Unsupported 7z BCJ coder {_method_hex(coder.method)}"
         )
-    return BcjFilterStream(
-        source,
-        decoder_attr=method.pybcj_attr,
-        unpack_size=unpack_size,
-        seekable=seekable,
-    )
+    return _BcjStage(method.pybcj_attr, unpack_size)
 
 
-def _open_lzma_combined(
-    source: BinaryIO,
-    run: list[SevenZipCoder],
-    *,
-    stream_config: StreamConfig,
-    collector: DiagnosticCollector | None,
-    seekable: bool,
-) -> BinaryIO:
+def _lzma_chain_stage(
+    run: list[SevenZipCoder], *, cap_size: int | None
+) -> _LzmaChainStage:
     has_lzma1 = any(lookup(c.method) is METHOD_LZMA for c in run)
     has_lzma2 = any(lookup(c.method) is METHOD_LZMA2 for c in run)
     # Decode order is outer-first; liblzma wants encode order → reversed(run).
     filters = [_lzma_filter(coder) for coder in reversed(run)]
     codec = Codec.LZMA if has_lzma1 and not has_lzma2 else Codec.LZMA2
-    return open_codec_stream(
-        codec,
-        source,
-        config=stream_config,
-        params=CodecParams(filters=filters),
-        collector=collector,
-        seekable=seekable,
-    )
+    return _LzmaChainStage(codec, filters, cap_size)
 
 
-def _open_lzma_family(
-    source: BinaryIO,
-    run: list[SevenZipCoder],
-    unpack_sizes: list[int],
+def _execute_stage(
+    stream: BinaryIO,
+    stage: _Stage,
     *,
+    password: bytes | None,
+    key_cache: SevenZipKeyCache,
     stream_config: StreamConfig,
     collector: DiagnosticCollector | None,
     seekable: bool,
 ) -> BinaryIO:
-    if len(run) != len(unpack_sizes):
-        raise CorruptionError("7z LZMA-family run length does not match unpack sizes")
-    has_lzma1 = any(lookup(c.method) is METHOD_LZMA for c in run)
-    has_lzma2 = any(lookup(c.method) is METHOD_LZMA2 for c in run)
-    has_bcj = any(is_bcj(c.method) for c in run)
-    if has_lzma1 and has_lzma2:
-        raise UnsupportedFeatureError(
-            "Mixed LZMA1+LZMA2 7z coder chains are unsupported"
+    """Open one planned stage on top of ``stream``. The only stream-opening code."""
+    if isinstance(stage, _AesStage):
+        return _open_aes_stage(
+            stream, stage.coder, password=password, key_cache=key_cache
         )
-    if has_bcj and not has_lzma1 and not has_lzma2:
-        # BCJ alone (or after COPY / Deflate / …): stage via pybcj.
-        _require_pybcj()
-        stream: BinaryIO = source
-        for index, coder in enumerate(run):
-            if not is_bcj(coder.method):
-                raise UnsupportedFeatureError(
-                    f"Unsupported non-LZMA 7z coder in BCJ run "
-                    f"{_method_hex(coder.method)}"
-                )
-            stream = _open_bcj_stage(
-                stream, coder, unpack_size=unpack_sizes[index], seekable=seekable
-            )
-        return stream
-    if has_lzma1 and has_bcj:
-        # liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS (BPO-21872).
-        # Stage: stdlib LZMA1 (+ Delta, etc.), then pybcj.
-        _require_pybcj()
-        stream = source
-        index = 0
-        while index < len(run):
-            coder = run[index]
-            if is_bcj(coder.method):
-                stream = _open_bcj_stage(
-                    stream, coder, unpack_size=unpack_sizes[index], seekable=seekable
-                )
-                index += 1
-                continue
-            sub_run: list[SevenZipCoder] = []
-            while index < len(run) and not is_bcj(run[index].method):
-                sub_run.append(run[index])
-                index += 1
-            stream = _open_lzma_combined(
-                stream,
-                sub_run,
-                stream_config=stream_config,
-                collector=collector,
-                seekable=seekable,
-            )
-            stream = SlicingStream(
-                stream, length=unpack_sizes[index - 1], own_source=True
-            )
-        return stream
-    return _open_lzma_combined(
-        source,
-        run,
-        stream_config=stream_config,
-        collector=collector,
+    if isinstance(stage, _CodecStage):
+        return open_codec_stream(
+            stage.codec,
+            stream,
+            config=stream_config,
+            params=CodecParams(properties=stage.properties),
+            collector=collector,
+            seekable=seekable,
+        )
+    if isinstance(stage, _LzmaChainStage):
+        out = open_codec_stream(
+            stage.codec,
+            stream,
+            config=stream_config,
+            params=CodecParams(filters=stage.filters),
+            collector=collector,
+            seekable=seekable,
+        )
+        if stage.cap_size is not None:
+            out = SlicingStream(out, length=stage.cap_size, own_source=True)
+        return out
+    return BcjFilterStream(
+        stream,
+        decoder_attr=stage.pybcj_attr,
+        unpack_size=stage.unpack_size,
         seekable=seekable,
     )
 
@@ -277,53 +333,23 @@ def open_folder_pipeline(
     collector: DiagnosticCollector | None = None,
     seekable: bool = False,
 ) -> BinaryIO:
-    """Compose a folder's coder chain into a single pull stream."""
-    if any(
-        coder.num_in_streams != 1 or coder.num_out_streams != 1
-        for coder in folder.coders
-    ):
-        raise UnsupportedFeatureError(
-            "7z folders with complex coder graphs are not supported"
-        )
-    _check_linear_coder_chain(folder)
+    """Compose a folder's coder chain into a single pull stream (plan, then fold)."""
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
+    stages = plan_folder(folder)
+    # Fail fast before opening any stream if a pybcj-staged BCJ filter is needed but
+    # absent (LZMA2+BCJ folds BCJ into the liblzma chain and emits no _BcjStage).
+    if any(isinstance(stage, _BcjStage) for stage in stages):
+        _require_pybcj()
     stream: BinaryIO = source
-
-    for stage in group_coders(folder):
-        if stage.kind is MethodKind.BCJ2:
-            raise UnsupportedFeatureError(
-                "BCJ2-compressed 7z folders are not supported"
-            )
-        if stage.kind is MethodKind.AES:
-            stream = _open_aes_stage(
-                stream, stage.coders[0], password=password, key_cache=key_cache
-            )
-            continue
-        if stage.kind is MethodKind.LZMA_FAMILY:
-            stream = _open_lzma_family(
-                stream,
-                list(stage.coders),
-                list(stage.unpack_sizes),
-                stream_config=config,
-                collector=collector,
-                seekable=seekable,
-            )
-            continue
-        if stage.kind is MethodKind.SINGLE:
-            coder = stage.coders[0]
-            method = require(coder.method)
-            assert method.codec is not None
-            stream = open_codec_stream(
-                method.codec,
-                stream,
-                config=config,
-                params=CodecParams(properties=coder.properties),
-                collector=collector,
-                seekable=seekable,
-            )
-            continue
-        raise UnsupportedFeatureError(
-            f"Unsupported 7z coder method {_method_hex(stage.coders[0].method)}"
+    for stage in stages:
+        stream = _execute_stage(
+            stream,
+            stage,
+            password=password,
+            key_cache=key_cache,
+            stream_config=config,
+            collector=collector,
+            seekable=seekable,
         )
     return stream
 
