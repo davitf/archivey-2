@@ -1,9 +1,9 @@
 # Acknowledgements
 
-Archivey’s core is MIT-licensed and mostly stdlib / native parsers, but it stands on
-other people’s formats, libraries, fixtures, and design work. This page records that —
-whether each project is a runtime dependency, a test oracle, adapted source, or only a
-design reference.
+None of this would exist without the people who built the formats, libraries, and tools
+Archivey leans on — whether we depend on their code directly, learned from their design,
+or just used their project to check our own work. This page is where we say thanks and
+give credit properly.
 
 License texts for adapted kernels live next to the code
 (`src/archivey/internal/streams/unix_compress.py`,
@@ -12,13 +12,12 @@ License texts for adapted kernels live next to the code
 
 ## Thanks
 
-Thanks to the maintainers and contributors of every project below — especially those
-whose work Archivey learned from without taking as a dependency. Where we built our own
-parsers and stream layers instead of wrapping a library, it is so the code can plug into
-Archivey’s architecture, use modes (streaming vs random access, seekability,
-concurrency, cost reporting, diagnostics), and extraction behaviour, and keep one
-consistent API and behaviour across formats. If something is missing from this list,
-please open an issue or PR.
+Thanks to the maintainers and contributors of every project below — especially the ones
+whose work shaped our design without ever becoming a dependency. When we built our own
+parser or stream layer instead of wrapping a library, it’s usually because it needed to
+fit Archivey’s architecture and behave consistently across formats, not because the
+original wasn’t good. If we missed a project that should be here, open an issue or a
+PR — genuinely.
 
 ## Adapted source
 
