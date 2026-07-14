@@ -413,3 +413,34 @@ def test_rar_members_enforces_listing_limits() -> None:
     with open_archive(_fixture("basic_nonsolid__.rar"), config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_members"):
             reader.members()
+
+
+def test_fix_rar3_astral_truncation() -> None:
+    """RAR3 compresses names as UTF-16, which truncates non-BMP chars to a PUA/surrogate
+    code unit; the 8-bit name field is preferred when it recovers the real character."""
+    from archivey.internal.backends.rar_parser import _fix_rar3_astral_truncation
+
+    # U+1F600 truncated to U+F600 in the UTF-16 name; the UTF-8 8-bit name recovers it.
+    truncated = "emoji_\uf600.txt"
+    recovered = "emoji_\U0001f600.txt"
+    assert _fix_rar3_astral_truncation(truncated, recovered.encode()) == recovered
+    # No 8-bit/UTF-16 disagreement -> keep the decompressed name unchanged.
+    assert _fix_rar3_astral_truncation("plain.txt", b"plain.txt") == "plain.txt"
+    # A PUA char present in both fields (genuine, not a truncation) is preserved.
+    pua = "\uf600.txt"
+    assert _fix_rar3_astral_truncation(pua, pua.encode()) == pua
+    # An 8-bit field that is not valid UTF-8 cannot override; keep the UTF-16 name.
+    assert _fix_rar3_astral_truncation("name.txt", b"\xff\xfe") == "name.txt"
+
+
+def test_rar3_non_bmp_filename_not_truncated() -> None:
+    """Regression: an emoji in a RAR3 name must survive as U+1F600, not the PUA U+F600
+    the raw UTF-16 field decodes to (external fixture from the v1 reader's bug)."""
+    with open_archive(_fixture("encoding__rar4.rar")) as archive:
+        names = {m.name for m in archive.members()}
+    assert "emoji_😀.txt" in names
+    # None of the recovered names retain a surrogate/PUA truncation artifact.
+    for name in names:
+        assert not any(
+            0xE000 <= ord(c) <= 0xF8FF or 0xD800 <= ord(c) <= 0xDFFF for c in name
+        )

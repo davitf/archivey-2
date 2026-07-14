@@ -747,6 +747,32 @@ class _UnicodeFilename:
         return self.buf.decode("utf-16le", "replace")
 
 
+def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:
+    """Recover non-BMP characters truncated by the RAR3 Unicode name compressor.
+
+    RAR 2.9–4 encode filenames as compressed UTF-16, which cannot represent characters
+    outside the Basic Multilingual Plane: an emoji like ``😀`` (U+1F600) is stored as a
+    single truncated code unit (U+F600, in the Private Use Area) instead of a surrogate
+    pair. The legacy 8-bit name field carries the same name — commonly as UTF-8 — so where
+    the decompressed name shows a surrogate/PUA code unit exactly ``0x10000`` below the
+    8-bit name's character, prefer the 8-bit decoding. (Workaround ported from the v1
+    reader's ``get_non_corrupted_filename``.)
+    """
+    try:
+        utf8_name = std_name.decode("utf-8")
+    except UnicodeDecodeError:
+        return unicode_name
+    if utf8_name == unicode_name:
+        return unicode_name
+    for u16c, u8c in zip(unicode_name, utf8_name):
+        u16 = ord(u16c)
+        if (0xD800 <= u16 <= 0xDFFF or 0xE000 <= u16 <= 0xF8FF) and ord(
+            u8c
+        ) == u16 + 0x10000:
+            return utf8_name
+    return unicode_name
+
+
 # ---------------------------------------------------------------------------
 # RAR3 / RAR4 parser
 # ---------------------------------------------------------------------------
@@ -988,6 +1014,8 @@ def _parse_rar3_file_header(
         filename = u.decode()
         if u.failed:
             filename = _decode_name(orig_filename)
+        else:
+            filename = _fix_rar3_astral_truncation(filename, orig_filename)
     elif flags & _RAR3_FILE_UNICODE:
         orig_filename = name
         filename = name.decode("utf8", "replace")
