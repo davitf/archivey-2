@@ -9,28 +9,40 @@ return an `ArchiveStream` carrying stream-level presentation metadata; internal
 `backend.open()` calls MAY return raw backend streams.
 
 The seekable decompressor path SHALL be a single concrete stream class
-parameterized by a `Decoder` strategy, not a per-codec subclass hierarchy. Every
-codec — forward-only and segmented alike — SHALL plug in through **one** decoder
-protocol:
+(`DecompressorStream`) parameterized by a `Decoder` strategy, not a per-codec
+subclass hierarchy. Every codec — forward-only and segmented alike — SHALL plug in
+through **one** decoder protocol, which also owns seek-index discovery:
 
 ```python
-Segment = tuple[int, int]  # (decompressed_size, compressed_size)
+@dataclass
+class DecodeOut:
+    data: bytes
+    points: list[SeekPoint]  # absolute; empty for forward-only codecs
 
 class Decoder(Protocol):
-    def feed(self, data: bytes) -> tuple[bytes, list[Segment]]: ...
-    def flush(self) -> tuple[bytes, list[Segment]]: ...
-    def is_finished(self) -> bool: ...
-    # Default no-op; only index-bearing codecs (xz, lzip) override it.
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder: ...
+    def feed(self, chunk: bytes) -> DecodeOut: ...
+    def flush(self) -> DecodeOut: ...
+    @property
+    def finished(self) -> bool: ...
+    @property
+    def pending_error(self) -> BaseException | None: ...
+    # Default no-op; only index-bearing codecs (xz, lzip, future BGZF) override it.
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]: ...
 ```
 
-Forward-only codecs SHALL return an empty segment list and inherit the no-op
-`build_index`. The stream — not the decoder — SHALL own the buffer, position,
-compressed/decompressed cursors, seek-point table, and seek algorithm, deriving
-seek points from the segments each `feed`/`flush` reports. Adding a codec SHALL
-add a `Decoder`, and MUST NOT require a new stream subclass.
+The stream — not the decoder — SHALL own the buffer, position, seek-point table,
+and seek algorithm; it SHALL be format-agnostic, storing whatever `SeekPoint`s a
+decoder emits. The `Decoder` SHALL choose seek-point placement (member/stream start
+vs. post-realignment) and MAY perform progressive index enrichment during `feed`
+using the `inner` it retained from `recreate`, restoring `inner`'s position itself.
+Forward-only codecs SHALL emit empty `points`, keep `pending_error` `None`, and
+inherit the no-op `build_index`. Deferred truncation (e.g. unix-compress leftover
+bits) SHALL surface through `pending_error`, raised on the next empty `read` after
+delivering bytes. Adding a codec SHALL add a `Decoder` and MUST NOT require a new
+stream subclass or a `SegmentedDecompressorStream` layer.
 
 #### Scenario: wrapper surface matrix
 
@@ -43,7 +55,9 @@ add a `Decoder`, and MUST NOT require a new stream subclass.
 
 | Case | Expected |
 | --- | --- |
-| Forward-only codec (zlib, brotli, ppmd, bcj, deflate64) | Implements `feed`/`flush`/`is_finished`; `feed`/`flush` return empty segments; inherits no-op `build_index` |
-| Segmented codec (xz, lzip, unix-compress) | Reports completed `Segment`s; stream derives seek points and advances cursors |
-| Index-bearing codec (xz, lzip) | Overrides `build_index`; stream drives it demand-driven per `seekable-decompressor-streams` |
+| Forward-only codec (zlib, brotli, ppmd, bcj, deflate64) | Implements `recreate`/`feed`/`flush`/`finished`; emits empty `points`; `pending_error` `None`; inherits no-op `build_index` |
+| Segmented boundary codec (lzip, xz stream start) | `feed` emits a `SeekPoint` at the boundary with the codec's own before/after placement; stream stores it |
+| Progressive enrichment (xz block index) | `feed` scans the completed stream's footer via retained `inner` and emits block `SeekPoint`s (carrying resume `state`); restores `inner` position |
+| One-shot / forward walk (xz, lzip backward scan; future BGZF forward walk) | `build_index` returns points + size; stream drives it demand-driven per `seekable-decompressor-streams` |
+| Deferred truncation (unix-compress leftover bits) | `pending_error` set after `flush`; base raises it on the next empty `read` |
 | A new codec is added | One `Decoder` added; no new stream subclass; no `SegmentedDecompressorStream` layer |
