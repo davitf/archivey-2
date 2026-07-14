@@ -1,8 +1,8 @@
-"""Concrete raw-stream decompressor backends: zlib/deflate and Brotli.
+"""Forward-only codec decoders: zlib/deflate, Brotli, PPMd, BCJ, Deflate64.
 
-These build on the codec-agnostic ``DecompressorStream`` base in ``decompressor_stream.py``;
-the segmented XZ / lzip backends live in ``xz.py`` / ``lzip.py``. Each is forward-only here —
-random access, where available, is handled by the codec layer's optional accelerators.
+Each is a thin :class:`BaseDecoder` adapter. Construction helpers return a concrete
+:class:`~archivey.internal.streams.decompressor_stream.DecompressorStream` wrapping
+the decoder — there are no per-codec stream subclasses.
 """
 
 from __future__ import annotations
@@ -11,177 +11,205 @@ import os
 import zlib
 from typing import Any, BinaryIO
 
-from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.decompressor_stream import (
+    BaseDecoder,
+    DecodeOut,
+    DecompressorStream,
+    SeekPoint,
+)
 
 
-class ZlibDecompressorStream(DecompressorStream["zlib._Decompress"]):
-    """Inflate a raw-deflate or zlib-wrapped stream.
+class ZlibDecoder(BaseDecoder):
+    """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``."""
 
-    ``wbits`` selects the format: ``-15`` for raw deflate (ZIP/7z) and ``zlib.MAX_WBITS``
-    for a zlib-wrapped stream. Forward-only here — random access for deflate is provided
-    by the optional accelerators in the codec layer, not by this class.
-    """
-
-    def __init__(
-        self,
-        path: str | os.PathLike[str] | BinaryIO,
-        wbits: int = -15,
-    ) -> None:
+    def __init__(self, wbits: int = -15) -> None:
         self._wbits = wbits
-        super().__init__(path)
+        self._decomp = zlib.decompressobj(wbits)
 
-    def _create_decompressor(self, point: SeekPoint) -> "zlib._Decompress":
-        return zlib.decompressobj(self._wbits)
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> ZlibDecoder:
+        del point, inner
+        return ZlibDecoder(self._wbits)
 
-    def _decompress_chunk(self, chunk: bytes) -> bytes:
-        return self._decompressor.decompress(chunk)
+    def feed(self, chunk: bytes) -> DecodeOut:
+        return DecodeOut(self._decomp.decompress(chunk))
 
-    def _flush_decompressor(self) -> bytes:
-        return self._decompressor.flush()
+    def flush(self) -> DecodeOut:
+        return DecodeOut(self._decomp.flush())
 
-    def _is_decompressor_finished(self) -> bool:
-        return self._decompressor.eof
+    @property
+    def finished(self) -> bool:
+        return self._decomp.eof
 
 
-class BrotliDecompressorStream(DecompressorStream[Any]):
+class BrotliDecoder(BaseDecoder):
     """Decode a raw Brotli stream via the ``brotli`` package's incremental decompressor.
-
-    Forward-only: Brotli has no container framing or block index, so there are no seek
-    points (the base class re-decodes from the start for a backward seek). The ``brotli``
-    package exposes only an incremental ``Decompressor`` (``process()`` / ``is_finished()``)
-    with no file-like ``open()``, unlike ``zstandard`` / ``lz4`` — hence this wrapper.
 
     The ``brotli`` import is local because it's an optional dependency with no type stubs;
     the codec layer's ``_open_brotli`` gates on its presence before constructing this, so
     the import here always succeeds.
     """
 
-    def _create_decompressor(self, point: SeekPoint) -> Any:
+    def __init__(self) -> None:
         import brotli
 
-        return brotli.Decompressor()
+        self._decomp: Any = brotli.Decompressor()
 
-    def _decompress_chunk(self, chunk: bytes) -> bytes:
-        return self._decompressor.process(chunk)
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> BrotliDecoder:
+        del point, inner
+        return BrotliDecoder()
 
-    def _flush_decompressor(self) -> bytes:
+    def feed(self, chunk: bytes) -> DecodeOut:
+        return DecodeOut(self._decomp.process(chunk))
+
+    def flush(self) -> DecodeOut:
         # Brotli decodes eagerly; there is nothing buffered to flush at EOF.
-        return b""
+        return DecodeOut(b"")
 
-    def _is_decompressor_finished(self) -> bool:
-        return self._decompressor.is_finished()
+    @property
+    def finished(self) -> bool:
+        return bool(self._decomp.is_finished())
 
 
-class PpmdDecompressorStream(DecompressorStream[Any]):
-    """Decode a PPMd var.H stream via ``pyppmd.Ppmd7Decoder``.
+class PpmdDecoder(BaseDecoder):
+    """Decode a PPMd var.H stream via ``pyppmd.Ppmd7Decoder``."""
 
-    Forward-only. ``order`` / ``mem_size`` come from the 7z coder properties blob
-    (5 or 7 bytes). The ``pyppmd`` import is local — the codec layer gates presence
-    before constructing this stream.
-    """
-
-    def __init__(
-        self,
-        path: str | os.PathLike[str] | BinaryIO,
-        *,
-        order: int,
-        mem_size: int,
-    ) -> None:
-        self._order = order
-        self._mem_size = mem_size
-        super().__init__(path, codec_name="ppmd")
-
-    def _create_decompressor(self, point: SeekPoint) -> Any:
+    def __init__(self, *, order: int, mem_size: int) -> None:
         import pyppmd
 
-        return pyppmd.Ppmd7Decoder(self._order, self._mem_size)
+        self._order = order
+        self._mem_size = mem_size
+        self._decomp: Any = pyppmd.Ppmd7Decoder(order, mem_size)
 
-    def _decompress_chunk(self, chunk: bytes) -> bytes:
-        return self._decompressor.decode(chunk, -1)
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> PpmdDecoder:
+        del point, inner
+        return PpmdDecoder(order=self._order, mem_size=self._mem_size)
 
-    def _flush_decompressor(self) -> bytes:
+    def feed(self, chunk: bytes) -> DecodeOut:
+        return DecodeOut(self._decomp.decode(chunk, -1))
+
+    def flush(self) -> DecodeOut:
         # 7z PPMd streams sometimes need a trailing NUL to finish when the decoder
         # still reports needs_input at EOF (mirrors py7zr's PpmdDecompressor).
-        if (
-            getattr(self._decompressor, "needs_input", False)
-            and not self._decompressor.eof
-        ):
-            return self._decompressor.decode(b"\0", -1)
-        return b""
+        if getattr(self._decomp, "needs_input", False) and not self._decomp.eof:
+            return DecodeOut(self._decomp.decode(b"\0", -1))
+        return DecodeOut(b"")
 
-    def _is_decompressor_finished(self) -> bool:
-        return bool(self._decompressor.eof)
+    @property
+    def finished(self) -> bool:
+        return bool(self._decomp.eof)
 
 
-class BcjFilterStream(DecompressorStream[Any]):
-    """Apply a ``pybcj`` BCJ branch filter to an already-decompressed byte stream.
+class BcjDecoder(BaseDecoder):
+    """Apply a ``pybcj`` BCJ branch filter to an already-decompressed byte stream."""
 
-    Used for 7z **LZMA1+BCJ** folders: combining LZMA1 and BCJ in one liblzma
-    ``FORMAT_RAW`` chain can silently drop the final look-ahead bytes when LZMA1
-    lacks an end-of-stream marker (common from the 7-Zip CLI). Staging LZMA1 via
-    stdlib and BCJ via ``pybcj`` avoids that. LZMA2+BCJ stays on the stdlib path.
+    def __init__(self, *, decoder_attr: str, unpack_size: int) -> None:
+        import bcj
 
-    ``unpack_size`` is the coder's output size from the 7z folder; ``pybcj`` uses it
-    to flush look-ahead at the end of the stream. The ``bcj`` import is local — the
-    7z reader gates presence before constructing this stream.
-    """
-
-    def __init__(
-        self,
-        path: str | os.PathLike[str] | BinaryIO,
-        *,
-        decoder_attr: str,
-        unpack_size: int,
-        seekable: bool = False,
-    ) -> None:
         self._decoder_attr = decoder_attr
         self._unpack_size = unpack_size
         self._produced = 0
-        super().__init__(path, codec_name="bcj", seekable=seekable)
+        decoder_cls = getattr(bcj, decoder_attr)
+        self._decomp: Any = decoder_cls(unpack_size)
 
-    def _create_decompressor(self, point: SeekPoint) -> Any:
-        import bcj
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> BcjDecoder:
+        del point, inner
+        return BcjDecoder(
+            decoder_attr=self._decoder_attr, unpack_size=self._unpack_size
+        )
 
-        del point  # BCJ has no mid-stream resume state; seekers restart from origin.
-        self._produced = 0
-        # Remaining expected output equals the full coder size when restarting from 0.
-        decoder_cls = getattr(bcj, self._decoder_attr)
-        return decoder_cls(self._unpack_size)
-
-    def _decompress_chunk(self, chunk: bytes) -> bytes:
-        out = self._decompressor.decode(chunk)
+    def feed(self, chunk: bytes) -> DecodeOut:
+        out = self._decomp.decode(chunk)
         self._produced += len(out)
-        return out
+        return DecodeOut(out)
 
-    def _flush_decompressor(self) -> bytes:
-        out = self._decompressor.decode(b"")
+    def flush(self) -> DecodeOut:
+        out = self._decomp.decode(b"")
         self._produced += len(out)
-        return out
+        return DecodeOut(out)
 
-    def _is_decompressor_finished(self) -> bool:
+    @property
+    def finished(self) -> bool:
         return self._produced >= self._unpack_size
 
 
-class Deflate64DecompressorStream(DecompressorStream[Any]):
-    """Decode a Deflate64 stream via ``inflate64.Inflater``.
+class Deflate64Decoder(BaseDecoder):
+    """Decode a Deflate64 stream via ``inflate64.Inflater``."""
 
-    Forward-only. The ``inflate64`` package exposes an incremental ``Inflater``
-    (``inflate()`` / ``eof``) with no file-like open — same shape as Brotli/PPMd.
-    """
-
-    def _create_decompressor(self, point: SeekPoint) -> Any:
+    def __init__(self) -> None:
         import inflate64
 
-        return inflate64.Inflater()
+        self._decomp: Any = inflate64.Inflater()
 
-    def _decompress_chunk(self, chunk: bytes) -> bytes:
-        return self._decompressor.inflate(chunk)
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Deflate64Decoder:
+        del point, inner
+        return Deflate64Decoder()
 
-    def _flush_decompressor(self) -> bytes:
+    def feed(self, chunk: bytes) -> DecodeOut:
+        return DecodeOut(self._decomp.inflate(chunk))
+
+    def flush(self) -> DecodeOut:
         # Flush remaining state with an empty feed (mirrors py7zr's Deflate64Decompressor).
-        if self._decompressor.eof:
-            return b""
-        return self._decompressor.inflate(b"")
+        if self._decomp.eof:
+            return DecodeOut(b"")
+        return DecodeOut(self._decomp.inflate(b""))
 
-    def _is_decompressor_finished(self) -> bool:
-        return bool(self._decompressor.eof)
+    @property
+    def finished(self) -> bool:
+        return bool(self._decomp.eof)
+
+
+def ZlibDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    wbits: int = -15,
+) -> DecompressorStream:
+    """Inflate a raw-deflate or zlib-wrapped stream (forward-only)."""
+    return DecompressorStream(path, make_decoder=lambda _p, _i: ZlibDecoder(wbits))
+
+
+def BrotliDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+) -> DecompressorStream:
+    """Decode a raw Brotli stream (forward-only)."""
+    return DecompressorStream(path, make_decoder=lambda _p, _i: BrotliDecoder())
+
+
+def PpmdDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    *,
+    order: int,
+    mem_size: int,
+) -> DecompressorStream:
+    """Decode a PPMd var.H stream (forward-only)."""
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: PpmdDecoder(order=order, mem_size=mem_size),
+        codec_name="ppmd",
+    )
+
+
+def BcjFilterStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    *,
+    decoder_attr: str,
+    unpack_size: int,
+    seekable: bool = False,
+    collector: DiagnosticCollector | None = None,
+) -> DecompressorStream:
+    """Apply a ``pybcj`` BCJ branch filter (forward-only)."""
+    del collector  # accepted for call-site uniformity; BCJ emits no diagnostics today
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: BcjDecoder(
+            decoder_attr=decoder_attr, unpack_size=unpack_size
+        ),
+        codec_name="bcj",
+        seekable=seekable,
+    )
+
+
+def Deflate64DecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+) -> DecompressorStream:
+    """Decode a Deflate64 stream (forward-only)."""
+    return DecompressorStream(path, make_decoder=lambda _p, _i: Deflate64Decoder())

@@ -27,8 +27,11 @@ from typing import BinaryIO
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
+    BaseDecoder,
+    DecodeOut,
+    DecompressorStream,
     SeekPoint,
-    SegmentedDecompressorStream,
+    build_index_backwards,
 )
 
 _MAGIC = b"LZIP"
@@ -228,40 +231,90 @@ class _LzipState:
         return (int(data_size), int(member_size))
 
 
-class LzipDecompressorStream(SegmentedDecompressorStream[_LzipState]):
-    """Seekable lzip decompressor backed by stdlib ``lzma``.
-
-    Builds a seek-point table from member headers/trailers — progressively during forward
-    reads, and via a one-shot backward trailer scan for SEEK_END / backward seeks.
-    """
+class LzipDecoder(BaseDecoder):
+    """Lzip decoder: member-start seek points (before-placement) + trailer index."""
 
     def __init__(
         self,
-        path: str | os.PathLike[str] | BinaryIO,
+        state: _LzipState,
         *,
-        collector: DiagnosticCollector | None = None,
-        seekable: bool = True,
+        comp_cursor: int,
+        decomp_cursor: int,
+        collector: DiagnosticCollector | None,
     ) -> None:
-        super().__init__(
-            path, collector=collector, codec_name="lzip", seekable=seekable
+        self._state = state
+        self._comp_cursor = comp_cursor
+        self._decomp_cursor = decomp_cursor
+        self._collector = collector
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
+        del inner
+        return LzipDecoder(
+            _LzipState(),
+            comp_cursor=point.compressed_offset,
+            decomp_cursor=point.decompressed_offset,
+            collector=self._collector,
         )
 
-    def _make_decompressor(self, point: SeekPoint) -> _LzipState:
-        return _LzipState()
+    def feed(self, chunk: bytes) -> DecodeOut:
+        data, units = self._state.feed(chunk)
+        return DecodeOut(data, self._points_for_units(units))
 
-    def _on_completed_segments(self, units: list[tuple[int, int]]) -> None:
+    def flush(self) -> DecodeOut:
+        data, units = self._state.flush()
+        return DecodeOut(data, self._points_for_units(units))
+
+    @property
+    def finished(self) -> bool:
+        return self._state.is_finished()
+
+    def _points_for_units(self, units: list[tuple[int, int]]) -> list[SeekPoint]:
+        points: list[SeekPoint] = []
         for decompressed_size, compressed_size in units:
-            self.add_seek_points([SeekPoint(self._decomp_cursor, self._comp_cursor)])
+            # Before-placement: point at member start, then advance cursors.
+            points.append(SeekPoint(self._decomp_cursor, self._comp_cursor))
             self._comp_cursor += compressed_size
             self._decomp_cursor += decompressed_size
+        return points
 
-    def _build_index(self, last_known: SeekPoint) -> tuple[list[SeekPoint], int | None]:
-        return self._build_index_backwards(
+    def build_index(
+        self, inner: BinaryIO, last_known: SeekPoint
+    ) -> tuple[list[SeekPoint], int | None]:
+        return build_index_backwards(
+            inner,
             last_known,
             _read_index_backwards,
             lambda m: SeekPoint(m.decompressed_start, m.compressed_start),
             "Lzip backwards index scan failed (the file may have trailing data after the "
             "last member, which is valid per the lzip spec); falling back to sequential "
             "decompression. Reason: %s",
+            codec_name="lzip",
+            collector=self._collector,
             scan="backwards_trailer",
         )
+
+
+def LzipDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    *,
+    collector: DiagnosticCollector | None = None,
+    seekable: bool = True,
+) -> DecompressorStream:
+    """Seekable lzip decompressor backed by stdlib ``lzma``."""
+
+    def make_decoder(point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
+        del inner
+        return LzipDecoder(
+            _LzipState(),
+            comp_cursor=point.compressed_offset,
+            decomp_cursor=point.decompressed_offset,
+            collector=collector,
+        )
+
+    return DecompressorStream(
+        path,
+        make_decoder=make_decoder,
+        collector=collector,
+        codec_name="lzip",
+        seekable=seekable,
+    )
