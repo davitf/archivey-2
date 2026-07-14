@@ -1,0 +1,77 @@
+{
+  "solid_decode_factor": 2.0,
+  "cases": {
+    "zip_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 4,
+      "unpacked_bytes": null,
+      "notes": ""
+    },
+    "zip_read_all": {
+      "bytes_decompressed": 32768,
+      "source_seek_count": 28,
+      "unpacked_bytes": 32768,
+      "notes": ""
+    },
+    "zip_extract": {
+      "bytes_decompressed": 32768,
+      "source_seek_count": 28,
+      "unpacked_bytes": null,
+      "notes": ""
+    },
+    "tar_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 8,
+      "unpacked_bytes": null,
+      "notes": ""
+    },
+    "tar_read_all": {
+      "bytes_decompressed": 32768,
+      "source_seek_count": 16,
+      "unpacked_bytes": 32768,
+      "notes": "plain uncompressed TAR vs tarfile r: (not .tar.gz)"
+    },
+    "gzip_read_all": {
+      "bytes_decompressed": 65536,
+      "source_seek_count": 1,
+      "unpacked_bytes": 65536,
+      "notes": ""
+    },
+    "targz_read_all_accel_off": {
+      "bytes_decompressed": 32768,
+      "source_seek_count": 0,
+      "unpacked_bytes": 32768,
+      "notes": "stdlib gzip/bz2 codec; accelerators forced OFF"
+    },
+    "targz_read_all_accel_on": {
+      "bytes_decompressed": 32768,
+      "source_seek_count": 0,
+      "unpacked_bytes": 32768,
+      "notes": "rapidgzip accelerator ON; vs accel_off 0.77\u00d7"
+    },
+    "tarbz2_read_all_accel_off": {
+      "bytes_decompressed": 32768,
+      "source_seek_count": 0,
+      "unpacked_bytes": 32768,
+      "notes": "stdlib gzip/bz2 codec; accelerators forced OFF"
+    },
+    "tarbz2_read_all_accel_on": {
+      "bytes_decompressed": 32768,
+      "source_seek_count": 0,
+      "unpacked_bytes": 32768,
+      "notes": "rapidgzip accelerator ON; vs accel_off 0.32\u00d7"
+    },
+    "sevenzip_solid_sequential": {
+      "bytes_decompressed": 2097152,
+      "source_seek_count": 4,
+      "unpacked_bytes": 2097152,
+      "notes": "solid invariant: bytes_decompressed <= unpacked * factor"
+    },
+    "sevenzip_solid_random": {
+      "bytes_decompressed": 34603008,
+      "source_seek_count": 35,
+      "unpacked_bytes": 2097152,
+      "notes": "re-decode recorded; not gated"
+    }
+  }
+}

@@ -44,6 +44,11 @@ from archivey.internal.extraction_types import (
     OverwritePolicy,
 )
 from archivey.internal.listing_limits import ListingLimitTracker
+from archivey.internal.measurement import (
+    ByteCounter,
+    SeekCounter,
+    measurement_enabled,
+)
 from archivey.internal.naming import (
     _warn_for_bidirectional_controls,
     resolve_link_target_name,
@@ -52,7 +57,11 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.reader_state import ReaderState
 from archivey.internal.selection import normalize_member_selector
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.counting import CountingReader
+from archivey.internal.streams.counting import (
+    CountingReader,
+    OutputCountingStream,
+    SeekCountingStream,
+)
 from archivey.internal.streams.streamtools import (
     is_seekable,
     is_stream,
@@ -248,6 +257,15 @@ class BaseArchiveReader(ArchiveReader):
         # a stream source; backs compressed_bytes_consumed (the live decompression-ratio
         # denominator for a source whose total size is not cheaply knowable).
         self._compressed_input_counter: CountingReader | None = None
+        # Opt-in benchmark counters (see archivey.internal.measurement). When measurement
+        # is off these stay None and wrap helpers are identity — zero hot-path overhead.
+        self._measure = measurement_enabled()
+        self._decompressed_counter: ByteCounter | None = (
+            ByteCounter() if self._measure else None
+        )
+        self._seek_counter: SeekCounter | None = (
+            SeekCounter() if self._measure else None
+        )
         self._members_cache: list[ArchiveMember] | None = None
         self._members_by_name_lists: dict[str, list[ArchiveMember]] | None = None
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
@@ -504,6 +522,53 @@ class BaseArchiveReader(ArchiveReader):
         """
         return None
 
+    def _track_decompressed(self, stream: BinaryIO) -> BinaryIO:
+        """Wrap ``stream`` to count decoded/output bytes when measurement is on.
+
+        Backends call this on the stream that *is* the decompressor (or stored-data)
+        output: member streams for ZIP/TAR/single-file, folder/solid-block streams for
+        solid 7z/RAR. Identity when measurement is off.
+        """
+        counter = self._decompressed_counter
+        if counter is None:
+            return stream
+        return OutputCountingStream(stream, counter)
+
+    def _seek_handle_wrapper(self) -> Callable[[BinaryIO], BinaryIO] | None:
+        """Return a ``SharedSource(wrap_handle=…)`` callback when measurement is on."""
+        counter = self._seek_counter
+        if counter is None:
+            return None
+        return lambda handle: SeekCountingStream(handle, counter)
+
+    def _track_source_seeks(self, source: Path | BinaryIO) -> Path | BinaryIO:
+        """Wrap a seekable BinaryIO source to count seeks; leave paths unchanged.
+
+        Path sources are instrumented via :meth:`_seek_handle_wrapper` on
+        ``SharedSource``, or by opening the path and wrapping before a library that
+        takes a file object (ZIP). Identity when measurement is off.
+        """
+        counter = self._seek_counter
+        if counter is None or not is_stream(source):
+            return source
+        return SeekCountingStream(source, counter)
+
+    @property
+    def bytes_decompressed(self) -> int:
+        """Total decoded/output bytes counted while measurement was enabled, else 0.
+
+        Distinct from :attr:`compressed_bytes_consumed` (compressed *input* pressure for
+        the live ratio guard). Internal / harness-facing — not on the public ABC.
+        """
+        c = self._decompressed_counter
+        return c.total if c is not None else 0
+
+    @property
+    def source_seek_count(self) -> int:
+        """Number of ``seek`` calls on the instrumented archive source, else 0."""
+        c = self._seek_counter
+        return c.count if c is not None else 0
+
     def _wrap_member_stream(
         self,
         inner: BinaryIO,
@@ -511,6 +576,7 @@ class BaseArchiveReader(ArchiveReader):
         *,
         lazy: bool = False,
         size: int | None = None,
+        track_output: bool = True,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -522,7 +588,14 @@ class BaseArchiveReader(ArchiveReader):
 
         Seekability is gated by ``MemberStreams.SEEKABLE``: without it the wrapper reports
         non-seekable even when ``inner`` could seek.
+
+        When measurement is on and ``track_output`` is true (the default), decoded bytes
+        delivered through this handle are added to :attr:`bytes_decompressed`. Solid
+        backends that already count at the folder/block decode layer pass
+        ``track_output=False`` to avoid double-counting.
         """
+        if track_output:
+            inner = self._track_decompressed(inner)
         return ArchiveStream(
             lambda: inner,
             translate=self._translate_exception,

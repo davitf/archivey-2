@@ -1,0 +1,77 @@
+name: Benchmark wall-time
+
+# Wall-time drift tracker for the VISION perf budget. Off the PR path (shared-runner
+# ratios are too noisy to block merges) and NOT run per-PR (that taxed every PR with a
+# multi-minute realistic run). Instead: a daily schedule with a change guard — the
+# expensive run fires only when the default branch actually moved since the previous
+# nightly, so bursts of activity get next-morning signal while long dormant stretches
+# cost only the ~15s guard step. `workflow_dispatch` forces a run on demand.
+#
+# The PR-blocking structural gate (seek baselines + solid decode-once) lives in
+# `ci.yml` (`benchmark` job) and runs on every PR.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: benchmark-wall
+  cancel-in-progress: true
+
+jobs:
+  benchmark-wall:
+    name: Full realistic wall-time (nightly if changed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide whether to run (skip unchanged nightly)
+        id: guard
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — running."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Scheduled: run only if the default-branch HEAD was committed since roughly
+          # the previous nightly. Cron is daily; 25h gives a 1h margin so a commit made
+          # just before yesterday's run isn't missed. During dormant stretches HEAD is
+          # older than the window and the expensive job is skipped.
+          last=$(git log -1 --format=%ct)
+          age=$(( $(date +%s) - last ))
+          if [ "$age" -lt 90000 ]; then
+            echo "HEAD committed ${age}s ago (< 25h) — changes since last run; running."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "HEAD committed ${age}s ago (>= 25h) — no changes since last run; skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install uv
+        if: steps.guard.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        if: steps.guard.outputs.run == 'true'
+        run: uv python install 3.11
+      - name: Sync (dev + all extras)
+        if: steps.guard.outputs.run == 'true'
+        run: uv sync --group dev --extra all
+      # Not continue-on-error: off the PR path, so a red run is a useful notification.
+      # `--mode full` only hard-fails on a real structural regression or the ~10× wall
+      # sanity ceiling; VISION-band jitter is printed, not failed — so noise won't flake.
+      - name: Full realistic wall-time run
+        if: steps.guard.outputs.run == 'true'
+        run: >
+          uv run --no-sync python -m benchmarks.harness
+          --mode full --scale realistic
+          --json-out benchmark-wall-realistic.json
+      - name: Upload wall-time results
+        if: always() && steps.guard.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-wall-realistic
+          path: benchmark-wall-realistic.json

@@ -336,6 +336,9 @@ class ZipReader(BaseArchiveReader):
         self._handle_lock: threading.Lock | None = (
             threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
         )
+        # When measurement is on we open a Path ourselves to install a seek counter;
+        # ZipFile does not close a caller-supplied file object, so we own it.
+        self._owned_fp: BinaryIO | None = None
 
         if is_stream(source) and not is_seekable(source):
             raise StreamNotSeekableError(
@@ -352,13 +355,21 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
 
+        zip_source: Path | BinaryIO = source
+        if self._measure:
+            if isinstance(source, Path):
+                self._owned_fp = open(source, "rb")
+                zip_source = self._track_source_seeks(self._owned_fp)
+            else:
+                zip_source = self._track_source_seeks(source)
+
         try:
             # `metadata_encoding` (3.11+) decodes names stored without the UTF-8 flag with
             # the caller's encoding instead of the cp437 default (UTF-8-flagged names are
             # unaffected). Reading the central directory here decodes every member name.
             # typeshed types ZipFile too narrowly; a binary stream is valid here.
             self._archive: zipfile.ZipFile = zipfile.ZipFile(  # type: ignore[arg-type]
-                source, "r", metadata_encoding=encoding
+                zip_source, "r", metadata_encoding=encoding
             )
         except zipfile.BadZipFile as exc:
             if _looks_like_multivolume(exc):
@@ -997,6 +1008,9 @@ class ZipReader(BaseArchiveReader):
     def _close_archive(self) -> None:
         with self._handle_guard():
             self._archive.close()
+        if self._owned_fp is not None:
+            self._owned_fp.close()
+            self._owned_fp = None
 
 
 def _looks_like_multivolume(exc: zipfile.BadZipFile) -> bool:

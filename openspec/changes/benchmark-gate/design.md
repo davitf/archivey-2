@@ -37,17 +37,37 @@ Nothing gates it. `compressed-streams` already "counts compressed bytes consumed
 - **Instrumentation source.** Reuse the `compressed-streams` compressed-bytes counter for
   bytes-decompressed; add a lightweight seek counter on the source-facing stream wrapper
   if one is not already exposed. Measurement must not perturb the hot path when disabled.
-- **Baselines are recorded, reviewed artifacts.** A committed `benchmarks/baselines/*.json`
-  keyed by (format, op) holds the reference ratios/counts; the gate compares against them
-  with a tolerance band. Updating a baseline is a reviewed diff (like a snapshot test).
+- **Baselines are recorded, reviewed artifacts.** A committed
+  `benchmarks/baselines/structural.json` keyed by case holds seek/byte reference
+  counts; the PR gate compares seek counts against them with slack. There is
+  **no** committed `wall_time.json` — cold-pass ci ratios were misleading, and
+  shared-runner noise makes wall-ratio regression gates flake.
 - **Corpus.** Reuse the declarative test corpus plus a small set of deliberately-large
   solid archives generated on demand (not committed), so the O(n²) signal is visible.
 
-## Open questions (resolve during apply)
+## Open questions (resolved during apply)
 
-- Exact tolerance band for wall-time ratios on CI runners (start generous, tighten once
-  the runner variance is measured).
-- Whether the gate runs on every PR or nightly + on-demand (wall-time noise on shared CI
-  may argue for structural-invariant gating on PRs and full wall-time nightly).
-- Whether `tracemalloc`/peak-RSS becomes a fourth axis now or later (metadata-bomb bounds
-  interact with it — cross-ref threat-model O1).
+- **Wall-time tolerance:** sanity ceiling `WALL_RATIO_BUDGET=10` only in `--mode full`.
+  No committed wall-ratio baseline. VISION ≤1.3× / ~2× is informational on realistic
+  full runs (printed, not hard-fail).
+- **Wall-time cadence — change-guarded nightly (2026-07-14, maintainer):** structural
+  invariants (seek ≤ bounds + solid decode-once) block every PR via the `benchmark` CI job
+  + `tests/test_benchmark_gate.py`; decode-once is also a first-class unit test
+  (`test_measurement.py`, 7z + committed solid RAR, ×1.1 bound). Full wall-time mode runs
+  in a **separate `benchmark-wall.yml` workflow** on a daily `schedule` + `workflow_dispatch`,
+  with a **change guard**: the expensive realistic run fires only when the default-branch
+  HEAD was committed within ~25h (i.e. there were changes since the previous nightly);
+  otherwise the job skips after a ~15s guard step. Rationale, in order of what was rejected:
+  _per-PR_ taxed every PR with a multi-minute realistic run; _plain always-on nightly_
+  wastes runs on unchanged code during this project's long dormant stretches; _change-guarded
+  nightly_ gives next-morning signal after a burst at ~zero cost while dormant. It is off the
+  PR path (never blocks a merge); with no committed wall baseline the run hard-fails (and thus
+  notifies) only on a real structural regression or the ~10× `WALL_RATIO_BUDGET` sanity
+  ceiling — VISION-band jitter is printed, not failed. `workflow_dispatch` forces a run.
+- **Peak memory / tracemalloc:** deferred — fourth axis later (cross-ref threat-model O1).
+
+## Instrumentation note (apply clarification)
+
+`compressed_bytes_consumed` remains the compressed-*input* live-ratio counter.
+`bytes_decompressed` is a separate opt-in output counter (folder/member decode layer).
+Both coexist; measurement is off by default (`enable_measurement()` context).
