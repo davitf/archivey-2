@@ -28,7 +28,9 @@ implementation.
 - **O2 — deterministic collision handling on all platforms:** the coordinator tracks a
   casefold+NFC key per written path, treats a collision as a first-class event on **every**
   OS (not just case-insensitive ones), applies `OverwritePolicy` deliberately, and records
-  it on the `ExtractionResult`. Scopes a future `OverwritePolicy.RENAME` (`name (1)`).
+  it on the `ExtractionResult`. Adds `OverwritePolicy.RENAME` (`name (1)`) — in scope here
+  because it reuses this collision map, and the CLI's `extract` wants rename-on-collision
+  parity with `unzip`.
 - **O3/O4 — portable-name enforcement:** under `STRICT`, reject Windows-reserved names,
   trailing dots/spaces, and `:` on **every** platform (portability is part of no-surprises);
   `TRUSTED` allows what the local OS allows; `STANDARD` sits between (decision below).
@@ -50,7 +52,7 @@ implementation.
 
 - `safe-extraction`: add cross-platform name-safety behavior across the
   `ExtractionPolicy` levels (collision determinism, reserved/mangled-name rejection,
-  portable-name normalization); surface collisions on `ExtractionResult`; scope
+  portable-name normalization); surface collisions on `ExtractionResult`; add
   `OverwritePolicy.RENAME`.
 
 ## Impact
@@ -58,8 +60,8 @@ implementation.
 - `ExtractionCoordinator` (`internal/extraction.py`): casefold+NFC collision map; a
   pre-write portable-name check/transform keyed on `ExtractionPolicy`.
 - Public surface: STRICT may now *reject or rewrite* names it previously wrote as-is
-  (deliberate, documented); `ExtractionResult` gains a collision signal; possible new
-  `OverwritePolicy.RENAME` (follow-up).
+  (deliberate, documented); `ExtractionResult` gains a collision signal; new
+  `OverwritePolicy.RENAME` (`name (1)`), useful for the CLI's `extract`.
 - Tests: cross-platform matrix (collision, reserved, trailing dot/space, `:`,
   surrogateescape) asserted deterministically on all platforms (not gated on the runner OS).
 - **Spike marker:** the O7 normalization scheme is an open design decision; O2/O3/O4 can

@@ -7,7 +7,7 @@
 
 - [ ] 2.1 Add a `casefold(NFC(path))` → written-path map to `ExtractionCoordinator`
 - [ ] 2.2 Route casefold/NFC collisions through `OverwritePolicy` on all platforms; record on `ExtractionResult`
-- [ ] 2.3 Scope `OverwritePolicy.RENAME` (spec + stub; full impl may be a follow-up)
+- [ ] 2.3 Add `OverwritePolicy.RENAME` (`name (1)`) using the collision map; lands before the CLI phase so `extract` can offer rename-on-collision
 
 ## 3. O3/O4 — portable-name enforcement
 

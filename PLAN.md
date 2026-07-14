@@ -81,21 +81,32 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
    Windows-reserved / trailing-dot-space / `:` rejection under STRICT (O3/O4), and the
    **open decision** of how to handle unrepresentable names (O7: reject vs reversible
    portable-escape). O2/O3/O4 can land before the O7 scheme is settled. Coordinates with
-   the in-flight `adversarial-string-corpus-contract` (bidi/NUL) — no overlap.
-4. **`zip-native-codec-streams`** — route ZIP member decompression through archivey's
-   shared codec layer (keeping stdlib `zipfile` for central-directory parsing for now).
-   Unlocks DEFLATE64/ZSTD/PPMD ZIP members (the codec backends + registry entries already
-   exist; only the wiring is missing), unifies verification/error-translation, and is the
-   stepping-stone toward a native ZIP parser. **In `0.2.0`** (widens ZIP compatibility
-   beyond stdlib). Encrypted-member decryption stays on `zipfile` initially.
-5. **Release bundle** (existing Phase 7 + Phase 10 work, plus threat-model O5 follow-ups) —
+   the in-flight `adversarial-string-corpus-contract` (bidi/NUL) — no overlap. **Includes
+   `OverwritePolicy.RENAME`** (`name (1)`), which reuses the O2 collision map — sequence
+   this **before the CLI** so `extract` can offer rename-on-collision (parity with `unzip`).
+4. **`zip-native-codec-streams`** → then **`zip-aes-decryption`** — route ZIP member
+   decompression through archivey's shared codec layer (keeping stdlib `zipfile` for
+   central-directory parsing for now). Unlocks DEFLATE64/ZSTD/PPMD ZIP members (the codec
+   backends + registry entries already exist; only the wiring is missing), unifies
+   verification/error-translation, and is the stepping-stone toward a native ZIP parser.
+   `zip-native-codec-streams` deliberately keeps **encrypted** members on the `zipfile`
+   path; **`zip-aes-decryption`** then closes the real compat gap — archivey cannot read
+   **WinZip AES** (method 99 / `0x9901`) ZIPs *at all* today (stdlib `zipfile` has no AES),
+   so it composes AE-1/AE-2 decryption (`[crypto]` AES-CTR + PBKDF2 + HMAC-SHA1) onto the
+   raw-data path. Both **in `0.2.0`** (widen ZIP compatibility beyond stdlib).
+5. **`rar-file-version-members`** (already proposed) — land it **in `0.2.0` because it is
+   BREAKING to the listing contract** (WinRAR `-ver` history rows appear in `members()`).
+   Pre-release that break is free; post-release it costs users. Niche and small, so low
+   priority *within* 0.2.0 — but it should not slip past the tag for the breaking reason.
+6. **Release bundle** (existing Phase 7 + Phase 10 work, plus threat-model O5 follow-ups) —
    what makes it a *public* release: the **CLI** (`archivey list|test|extract`, the
-   "unzip that can't be zip-slipped" demo — after the benchmark gate); **packaging
-   finalize** (extras→capability, PyPI metadata, drop `0.2.0.dev0`); **doc sweep +
-   migration guide** (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey);
-   **`SECURITY.md` + disclosure process** and an **explicit free-threading support
-   statement** (the `3.13t` job runs core-only — document the matrix rather than leaving
-   it implicit). Tag `0.2.0` after this.
+   "unzip that can't be zip-slipped" demo — after the benchmark gate *and* after
+   `cross-platform-name-safety` so `RENAME` exists); **packaging finalize**
+   (extras→capability, PyPI metadata, drop `0.2.0.dev0`); **doc sweep + migration guide**
+   (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey); **`SECURITY.md` +
+   disclosure process** and an **explicit free-threading support statement** (the `3.13t`
+   job runs core-only — document the matrix rather than leaving it implicit). Tag `0.2.0`
+   after this.
 
 **Deferred to a later version (not `0.2.0`):**
 - **Salvage / best-effort read mode** — the founding use case (index truncated/corrupt
@@ -112,8 +123,10 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
 
 New OpenSpec changes registered for this sequencing: `benchmark-gate`,
 `stored-digest-dedupe-parity`, `rar-blake2sp-verification`, `zip-native-codec-streams`,
-`cross-platform-name-safety`. (Provenance: the `review/` deep-review set — `roadmap.md`,
-`SUMMARY.md`, `QUESTIONS.md` — and `docs/internal/threat-model.md` O1–O7.)
+`zip-aes-decryption`, `cross-platform-name-safety` (which also lands
+`OverwritePolicy.RENAME`). Plus the already-proposed `rar-file-version-members`, pulled
+into 0.2.0 because it is breaking. (Provenance: the `review/` deep-review set —
+`roadmap.md`, `SUMMARY.md`, `QUESTIONS.md` — and `docs/internal/threat-model.md` O1–O7.)
 
 ---
 

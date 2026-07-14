@@ -11,8 +11,9 @@ rules compose with — and never bypass — the non-bypassable path-safety const
 written destination and treat a second member resolving to the same key as an existing
 destination on **all** platforms, applying `OverwritePolicy` deliberately and recording the
 collision on the member's `ExtractionResult`. `REPLACE` SHALL NOT silently merge distinct
-members on case-insensitive filesystems. `OverwritePolicy.RENAME` (extract as `name (1)`)
-is reserved for intentional-duplicate archives.
+members on case-insensitive filesystems. `OverwritePolicy` SHALL add a `RENAME` member that
+extracts a colliding entry under a deterministic derived name (`name (1)`, `name (2)`, …)
+using the same collision key, for archives with intentional duplicates.
 
 **Portable-name enforcement (O3/O4).** Under `STRICT`, Windows-reserved device names
 (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`; case-insensitive, with or
@@ -38,3 +39,4 @@ decide. Either way the outcome SHALL be deterministic and typed (never a bare `O
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
 | Surrogateescape `caf\udce9.txt` on APFS | Deterministic typed outcome per the chosen O7 scheme | Faithful bytes attempted; OS decides |
 | `REPLACE` with a casefold collision | Collision handled per policy, not a silent merge | Local OS behavior |
+| `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` deterministically | Same |
