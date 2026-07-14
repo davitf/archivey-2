@@ -91,8 +91,8 @@ Keep a clear layering:
 
 | Module | Owns |
 |---|---|
-| `sevenzip_methods.py` (new) | Method registry + lookups (`folder_is_encrypted`, `compression_method_for_coder`) |
-| `sevenzip_parser.py` | Signature/header structure only; returns plain or encoded header descriptors |
+| `sevenzip_methods.py` (new) | Method registry + method-id lookups (`lookup`/`require`, `is_bcj`/`is_lzma_family`) — a **pure leaf** importing no other 7z module |
+| `sevenzip_parser.py` | Signature/header structure only; returns plain or encoded header descriptors. Also hosts the folder-level helpers `folder_is_encrypted` / `compression_method_for_coder` (typed against the folder/coder dataclasses; they call `methods.lookup`) |
 | `sevenzip_pipeline.py` (new, or kept as top-level funcs moved out of reader) | `open_folder_pipeline`, `decode_folder_to_bytes` |
 | `sevenzip_reader.py` | `SevenZipReader` / backend: passwords, members, solid, open |
 
@@ -152,34 +152,58 @@ Register each logical method once; BCJ short (`0x04`–`0x09`) and long
 
 IDs stay `bytes` (variable-length) — not an `IntEnum`.
 
+The registry is a **pure leaf**: it imports only `Codec` / `CompressionAlgorithm`
+and knows nothing of the parser dataclasses. The two folder-level helpers that need
+those types — `folder_is_encrypted(folder)` and `compression_method_for_coder(coder)`
+— therefore live in `sevenzip_parser` and call `lookup`, so they stay fully typed
+against `SevenZipFolder` / `SevenZipCoder` instead of `object` + `getattr` (which
+would be the price of putting them in the leaf and importing parser types back).
+
 **Rejected:** Four parallel dicts “because concerns differ.” **Rejected:**
-Per-coder strategy classes for ~15 methods.
+Per-coder strategy classes for ~15 methods. **Rejected:** keeping the folder helpers
+in the registry with `folder: object` / `getattr` typing to dodge the import cycle.
 
-### 4. Registry-driven pipeline with explicit stage grouping
+### 4. Registry-driven pipeline: pure `plan_folder` + `execute` fold
+
+Split the folder decode into a pure planning pass and a stream-opening fold, so the
+coder-grouping / staging decisions are inspectable and never interleaved with I/O:
 
 ```
-assert linear 1-in/1-out + bind wiring
-stream = source
-for stage in group_coders(folder):   # skip COPY; batch LZMA_FAMILY runs
-    stream = handlers[stage.kind](stream, stage, ctx)
-return stream
+plan_folder(folder) -> list[_Stage]     # PURE: validate wiring, flatten the chain
+    # _AesStage | _CodecStage | _LzmaChainStage(filters, cap_size) | _BcjStage(attr, size)
+
+open_folder_pipeline(source, folder, …):
+    stages = plan_folder(folder)
+    if any(_BcjStage in stages): _require_pybcj()   # fail fast, before opening a stream
+    stream = source
+    for stage in stages:                            # the only I/O-touching code
+        stream = _execute_stage(stream, stage, …)
+    return stream
 ```
 
-Keep these special cases (they are format/stdlib realities), just stop nesting
-rescans:
+Planning flattens the special cases into concrete stage *data* — crucially, the
+LZMA1+BCJ workaround becomes a capped `_LzmaChainStage` plus per-BCJ `_BcjStage`s
+rather than control flow, so `execute` needs no rescans of `has_lzma1/has_lzma2/has_bcj`:
 
-| Case | Handler behavior |
+| Case | Emitted stages |
 |---|---|
-| LZMA2 ± Delta ± BCJ | One stdlib `FORMAT_RAW` filter chain (`reversed` filters) |
-| LZMA1 + BCJ | Stdlib LZMA1 (+ non-BCJ filters), then pybcj per BCJ stage + slice caps |
-| BCJ alone | pybcj stages |
-| AES | `open_aes_decrypt_stream` |
-| SINGLE | `open_codec_stream(method.codec, …)` |
-| BCJ2 / unknown | `UnsupportedFeatureError` |
+| LZMA2 ± Delta ± BCJ | one `_LzmaChainStage` (BCJ folded into the `FORMAT_RAW` filter list; no pybcj) |
+| LZMA1 + BCJ | `_LzmaChainStage(cap_size=run output)` per stdlib LZMA1/Delta run + `_BcjStage` per BCJ (BPO-21872) |
+| BCJ alone | `_BcjStage` each |
+| AES | `_AesStage` → `open_aes_decrypt_stream` |
+| SINGLE | `_CodecStage` → `open_codec_stream(method.codec, …)` |
+| COPY | no stage |
+| BCJ2 / non-linear / multi-in-out | `UnsupportedFeatureError` (raised during planning) |
 
-**Rejected:** “Always use pybcj for BCJ” (LZMA2+BCJ is core stdlib per
-`format-7z`). **Rejected:** Combined liblzma for LZMA1+BCJ (BPO-21872 silent
-truncation).
+`_require_pybcj()` now runs up front when the plan contains a `_BcjStage` — before any
+stream opens. The only observable change is precedence in the pathological
+"encrypted + LZMA1+BCJ + pybcj absent" case (missing-pybcj now surfaces before the
+password prompt); every non-pathological path is byte-identical.
+
+**Rejected:** “Always use pybcj for BCJ” (LZMA2+BCJ is core stdlib per `format-7z`).
+**Rejected:** Combined liblzma for LZMA1+BCJ (BPO-21872 silent truncation).
+**Rejected:** `group_coders` returning stages that a handler then re-dispatches into a
+nested LZMA-family helper (the original shape; it rescanned the run inside execute).
 
 ### 5. Parser cleanup without rewriting the format walk
 
@@ -226,4 +250,14 @@ the methods/pipeline/reader split (docs-only; not required to apply).
 before. The half-size aspiration was not met — module-boundary + two-phase API
 overhead offset the table collapse — but the structural goals (one registry, no
 `decode_folder` DI, registry-driven pipeline) landed. Further shrinkage would cut
-into the irreducible header walk or safety comments; deferred.
+into the irreducible header walk or safety comments; deferred. Clarity, not size, is
+the win here (see the two follow-up refinements below).
+
+**Follow-up refinements (post-merge of the initial implementation):** two clarity/
+correctness cleanups landed on top of the first implementation, both behavior-preserving
+and verified against the full suite + all three dependency legs:
+- Typed the folder helpers in the parser instead of `folder: object` + `getattr`
+  in the registry (Decision 3), keeping the registry a pure leaf without erasing types.
+- Split `open_folder_pipeline` into the pure `plan_folder` + `execute` fold (Decision 4),
+  flattening the LZMA1+BCJ staging into stage data so no `has_lzma1/has_lzma2/has_bcj`
+  rescan remains inside the execute path.

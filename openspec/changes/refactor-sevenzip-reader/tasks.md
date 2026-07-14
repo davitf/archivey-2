@@ -44,6 +44,17 @@
 - [x] 4.3 Confirm public `SevenZipReadBackend` registration and seekable-source reject are
       unchanged.
 
+## 4b. Follow-up clarity/correctness refinements (behavior-preserving)
+
+- [x] 4b.1 Type the folder helpers (`folder_is_encrypted`, `compression_method_for_coder`)
+      in `sevenzip_parser` against the folder/coder dataclasses instead of `object` +
+      `getattr` in the registry; keep `sevenzip_methods` a pure leaf (design §1, §3).
+- [x] 4b.2 Split `open_folder_pipeline` into pure `plan_folder(folder) -> list[_Stage]`
+      + `_execute_stage` fold; flatten LZMA1+BCJ into capped `_LzmaChainStage` +
+      `_BcjStage` so execute needs no `has_lzma1/has_lzma2/has_bcj` rescan (design §4).
+- [x] 4b.3 Verify the 7-Zip CLI LZMA1+BCJ liblzma-truncation test and py7zr LZMA1+BCJ
+      roundtrip pass under the flattened staging; run all three dependency legs.
+
 ## 5. Verify
 
 - [x] 5.1 `uv run --no-sync pytest tests/test_sevenzip_reader.py tests/test_sevenzip_oracle.py tests/test_py7zr_corpus.py tests/test_codecs.py tests/test_password.py -q`
