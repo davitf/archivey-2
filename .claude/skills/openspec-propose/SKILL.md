@@ -15,6 +15,7 @@ I'll create a change with artifacts:
 - proposal.md (what & why)
 - design.md (how)
 - tasks.md (implementation steps)
+- brief.md (a one-minute, spoken-word-friendly summary of the change)
 
 When ready to implement, run /opsx:apply
 
@@ -48,7 +49,7 @@ When ready to implement, run /opsx:apply
    - `artifacts`: list of all artifacts with their status and dependencies
    - `planningHome`, `changeRoot`, `artifactPaths`, and `actionContext`: path and scope context. Use these instead of assuming repo-local paths.
 
-4. **Create artifacts in sequence until apply-ready**
+4. **Create artifacts in sequence until apply-ready, then write the brief**
 
    Use the **TodoWrite tool** to track progress through the artifacts.
 
@@ -74,11 +75,25 @@ When ready to implement, run /opsx:apply
    b. **Continue until all `applyRequires` artifacts are complete**
       - After creating each artifact, re-run `openspec status --change "<name>" --json`
       - Check if every artifact ID in `applyRequires` has `status: "done"` in the artifacts array
-      - Stop when all `applyRequires` artifacts are done
+      - Stop the apply-required loop when all `applyRequires` artifacts are done
 
    c. **If an artifact requires user input** (unclear context):
       - Use **AskUserQuestion tool** to clarify
       - Then continue with creation
+
+   d. **Always generate the `brief` artifact last, after the apply-required loop.**
+      - `brief` is deliberately **not** in `applyRequires` (it never blocks implementation), so
+        the loop above stops before it — generate it explicitly here. It becomes `ready` once
+        `proposal`/`design`/`specs`/`tasks` exist.
+      - Get its instructions the same way (`openspec instructions brief --change "<name>" --json`),
+        read `proposal.md`/`design.md`/`tasks.md` for context, and write `brief.md` to its
+        `resolvedOutputPath`.
+      - It is a spoken-word-friendly summary the maintainer can read — or have read aloud by
+        text-to-speech — in under a minute: **prose only, no tables/code, symbols spelled out,
+        ~200–280 words**, with the `Status` / `Why it matters` / `What it does` / `Decided` /
+        `Your call later` / `Bottom line` lead-ins from the template. Do **not** introduce new
+        decisions — derive it entirely from the other artifacts, and state up front in `Status`
+        whether the change is a spike with an open decision or ready to implement.
 
 5. **Show final status**
    ```bash
@@ -89,7 +104,7 @@ When ready to implement, run /opsx:apply
 
 After completing all artifacts, summarize:
 - Change name and location
-- List of artifacts created with brief descriptions
+- List of artifacts created with brief descriptions (including `brief.md`, the one-minute summary)
 - What's ready: "All artifacts created! Ready for implementation."
 - Prompt: "Run `/opsx:apply` or ask me to implement to start working on the tasks."
 
@@ -105,6 +120,8 @@ After completing all artifacts, summarize:
 
 **Guardrails**
 - Create ALL artifacts needed for implementation (as defined by schema's `apply.requires`)
+- Always generate `brief.md` too, even though it is not in `apply.requires` — it is
+  informational, never gates implementation, and is derived from the other artifacts
 - Always read dependency artifacts before creating a new one
 - If context is critically unclear, ask the user - but prefer making reasonable decisions to keep momentum
 - If a change with that name already exists, ask if user wants to continue it or create a new one

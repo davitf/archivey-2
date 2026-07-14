@@ -144,6 +144,43 @@ artifacts:
       - specs
       - design
 
+  - id: brief
+    generates: brief.md
+    description: A spoken-word-friendly "coffee brief" summarizing the change in under a minute
+    template: brief.md
+    instruction: |
+      Write a short brief that the maintainer can read — or have read aloud by
+      text-to-speech — in under a minute, instead of opening the full proposal/
+      design/specs. Derive it entirely from proposal.md, design.md, and tasks.md;
+      do NOT introduce decisions that are not already in those files.
+
+      Hard format rules (this is consumed by ear):
+      - Prose only. NO tables, NO code blocks/fences, NO scenario matrices.
+      - Minimal symbols; spell things out (say "about 1.3 times stdlib", not
+        "≤1.3×") where a symbol would read badly aloud. Format names are fine.
+      - Aim for ~200–280 words. Skimmable via the bold lead-ins below.
+
+      Sections (keep the bold lead-ins; fill each in a sentence or two):
+      - **Title line**: `# <change-name> — <one-line what it does>`
+      - **Status**: one of "Ready to implement" / "Exploration (spike)" /
+        "Blocked on a decision"; then dependencies (Depends on … / Blocks …),
+        whether it is breaking, and a rough effort (small/medium/large).
+      - **Why it matters**: the gap, tied to VISION or the threat model if relevant.
+      - **What it does**: plain-language summary.
+      - **Decided**: the settled decisions worth knowing (the things otherwise
+        buried in design.md), in prose.
+      - **Your call later**: open questions needing a decision during
+        implementation — or "None — the design is settled."
+      - **Bottom line**: one sentence on where it sits and how urgent.
+
+      Keep it honest: if the change is a spike with an unresolved core decision,
+      say so up front in Status.
+    requires:
+      - proposal
+      - design
+      - specs
+      - tasks
+
 apply:
   requires: [tasks]
   tracks: tasks.md
