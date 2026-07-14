@@ -184,7 +184,7 @@ class SevenZipReader(BaseArchiveReader):
                 archive_name=archive_name,
                 source_format=ArchiveFormat.SEVEN_Z,
             )
-        self._shared = SharedSource(source)
+        self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         self._volume_count = getattr(source, "volume_count", 1)
         self._archive = self._load_archive()
         self._folder_pack_starts = self._folder_pack_start_indices(self._archive)
@@ -288,8 +288,12 @@ class SevenZipReader(BaseArchiveReader):
                     if solid is not None:
                         solid.close()
                     current_folder = raw.folder_index
+                    # Count at the folder decode layer (solid invariant); member wraps
+                    # pass track_output=False so sequential reads are not double-counted.
                     solid = SolidBlockReader(
-                        self._open_folder_stream(raw.folder_index, member)
+                        self._track_decompressed(
+                            self._open_folder_stream(raw.folder_index, member)
+                        )
                     )
                 assert solid is not None
                 member_stream = self._member_stream_from_solid(solid, member)
@@ -437,10 +441,11 @@ class SevenZipReader(BaseArchiveReader):
         member: ArchiveMember | None,
         *,
         seekable: bool = False,
+        track_output: bool = False,
     ) -> BinaryIO:
         folder = self._archive.folders[folder_index]
         password = self._password_for_folder(folder_index, member)
-        return open_folder_pipeline(
+        stream = open_folder_pipeline(
             self._folder_pack_view(folder_index),
             folder,
             password=password,
@@ -449,6 +454,11 @@ class SevenZipReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
             seekable=seekable,
         )
+        # Random ``open()`` passes track_output=True so each from-start folder decode
+        # counts; sequential ``_iter_with_data`` already wraps once around SolidBlockReader.
+        if track_output:
+            return self._track_decompressed(stream)
+        return stream
 
     def _open_folder_pipeline(
         self,
@@ -542,7 +552,9 @@ class SevenZipReader(BaseArchiveReader):
                 member=member,
                 archive_name=self._archive_name,
             )
-        return self._wrap_member_stream(inner, member.name, size=member.size)
+        return self._wrap_member_stream(
+            inner, member.name, size=member.size, track_output=False
+        )
 
     def _member_stream_from_solid(
         self, solid: SolidBlockReader, member: ArchiveMember
@@ -577,7 +589,10 @@ class SevenZipReader(BaseArchiveReader):
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)
         folder_stream = self._open_folder_stream(
-            raw.folder_index, member, seekable=want_seekable
+            raw.folder_index,
+            member,
+            seekable=want_seekable,
+            track_output=True,
         )
         try:
             if want_seekable and is_seekable(folder_stream):

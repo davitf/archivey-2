@@ -1,0 +1,53 @@
+{
+  "solid_decode_factor": 2.0,
+  "cases": {
+    "zip_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 4,
+      "unpacked_bytes": null,
+      "notes": ""
+    },
+    "zip_read_all": {
+      "bytes_decompressed": 32784,
+      "source_seek_count": 28,
+      "unpacked_bytes": 32784,
+      "notes": ""
+    },
+    "zip_extract": {
+      "bytes_decompressed": 32784,
+      "source_seek_count": 28,
+      "unpacked_bytes": null,
+      "notes": ""
+    },
+    "tar_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 8,
+      "unpacked_bytes": null,
+      "notes": ""
+    },
+    "tar_read_all": {
+      "bytes_decompressed": 32784,
+      "source_seek_count": 16,
+      "unpacked_bytes": 32784,
+      "notes": ""
+    },
+    "gzip_read_all": {
+      "bytes_decompressed": 65538,
+      "source_seek_count": 1,
+      "unpacked_bytes": 65538,
+      "notes": ""
+    },
+    "sevenzip_solid_sequential": {
+      "bytes_decompressed": 2097238,
+      "source_seek_count": 4,
+      "unpacked_bytes": 2097238,
+      "notes": "solid invariant: bytes_decompressed <= unpacked * factor"
+    },
+    "sevenzip_solid_random": {
+      "bytes_decompressed": 34604317,
+      "source_seek_count": 35,
+      "unpacked_bytes": 2097238,
+      "notes": "re-decode recorded; not gated"
+    }
+  }
+}

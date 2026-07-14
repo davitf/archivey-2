@@ -43,11 +43,18 @@ Nothing gates it. `compressed-streams` already "counts compressed bytes consumed
 - **Corpus.** Reuse the declarative test corpus plus a small set of deliberately-large
   solid archives generated on demand (not committed), so the O(n²) signal is visible.
 
-## Open questions (resolve during apply)
+## Open questions (resolved during apply)
 
-- Exact tolerance band for wall-time ratios on CI runners (start generous, tighten once
-  the runner variance is measured).
-- Whether the gate runs on every PR or nightly + on-demand (wall-time noise on shared CI
-  may argue for structural-invariant gating on PRs and full wall-time nightly).
-- Whether `tracemalloc`/peak-RSS becomes a fourth axis now or later (metadata-bomb bounds
-  interact with it — cross-ref threat-model O1).
+- **Wall-time tolerance:** start generous — sanity ceiling `WALL_RATIO_BUDGET=10` on
+  micro corpora; regression gating is recorded baseline + `WALL_RATIO_TOLERANCE=1.0`.
+  Tighten once runner variance is measured.
+- **PR vs nightly:** structural invariants (bytes-decompressed / seek ≤ bounds) on every
+  PR via the `benchmark` CI job + `tests/test_benchmark_gate.py`. Full wall-time mode is
+  opt-in (`python -m benchmarks.harness --mode full`) for nightly/on-demand.
+- **Peak memory / tracemalloc:** deferred — fourth axis later (cross-ref threat-model O1).
+
+## Instrumentation note (apply clarification)
+
+`compressed_bytes_consumed` remains the compressed-*input* live-ratio counter.
+`bytes_decompressed` is a separate opt-in output counter (folder/member decode layer).
+Both coexist; measurement is off by default (`enable_measurement()` context).

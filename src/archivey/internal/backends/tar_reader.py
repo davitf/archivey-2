@@ -54,6 +54,7 @@ from archivey.internal.streams.streamtools import (
     ensure_binaryio,
     ensure_bufferedio,
     is_seekable,
+    is_stream,
 )
 from archivey.types import (
     ArchiveFormat,
@@ -200,6 +201,8 @@ class TarReader(BaseArchiveReader):
             # can see compressed bytes consumed; a path / seekable stream (cheap size known)
             # is returned unchanged and uses the static ratio.
             counted = self._wrap_compressed_input(source)
+            if self._measure and is_stream(counted):
+                counted = self._track_source_seeks(counted)
             codec_source: str | BinaryIO = (
                 str(counted) if isinstance(counted, Path) else counted
             )
@@ -219,8 +222,19 @@ class TarReader(BaseArchiveReader):
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
             return self._tarfile_open(fileobj=self._owned_stream, streaming=streaming)
         if isinstance(source, Path):
+            if self._measure:
+                # Instrument seeks on the plain-tar handle; we own the fp for close.
+                self._owned_stream = cast(
+                    "BinaryIO", self._track_source_seeks(open(source, "rb"))
+                )
+                return self._tarfile_open(
+                    fileobj=self._owned_stream, streaming=streaming
+                )
             return self._tarfile_open(name=str(source), streaming=streaming)
-        return self._tarfile_open(fileobj=source, streaming=streaming)
+        return self._tarfile_open(
+            fileobj=cast("BinaryIO", self._track_source_seeks(source)),
+            streaming=streaming,
+        )
 
     def _tarfile_open(
         self,

@@ -32,7 +32,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from archivey.internal.streams.streamtools.binaryio import (
     is_filename,
@@ -47,6 +47,10 @@ class SharedSource:
 
     Construct from a :class:`~pathlib.Path` (opens and owns the handle) or an already-open
     seekable ``BinaryIO`` (does **not** take ownership — the caller closes it).
+
+    ``wrap_handle`` (optional) is applied once to the underlying file handle after it is
+    opened or accepted — used by the benchmark harness to install a seek counter without
+    changing view semantics.
     """
 
     def __init__(
@@ -54,6 +58,7 @@ class SharedSource:
         source: Path | BinaryIO,
         *,
         independent_handles: bool = False,
+        wrap_handle: Callable[[BinaryIO], BinaryIO] | None = None,
     ) -> None:
         # Seam for true parallel I/O on path sources (fresh FD per view). Dormant:
         # ignored for now; every view shares ``_handle`` + ``_lock``. See module docstring.
@@ -76,6 +81,9 @@ class SharedSource:
                 raise ValueError("SharedSource requires a seekable BinaryIO source")
             self._handle = source
             self._size = source_byte_size(source)
+
+        if wrap_handle is not None:
+            self._handle = wrap_handle(self._handle)
 
     @property
     def closed(self) -> bool:

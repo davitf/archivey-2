@@ -212,6 +212,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_shared_source(self, source: Path | BinaryIO) -> SharedSource:
         """Build SharedSource, discovering/materializing volumes as needed."""
+        wrap = self._seek_handle_wrapper()
         if isinstance(source, Path):
             siblings = discover_volume_siblings(source)
             if siblings is not None and len(siblings) > 1:
@@ -220,10 +221,10 @@ class RarReader(BaseArchiveReader):
                 self._archive_path = siblings[0]
                 concat = ConcatenatedFile(siblings)
                 self._owned_concat = concat
-                return SharedSource(concat)
+                return SharedSource(concat, wrap_handle=wrap)
             self._volume_paths = [source]
             self._archive_path = source
-            return SharedSource(source)
+            return SharedSource(source, wrap_handle=wrap)
 
         if isinstance(source, ConcatenatedFile):
             paths = source.volume_paths
@@ -232,15 +233,15 @@ class RarReader(BaseArchiveReader):
                 self._volume_paths = paths
                 self._volume_count = len(paths)
                 self._archive_path = paths[0]
-                return SharedSource(source)
+                return SharedSource(source, wrap_handle=wrap)
             # Stream volumes: materialize for unrar; parse from originals.
             items = source.volume_items
             self._volume_count = len(items)
             self._materialize_stream_volumes(items)
-            return SharedSource(source)
+            return SharedSource(source, wrap_handle=wrap)
 
         # Single non-path stream — materialize later when unrar is needed.
-        return SharedSource(source)
+        return SharedSource(source, wrap_handle=wrap)
 
     def _materialize_stream_volumes(self, items: Sequence[Path | BinaryIO]) -> None:
         """Write ordered volumes into a temp dir with ``name.partN.rar`` names."""
@@ -440,7 +441,7 @@ class RarReader(BaseArchiveReader):
         path = self._ensure_archive_path()
         proc, stdout = open_unrar_p(path, password=self._unrar_password)
         self._live_unrar = proc
-        owned: BinaryIO = _UnrarOwnedStream(stdout, proc)
+        owned: BinaryIO = self._track_decompressed(_UnrarOwnedStream(stdout, proc))
         solid = SolidBlockReader(owned)
         previous: ArchiveStream | None = None
         pipe_offset = 0
@@ -462,7 +463,7 @@ class RarReader(BaseArchiveReader):
                         "RAR solid stream ended before the requested member"
                     ) from exc
                 pipe_offset += size
-                stream = self._wrap_payload_stream(inner, member)
+                stream = self._wrap_payload_stream(inner, member, track_output=False)
                 previous = stream
                 yield member, stream
         finally:
@@ -472,7 +473,11 @@ class RarReader(BaseArchiveReader):
             self._live_unrar = None
 
     def _wrap_payload_stream(
-        self, inner: BinaryIO, member: ArchiveMember
+        self,
+        inner: BinaryIO,
+        member: ArchiveMember,
+        *,
+        track_output: bool = True,
     ) -> ArchiveStream:
         if member.hashes:
             inner = VerifyingStream(
@@ -482,7 +487,9 @@ class RarReader(BaseArchiveReader):
                 member=member,
                 archive_name=self._archive_name,
             )
-        return self._wrap_member_stream(inner, member.name, size=member.size)
+        return self._wrap_member_stream(
+            inner, member.name, size=member.size, track_output=track_output
+        )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
         return (
@@ -540,11 +547,12 @@ class RarReader(BaseArchiveReader):
             member=raw.filename,
         )
         self._live_unrar = proc
-        owned = _UnrarOwnedStream(stdout, proc)
+        owned = self._track_decompressed(_UnrarOwnedStream(stdout, proc))
         size = _member_stream_size(member)
         sliced: BinaryIO = SlicingStream(owned, length=size, own_source=True)
         try:
-            return self._wrap_payload_stream(sliced, member)
+            # Folder/pipe output already counted; avoid double-counting at the member wrap.
+            return self._wrap_payload_stream(sliced, member, track_output=False)
         except BaseException:
             sliced.close()
             self._live_unrar = None

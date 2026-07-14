@@ -35,9 +35,9 @@ jobs:
       - name: Sync (dev tooling)
         run: uv sync --group dev
       - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/
+        run: uv run ruff check src/ tests/ scripts/ benchmarks/
       - name: Ruff format
-        run: uv run ruff format --check src/ tests/ scripts/
+        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
@@ -186,3 +186,28 @@ jobs:
           uv run --python 3.13t --no-sync
           --with pytest --with pytest-timeout
           pytest -m concurrent_reader -q --timeout=60 -o addopts=
+
+  # Performance budget gate (VISION): structural invariants on every PR (bytes
+  # decompressed / seek counts). Wall-time ratios vs stdlib are noisier on shared
+  # runners — run with --mode full on a schedule or manually.
+  benchmark:
+    name: Benchmark gate (structural)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Sync (dev + all extras)
+        run: uv sync --group dev --extra all
+      - name: Install unrar (solid RAR fixtures when rar builder absent still need reader)
+        run: sudo apt-get update && sudo apt-get install -y unrar || true
+      - name: Structural benchmark gate
+        run: uv run --no-sync python -m benchmarks.harness --mode structural
+      - name: Pytest structural gate
+        run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q

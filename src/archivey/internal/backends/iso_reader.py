@@ -282,14 +282,19 @@ class IsoReader(BaseArchiveReader):
             )
 
         self._iso = pycdlib.PyCdlib()
+        self._owned_fp: BinaryIO | None = None
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
         with self._translated_errors():
             with self._handle_guard():
                 if isinstance(source, Path):
-                    self._iso.open(str(source))
+                    if self._measure:
+                        self._owned_fp = open(source, "rb")
+                        self._iso.open_fp(self._track_source_seeks(self._owned_fp))
+                    else:
+                        self._iso.open(str(source))
                 else:
-                    self._iso.open_fp(source)
+                    self._iso.open_fp(self._track_source_seeks(source))
 
         # Auto-select the richest namespace: Rock Ridge > Joliet > plain ISO 9660.
         if self._iso.has_rock_ridge():
@@ -504,6 +509,9 @@ class IsoReader(BaseArchiveReader):
     def _close_archive(self) -> None:
         with self._handle_guard():
             self._iso.close()
+        if self._owned_fp is not None:
+            self._owned_fp.close()
+            self._owned_fp = None
 
 
 class IsoReadBackend(ReadBackend):
