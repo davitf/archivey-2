@@ -31,6 +31,13 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - Unsupported compression methods: listing succeeds; reading raises
   `UnsupportedFeatureError`.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
+  (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
+  Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise falls back
+  to a configurable legacy encoding (`ArchiveyConfig.zip_unflagged_fallback_encoding`,
+  default `cp437`). When UTF-8 is inferred for an unflagged name, a
+  `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
+  `open_archive` is authoritative — it is used verbatim and disables the sniff.
 - ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
   [costs](costs.md).
 

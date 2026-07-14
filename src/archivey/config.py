@@ -100,6 +100,11 @@ class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     strict_archive_eof: bool = False
+    # Legacy encoding for a ZIP member name stored without the UTF-8 flag whose bytes are
+    # also not valid UTF-8 (the sniff prefers UTF-8 first). Default cp437 per APPNOTE; set a
+    # local codepage (e.g. "cp1252", "shift_jis") for a known-legacy corpus. An explicit
+    # ``encoding=`` on ``open_archive`` overrides this and disables the sniff entirely.
+    zip_unflagged_fallback_encoding: str = "cp437"
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)

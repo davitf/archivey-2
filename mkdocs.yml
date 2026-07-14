@@ -30,6 +30,7 @@ nav:
       - Threat model: internal/threat-model.md
       - Compression-library analysis: internal/library-analysis.md
       - Known issues: internal/known-issues.md
+      - Release-repo cutover: internal/release-repo-cutover.md
   - Grab-bag:
       - Overview: grab-bag/index.md
       - SPEC (historical): grab-bag/SPEC.md

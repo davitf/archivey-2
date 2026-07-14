@@ -1,0 +1,110 @@
+name: Publish
+
+# Build the sdist + wheel and publish to PyPI, triggered by pushing a version tag
+# (`vX.Y.Z`, including pre-releases like `v0.2.0a1`). Ported from the v1/dev repo's
+# `deploy-pypi.yml` and modernised:
+#   - builds with `uv build` (the repo's standard tooling) instead of bare hatch;
+#   - publishes via PyPI **Trusted Publishing (OIDC)** — no API token secret to rotate;
+#   - guards on `github.repository` so only the canonical repos ever publish, and a
+#     fork that pushes a tag builds but uploads nothing.
+#
+# The version is a STATIC literal in pyproject.toml (`[project].version`), not derived
+# from the tag, so the `build` job fails loudly if the pushed tag disagrees with the
+# packaged version — i.e. you forgot to bump `version` or drop the `.devN` suffix.
+#
+# ── One-time setup required before the first release ────────────────────────────────
+# Trusted Publishing must be configured on the index side (Settings are per-project):
+#   • PyPI  (https://pypi.org/manage/account/publishing/):
+#       project `archivey`, owner `davitf`, repo `archivey`,
+#       workflow `publish.yml`, environment `pypi`.
+#   • TestPyPI (https://test.pypi.org/manage/account/publishing/):
+#       project `archivey`, owner `davitf`, repo `archivey-2`,
+#       workflow `publish.yml`, environment `testpypi`.
+# Also create the GitHub environments `pypi` and `testpypi` (Settings → Environments)
+# and add protection rules (e.g. required reviewer) to the `pypi` one.
+#
+# ── Repo-rename note ────────────────────────────────────────────────────────────────
+# The `pypi` job is gated on `davitf/archivey`; the `testpypi` job on `davitf/archivey-2`.
+# While this repo is still named `archivey-2`, tag pushes go to TestPyPI. After the repo
+# is renamed to `archivey`, tag pushes go to real PyPI, and the `testpypi` job stops
+# matching (drop it, or repoint it, once the rename lands).
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Verify tag matches packaged version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(ls dist/*.whl | sed -E 's|.*/archivey-([^-]+)-.*|\1|')"
+          echo "tag version = $tag"
+          echo "built version = $pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' does not match packaged version '$pkg'. Bump [project].version in pyproject.toml (and drop any .devN suffix) before tagging." >&2
+            exit 1
+          fi
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    name: Publish to PyPI
+    needs: [build]
+    # Real PyPI only from the canonical repo, and only for an actual version tag.
+    if: github.repository == 'davitf/archivey' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC token for Trusted Publishing
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  testpypi:
+    name: Publish to TestPyPI
+    needs: [build]
+    # Dry-run target while this repo is still `archivey-2` (tag pushes and manual dispatch).
+    if: github.repository == 'davitf/archivey-2'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

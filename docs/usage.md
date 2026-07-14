@@ -87,6 +87,41 @@ archivey.open_archive("secret.zip", password=["likely", "fallback"])
 List the most likely password first — especially for 7z, where each wrong candidate pays
 key derivation.
 
+## Error handling
+
+Every failure that comes from the archive or its environment derives from
+[`ArchiveyError`][archivey.ArchiveyError], so one `except` covers them all:
+
+```python
+from archivey import open_archive, ArchiveyError
+
+try:
+    with open_archive("maybe.7z") as reader:
+        reader.extract_all("out/")
+except ArchiveyError as e:
+    print("could not process archive:", e)
+```
+
+React to specific cases with the subtypes:
+
+| Exception | Raised when |
+| --- | --- |
+| `OpenError` | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError`, `StreamNotSeekableError` (random-access open on a pipe) |
+| `EncryptionError` | a password is required, missing, or wrong |
+| `CorruptionError` / `TruncatedError` | the archive is malformed or cut short |
+| `PackageNotInstalledError` | an optional package or tool is absent (e.g. the `unrar` binary for RAR data) |
+| `FilterRejectionError` | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError` |
+| `ResourceLimitError` | a listing/extraction safety limit (member count, size) was exceeded |
+
+Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
+overlapping stream without `MemberStreams.CONCURRENT`, using a closed reader, and similar
+misuse raise [`ArchiveyUsageError`][archivey.ArchiveyUsageError] (e.g.
+`ConcurrentAccessError`), which is **not** an `ArchiveyError` — so a blanket
+`except ArchiveyError` never silently swallows a bug. (When an *archive* genuinely can't
+provide an operation — seeking a non-seekable member, a format that can't list — that is a
+real `ArchiveyError`: `UnsupportedOperationError`.) See
+[decision 0012](decisions/0012-usage-errors-outside-archiveyerror.md).
+
 ## Next
 
 - [Access costs and pitfalls](costs.md) — solid archives, seeking, concurrency
