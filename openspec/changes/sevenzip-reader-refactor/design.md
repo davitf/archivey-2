@@ -80,59 +80,130 @@ parser (`sevenzip_parser.py:885`) computes the folder's output size from bind
 pairs; reader (`sevenzip_reader.py:808`) sums member sizes for a folder index.
 Same name, different concept — a real readability trap.
 
+**Sibling implementation (PR #93, `refactor-sevenzip-reader`).** A parallel,
+already-merged-green implementation attacked the same problem. It is empirical
+evidence, and two of its results steer this design:
+
+| PR #93 result | What we take / change |
+| --- | --- |
+| Split into **four** modules (`methods` + `parser` + `pipeline` + `reader`); line count **grew** ~2.1k → ~2.3k — "module-boundary + two-phase API overhead offset the table collapse." | Keep **three** modules (registry + parser + reader); pipeline stays in the reader. Drop the "half size" target as disproven. |
+| `aliases: tuple[bytes, ...]` on the registry row + `_bcj()`/`_single()` table constructors register each BCJ method once (long id as alias). | Adopt verbatim — tightest table shape. |
+| Concrete two-phase API: `Signature`, `PlainHeader \| EncodedHeader`, `read_signature_and_next_header`, `parse_header_block`, `materialize_archive`, `encoded_folder_slices`, plus a thin all-in-one `parse_sevenzip_archive(fp, password=...)` for harnesses. | Adopt this shape (Decision 2) — proven, minimal harness diff. |
+| Table-driven `FILES_INFO` handlers. | Adopt (Decision 5). |
+| Registry helpers typed as `folder_is_encrypted(folder: object)` with `getattr(...)`, to dodge a registry→parser import cycle. | **Reject** — keep them typed on the parser dataclasses (Decision 1); the cycle is avoided by keeping the registry a pure leaf, not by erasing types. |
+| `group_coders` returns stages, but each LZMA-family stage re-dispatches into a nested `_open_lzma_family` that re-scans `has_lzma1/has_lzma2/has_bcj`. | Go further (Decision 3): the planner **flattens** the LZMA1+BCJ sub-staging into concrete stages so `execute` is a rescan-free fold — with a fallback to PR #93's proven grouped shape if flattening proves fragile. |
+
 ## Decisions
 
-### 1. New module `sevenzip_coders.py` holding one `Coder` registry
-A `@dataclass(frozen=True) Coder` with fields for `method` (id bytes), `algo:
-CompressionAlgorithm`, `kind: CoderKind`, `codec: Codec | None`, and
-`pybcj_decoder: str | None`; a module-level `CODERS: dict[bytes, Coder]` plus a
-small `lookup(method) -> Coder | None`. `CoderKind` is an `Enum`
-(`COPY`, `LZMA_FILTER`, `SINGLE_STAGE`, `AES`, `REJECT`). Both parser and reader
-import from here; the reader stops importing `_METHOD_*` from the parser. Named
-`_METHOD_*` constants that other code references by name are re-exported from the
-new module (or kept as thin aliases) so imports stay stable where convenient.
+### 1. New leaf module `sevenzip_coders.py` holding one method registry
+A `@dataclass(frozen=True, slots=True) SevenZipMethod` with `method_id: bytes`,
+`algorithm: CompressionAlgorithm`, `kind: MethodKind`, `codec: Codec | None`,
+`lzma_filter_id: int | None`, `pybcj_attr: str | None`, and
+`aliases: tuple[bytes, ...] = ()`. `MethodKind` is an `Enum`
+(`COPY`, `AES`, `BCJ2`, `LZMA_FAMILY`, `SINGLE`). A tuple of rows built with
+`_bcj(short, long, …)` / `_single(id, algo, codec)` helpers is indexed into
+`_BY_ID` (each row under its `method_id` and every alias). Public surface:
+`lookup(id) -> SevenZipMethod | None`, `require(id) -> SevenZipMethod` (raises
+`UnsupportedFeatureError` naming the id), the `METHOD_COPY/LZMA/LZMA2/DELTA/AES`
+singletons, and small predicates `is_bcj`/`is_lzma_family`.
+
+**The module is a pure leaf**: it imports only `Codec`, `CompressionAlgorithm`,
+`CompressionMethod`, and `lzma`. It does **not** import the parser dataclasses.
+Therefore the folder-level helpers `folder_is_encrypted(folder: SevenZipFolder)`
+and `compression_method_for_coder(coder: SevenZipCoder)` stay **typed** in the
+parser and call `coders.lookup` — avoiding the registry→parser import cycle
+*without* the sibling PR's `object`/`getattr` type erasure. The reader stops
+importing `_METHOD_*` from the parser and imports from `sevenzip_coders` instead.
 
 **Rejected:** keeping the table in the parser (reader keeps reaching into parser
 privates); attaching the data to the `Codec` enum in `codecs.py` (mixes 7z
-method-id semantics into the shared codec layer, which other formats use).
+method-id semantics into the shared codec layer other formats use); PR #93's
+untyped `folder: object` helpers (loses the types the current code has).
 
 ### 2. Invert control: pure parser + reader-driven header loop
-Parser exposes pure functions over a header buffer — read the signature/next
-header to `bytes`, parse a header buffer into an intermediate result, and expose
-whether it is an encoded header plus its `_StreamsInfo`. The reader loop:
+Adopt the sibling PR's concrete two-phase shape (proven, minimal harness diff).
+Parser exposes pure structure functions with an explicit sum type for the header:
+```python
+def read_signature_and_next_header(fp) -> Signature        # magic + CRCs + all bounds
+def parse_header_block(data: bytes) -> PlainHeader | EncodedHeader
+def materialize_archive(sig, plain, *, is_header_encrypted) -> SevenZipArchive
+def empty_archive(sig) -> SevenZipArchive
+def encoded_folder_slices(enc: EncodedHeader) -> Iterable[tuple[folder, offset, csize, usize]]
 ```
-hdr_bytes = parser.read_next_header(fp)          # signature + CRC + bounds
-parsed    = parser.parse_header_buffer(hdr_bytes)
-while parsed.is_encoded_header:                   # bounded (cap small N)
-    hdr_bytes = self._decode_encoded_header(parsed.encoded_streams)
-    parsed    = parser.parse_header_buffer(hdr_bytes)
-archive = parser.finalize(parsed)                # map files→folders, build SevenZipArchive
+The reader drives the loop (bounded; nested encoded headers still terminate):
 ```
-`parse_sevenzip_archive` loses `decode_folder=`. `DecodeFolder` is deleted.
+sig   = parse.read_signature_and_next_header(fp)
+block = parse.parse_header_block(sig.header_data)
+while isinstance(block, EncodedHeader):
+    raw   = self._decode_encoded_header(sig, block)   # pipeline + passwords + key cache
+    block = parse.parse_header_block(raw)
+archive = parse.materialize_archive(sig, block, is_header_encrypted=…)
+```
+`parse_sevenzip_archive` loses `decode_folder=`. `DecodeFolder` is deleted. A thin
+all-in-one `parse_sevenzip_archive(fp, *, password=None, key_cache=None, …)` that
+runs this loop with a single static password is kept for the fuzz/atheris harnesses,
+so their diff is a one-line call-site change, not a rewrite.
 
 **Rejected:** keeping the callback but moving it to a Protocol (still one impl,
 still threaded through the parser); making the parser import the reader lazily
-(hides the cycle instead of removing it).
+(hides the cycle instead of removing it); a boolean `is_encoded_header` flag on one
+intermediate struct (the `PlainHeader | EncodedHeader` sum type reads better and
+type-narrows).
 
 ### 3. Split `open_folder_pipeline` into `plan_pipeline` + `execute`
 `plan_pipeline(folder) -> list[Stage]` is pure: it runs all validation (num
-in/out == 1, `_check_linear_coder_chain`, BCJ2 → `UnsupportedFeatureError`),
-groups LZMA-family runs, and emits typed stage descriptors — `AesStage`,
-`LzmaChainStage(filters, codec)`, `BcjStage(decoder_attr, cap_size)`,
-`CodecStage(codec, properties)`, with COPY producing no stage. The LZMA1+BCJ
-decision (stdlib LZMA1/Delta chain, then per-BCJ pybcj stages with `SlicingStream`
-size caps) is encoded as the sequence of stages the planner emits, so the
-correctness workaround is preserved verbatim — only relocated. `execute(source,
-stages, *, password, key_cache, ...)` is a left fold opening each stage; it is the
-only part that touches `open_codec_stream` / crypto / pybcj. `plan_pipeline` is
-unit-testable without opening a real stream.
+in/out == 1, `_check_linear_coder_chain`, BCJ2 → `UnsupportedFeatureError`) and
+emits typed stage descriptors — `AesStage`, `LzmaChainStage(filters, codec)`,
+`BcjStage(decoder_attr, cap_size)`, `CodecStage(codec, properties)`; COPY produces
+no stage. `execute(source, stages, *, password, key_cache, …)` is a left fold that
+opens each stage and is the only code touching `open_codec_stream` / crypto /
+pybcj. `plan_pipeline` is unit-testable without opening a real stream.
+
+**Going beyond the sibling PR:** its `group_coders` returns stages but each
+LZMA-family stage still re-dispatches into a nested `_open_lzma_family` that
+re-scans `has_lzma1/has_lzma2/has_bcj`. Here the planner **flattens** the LZMA1+BCJ
+decision into concrete stages up front — an `LzmaChainStage` for each contiguous
+stdlib LZMA1/Delta run, then a `BcjStage(cap_size=run_output)` per BCJ coder — so
+`execute` never rescans and the BPO-21872 workaround is expressed as data, not
+control flow. LZMA2+BCJ stays one `LzmaChainStage`; BCJ-alone is a series of
+`BcjStage`s.
+
+**Fallback:** if flattening the LZMA1+BCJ sub-staging (the one correctness-critical
+subtlety, with its `SlicingStream` output caps) proves fragile against the oracle
+fixtures, fall back to the sibling PR's shape — a single `LzmaChainStage` kind whose
+`execute` handler contains the nested staging. Either way the split (pure planning +
+folding execution) and the byte-for-byte oracle result are the acceptance bar.
 
 **Rejected:** leaving the flow inline (the interleave is the complaint); pushing
-grouping into `codecs.py` (7z-specific).
+grouping into `codecs.py` (7z-specific); extracting a separate `pipeline` module
+(the sibling PR did and the code grew — keep it in the reader).
 
 ### 4. Rename the colliding `_folder_unpack_size`
 Parser keeps the bind-pair computation; rename the reader's member-size sum
 (e.g. `_folder_decoded_size` / `_folder_member_total`). Purely local rename.
+
+### 5. Parser cleanup without rewriting the format walk
+Table-drive the `FILES_INFO` property handlers (a `dict[_Property, handler]`
+instead of the long `if/elif` in `_read_files_info`), keeping every allocation and
+read bound. Keep the sequential `PACK_INFO → UNPACK_INFO → SUBSTREAMS_INFO` if-chain
+(it matches on-wire order) and keep building complete `SevenZipFileRecord`s once at
+materialization rather than half-empty-then-mutated. Fold the two password+CRC
+confirm paths (encoded header vs. member folder) into one helper. All threat-model
+comments (file-count bomb, `_read_exact` ceiling, CRC-vs-attacker) stay verbatim.
+
+**Rejected:** a hand-rolled bit-parser DSL — not enough repetition to pay for it.
+
+### 6. Spec representation: a `testing-contract` preservation gate, not a `format-7z` delta
+This refactor changes no caller-visible behavior, so no `format-7z` requirement
+changes. OpenSpec still requires ≥1 delta, so express the change where it is
+honest: a new `testing-contract` requirement stating the restructure SHALL preserve
+the existing 7z suite, with only relocated-symbol call-site test edits allowed. This
+mirrors the sibling PR and avoids a misleading no-op edit to a behavior spec.
+
+**Rejected:** a MODIFIED `format-7z` requirement re-asserting unchanged behavior
+(signals a change that didn't happen); a `minimalist` no-delta change (loses the
+explicit, checkable preservation gate that makes "strictly better, no regressions"
+verifiable at apply time).
 
 ## Risks / Trade-offs
 
