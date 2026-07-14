@@ -32,7 +32,9 @@ from archivey.cost import (
 from archivey.diagnostics import (
     DiagnosticCode,
     MemberTimestampContext,
+    NameEncodingContext,
     SymlinkTargetContext,
+    raw_name_to_base64,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -441,6 +443,33 @@ class ZipReader(BaseArchiveReader):
         for info in self._archive.infolist():
             yield self._to_member(info)
 
+    def _sniff_unflagged_name(
+        self, raw_name: bytes, cp437_decoded: str
+    ) -> tuple[str, str | None]:
+        """Decode an unflagged ZIP name (no explicit ``encoding=``): prefer valid UTF-8, else
+        the configured legacy fallback (default cp437).
+
+        Returns ``(name, inferred_encoding)`` where ``inferred_encoding`` is the encoding used
+        only when it overrode the cp437 APPNOTE default (for the diagnostic), else ``None``.
+        UTF-8 is self-validating, so a clean decode is strong evidence the bytes are UTF-8;
+        legacy bytes that are coincidentally valid UTF-8 are the documented residual risk.
+        """
+        try:
+            return raw_name.decode("utf-8"), "utf-8"
+        except UnicodeDecodeError:
+            fallback = self._config.zip_unflagged_fallback_encoding
+            if fallback.lower().replace("-", "").replace("_", "") in {
+                "cp437",
+                "437",
+                "ibm437",
+            }:
+                return cp437_decoded, None
+            try:
+                return raw_name.decode(fallback, errors="surrogateescape"), fallback
+            except LookupError:
+                # An unknown fallback encoding name: keep the cp437 decode rather than fail.
+                return cp437_decoded, None
+
     def _to_member(self, info: zipfile.ZipInfo) -> ArchiveMember:
         full_mode = info.external_attr >> 16
         is_unix = info.create_system == 3
@@ -469,16 +498,27 @@ class ZipReader(BaseArchiveReader):
         # null byte), whereas orig_filename is the raw decoded name, identical on every OS.
         # Archivey's own backslash_is_separator / extraction checks are the single authority.
         decoded = info.orig_filename
-        name = normalize_member_name(
-            decoded, member_type, backslash_is_separator=backslash_is_separator
-        )
+        is_utf8_flagged = bool(info.flag_bits & 0x800)
         # raw_name recovers the stored bytes by re-encoding the SAME source as name
         # (decoded == orig_filename) with the codec zipfile decoded with: UTF-8 when the
         # entry's UTF-8 flag is set, else the caller's metadata encoding (when given) or
         # zipfile's cp437 default. Using orig_filename keeps name and raw_name consistent.
         raw_name = decoded.encode(
-            "utf-8" if info.flag_bits & 0x800 else (self._encoding or "cp437"),
+            "utf-8" if is_utf8_flagged else (self._encoding or "cp437"),
             errors="surrogateescape",
+        )
+        # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
+        # so cp437 would yield mojibake. With no authoritative signal (flag clear AND no
+        # explicit encoding=), prefer UTF-8 when the stored bytes are valid UTF-8, else a
+        # configurable legacy fallback. A set flag or explicit encoding= is honored as-is.
+        name_source = decoded
+        inferred_encoding: str | None = None
+        if not is_utf8_flagged and self._encoding is None:
+            name_source, inferred_encoding = self._sniff_unflagged_name(
+                raw_name, decoded
+            )
+        name = normalize_member_name(
+            name_source, member_type, backslash_is_separator=backslash_is_separator
         )
 
         algo = _ZIP_COMPRESSION_ALGOS.get(
@@ -514,6 +554,25 @@ class ZipReader(BaseArchiveReader):
             extra={"zip.compress_type": info.compress_type},
             _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )
+        if inferred_encoding is not None:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
+                message=(
+                    f"ZIP member name decoded as {inferred_encoding!r} rather than the "
+                    f"cp437 default (UTF-8 flag not set): {member.name!r}"
+                ),
+                context=NameEncodingContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    raw_name_base64=raw_name_to_base64(member.raw_name),
+                    inferred_encoding=inferred_encoding,
+                    declared_encoding="cp437",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,

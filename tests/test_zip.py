@@ -15,7 +15,9 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
     CompressionAlgorithm,
+    DiagnosticCode,
     MemberStreams,
     MemberType,
     open_archive,
@@ -793,6 +795,127 @@ def test_backslash_kept_literal_for_unix_entry() -> None:
     with open_archive(_ZIP_BACKSLASH_DIR / "unix_backslash.zip") as ar:
         names = [m.name for m in ar.members()]
     assert names == ["weird\\name.txt"]
+
+
+# ---------------------------------------------------------------------------
+# Unflagged member-name encoding (UTF-8 sniff + configurable legacy fallback)
+# ---------------------------------------------------------------------------
+
+_EXTERNAL_DIR = Path(__file__).parent / "fixtures" / "external"
+
+
+def _stored_zip(name_bytes: bytes, *, utf8_flag: bool) -> bytes:
+    """A minimal single-entry (stored, empty) ZIP with a raw name and chosen UTF-8 flag."""
+    flags = 0x800 if utf8_flag else 0
+    n = len(name_bytes)
+    lfh = (
+        struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, flags, 0, 0, 0, 0, 0, 0, n, 0)
+        + name_bytes
+    )
+    cdh = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            20,
+            20,
+            flags,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            n,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name_bytes
+    )
+    eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cdh), len(lfh), 0)
+    return lfh + cdh + eocd
+
+
+def test_unflagged_utf8_name_is_sniffed() -> None:
+    # Info-ZIP fixture: names are valid UTF-8 bytes with the UTF-8 flag NOT set. Decoding
+    # them as cp437 (the APPNOTE default) would mojibake; the sniff recovers UTF-8.
+    with open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip") as ar:
+        names = {m.name for m in ar.members()}
+        counts = ar.diagnostics.counts
+    assert names == {"Español.txt", "Català.txt", "Português.txt", "emoji_😀.txt"}
+    # One inference diagnostic per unflagged name that was decoded as UTF-8.
+    assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] == 4
+
+
+def test_explicit_encoding_disables_sniff() -> None:
+    # An explicit encoding= is authoritative: it is used verbatim and the sniff never runs.
+    with open_archive(
+        _EXTERNAL_DIR / "encoding_infozip_jules.zip", encoding="cp437"
+    ) as ar:
+        names = {m.name for m in ar.members()}
+        counts = ar.diagnostics.counts
+    assert (
+        "Español.txt" not in names
+    )  # decoded as cp437 as asked (mojibake), not sniffed
+    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_flag_set_name_is_not_sniffed(tmp_path: Path) -> None:
+    # A set UTF-8 flag is authoritative; zipfile flags non-ASCII names, so no sniff fires.
+    path = tmp_path / "flagged.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("café.txt", b"x")
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        counts = ar.diagnostics.counts
+    assert member.name == "café.txt"
+    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_invalid_utf8_uses_configurable_legacy_fallback() -> None:
+    # 0xE9 alone is invalid UTF-8; as cp1252 it is "é". A caller with a known-legacy corpus
+    # sets the fallback so unflagged non-UTF-8 names decode deterministically.
+    data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
+    assert zipfile.ZipFile(io.BytesIO(data)).infolist()[0].flag_bits & 0x800 == 0
+    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")
+    with open_archive(io.BytesIO(data), config=cfg) as ar:
+        member = ar.members()[0]
+        counts = ar.diagnostics.counts
+    assert member.name == "café.txt"
+    assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] == 1
+
+
+def test_invalid_utf8_default_fallback_is_cp437_without_diagnostic() -> None:
+    # With the default cp437 fallback, an unflagged non-UTF-8 name decodes as cp437 and
+    # emits no inference diagnostic (cp437 is the APPNOTE default, not an override).
+    data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
+    with open_archive(io.BytesIO(data)) as ar:
+        member = ar.members()[0]
+        counts = ar.diagnostics.counts
+    assert member.name == b"caf\xe9.txt".decode("cp437")
+    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_encoding_inference_is_escalatable() -> None:
+    # The inference diagnostic flows through DiagnosticPolicy like any other: a caller who
+    # refuses to trust the guess can escalate it to an error.
+    from archivey import DiagnosticDisposition, DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError
+
+    policy = DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: DiagnosticDisposition.RAISE
+        }
+    )
+    cfg = ArchiveyConfig(diagnostic_policy=policy)
+    with pytest.raises(DiagnosticRaisedError):
+        with open_archive(
+            _EXTERNAL_DIR / "encoding_infozip_jules.zip", config=cfg
+        ) as ar:
+            ar.members()
 
 
 # ---------------------------------------------------------------------------

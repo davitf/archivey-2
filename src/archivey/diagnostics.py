@@ -46,6 +46,7 @@ class DiagnosticCode(str, Enum):
     """Stable machine codes for advisory events."""
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
+    MEMBER_NAME_ENCODING_INFERRED = "member_name_encoding_inferred"
     FORMAT_EXTENSION_CONFLICT = "format_extension_conflict"
     SCAN_DIRECTORY_VANISHED = "scan_directory_vanished"
     SCAN_ENTRY_VANISHED = "scan_entry_vanished"
@@ -86,6 +87,17 @@ class NameNormalizationContext(_JsonSafeContext):
     raw_name_base64: str | None = None
     presented_name: str = ""
     normalized_name: str = ""
+
+
+@dataclass(frozen=True)
+class NameEncodingContext(_JsonSafeContext):
+    kind: Literal["name_encoding"] = "name_encoding"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    raw_name_base64: str | None = None
+    inferred_encoding: str = ""
+    declared_encoding: str = ""
 
 
 @dataclass(frozen=True)
@@ -183,6 +195,7 @@ class ExtractionOutcomeContext(_JsonSafeContext):
 
 DiagnosticContext = (
     NameNormalizationContext
+    | NameEncodingContext
     | FormatConflictContext
     | ScanRaceContext
     | ArchiveEofContext
@@ -197,6 +210,7 @@ DiagnosticContext = (
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
     {
         DiagnosticCode.MEMBER_NAME_NORMALIZED: "name_normalization",
+        DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: "name_encoding",
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT: "format_conflict",
         DiagnosticCode.SCAN_DIRECTORY_VANISHED: "scan_race",
         DiagnosticCode.SCAN_ENTRY_VANISHED: "scan_race",
@@ -361,6 +375,7 @@ __all__ = [
     "ExtractionReport",
     "FormatConflictContext",
     "MemberTimestampContext",
+    "NameEncodingContext",
     "NameNormalizationContext",
     "OnDiagnostic",
     "ScanRaceContext",
