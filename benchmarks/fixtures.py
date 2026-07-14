@@ -68,6 +68,8 @@ class FixtureSet:
     scale: Scale
     zip_path: Path
     tar_path: Path
+    targz_path: Path
+    tarbz2_path: Path
     gzip_path: Path
     solid_7z: Path | None
     solid_rar: Path | None
@@ -94,8 +96,9 @@ def build_zip(path: Path, scale: Scale) -> None:
             zf.writestr(f"f{i:04d}.bin", _payload(i, scale.common_member_size))
 
 
-def build_tar(path: Path, scale: Scale) -> None:
-    with tarfile.open(path, "w") as tf:
+def build_tar(path: Path, scale: Scale, *, mode: str = "w") -> None:
+    """Build a tar archive. ``mode`` may be ``w``, ``w:gz``, or ``w:bz2``."""
+    with tarfile.open(path, mode) as tf:
         for i in range(scale.common_members):
             data = _payload(i, scale.common_member_size)
             info = tarfile.TarInfo(name=f"f{i:04d}.bin")
@@ -180,11 +183,17 @@ def materialize_fixtures(
 
     zip_path = root / "common.zip"
     tar_path = root / "common.tar"
+    targz_path = root / "common.tar.gz"
+    tarbz2_path = root / "common.tar.bz2"
     gzip_path = root / "common.gz"
     if not zip_path.exists():
         build_zip(zip_path, scale_obj)
     if not tar_path.exists():
         build_tar(tar_path, scale_obj)
+    if not targz_path.exists():
+        build_tar(targz_path, scale_obj, mode="w:gz")
+    if not tarbz2_path.exists():
+        build_tar(tarbz2_path, scale_obj, mode="w:bz2")
     if not gzip_path.exists():
         build_gzip(gzip_path, scale_obj)
 
@@ -218,6 +227,8 @@ def materialize_fixtures(
         scale=scale_obj,
         zip_path=zip_path,
         tar_path=tar_path,
+        targz_path=targz_path,
+        tarbz2_path=tarbz2_path,
         gzip_path=gzip_path,
         solid_7z=solid_7z,
         solid_rar=solid_rar,

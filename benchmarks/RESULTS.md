@@ -64,6 +64,31 @@ So:
 | tar_read_all | **1.70×** | 3.6 ms | 2.1 ms | above 1.3×, under 2× safety |
 | gzip_read_all | **1.02×** | 31.7 ms | 31.2 ms | within |
 
+### `.tar.gz` / `.tar.bz2` accelerators (off vs on)
+
+Same ~16 MiB multi-member corpus. Stdlib peer is `tarfile` `r:gz` / `r:bz2`
+(always stdlib codecs). Archivey forces `use_rapidgzip` /
+`use_indexed_bzip2` ON or OFF; ON also sets `MemberStreams.SEEKABLE`.
+
+The bzip2 accelerator is **`rapidgzip.IndexedBzip2File`** (via
+`use_indexed_bzip2`), not the separate `indexed_bzip2` package.
+
+| Case | ay | stdlib | vs stdlib | vs accel_off |
+| --- | ---: | ---: | ---: | ---: |
+| targz accel **off** | 21.3 ms | 18.0 ms | 1.18× | — |
+| targz accel **on** | 8.3 ms | 18.2 ms | **0.45×** | **2.57×** faster |
+| tarbz2 accel **off** | 375 ms | 366 ms | 1.02× | — |
+| tarbz2 accel **on** | 126 ms | 365 ms | **0.35×** | **2.97×** faster |
+
+Takeaway: with accelerators off we track stdlib; with them on, archivey
+beats `tarfile` by ~2–3× on this sequential read-all workload — the
+interesting comparison the harness now records as
+`targz_read_all_accel_{off,on}` / `tarbz2_read_all_accel_{off,on}`.
+
+At **ci** (tiny) scale the same accel_on cases are often *slower* than
+accel_off (indexing / thread-pool startup dominates). Do not read CI-scale
+wall ratios for accelerators as regressions; use realistic scale.
+
 ### Structural / solid
 
 | Check | Result |

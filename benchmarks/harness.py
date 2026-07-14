@@ -25,7 +25,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from archivey import open_archive
+from archivey import MemberStreams, open_archive
+from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
 from benchmarks.fixtures import FixtureSet, materialize_fixtures
@@ -75,9 +76,25 @@ def _op_open_list(path: Path) -> tuple[int, int]:
             return base.bytes_decompressed, base.source_seek_count
 
 
-def _op_read_all(path: Path) -> tuple[int, int, int]:
+def _accel_config(*, enabled: bool) -> ArchiveyConfig:
+    """Force rapidgzip / indexed-bzip2 (via rapidgzip's IndexedBzip2File) on or off.
+
+    ``ON`` engages the accelerator even without ``MemberStreams.SEEKABLE`` (AUTO would
+    not). The bzip2 accelerator is rapidgzip's bundled decoder, not the separate
+    ``indexed_bzip2`` package — see codecs.py.
+    """
+    mode = AcceleratorMode.ON if enabled else AcceleratorMode.OFF
+    return ArchiveyConfig(use_rapidgzip=mode, use_indexed_bzip2=mode)
+
+
+def _op_read_all(
+    path: Path,
+    *,
+    config: ArchiveyConfig | None = None,
+    member_streams: MemberStreams = MemberStreams(0),
+) -> tuple[int, int, int]:
     with enable_measurement():
-        with open_archive(path) as reader:
+        with open_archive(path, config=config, member_streams=member_streams) as reader:
             base = _as_base(reader)
             unpacked = 0
             for member, stream in reader.stream_members():
@@ -102,9 +119,14 @@ def _op_extract(path: Path, dest_root: Path) -> tuple[int, int]:
             return base.bytes_decompressed, base.source_seek_count
 
 
-def _op_read_all_unmeasured(path: Path) -> None:
+def _op_read_all_unmeasured(
+    path: Path,
+    *,
+    config: ArchiveyConfig | None = None,
+    member_streams: MemberStreams = MemberStreams(0),
+) -> None:
     """Read every member without measurement wrappers — fair wall-time peer."""
-    with open_archive(path) as reader:
+    with open_archive(path, config=config, member_streams=member_streams) as reader:
         for _member, stream in reader.stream_members():
             if stream is not None:
                 stream.read()
@@ -194,6 +216,35 @@ def _stdlib_gzip_read_all(path: Path) -> None:
         gf.read()
 
 
+def _stdlib_targz_read_all(path: Path) -> None:
+    with tarfile.open(path, "r:gz") as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            f = tf.extractfile(member)
+            if f is not None:
+                f.read()
+
+
+def _stdlib_tarbz2_read_all(path: Path) -> None:
+    with tarfile.open(path, "r:bz2") as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            f = tf.extractfile(member)
+            if f is not None:
+                f.read()
+
+
+def _rapidgzip_available() -> bool:
+    try:
+        import rapidgzip  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def run_cases(
     fixtures: FixtureSet,
     work: Path,
@@ -212,16 +263,23 @@ def run_cases(
     # install seek/output counters (those change the ZIP open path and skew ~10ms
     # samples enough to invent a bogus "faster than zipfile" ratio).
     def pair_wall(
-        std_fn: Callable[[], None], path: Path
+        std_fn: Callable[[], None],
+        path: Path,
+        *,
+        config: ArchiveyConfig | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
     ) -> tuple[float, float]:
+        def ay() -> None:
+            _op_read_all_unmeasured(path, config=config, member_streams=member_streams)
+
         if warmup:
             ay_wall, _ignored, std_wall = _interleaved_pair_times(
-                lambda: _op_read_all_unmeasured(path),
+                ay,
                 std_fn,
                 rounds=7,
             )
             return ay_wall, std_wall
-        wall, _ = timed_with_optional_warmup(lambda: _op_read_all_unmeasured(path))
+        wall, _ = timed_with_optional_warmup(ay)
         std_wall, _ = timed_with_optional_warmup(std_fn)
         return wall, std_wall
 
@@ -304,6 +362,79 @@ def run_cases(
             wall_ratio=(wall / std_wall) if std_wall > 0 else None,
         )
     )
+
+    # --- .tar.gz / .tar.bz2 with accelerators off vs on ---
+    # Default AUTO leaves accelerators off unless SEEKABLE is declared; we force ON/OFF
+    # explicitly. bzip2 accelerator = rapidgzip.IndexedBzip2File (not indexed_bzip2 pkg).
+    has_accel = _rapidgzip_available()
+    for label, path, std_fn, fmt in (
+        ("targz", fixtures.targz_path, _stdlib_targz_read_all, "tar.gz"),
+        ("tarbz2", fixtures.tarbz2_path, _stdlib_tarbz2_read_all, "tar.bz2"),
+    ):
+        cfg_off = _accel_config(enabled=False)
+        _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda p=path, c=cfg_off: _op_read_all(p, config=c)
+        )
+        wall_off, std_wall = pair_wall(
+            lambda p=path, s=std_fn: s(p), path, config=cfg_off
+        )
+        results.append(
+            CaseResult(
+                f"{label}_read_all_accel_off",
+                fmt,
+                "read_all",
+                wall_off,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                stdlib_wall_s=std_wall,
+                wall_ratio=(wall_off / std_wall) if std_wall > 0 else None,
+                notes="stdlib gzip/bz2 codec; accelerators forced OFF",
+            )
+        )
+        if not has_accel:
+            results.append(
+                CaseResult(
+                    f"{label}_read_all_accel_on",
+                    fmt,
+                    "read_all",
+                    0.0,
+                    0,
+                    0,
+                    unpacked_bytes=unpacked,
+                    notes="skipped: rapidgzip not installed ([seekable] extra)",
+                )
+            )
+            continue
+        cfg_on = _accel_config(enabled=True)
+        # SEEKABLE so AUTO would also engage; ON engages either way. Matches the
+        # intended accelerator use case (indexed / parallel decode).
+        seekable = MemberStreams.SEEKABLE
+        _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda p=path, c=cfg_on: _op_read_all(p, config=c, member_streams=seekable)
+        )
+        wall_on, std_wall_on = pair_wall(
+            lambda p=path, s=std_fn: s(p),
+            path,
+            config=cfg_on,
+            member_streams=seekable,
+        )
+        speedup = (wall_off / wall_on) if wall_on > 0 else None
+        speedup_note = f"; vs accel_off {speedup:.2f}×" if speedup is not None else ""
+        results.append(
+            CaseResult(
+                f"{label}_read_all_accel_on",
+                fmt,
+                "read_all",
+                wall_on,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                stdlib_wall_s=std_wall_on,
+                wall_ratio=(wall_on / std_wall_on) if std_wall_on > 0 else None,
+                notes=f"rapidgzip accelerator ON{speedup_note}",
+            )
+        )
 
     # --- Solid 7z ---
     if fixtures.solid_7z is not None:
@@ -393,7 +524,7 @@ def _structural_checks(
         if r.operation == "read_all" and r.unpacked_bytes is not None:
             # Common-path formats: decompressed bytes should match what was read.
             if (
-                r.format in ("zip", "tar", "gzip")
+                r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2")
                 and r.bytes_decompressed < r.unpacked_bytes
             ):
                 failures.append(
@@ -457,7 +588,10 @@ def write_baselines(results: list[CaseResult]) -> None:
             "unpacked_bytes": r.unpacked_bytes,
             "notes": r.notes,
         }
-        if r.wall_ratio is not None:
+        # Skip accel_on wall ratios: at CI/tiny scale indexing startup dominates and
+        # the ratio vs stdlib is not a meaningful regression signal (realistic scale
+        # is the interesting comparison; see RESULTS.md).
+        if r.wall_ratio is not None and not r.case.endswith("_accel_on"):
             wall["cases"][r.case] = {
                 "wall_ratio": r.wall_ratio,
                 "wall_s": r.wall_s,
