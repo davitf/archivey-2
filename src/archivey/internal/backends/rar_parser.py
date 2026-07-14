@@ -3,6 +3,10 @@
 Parses archive headers into :class:`RarArchive` / :class:`RarMemberInfo` without
 decompressing member data and without importing ``rarfile``. Header encryption uses
 :mod:`archivey.internal.streams.crypto` (never ``cryptography`` directly).
+
+RAR3 SHA-1 / string-to-key and Unicode filename decompression are adapted from
+``rarfile`` 4.3 (https://github.com/markokr/rarfile), Copyright (c) 2005-2024
+Marko Kreen, used under the ISC License (see the notice at the bottom of this file).
 """
 
 from __future__ import annotations
@@ -1518,3 +1522,23 @@ def _parse_rar5_file_encryption(xdata: bytes, pos: int) -> RarEncryptionInfo:
         iv=iv,
         check_value=check_value,
     )
+
+
+# ---------------------------------------------------------------------------
+# ISC License notice for algorithms adapted from rarfile
+# (RAR3 SHA-1 / string-to-key and Unicode filename decompression above)
+# ---------------------------------------------------------------------------
+#
+# Copyright (c) 2005-2024 Marko Kreen <markokr@gmail.com>
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
