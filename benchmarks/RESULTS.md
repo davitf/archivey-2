@@ -1,10 +1,11 @@
 # Benchmark gate — sample results
 
 **Blocking PR gate = structural invariants only** (seek-count baselines + solid
-decode-once). Wall-time / VISION ≤1.3× runs on every PR too, but **non-blocking**
-(`benchmark-wall` job, `continue-on-error`) — shared-runner noise makes a ratio
-regression *gate* flake, so the job surfaces drift (JSON artifact + informational
-VISION print) and only goes red on a gross regression, without blocking merges.
+decode-once). Wall-time / VISION ≤1.3× runs off the PR path as a **change-guarded
+nightly** (`benchmark-wall.yml`): a daily schedule whose expensive realistic run is
+skipped unless the default branch changed since the previous run (this project is
+bursty/dormant, and per-PR taxed every PR). It records drift (JSON artifact +
+informational VISION print) and goes red only on a gross regression.
 
 Re-run with:
 
@@ -115,8 +116,8 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
 ### Gate policy
 
 - **PR CI (blocking):** `--mode structural --scale ci` + unit decode-once tests.
-- **PR CI (non-blocking):** `--mode full --scale realistic` with JSON artifact
-  upload — runs on every PR/push, not on a nightly schedule (this project is
-  bursty and often dormant, so per-PR catches regressions immediately while
-  nightly would mostly run on unchanged code or skip during dormancy).
+- **Change-guarded nightly (off the PR path, `benchmark-wall.yml`):** `--mode full
+  --scale realistic` with JSON artifact upload — a daily schedule that skips its
+  expensive run unless the default branch changed since the previous run (bursty/dormant
+  project; per-PR was rejected for taxing every PR). `workflow_dispatch` forces a run.
 - Wall timing: unmeasured archivey vs stdlib; VISION band informational.

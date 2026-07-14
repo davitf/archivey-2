@@ -17,12 +17,15 @@ budget (≤1.3× common paths; up to ~2× where a safety/correctness feature jus
 annotated per case). Bytes-decompressed and seek-count SHALL be gated as deterministic
 structural invariants (exact value or ≤ bound), since they are host-independent.
 Structural invariants SHALL gate (block) every PR. Full wall-time ratio checks SHALL run
-on every PR/push as well, but as a **non-blocking** job (`continue-on-error`): shared-runner
-ratios are too noisy to block merges, so the job records results (JSON artifact +
-informational VISION print) and fails visibly only on a gross regression past the sanity
-ceiling. A nightly `schedule` SHALL NOT be used — this project is bursty and often dormant,
-so per-PR execution catches regressions immediately whereas nightly would mostly run on
-unchanged code or skip during dormancy.
+off the PR path (non-blocking) as a separate scheduled job on a daily cadence, guarded so
+the expensive run is SKIPPED unless the default branch changed since the previous run
+(commit-recency guard), and MAY be forced on demand via `workflow_dispatch`. The job records
+results (JSON artifact + informational VISION print) and fails visibly (notifying) only on a
+real structural regression or a gross wall regression past the sanity ceiling. Per-PR
+wall-time execution SHALL NOT be required (it taxes every PR with a multi-minute run), and a
+plain always-on nightly SHALL be avoided in favour of the change-guarded schedule — this
+project is bursty with long dormant stretches, so the guard yields next-run signal after a
+change at near-zero cost while dormant.
 
 The harness SHALL enforce the solid-block no-re-decode invariant: reading every member
 of a solid archive (7z folder / solid RAR) in listing order SHALL decompress each packed
