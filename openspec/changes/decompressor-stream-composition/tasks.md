@@ -18,6 +18,6 @@
 ## 3. Verify
 
 - [x] 3.1 `uv run pytest tests/test_seekable_streams.py tests/test_stream_inputs.py tests/test_binaryio.py` — the behavior oracle — green (incl. the unix-compress `.Z` seek/truncation matrix).
-- [ ] 3.2 Full suite green in all three dep configs (`[all]`, `[all-lowest]`, `[core-only]`) per CONTRIBUTING "Before pushing".
-- [ ] 3.3 `uv run pyrefly check` and `uv run ty check` clean; no lingering references to `SegmentedDecompressorStream` or the removed abstracts.
-- [ ] 3.4 `openspec validate --strict decompressor-stream-composition`.
+- [x] 3.2 Full suite green in all three dep configs (`[all]`, `[all-lowest]`, `[core-only]`) per CONTRIBUTING "Before pushing".
+- [x] 3.3 `uv run pyrefly check` and `uv run ty check` clean; no lingering references to `SegmentedDecompressorStream` or the removed abstracts.
+- [x] 3.4 `openspec validate --strict decompressor-stream-composition`.
