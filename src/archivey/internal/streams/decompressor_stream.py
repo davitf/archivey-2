@@ -1,17 +1,12 @@
-"""Seekable decompressor-stream base class (codec-agnostic).
+"""Seekable decompressor stream parameterized by a ``Decoder`` strategy.
 
-The base supports optional seek-point-based random access: subclasses register known
-positions as they decode (``add_seek_points``) and/or build a full index once on demand
-(``_build_index``). The concrete backends build on this: the zlib/deflate and Brotli
-streams in ``decompress.py`` and the segmented XZ / lzip streams in ``xz.py`` / ``lzip.py``.
-
-This module holds no codec itself — only the shared scaffolding (``DecompressorStream``,
-``SegmentedDecompressorStream``, ``SeekPoint``).
+One concrete :class:`DecompressorStream` owns the buffer, position, seek-point table,
+and seek algorithm. Codecs plug in through the :class:`Decoder` protocol (feed / flush /
+recreate / index discovery) — not by subclassing the stream.
 """
 
 from __future__ import annotations
 
-import abc
 import bisect
 import io
 import os
@@ -20,9 +15,8 @@ from typing import (
     Any,
     BinaryIO,
     Callable,
-    Generic,
     Protocol,
-    TypeVar,
+    Sequence,
     cast,
 )
 
@@ -49,31 +43,113 @@ class SeekPoint:
     state: Any = field(default=None, compare=False)
 
 
-DecompressorT = TypeVar("DecompressorT")
+@dataclass
+class DecodeOut:
+    """Bytes produced by a decoder step, plus any absolute seek points discovered."""
+
+    data: bytes
+    points: list[SeekPoint] = field(default_factory=list)
 
 
-class _SegmentDecompressor(Protocol):
-    """Interface shared by the lzip/XZ state machines and the XZ block chain."""
+class Decoder(Protocol):
+    """Codec strategy for :class:`DecompressorStream`."""
 
-    def feed(self, data: bytes) -> tuple[bytes, list[tuple[int, int]]]: ...
-    def flush(self) -> tuple[bytes, list[tuple[int, int]]]: ...
-    def is_finished(self) -> bool: ...
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder: ...
+
+    def feed(self, chunk: bytes) -> DecodeOut: ...
+
+    def flush(self) -> DecodeOut: ...
+
+    @property
+    def finished(self) -> bool: ...
+
+    @property
+    def pending_error(self) -> BaseException | None: ...
+
+    def build_index(
+        self, inner: BinaryIO, last_known: SeekPoint
+    ) -> tuple[list[SeekPoint], int | None]: ...
 
 
-_SDT = TypeVar("_SDT", bound=_SegmentDecompressor)
+class BaseDecoder:
+    """Default decoder behavior: empty points, no pending error, no-op index build."""
+
+    _pending_error: BaseException | None = None
+
+    @property
+    def pending_error(self) -> BaseException | None:
+        return self._pending_error
+
+    def build_index(
+        self, inner: BinaryIO, last_known: SeekPoint
+    ) -> tuple[list[SeekPoint], int | None]:
+        del inner, last_known
+        return [], None
 
 
-class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
-    """Seekable decompressor stream with optional seek-point-based random access.
+MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
+
+
+def build_index_backwards(
+    inner: BinaryIO,
+    last_known: SeekPoint,
+    scan_fn: Callable[..., list[Any]],
+    to_point: Callable[[Any], SeekPoint],
+    warning_msg: str,
+    *,
+    codec_name: str = "",
+    collector: DiagnosticCollector | None = None,
+    scan: str = "backwards_index",
+) -> tuple[list[SeekPoint], int | None]:
+    """Backward scan → seek points + total decompressed size.
+
+    ``scan_fn`` reads only index/trailer structures (no decompression). On a
+    ``CorruptionError`` (e.g. valid-but-unparseable trailing data) it emits
+    ``SEEK_INDEX_DEGRADED`` and returns an empty index so the stream falls back to
+    sequential decoding.
+    """
+    file_size = inner.seek(0, io.SEEK_END)
+    try:
+        bounds = scan_fn(
+            inner,
+            file_size,
+            stop_at=last_known.compressed_offset,
+            start_decompressed_offset=last_known.decompressed_offset,
+        )
+    except CorruptionError as e:
+        message = warning_msg % (e,)
+        resolve_collector(collector).emit(
+            code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+            message=message,
+            context=SeekIndexContext(
+                codec=codec_name,
+                scan=scan,
+                error_type=type(e).__name__,
+            ),
+            logger=logger,
+        )
+        return [], None
+    points = [
+        to_point(b)
+        for b in bounds
+        if b.decompressed_start > last_known.decompressed_offset
+    ]
+    total: int | None = bounds[-1].decompressed_end if bounds else None
+    return points, total
+
+
+class DecompressorStream(ReadOnlyIOStream):
+    """Seekable decompressor stream driven by a :class:`Decoder` strategy.
 
     ``readable``/``writable``/``write``/``readinto`` come from :class:`ReadOnlyIOStream`
-    (``readinto`` is built on this class's ``read``); subclasses provide the decode primitives.
+    (``readinto`` is built on this class's ``read``).
     """
 
     def __init__(
         self,
         path: str | os.PathLike[str] | BinaryIO,
         *,
+        make_decoder: MakeDecoder,
         collector: DiagnosticCollector | None = None,
         codec_name: str = "",
         seekable: bool = True,
@@ -94,52 +170,59 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         self._seek_points: list[SeekPoint] = [SeekPoint(0, 0)]
         self._index_built = False
         self._index_build_attempted = False
-        self._decompressor: DecompressorT = self._create_decompressor(
-            self._seek_points[0]
-        )
+        self._make_decoder = make_decoder
+        self._decoder: Decoder = make_decoder(self._seek_points[0], self._inner)
         self._buffer = bytearray()
         self._eof = False
         self._pos = 0
         self._size: int | None = None
 
-    @abc.abstractmethod
-    def _create_decompressor(self, point: SeekPoint) -> DecompressorT: ...
-
-    @abc.abstractmethod
-    def _decompress_chunk(self, chunk: bytes) -> bytes: ...
-
-    @abc.abstractmethod
-    def _flush_decompressor(self) -> bytes:
-        """Flush pending data once the compressed input is exhausted.
-
-        Most decompressors decode eagerly and return ``b""`` here; zlib is the exception
-        (its ``flush()`` emits the last decompressed bytes). The decompressor must not be
-        used after this call.
-        """
-        ...
-
-    @abc.abstractmethod
-    def _is_decompressor_finished(self) -> bool: ...
-
     def seekable(self) -> bool:
         return self._inner.seekable()
 
-    def add_seek_points(self, points: list[SeekPoint]) -> None:
+    def add_seek_points(self, points: Sequence[SeekPoint]) -> None:
         """Merge ``points`` into the sorted index, skipping duplicates.
 
         Pass points in ascending ``decompressed_offset`` order; the common in-order case
         is an O(1) append, out-of-order insertions fall back to bisect. No-ops when
-        index construction was not declared (no seek-point table is built).
+        index construction was not declared (no seek-point table is built), except for
+        refining the origin's ``compressed_offset`` / ``state`` (unix-compress header
+        commit must apply even when the table is not built).
         """
-        if not self._index_enabled:
-            return
         for point in points:
+            # Origin refinement always applies — resume must skip a committed header
+            # even when seek-point indexing was not declared.
+            origin = self._seek_points[0]
+            if (
+                point.decompressed_offset == 0
+                and origin.decompressed_offset == 0
+                and (
+                    origin.compressed_offset != point.compressed_offset
+                    or origin.state is not point.state
+                )
+            ):
+                self._seek_points[0] = point
+                continue
+            if not self._index_enabled:
+                continue
             if point < self._seek_points[-1]:
                 i = bisect.bisect_left(self._seek_points, point)
                 if i < len(self._seek_points) and self._seek_points[i] == point:
+                    existing = self._seek_points[i]
+                    if (
+                        existing.compressed_offset != point.compressed_offset
+                        or existing.state is not point.state
+                    ):
+                        self._seek_points[i] = point
                     continue
                 self._seek_points.insert(i, point)
             elif self._seek_points[-1] == point:
+                existing = self._seek_points[-1]
+                if (
+                    existing.compressed_offset != point.compressed_offset
+                    or existing.state is not point.state
+                ):
+                    self._seek_points[-1] = point
                 continue
             else:
                 self._seek_points.append(point)
@@ -151,30 +234,29 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
 
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
         self._inner.seek(point.compressed_offset)
-        self._decompressor = self._create_decompressor(point)
+        self._decoder = self._decoder.recreate(point, self._inner)
+        if isinstance(self._decoder, BaseDecoder):
+            self._decoder._pending_error = None
         self._buffer.clear()
         self._eof = False
         self._pos = point.decompressed_offset
 
-    def _build_index(self, last_known: SeekPoint) -> tuple[list[SeekPoint], int | None]:
-        """One-shot full index build. Default: no-op.
-
-        Subclasses that support random access override this to return new seek points and
-        the total decompressed size (or ``None`` if unknown). Called at most once.
-        """
-        return [], None
+    def _ingest_decode(self, out: DecodeOut) -> bytes:
+        if out.points:
+            self.add_seek_points(out.points)
+        return out.data
 
     def _read_decompressed_chunk(self) -> bytes:
         chunk = self._inner.read(65536)
         if not chunk:
             self._eof = True
-            leftover = self._flush_decompressor()
-            if not self._is_decompressor_finished():
+            leftover = self._ingest_decode(self._decoder.flush())
+            if not self._decoder.finished:
                 raise TruncatedError("File is truncated")
             self._size = self._pos + len(self._buffer) + len(leftover)
             self._index_built = True  # a forward scan to EOF is a complete index
             return leftover
-        return self._decompress_chunk(chunk)
+        return self._ingest_decode(self._decoder.feed(chunk))
 
     def readall(self) -> bytes:
         while not self._eof:
@@ -190,12 +272,19 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         if n == 0:
             return b""
         if n is None or n < 0:
-            return self.readall()
-        if len(self._buffer) < n and not self._eof:
-            self._buffer.extend(self._read_decompressed_chunk())
-        data = bytes(self._buffer[:n])
-        del self._buffer[:n]
-        self._pos += len(data)
+            data = self.readall()
+        else:
+            if len(self._buffer) < n and not self._eof:
+                self._buffer.extend(self._read_decompressed_chunk())
+            data = bytes(self._buffer[:n])
+            del self._buffer[:n]
+            self._pos += len(data)
+        if not data:
+            err = self._decoder.pending_error
+            if err is not None:
+                if isinstance(self._decoder, BaseDecoder):
+                    self._decoder._pending_error = None
+                raise err
         return data
 
     def close(self) -> None:
@@ -207,7 +296,9 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
         if not self._index_enabled or self._index_built or self._index_build_attempted:
             return
         inner_pos = self._inner.tell()
-        new_points, new_size = self._build_index(self._seek_points[-1])
+        new_points, new_size = self._decoder.build_index(
+            self._inner, self._seek_points[-1]
+        )
         self._index_build_attempted = True
         if new_points or new_size is not None:
             self._index_built = True
@@ -215,7 +306,7 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
             self.add_seek_points(new_points)
         if new_size is not None:
             self._size = new_size
-        # _build_index may have seeked _inner (e.g. lzip's backward trailer scan);
+        # build_index may have seeked _inner (e.g. lzip's backward trailer scan);
         # restore it so the decompressor's expected read position is still valid.
         if self._inner.tell() != inner_pos:
             self._inner.seek(inner_pos)
@@ -303,95 +394,3 @@ class DecompressorStream(ReadOnlyIOStream, Generic[DecompressorT]):
 
     def tell(self, /) -> int:
         return self._pos
-
-
-class SegmentedDecompressorStream(DecompressorStream[_SDT]):
-    """Base for multi-segment compressed formats (lzip, XZ).
-
-    Tracks compressed/decompressed cursors and delegates feed/flush to a state-machine
-    decompressor; provides the shared backward-scan index skeleton.
-    """
-
-    def __init__(
-        self,
-        path: str | os.PathLike[str] | BinaryIO,
-        *,
-        collector: DiagnosticCollector | None = None,
-        codec_name: str = "",
-        seekable: bool = True,
-    ) -> None:
-        # Pre-declare cursors: super().__init__ calls _create_decompressor, which reads them.
-        self._comp_cursor = 0
-        self._decomp_cursor = 0
-        super().__init__(
-            path, collector=collector, codec_name=codec_name, seekable=seekable
-        )
-
-    @abc.abstractmethod
-    def _make_decompressor(self, point: SeekPoint) -> _SDT: ...
-
-    @abc.abstractmethod
-    def _on_completed_segments(self, units: list[tuple[int, int]]) -> None: ...
-
-    def _create_decompressor(self, point: SeekPoint) -> _SDT:
-        self._comp_cursor = point.compressed_offset
-        self._decomp_cursor = point.decompressed_offset
-        return self._make_decompressor(point)
-
-    def _decompress_chunk(self, chunk: bytes) -> bytes:
-        data, units = self._decompressor.feed(chunk)
-        self._on_completed_segments(units)
-        return data
-
-    def _flush_decompressor(self) -> bytes:
-        data, units = self._decompressor.flush()
-        self._on_completed_segments(units)
-        return data
-
-    def _is_decompressor_finished(self) -> bool:
-        return self._decompressor.is_finished()
-
-    def _build_index_backwards(
-        self,
-        last_known: SeekPoint,
-        scan_fn: Callable[..., list[Any]],
-        to_point: Callable[[Any], SeekPoint],
-        warning_msg: str,
-        *,
-        scan: str = "backwards_index",
-    ) -> tuple[list[SeekPoint], int | None]:
-        """Backward scan → seek points + total decompressed size.
-
-        ``scan_fn`` reads only index/trailer structures (no decompression). On a
-        ``CorruptionError`` (e.g. valid-but-unparseable trailing data) it emits
-        ``SEEK_INDEX_DEGRADED`` and returns an empty index so the stream falls back to
-        sequential decoding.
-        """
-        file_size = self._inner.seek(0, io.SEEK_END)
-        try:
-            bounds = scan_fn(
-                self._inner,
-                file_size,
-                stop_at=last_known.compressed_offset,
-                start_decompressed_offset=last_known.decompressed_offset,
-            )
-        except CorruptionError as e:
-            message = warning_msg % (e,)
-            resolve_collector(self._diagnostics_collector).emit(
-                code=DiagnosticCode.SEEK_INDEX_DEGRADED,
-                message=message,
-                context=SeekIndexContext(
-                    codec=self._codec_name,
-                    scan=scan,
-                    error_type=type(e).__name__,
-                ),
-                logger=logger,
-            )
-            return [], None
-        points = [
-            to_point(b)
-            for b in bounds
-            if b.decompressed_start > last_known.decompressed_offset
-        ]
-        total: int | None = bounds[-1].decompressed_end if bounds else None
-        return points, total

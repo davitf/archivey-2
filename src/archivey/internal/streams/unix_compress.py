@@ -2,7 +2,7 @@
 
 The LZW kernel is adapted from `uncompresspy` (https://github.com/kYwzor/uncompresspy),
 Copyright (c) 2025 Tiago Gomes, used under the BSD 3-Clause License (see the notice at
-the bottom of this file). Archivey wraps it in :class:`SegmentedDecompressorStream` so
+the bottom of this file). Archivey wraps it in an :class:`UnixCompressDecoder` so
 CLEAR boundaries become :class:`~archivey.internal.streams.decompressor_stream.SeekPoint`s
 and forward decode never requires a seekable source.
 """
@@ -15,8 +15,10 @@ from typing import BinaryIO
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
+    BaseDecoder,
+    DecodeOut,
+    DecompressorStream,
     SeekPoint,
-    SegmentedDecompressorStream,
 )
 
 _INITIAL_CODE_WIDTH = 9
@@ -295,80 +297,110 @@ class LzwState:
         return bytes(output), units
 
 
-class UnixCompressDecompressorStream(SegmentedDecompressorStream[LzwState]):
-    """Seekable unix-compress stream: CLEAR → :class:`SeekPoint` when indexing is on."""
+class UnixCompressDecoder(BaseDecoder):
+    """LZW decoder: CLEAR seek points (after-placement) + deferred truncation."""
 
     def __init__(
         self,
-        path: str | os.PathLike[str] | BinaryIO,
+        state: LzwState,
         *,
-        collector: DiagnosticCollector | None = None,
-        seekable: bool = True,
+        comp_cursor: int,
+        decomp_cursor: int,
+        max_width: int | None = None,
+        block_mode: bool | None = None,
+        header_committed: bool = False,
     ) -> None:
-        self._max_width: int | None = None
-        self._block_mode: bool | None = None
-        self._header_committed = False
-        self._pending_truncated: TruncatedError | None = None
-        super().__init__(
-            path, collector=collector, codec_name="unix_compress", seekable=seekable
+        self._state = state
+        self._comp_cursor = comp_cursor
+        self._decomp_cursor = decomp_cursor
+        self._max_width = max_width
+        self._block_mode = block_mode
+        self._header_committed = header_committed
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> UnixCompressDecoder:
+        del inner
+        if self._max_width is not None and self._block_mode is not None:
+            state = LzwState(max_width=self._max_width, block_mode=self._block_mode)
+            header_committed = True
+        else:
+            state = LzwState()
+            header_committed = False
+        return UnixCompressDecoder(
+            state,
+            comp_cursor=point.compressed_offset,
+            decomp_cursor=point.decompressed_offset,
+            max_width=self._max_width,
+            block_mode=self._block_mode,
+            header_committed=header_committed,
         )
 
-    def _make_decompressor(self, point: SeekPoint) -> LzwState:
-        if self._max_width is not None and self._block_mode is not None:
-            return LzwState(max_width=self._max_width, block_mode=self._block_mode)
-        # Origin open only: header still in the stream at compressed_offset 0.
-        return LzwState()
+    def feed(self, chunk: bytes) -> DecodeOut:
+        data, units = self._state.feed(chunk)
+        points = self._commit_header_points()
+        points.extend(self._points_for_units(units))
+        return DecodeOut(data, points)
 
-    def _decompress_chunk(self, chunk: bytes) -> bytes:
-        data, units = self._decompressor.feed(chunk)
-        self._commit_header_if_needed()
-        self._on_completed_segments(units)
-        return data
-
-    def _flush_decompressor(self) -> bytes:
-        data, units = self._decompressor.flush()
-        self._commit_header_if_needed()
-        self._on_completed_segments(units)
-        # Deliver all decoded bytes first; raise TruncatedError on the next empty read.
-        if self._decompressor.truncated:
-            self._pending_truncated = TruncatedError(
+    def flush(self) -> DecodeOut:
+        data, units = self._state.flush()
+        points = self._commit_header_points()
+        points.extend(self._points_for_units(units))
+        if self._state.truncated:
+            self._pending_error = TruncatedError(
                 "unix-compress (.Z) stream is truncated (nonzero leftover bits after "
                 "the last complete LZW code)"
             )
-        return data
+        return DecodeOut(data, points)
 
-    def _reset_to_seek_point(self, point: SeekPoint) -> None:
-        self._pending_truncated = None
-        super()._reset_to_seek_point(point)
+    @property
+    def finished(self) -> bool:
+        return self._state.is_finished()
 
-    def read(self, n: int = -1, /) -> bytes:
-        if n == 0:
-            return b""
-        data = super().read(n)
-        if not data and self._pending_truncated is not None:
-            err = self._pending_truncated
-            self._pending_truncated = None
-            raise err
-        return data
-
-    def _commit_header_if_needed(self) -> None:
+    def _commit_header_points(self) -> list[SeekPoint]:
         if self._header_committed:
-            return
-        params = self._decompressor.header_params
+            return []
+        params = self._state.header_params
         if params is None:
-            return
+            return []
         self._max_width, self._block_mode = params
         self._comp_cursor = _HEADER_SIZE
         self._decomp_cursor = 0
-        if self._seek_points and self._seek_points[0].compressed_offset == 0:
-            self._seek_points[0] = SeekPoint(0, _HEADER_SIZE)
         self._header_committed = True
+        # Refine origin: resume after the 3-byte header (same decompressed offset).
+        return [SeekPoint(0, _HEADER_SIZE)]
 
-    def _on_completed_segments(self, units: list[tuple[int, int]]) -> None:
+    def _points_for_units(self, units: list[tuple[int, int]]) -> list[SeekPoint]:
+        points: list[SeekPoint] = []
         for decomp_size, comp_size in units:
+            # After-placement: advance past CLEAR realignment, then emit the point.
             self._comp_cursor += comp_size
             self._decomp_cursor += decomp_size
-            self.add_seek_points([SeekPoint(self._decomp_cursor, self._comp_cursor)])
+            points.append(SeekPoint(self._decomp_cursor, self._comp_cursor))
+        return points
+
+
+def UnixCompressDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    *,
+    collector: DiagnosticCollector | None = None,
+    seekable: bool = True,
+) -> DecompressorStream:
+    """Seekable unix-compress stream: CLEAR → :class:`SeekPoint` when indexing is on."""
+
+    def make_decoder(point: SeekPoint, inner: BinaryIO) -> UnixCompressDecoder:
+        del inner
+        return UnixCompressDecoder(
+            LzwState(),
+            comp_cursor=point.compressed_offset,
+            decomp_cursor=point.decompressed_offset,
+        )
+
+    return DecompressorStream(
+        path,
+        make_decoder=make_decoder,
+        collector=collector,
+        codec_name="unix_compress",
+        seekable=seekable,
+    )
 
 
 # ---------------------------------------------------------------------------
