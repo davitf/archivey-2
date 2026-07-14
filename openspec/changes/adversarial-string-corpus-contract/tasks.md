@@ -20,4 +20,4 @@
 ## 3. Documentation and verification
 
 - [x] 3.1 Reconcile `ARCHITECTURE.md` with generated-on-demand adversarial archives and exceptional committed fixtures.
-- [ ] 3.2 Validate the OpenSpec change and run focused/full quality gates.
+- [x] 3.2 Validate the OpenSpec change and run focused/full quality gates.

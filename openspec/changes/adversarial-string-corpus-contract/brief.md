@@ -1,6 +1,6 @@
 # adversarial-string-corpus-contract — honest adversarial fixtures and name safety
 
-**Status:** In progress — nearly done, eight of nine tasks complete. Depends on nothing. Not breaking. Effort: small.
+**Status:** Complete — all nine tasks done; ready to archive. Depends on nothing. Not breaking. Effort: small.
 
 **Why it matters:** the testing contract's Unicode-bomb coverage needs proof that each adversarial archive actually carries the bytes and flags it claims, and the older prose describing committed binary fixtures conflicts with the current generate-on-demand policy. Separately, a link target containing a null byte needs a defined, safe outcome before it ever reaches a filesystem path.
 
