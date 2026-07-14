@@ -64,6 +64,45 @@
   (xxencode, BinHex, yEnc) only if a real corpus itch appears. Promote when a backup
   corpus actually wants `detect_format` / `open_archive` to Just Work on `.uu`.
 
+- **Opt-in legacy name-encoding detection (+ undecodable-name reporting)** — *explicitly
+  post-1.0; not needed for release.* Member names that carry **no Unicode marker and are not
+  valid UTF-8** currently decode via `surrogateescape` → honest but garbled (`U+DCxx`)
+  spellings. Affected: **TAR** (ustar/pax has no charset field at all, so `tarfile` defaults
+  to UTF-8 and everything else becomes surrogateescape), **RAR3** non-Unicode names (already
+  falls back to `windows-1252` via `_decode_name`), and **ZIP** unflagged names that aren't
+  valid UTF-8 (falls back to `zip_unflagged_fallback_encoding`, default cp437). The common
+  *UTF-8-without-marker* case is already handled everywhere (that was the
+  `zip-name-encoding-sniffing` change); this item is only about the genuinely-legacy tail.
+
+  **Why this is NOT the default (the danger).** The shipped UTF-8 sniff is *validation*, not
+  guessing — UTF-8 is self-checking, so a clean decode is near-conclusive. Legacy detection
+  has **no oracle**: latin-1 / cp1252 / cp437 / cp850 / ISO-8859-x are all total functions
+  over bytes (each decodes *any* input, just to different characters), and filenames are far
+  too short for statistical detectors (chardet / charset-normalizer) to be reliable — often
+  1–2 non-ASCII bytes. A wrong guess is strictly worse than the status quo: today's
+  surrogateescape is **honest** (visibly signals "not decodable") and **lossless**
+  (round-trips to the original bytes); a wrong codepage yields a **plausible-but-silently-wrong**
+  name that may also be **lossy**. So surrogateescape stays the default; detection is opt-in.
+
+  **Shape if built.** A config flag (off by default), behind a `[charset-detect]` extra
+  (keeps the zero-dep core clean). Detect **archive-wide** over the concatenation of *all*
+  non-UTF-8 names at once — kilobytes of same-encoding text, not one 8-byte name — and apply
+  a single codepage; emit a diagnostic recording the guessed encoding + confidence. Backstop:
+  `ArchiveMember.raw_name` already retains the true bytes, so even a wrong guess loses nothing.
+  Naturally unifies TAR + RAR3's legacy fallback with ZIP's `zip_unflagged_fallback_encoding`
+  under one "legacy name-encoding policy".
+
+  **Corpus-gathering (the de-risking bridge — worth doing *earlier*, around release).** We
+  can't tune or even justify a detector without real-world samples, and a fresh library has
+  none — so surface the cases and let willing users report them. The surrogate case is already
+  machine-detectable (`U+DCxx` in a decoded name) and the raw bytes are already captured in the
+  diagnostic context (base64). **Never phone home** — filenames are sensitive. Instead, a
+  passive affordance: a docs "how to report a name we couldn't decode" note, a one-line CLI hint
+  (with an issue link) when `list`/`extract` encounters surrogate names, and/or a small helper
+  that dumps the undecodable raw-name samples for a user to paste into an issue. This reporting
+  affordance is cheap and safe (no guessing), should ship *before* the detector, and is exactly
+  what turns "release → real cases" into the evidence for whether/how to build detection at all.
+
 ## API & ergonomics
 
 - **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
