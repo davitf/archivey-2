@@ -16,8 +16,13 @@ Wall-time SHALL be gated as a ratio against the stdlib peer for that format
 budget (≤1.3× common paths; up to ~2× where a safety/correctness feature justifies it,
 annotated per case). Bytes-decompressed and seek-count SHALL be gated as deterministic
 structural invariants (exact value or ≤ bound), since they are host-independent.
-Structural invariants SHALL gate every PR; full wall-time ratio checks MAY run on a
-noisier schedule (nightly / on-demand).
+Structural invariants SHALL gate (block) every PR. Full wall-time ratio checks SHALL run
+on every PR/push as well, but as a **non-blocking** job (`continue-on-error`): shared-runner
+ratios are too noisy to block merges, so the job records results (JSON artifact +
+informational VISION print) and fails visibly only on a gross regression past the sanity
+ceiling. A nightly `schedule` SHALL NOT be used — this project is bursty and often dormant,
+so per-PR execution catches regressions immediately whereas nightly would mostly run on
+unchanged code or skip during dormancy.
 
 The harness SHALL enforce the solid-block no-re-decode invariant: reading every member
 of a solid archive (7z folder / solid RAR) in listing order SHALL decompress each packed

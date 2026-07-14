@@ -1,8 +1,10 @@
 # Benchmark gate — sample results
 
-**Automated PR gate = structural invariants only** (seek-count baselines + solid
-decode-once). Wall-time / VISION ≤1.3× is a **manual / nightly drift tool**
-(`benchmark-wall` job) — shared-runner noise makes ratio regression gates flake.
+**Blocking PR gate = structural invariants only** (seek-count baselines + solid
+decode-once). Wall-time / VISION ≤1.3× runs on every PR too, but **non-blocking**
+(`benchmark-wall` job, `continue-on-error`) — shared-runner noise makes a ratio
+regression *gate* flake, so the job surfaces drift (JSON artifact + informational
+VISION print) and only goes red on a gross regression, without blocking merges.
 
 Re-run with:
 
@@ -113,6 +115,8 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
 ### Gate policy
 
 - **PR CI (blocking):** `--mode structural --scale ci` + unit decode-once tests.
-- **Nightly / `workflow_dispatch` (non-blocking):** `--mode full --scale realistic`
-  with JSON artifact upload.
+- **PR CI (non-blocking):** `--mode full --scale realistic` with JSON artifact
+  upload — runs on every PR/push, not on a nightly schedule (this project is
+  bursty and often dormant, so per-PR catches regressions immediately while
+  nightly would mostly run on unchanged code or skip during dormancy).
 - Wall timing: unmeasured archivey vs stdlib; VISION band informational.

@@ -50,11 +50,16 @@ Nothing gates it. `compressed-streams` already "counts compressed bytes consumed
 - **Wall-time tolerance:** sanity ceiling `WALL_RATIO_BUDGET=10` only in `--mode full`.
   No committed wall-ratio baseline. VISION ≤1.3× / ~2× is informational on realistic
   full runs (printed, not hard-fail).
-- **PR vs nightly:** structural invariants (seek ≤ bounds + solid decode-once) on every
-  PR via the `benchmark` CI job + `tests/test_benchmark_gate.py`. Decode-once is also a
-  first-class unit test (`test_measurement.py`, 7z + committed solid RAR, ×1.1 bound).
-  Full wall-time mode runs non-blocking on `schedule` / `workflow_dispatch`
-  (`benchmark-wall` job, JSON artifact).
+- **PR-blocking vs non-blocking (not nightly):** structural invariants (seek ≤ bounds +
+  solid decode-once) block every PR via the `benchmark` CI job + `tests/test_benchmark_gate.py`.
+  Decode-once is also a first-class unit test (`test_measurement.py`, 7z + committed solid
+  RAR, ×1.1 bound). Full wall-time mode runs on **every PR/push** as a separate,
+  non-blocking `benchmark-wall` job (`continue-on-error`, JSON artifact).
+  _Decided against a nightly `schedule` (2026-07-14, maintainer):_ this project is bursty
+  with long dormant stretches, so a nightly run mostly fires on unchanged code or not at
+  all during dormancy, and surfaces regressions late. Per-PR gives an immediate signal;
+  `continue-on-error` + no committed wall baseline keeps shared-runner ratio noise from
+  flake-blocking merges (only the ~10× `WALL_RATIO_BUDGET` sanity ceiling turns the job red).
 - **Peak memory / tracemalloc:** deferred — fourth axis later (cross-ref threat-model O1).
 
 ## Instrumentation note (apply clarification)
