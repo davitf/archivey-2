@@ -22,6 +22,7 @@ import importlib
 import io
 import lzma
 import os
+import struct
 import weakref
 import zlib
 from dataclasses import dataclass, field
@@ -309,24 +310,32 @@ class _GzipTruncationCheckStream(DelegatingStream):
         )
 
     def _has_additional_gzip_member(self) -> bool:
-        # Scan in fixed-size blocks (never read the whole file into memory), carrying a small
-        # overlap so a header split across a block boundary is still found. Start one byte in so
-        # this member's own header at offset 0 is not matched.
-        magic = b"\x1f\x8b\x08"
-        block = 1 << 20
         try:
             with open(self._source_path, "rb") as f:
-                f.seek(1)
-                tail = b""
-                while True:
-                    chunk = f.read(block)
-                    if not chunk:
-                        return False
-                    if magic in tail + chunk:
-                        return True
-                    tail = chunk[-(len(magic) - 1) :]
+                return gzip_has_additional_member(f)
         except OSError:
             return True  # cannot rule out a second member -> do not raise
+
+
+def gzip_has_additional_member(stream: BinaryIO) -> bool:
+    """Whether ``stream`` contains a gzip member after the one starting at offset 0.
+
+    Scans in fixed-size blocks (never reads the whole file into memory), carrying a small
+    overlap so a header split across a block boundary is still found. Starts one byte in so
+    this member's own header at offset 0 is not matched. Caller positions/ownership: the
+    stream is seeked; restore the caller's position if needed.
+    """
+    magic = b"\x1f\x8b\x08"
+    block = 1 << 20
+    stream.seek(1)
+    tail = b""
+    while True:
+        chunk = stream.read(block)
+        if not chunk:
+            return False
+        if magic in tail + chunk:
+            return True
+        tail = chunk[-(len(magic) - 1) :]
 
 
 # --- single-file metadata + content probes ---------------------------------------------
@@ -354,13 +363,17 @@ class MetadataContext:
 
     Lets a codec's ``extract_metadata`` read what it needs from the source without the codec
     layer depending on the single-file reader. ``peek_header(n)`` returns the leading ``n``
-    bytes of the compressed source without consuming it; ``probe_decompressed_size()``
-    returns the decompressed size from the stream index/trailer when cheaply available (else
-    ``None``).
+    bytes of the compressed source without consuming it; ``peek_trailer(n)`` returns the
+    trailing ``n`` bytes when the source is seekable/path (else ``None``);
+    ``probe_decompressed_size()`` returns the decompressed size from the stream
+    index/trailer when cheaply available (else ``None``); ``gzip_is_single_member()``
+    reports whether a gzip source has exactly one member when that is cheaply knowable.
     """
 
     peek_header: Callable[[int], bytes]
+    peek_trailer: Callable[[int], bytes | None]
     probe_decompressed_size: Callable[[], int | None]
+    gzip_is_single_member: Callable[[], bool | None]
 
 
 # --- the codec descriptors -------------------------------------------------------------
@@ -606,31 +619,46 @@ class GzipCodec(StreamCodec):
         return None
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
-        """Surface gzip's stored filename (FNAME) and mtime from the fixed/optional header.
+        """Surface gzip's stored filename (FNAME), mtime, and trailer CRC when cheap.
 
         RFC 1952 specifies the FNAME field as ISO-8859-1 (Latin-1), so the decoded value in
         ``extra`` uses that encoding; ``raw_name`` keeps the verbatim stored bytes.
+
+        The 8-byte trailer CRC-32 is surfaced as ``member.hashes["crc32"]`` only for a
+        single-member gzip on a seekable/path source (multi-member trailers cover only the
+        last member). Never triggers a decompression pass.
         """
         header = ctx.peek_header(_GZIP_HEADER_PEEK)
-        if len(header) < 10 or header[:2] != b"\x1f\x8b":
-            return
-        flg = header[3]
-        mtime = int.from_bytes(header[4:8], "little")
-        if mtime != 0:
-            member.modified = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        if len(header) >= 10 and header[:2] == b"\x1f\x8b":
+            flg = header[3]
+            mtime = int.from_bytes(header[4:8], "little")
+            if mtime != 0:
+                member.modified = datetime.fromtimestamp(mtime, tz=timezone.utc)
 
-        pos = 10
-        if flg & 0x04:  # FEXTRA: 2-byte length + data
-            if pos + 2 > len(header):
-                return
-            xlen = int.from_bytes(header[pos : pos + 2], "little")
-            pos += 2 + xlen
-        if flg & 0x08:  # FNAME: null-terminated stored filename (Latin-1 per RFC 1952)
-            end = header.find(b"\x00", pos)
-            if end != -1:
-                name_bytes = header[pos:end]
-                member.raw_name = name_bytes
-                member.extra["gzip.original_filename"] = name_bytes.decode("latin-1")
+            pos = 10
+            if flg & 0x04:  # FEXTRA: 2-byte length + data
+                if pos + 2 <= len(header):
+                    xlen = int.from_bytes(header[pos : pos + 2], "little")
+                    pos += 2 + xlen
+                else:
+                    pos = len(header) + 1  # stop optional-field walk
+            if flg & 0x08 and pos <= len(header):
+                # FNAME: null-terminated stored filename (Latin-1 per RFC 1952)
+                end = header.find(b"\x00", pos)
+                if end != -1:
+                    name_bytes = header[pos:end]
+                    member.raw_name = name_bytes
+                    member.extra["gzip.original_filename"] = name_bytes.decode(
+                        "latin-1"
+                    )
+
+        # Trailer: CRC32 (4 LE) || ISIZE (4 LE). Only honest for a single-member stream.
+        if ctx.gzip_is_single_member() is not True:
+            return
+        trailer = ctx.peek_trailer(8)
+        if trailer is None or len(trailer) < 8:
+            return
+        member.hashes = {"crc32": struct.unpack_from("<I", trailer, 0)[0]}
 
 
 class Bzip2Codec(StreamCodec):
@@ -755,6 +783,24 @@ class LzipCodec(_SizedLzmaCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         return LzipDecompressorStream(source, seekable=config.seekable)
+
+    def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
+        """Surface decompressed size and the trailer CRC-32 under the same cheap gate.
+
+        Size comes from the seekable lzip index (``probe_decompressed_size``). The trailer
+        CRC is surfaced only when that probe succeeds *and* the file is a single lzip
+        member (``member_size`` equals the compressed source size) — a multi-member ``.lz``
+        has no single whole-stream stored CRC for the one synthetic archive member.
+        """
+        member.size = ctx.probe_decompressed_size()
+        if member.size is None or member.compressed_size is None:
+            return
+        trailer = ctx.peek_trailer(20)
+        if trailer is None or len(trailer) < 20:
+            return
+        crc32, _data_size, member_size = struct.unpack_from("<IQQ", trailer, 0)
+        if member_size == member.compressed_size:
+            member.hashes = {"crc32": crc32}
 
 
 def _alone_props_plausible(props: int) -> bool:

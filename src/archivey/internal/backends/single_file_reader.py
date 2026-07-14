@@ -16,6 +16,7 @@ Phase 2); only their *seekable-decompressor* refinements remain for Phase 8.
 
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 from typing import BinaryIO, Iterator
@@ -39,6 +40,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     MetadataContext,
+    gzip_has_additional_member,
     open_codec_stream,
     resolve_codec,
     stream_codec_for_format,
@@ -174,7 +176,9 @@ class SingleFileReader(BaseArchiveReader):
     def _metadata_context(self) -> MetadataContext:
         return MetadataContext(
             peek_header=self._peek_header,
+            peek_trailer=self._peek_trailer,
             probe_decompressed_size=self._probe_decompressed_size,
+            gzip_is_single_member=self._gzip_is_single_member,
         )
 
     def _peek_header(self, length: int) -> bytes:
@@ -188,6 +192,36 @@ class SingleFileReader(BaseArchiveReader):
         if self._header_cache is None or len(self._header_cache) < length:
             self._header_cache = self._read_source_prefix(length)
         return self._header_cache[:length]
+
+    def _peek_trailer(self, length: int) -> bytes | None:
+        """The last ``length`` bytes of the compressed source, when cheaply readable.
+
+        Returns ``None`` for a non-seekable source (never forces a decode pass) or when the
+        source is shorter than ``length``.
+        """
+        src = self._source
+        assert src is not None
+        try:
+            if isinstance(src, Path):
+                with open(src, "rb") as f:
+                    size = f.seek(0, io.SEEK_END)
+                    if size < length:
+                        return None
+                    f.seek(-length, io.SEEK_END)
+                    return f.read(length)
+            if is_seekable(src):
+                pos = src.tell()
+                try:
+                    size = src.seek(0, io.SEEK_END)
+                    if size < length:
+                        return None
+                    src.seek(-length, io.SEEK_END)
+                    return src.read(length)
+                finally:
+                    src.seek(pos)
+        except OSError:
+            return None
+        return None
 
     def _read_source_prefix(self, length: int) -> bytes:
         from archivey.internal.streams.peekable import PeekableStream
@@ -208,6 +242,34 @@ class SingleFileReader(BaseArchiveReader):
             src.seek(pos)
             return data
         return b""
+
+    def _gzip_is_single_member(self) -> bool | None:
+        """Whether the gzip source has exactly one member, when cheaply knowable.
+
+        ``None`` when the source is non-seekable or too short to trust; ``False`` when a
+        second gzip header is found after offset 0.
+        """
+        src = self._source
+        assert src is not None
+        try:
+            if isinstance(src, Path):
+                with open(src, "rb") as f:
+                    size = f.seek(0, io.SEEK_END)
+                    if size < 18:  # header(10) + min deflate + trailer(8)
+                        return None
+                    return not gzip_has_additional_member(f)
+            if is_seekable(src):
+                pos = src.tell()
+                try:
+                    size = src.seek(0, io.SEEK_END)
+                    if size < 18:
+                        return None
+                    return not gzip_has_additional_member(src)
+                finally:
+                    src.seek(pos)
+        except OSError:
+            return None
+        return None
 
     def _probe_decompressed_size(self) -> int | None:
         """Decompressed size from the stream index/trailer, when cheaply available.

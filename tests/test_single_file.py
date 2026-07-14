@@ -225,6 +225,73 @@ def test_lzip_size_from_trailer(tmp_path: Path) -> None:
         assert ar.members()[0].size is None
 
 
+# ---------------------------------------------------------------------------
+# Stored decompressed CRC (cheap dedupe; no decompression)
+# ---------------------------------------------------------------------------
+
+
+def test_single_member_gzip_exposes_stored_crc32(tmp_path: Path) -> None:
+    payload = b"stored-crc-payload"
+    path = tmp_path / "one.gz"
+    path.write_bytes(gzip.compress(payload))
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        assert member.hashes["crc32"] == zlib.crc32(payload) & 0xFFFFFFFF
+
+
+def test_multi_member_gzip_omits_crc32(tmp_path: Path) -> None:
+    path = tmp_path / "multi.gz"
+    path.write_bytes(gzip.compress(b"first") + gzip.compress(b"second"))
+    with open_archive(path) as ar:
+        assert "crc32" not in ar.members()[0].hashes
+
+
+def test_gzip_omits_crc32_on_nonseekable_source() -> None:
+    data = gzip.compress(b"pipe-payload")
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+        members = ar.get_members_if_available()
+        assert members is not None
+        assert "crc32" not in members[0].hashes
+
+
+def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
+    payload = b"lzip-crc-payload" * 3
+    path = tmp_path / "data.lz"
+    path.write_bytes(make_lzip_member(payload))
+    with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
+        member = ar.members()[0]
+        assert member.hashes["crc32"] == zlib.crc32(payload) & 0xFFFFFFFF
+    # Same gate as size: without declared SEEKABLE, omit the trailer CRC.
+    with open_archive(path) as ar:
+        assert "crc32" not in ar.members()[0].hashes
+
+
+def test_other_single_file_codecs_omit_stored_crc32(tmp_path: Path) -> None:
+    payload = b"no-whole-member-crc"
+    cases = {
+        "data.bz2": bz2.compress(payload),
+        "data.xz": lzma.compress(payload),
+        "data.zz": zlib.compress(payload),
+    }
+    for name, blob in cases.items():
+        path = tmp_path / name
+        path.write_bytes(blob)
+        with open_archive(path) as ar:
+            assert "crc32" not in ar.members()[0].hashes, name
+
+
+def test_stored_gzip_crc32_does_not_change_read_or_verification(tmp_path: Path) -> None:
+    payload = b"verify-unchanged"
+    path = tmp_path / "ok.gz"
+    path.write_bytes(gzip.compress(payload))
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        assert "crc32" in member.hashes
+        assert ar.read(member) == payload
+        # Second open still succeeds (path source; codec verifies its own trailer).
+        assert ar.read(member) == payload
+
+
 def test_lzma_alone_size_from_header_when_known(tmp_path: Path) -> None:
     payload = b"z" * 321
     # stdlib FORMAT_ALONE always writes the unknown-size marker. Patching the 8-byte
