@@ -838,10 +838,8 @@ def test_next_header_offset_overflow_is_typed_corruption() -> None:
     import zlib
 
     from archivey.exceptions import CorruptionError
-    from archivey.internal.backends.sevenzip_parser import (
-        MAGIC_7Z,
-        parse_sevenzip_archive,
-    )
+    from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     # Valid signature CRC over a start_header that claims an absurd next-header offset.
     next_offset = (1 << 64) - 1
@@ -851,11 +849,8 @@ def test_next_header_offset_overflow_is_typed_corruption() -> None:
     start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
     blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
 
-    def _boom(*_a: object, **_k: object) -> bytes:
-        raise AssertionError("decode_folder must not be reached")
-
     with pytest.raises(CorruptionError, match="next-header offset"):
-        parse_sevenzip_archive(io.BytesIO(blob), decode_folder=_boom)  # type: ignore[arg-type]
+        parse_sevenzip_archive(io.BytesIO(blob))
 
 
 def test_next_header_size_cap_is_typed_corruption() -> None:
@@ -866,8 +861,8 @@ def test_next_header_size_cap_is_typed_corruption() -> None:
     from archivey.internal.backends.sevenzip_parser import (
         _MAX_NEXT_HEADER_SIZE,
         MAGIC_7Z,
-        parse_sevenzip_archive,
     )
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     next_offset = 0
     next_size = _MAX_NEXT_HEADER_SIZE + 1
@@ -876,11 +871,8 @@ def test_next_header_size_cap_is_typed_corruption() -> None:
     start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
     blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
 
-    def _boom(*_a: object, **_k: object) -> bytes:
-        raise AssertionError("decode_folder must not be reached")
-
     with pytest.raises(CorruptionError, match="next-header size"):
-        parse_sevenzip_archive(io.BytesIO(blob), decode_folder=_boom)  # type: ignore[arg-type]
+        parse_sevenzip_archive(io.BytesIO(blob))
 
 
 def test_archive_property_payload_size_is_bounded() -> None:
@@ -889,10 +881,8 @@ def test_archive_property_payload_size_is_bounded() -> None:
     import zlib
 
     from archivey.exceptions import CorruptionError
-    from archivey.internal.backends.sevenzip_parser import (
-        MAGIC_7Z,
-        parse_sevenzip_archive,
-    )
+    from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     # Minimal next-header: HEADER + ARCHIVE_PROPERTIES + prop_id + 0xFF-encoded u64 size.
     # Mirrors the CI crash input shape (payload claim >> remaining header bytes).
@@ -911,11 +901,8 @@ def test_archive_property_payload_size_is_bounded() -> None:
         + header_body
     )
 
-    def _boom(*_a: object, **_k: object) -> bytes:
-        raise AssertionError("decode_folder must not be reached")
-
     with pytest.raises(CorruptionError, match="(length|Truncated|parser limit)"):
-        parse_sevenzip_archive(io.BytesIO(blob), decode_folder=_boom)  # type: ignore[arg-type]
+        parse_sevenzip_archive(io.BytesIO(blob))
 
 
 # py7zr's empty.7z: signature + start_header with nextHeaderSize == 0.

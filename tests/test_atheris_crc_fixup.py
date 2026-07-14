@@ -10,12 +10,7 @@ from pathlib import Path
 import pytest
 
 from archivey.exceptions import ArchiveyError, CorruptionError
-from archivey.internal.backends.sevenzip_parser import (
-    SevenZipFolder,
-    parse_sevenzip_archive,
-)
-from archivey.internal.backends.sevenzip_reader import decode_folder_to_bytes
-from archivey.internal.streams.crypto import SevenZipKeyCache
+from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 from tests.atheris_fuzz.crc_fixup import (
     fixup_sevenzip_header_crcs,
     fixup_zip_local_and_cd_crc,
@@ -25,22 +20,6 @@ from tests.sample_archives import CORPUS, corpus_archive_path
 
 def _crc32(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
-
-
-def _decode_folder(
-    source: object,
-    folder: SevenZipFolder,
-    compressed_size: int,
-    uncompressed_size: int,
-) -> bytes:
-    return decode_folder_to_bytes(
-        source,  # type: ignore[arg-type]
-        folder,
-        compressed_size=compressed_size,
-        uncompressed_size=uncompressed_size,
-        password=None,
-        key_cache=SevenZipKeyCache(),
-    )
 
 
 @pytest.fixture(scope="module")
@@ -67,7 +46,7 @@ def test_fixup_sevenzip_restores_crcs_after_bitflip(basic_7z: bytes) -> None:
 
     # Without fixup the next-header CRC must fail.
     with pytest.raises(CorruptionError, match="next header CRC"):
-        parse_sevenzip_archive(io.BytesIO(broken), decode_folder=_decode_folder)
+        parse_sevenzip_archive(io.BytesIO(broken))
 
     fixed = fixup_sevenzip_header_crcs(broken, broken=False)
     # Signature + next-header CRCs must match recomputed values.
@@ -79,7 +58,7 @@ def test_fixup_sevenzip_restores_crcs_after_bitflip(basic_7z: bytes) -> None:
 
     # Fixed-up blob must pass the CRC gate (may still raise typed errors for content).
     try:
-        parse_sevenzip_archive(io.BytesIO(fixed), decode_folder=_decode_folder)
+        parse_sevenzip_archive(io.BytesIO(fixed))
     except CorruptionError as exc:
         assert "next header CRC" not in str(exc)
         assert "signature header CRC" not in str(exc)
@@ -93,7 +72,7 @@ def test_fixup_sevenzip_broken_mode_still_rejects(basic_7z: bytes) -> None:
     flipped[start] ^= 0x02
     fixed_broken = fixup_sevenzip_header_crcs(bytes(flipped), broken=True)
     with pytest.raises(CorruptionError, match="next header CRC"):
-        parse_sevenzip_archive(io.BytesIO(fixed_broken), decode_folder=_decode_folder)
+        parse_sevenzip_archive(io.BytesIO(fixed_broken))
 
 
 def test_fixup_sevenzip_noop_on_non_magic() -> None:

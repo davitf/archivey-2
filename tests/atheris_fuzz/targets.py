@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import os
 from collections.abc import Callable
-from typing import Any
 
 from archivey import (
     AcceleratorMode,
@@ -19,13 +18,8 @@ from archivey import (
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.internal.backends.rar_unrar import find_rarlab_unrar
-from archivey.internal.backends.sevenzip_parser import (
-    SevenZipFolder,
-    parse_sevenzip_archive,
-)
-from archivey.internal.backends.sevenzip_reader import decode_folder_to_bytes
+from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 from archivey.internal.registry import FormatSupport
-from archivey.internal.streams.crypto import SevenZipKeyCache
 from tests.atheris_fuzz.crc_fixup import (
     fixup_rar_header_crcs,
     fixup_sevenzip_header_crcs,
@@ -48,25 +42,9 @@ _FUZZ_CONFIG = ArchiveyConfig(
 _MAX_MEMBERS = 10_000
 
 
-def _decode_folder(
-    source: Any,
-    folder: SevenZipFolder,
-    compressed_size: int,
-    uncompressed_size: int,
-) -> bytes:
-    return decode_folder_to_bytes(
-        source,
-        folder,
-        compressed_size=compressed_size,
-        uncompressed_size=uncompressed_size,
-        password=None,
-        key_cache=SevenZipKeyCache(),
-    )
-
-
 def sevenzip_header_one(data: bytes) -> None:
     try:
-        parse_sevenzip_archive(io.BytesIO(data), decode_folder=_decode_folder)
+        parse_sevenzip_archive(io.BytesIO(data))
     except ArchiveyError:
         return
 
