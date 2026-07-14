@@ -129,10 +129,6 @@ fuzz = [
     "atheris>=3.0.0; python_version >= '3.12'",
 ]
 
-[tool.hatch.version]
-path = "src/archivey/__init__.py"
-validate-bump = false
-
 [tool.ruff]
 target-version = "py311"
 

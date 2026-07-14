@@ -70,11 +70,10 @@ not derived from the tag. To cut a release:
 2. Tag `vX.Y.Z` and push the tag. `publish.yml` builds, verifies the tag matches the
    packaged version, and publishes via OIDC.
 
-!!! note "pyproject version-config cleanup (non-blocking)"
-    `pyproject.toml` carries both a static `[project].version` and a
-    `[tool.hatch.version]` block pointing at `src/archivey/__init__.py` (whose
-    `__version__` is computed at runtime via `importlib.metadata`, so there is no literal
-    for hatch to read). The static value governs the build; the `[tool.hatch.version]`
-    block is inert. Worth reconciling separately — either commit to a single static
-    source or adopt tag-driven versioning (`hatch-vcs`) — so `hatch version` and the
-    build agree.
+!!! note "pyproject version source (resolved)"
+    The build version has a single source of truth: the static `[project].version` in
+    `pyproject.toml`. The formerly-inert `[tool.hatch.version]` block (which pointed at
+    `src/archivey/__init__.py`, whose `__version__` is computed at runtime via
+    `importlib.metadata` and carries no literal) has been removed. To cut a release, bump
+    `[project].version` (drop any `.devN`) before tagging. If you later prefer tag-driven
+    versioning, adopting `hatch-vcs` is a separate, optional change.
