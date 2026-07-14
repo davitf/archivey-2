@@ -16,12 +16,12 @@ from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
 from archivey.internal.backends.sevenzip_methods import (
+    METHOD_AES,
     METHOD_COPY,
-    compression_method_for_coder,
-    folder_is_encrypted,
+    lookup,
 )
 from archivey.internal.streams.streamtools import read_exact
-from archivey.types import CompressionMethod
+from archivey.types import CompressionAlgorithm, CompressionMethod
 
 MAGIC_7Z = b"7z\xbc\xaf'\x1c"
 
@@ -348,6 +348,22 @@ def folder_unpack_size(folder: SevenZipFolder) -> int:
     if folder.unpack_sizes:
         return folder.unpack_sizes[-1]
     return 0
+
+
+def folder_is_encrypted(folder: SevenZipFolder) -> bool:
+    """Whether any coder in the folder is 7z AES.
+
+    Lives here (not in ``sevenzip_methods``) so it can be typed against the folder
+    dataclass: the registry module is a pure leaf and must not import these types.
+    """
+    return any(lookup(coder.method) is METHOD_AES for coder in folder.coders)
+
+
+def compression_method_for_coder(coder: SevenZipCoder) -> CompressionMethod:
+    """archivey's compression descriptor for a single 7z coder."""
+    method = lookup(coder.method)
+    algo = method.algorithm if method is not None else CompressionAlgorithm.UNKNOWN
+    return CompressionMethod(algo, properties=coder.properties)
 
 
 # Re-export for callers that historically imported these from the parser.

@@ -23,11 +23,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.sevenzip_methods import (
-    METHOD_AES,
-    compression_method_for_coder,
-    folder_is_encrypted,
-)
+from archivey.internal.backends.sevenzip_methods import METHOD_AES
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
     PlainHeader,
@@ -35,8 +31,10 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipCoder,
     SevenZipFileRecord,
     SevenZipFolder,
+    compression_method_for_coder,
     compute_is_current,
     empty_archive,
+    folder_is_encrypted,
     materialize_archive,
     parse_header_block,
     read_signature_and_next_header,

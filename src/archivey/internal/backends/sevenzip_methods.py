@@ -8,7 +8,7 @@ from enum import Enum, auto
 
 from archivey.exceptions import UnsupportedFeatureError
 from archivey.internal.streams.codecs import Codec
-from archivey.types import CompressionAlgorithm, CompressionMethod
+from archivey.types import CompressionAlgorithm
 
 
 class MethodKind(Enum):
@@ -128,19 +128,6 @@ def require(method_id: bytes) -> SevenZipMethod:
             f"Unsupported 7z coder method {_method_hex(method_id)}"
         )
     return method
-
-
-def folder_is_encrypted(folder: object) -> bool:
-    coders = getattr(folder, "coders", ())
-    return any(lookup(coder.method) is METHOD_AES for coder in coders)
-
-
-def compression_method_for_coder(coder: object) -> CompressionMethod:
-    method_id = getattr(coder, "method")
-    properties = getattr(coder, "properties", None)
-    entry = lookup(method_id)
-    algo = entry.algorithm if entry is not None else CompressionAlgorithm.UNKNOWN
-    return CompressionMethod(algo, properties=properties)
 
 
 def is_bcj(method_id: bytes) -> bool:
