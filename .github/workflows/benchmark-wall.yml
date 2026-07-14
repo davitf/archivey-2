@@ -1,0 +1,48 @@
+name: Benchmark wall-time
+
+# Non-blocking wall-time drift tracker (VISION perf budget). Kept out of `ci.yml`
+# so the nightly schedule triggers *only* this job — not the full lint/docs/test
+# matrix. Wall ratios vary with core count / runner load, so this never gates a
+# PR: it runs on a schedule (and on demand) and its result is informational.
+# The PR-blocking structural gate lives in `ci.yml` (`benchmark` job).
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: benchmark-wall-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Ratios are informational — continue-on-error so a noisy run never shows red.
+  # RAR solid cases need the `rar` writer to build fixtures; RAR decode-once is
+  # covered instead by unit tests against committed fixtures (unrar only) in the
+  # main `test` matrix (see tests/test_measurement.py).
+  benchmark-wall:
+    name: Full realistic wall-time (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Sync (dev + all extras)
+        run: uv sync --group dev --extra all
+      - name: Full realistic wall-time run
+        run: >
+          uv run --no-sync python -m benchmarks.harness
+          --mode full --scale realistic
+          --json-out benchmark-wall-realistic.json
+      - name: Upload wall-time results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-wall-realistic
+          path: benchmark-wall-realistic.json

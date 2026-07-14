@@ -9,10 +9,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Nightly wall-time drift tool (non-blocking) — see benchmark-wall job.
-  schedule:
-    - cron: "17 6 * * *"
-  workflow_dispatch:
 
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
 # rapid pushes don't pile up redundant full-matrix runs.
@@ -193,11 +189,9 @@ jobs:
 
   # Automated gate is **structural only** (seek baselines + solid decode-once).
   # Wall-time / VISION ≤1.3× is too noisy on shared runners for a PR blocker —
-  # see the non-blocking `benchmark-wall` job (nightly / workflow_dispatch).
+  # see the non-blocking nightly `benchmark-wall.yml` workflow.
   benchmark:
     name: Benchmark gate (structural)
-    # Skip on schedule — wall job covers that; still run on PR/push/dispatch.
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -223,36 +217,3 @@ jobs:
           path: benchmark-structural.json
       - name: Pytest structural gate + measurement unit tests
         run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q
-
-  # Non-blocking wall-time drift tracker. Ratios vary with core count / runner
-  # load — failures here are informational (continue-on-error). RAR solid cases
-  # need the `rar` writer to build fixtures; decode-once for RAR is covered by
-  # unit tests against committed fixtures (unrar only) in the main `test` job.
-  benchmark-wall:
-    name: Benchmark wall-time (nightly, non-blocking)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Set up Python
-        run: uv python install 3.11
-      - name: Sync (dev + all extras)
-        run: uv sync --group dev --extra all
-      - name: Full realistic wall-time run
-        run: >
-          uv run --no-sync python -m benchmarks.harness
-          --mode full --scale realistic
-          --json-out benchmark-wall-realistic.json
-      - name: Upload wall-time results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: benchmark-wall-realistic
-          path: benchmark-wall-realistic.json
