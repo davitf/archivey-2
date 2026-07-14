@@ -1,5 +1,9 @@
 # Benchmark gate — sample results
 
+**Automated PR gate = structural invariants only** (seek-count baselines + solid
+decode-once). Wall-time / VISION ≤1.3× is a **manual / nightly drift tool**
+(`benchmark-wall` job) — shared-runner noise makes ratio regression gates flake.
+
 Re-run with:
 
 ```bash
@@ -9,6 +13,10 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 # Realistic wall-time vs stdlib (multi-MiB corpora; interleaved medians)
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
+
+**Measurement host for tables below:** 4-core Intel Xeon (KVM), Linux x86_64.
+rapidgzip parallelises across cores — absolute speedups scale with core count;
+treat the figures as directional, not portable.
 
 ## Investigation: ZIP “faster than stdlib” and TAR slowdown
 
@@ -64,11 +72,15 @@ So:
 | tar_read_all | **1.70×** | 3.6 ms | 2.1 ms | above 1.3×, under 2× safety |
 | gzip_read_all | **1.02×** | 31.7 ms | 31.2 ms | within |
 
+On a quieter/smaller runner these drift (e.g. zip ~1.18×→~1.55×) — hence wall
+ratios are not a PR gate.
+
 ### `.tar.gz` / `.tar.bz2` accelerators (off vs on)
 
-Same ~16 MiB multi-member corpus. Stdlib peer is `tarfile` `r:gz` / `r:bz2`
-(always stdlib codecs). Archivey forces `use_rapidgzip` /
-`use_indexed_bzip2` ON or OFF; ON also sets `MemberStreams.SEEKABLE`.
+Same ~16 MiB multi-member corpus on the **4-core** host above. Stdlib peer is
+`tarfile` `r:gz` / `r:bz2` (always stdlib codecs). Archivey forces
+`use_rapidgzip` / `use_indexed_bzip2` ON or OFF; ON also sets
+`MemberStreams.SEEKABLE`.
 
 The bzip2 accelerator is **`rapidgzip.IndexedBzip2File`** (via
 `use_indexed_bzip2`), not the separate `indexed_bzip2` package.
@@ -80,25 +92,27 @@ The bzip2 accelerator is **`rapidgzip.IndexedBzip2File`** (via
 | tarbz2 accel **off** | 375 ms | 366 ms | 1.02× | — |
 | tarbz2 accel **on** | 126 ms | 365 ms | **0.35×** | **2.97×** faster |
 
-Takeaway: with accelerators off we track stdlib; with them on, archivey
-beats `tarfile` by ~2–3× on this sequential read-all workload — the
-interesting comparison the harness now records as
-`targz_read_all_accel_{off,on}` / `tarbz2_read_all_accel_{off,on}`.
-
-At **ci** (tiny) scale the same accel_on cases are often *slower* than
-accel_off (indexing / thread-pool startup dominates). Do not read CI-scale
-wall ratios for accelerators as regressions; use realistic scale.
+**Speedup scales with cores** (rapidgzip is parallel). On a 2-core box the same
+workload reproduced ~0.88× / ~0.50× vs stdlib — direction holds, absolute
+multipliers do not. At **ci** (tiny) scale accel_on is often *slower* than
+accel_off (indexing / thread-pool startup dominates).
 
 ### Structural / solid
 
 | Check | Result |
 | --- | --- |
-| ZIP/TAR/gzip sequential bytes | exact match — no silent re-decode |
-| solid 7z sequential | decode-once |
+| ZIP/TAR/gzip seek counts | within committed baseline bound (silent re-open churn) |
+| ZIP/TAR/gzip `bytes == unpacked` | tautological at member-output layer — under-decode guard only |
+| solid 7z sequential | decode-once (also pinned in `test_measurement.py`) |
 | solid 7z random `read()` | ~32.5× re-decode (n=64) — recorded, not gated |
+| solid RAR decode-once | unit-tested against committed fixtures (`unrar` only) |
+
+ISO / directory: measurement is wired; harness cases are out of scope (ISO
+lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
 
 ### Gate policy
 
-- PR CI: `--mode structural --scale ci`.
-- Wall timing: unmeasured archivey vs stdlib (measurement used only for
-  bytes/seeks). VISION band still informational on realistic full mode.
+- **PR CI (blocking):** `--mode structural --scale ci` + unit decode-once tests.
+- **Nightly / `workflow_dispatch` (non-blocking):** `--mode full --scale realistic`
+  with JSON artifact upload.
+- Wall timing: unmeasured archivey vs stdlib; VISION band informational.

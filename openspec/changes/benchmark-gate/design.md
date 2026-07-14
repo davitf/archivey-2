@@ -37,20 +37,24 @@ Nothing gates it. `compressed-streams` already "counts compressed bytes consumed
 - **Instrumentation source.** Reuse the `compressed-streams` compressed-bytes counter for
   bytes-decompressed; add a lightweight seek counter on the source-facing stream wrapper
   if one is not already exposed. Measurement must not perturb the hot path when disabled.
-- **Baselines are recorded, reviewed artifacts.** A committed `benchmarks/baselines/*.json`
-  keyed by (format, op) holds the reference ratios/counts; the gate compares against them
-  with a tolerance band. Updating a baseline is a reviewed diff (like a snapshot test).
+- **Baselines are recorded, reviewed artifacts.** A committed
+  `benchmarks/baselines/structural.json` keyed by case holds seek/byte reference
+  counts; the PR gate compares seek counts against them with slack. There is
+  **no** committed `wall_time.json` — cold-pass ci ratios were misleading, and
+  shared-runner noise makes wall-ratio regression gates flake.
 - **Corpus.** Reuse the declarative test corpus plus a small set of deliberately-large
   solid archives generated on demand (not committed), so the O(n²) signal is visible.
 
 ## Open questions (resolved during apply)
 
-- **Wall-time tolerance:** start generous — sanity ceiling `WALL_RATIO_BUDGET=10` on
-  micro corpora; regression gating is recorded baseline + `WALL_RATIO_TOLERANCE=1.0`.
-  Tighten once runner variance is measured.
-- **PR vs nightly:** structural invariants (bytes-decompressed / seek ≤ bounds) on every
-  PR via the `benchmark` CI job + `tests/test_benchmark_gate.py`. Full wall-time mode is
-  opt-in (`python -m benchmarks.harness --mode full`) for nightly/on-demand.
+- **Wall-time tolerance:** sanity ceiling `WALL_RATIO_BUDGET=10` only in `--mode full`.
+  No committed wall-ratio baseline. VISION ≤1.3× / ~2× is informational on realistic
+  full runs (printed, not hard-fail).
+- **PR vs nightly:** structural invariants (seek ≤ bounds + solid decode-once) on every
+  PR via the `benchmark` CI job + `tests/test_benchmark_gate.py`. Decode-once is also a
+  first-class unit test (`test_measurement.py`, 7z + committed solid RAR, ×1.1 bound).
+  Full wall-time mode runs non-blocking on `schedule` / `workflow_dispatch`
+  (`benchmark-wall` job, JSON artifact).
 - **Peak memory / tracemalloc:** deferred — fourth axis later (cross-ref threat-model O1).
 
 ## Instrumentation note (apply clarification)

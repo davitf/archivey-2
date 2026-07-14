@@ -5,11 +5,22 @@ Run::
     uv run --extra all python -m benchmarks.harness
     uv run --extra all python -m benchmarks.harness --update-baselines
     uv run --extra all python -m benchmarks.harness --mode structural
+    uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 
 Modes:
 
-- ``structural`` (default for CI/PR): gate bytes-decompressed and seek invariants only.
-- ``full``: also assert wall-time ratios vs stdlib peers (noisier; suited to nightly).
+- ``structural`` (default for CI/PR): **the automated gate** — seek-count baselines
+  and solid decode-once bounds only. Common-path ``bytes_decompressed == unpacked``
+  is tautological (counted at member output); the seek axis is what catches
+  silent re-open churn.
+- ``full``: also report wall-time ratios vs stdlib peers. Ratios are noisy on
+  shared runners, so full mode is a **manual / nightly drift tool**, not the PR
+  gate. Sanity ceiling only (no committed wall-time baseline).
+
+Formats covered here: ZIP, TAR, gzip, tar.gz/tar.bz2 (+ accelerators), solid 7z
+(and solid RAR when the ``rar`` writer is available to build fixtures). ISO and
+directory backends are instrumented for measurement but deliberately out of
+scope for this harness — see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
 """
 
 from __future__ import annotations
@@ -34,16 +45,14 @@ from benchmarks.fixtures import FixtureSet, materialize_fixtures
 ROOT = Path(__file__).resolve().parents[1]
 BASELINES_DIR = Path(__file__).resolve().parent / "baselines"
 STRUCTURAL_BASELINE = BASELINES_DIR / "structural.json"
-WALL_BASELINE = BASELINES_DIR / "wall_time.json"
 
 # Sequential solid read may decode a little padding / skip; keep a small slack factor.
+# (Unit tests use a tighter bound on controlled fixtures — see test_measurement.py.)
 SOLID_DECODE_FACTOR = 2.0
-# Wall-time: start generous. Absolute budget is a sanity ceiling; regression gating uses
-# the recorded baseline ± tolerance (VISION's 1.3× is the target on realistic corpora).
+# Wall-time sanity ceiling for --mode full. No committed wall_time.json: cold-pass
+# ci ratios were misleading, and shared-runner noise makes ratio regression gates
+# flake. VISION ≤1.3× / ~2× is informational on realistic full runs / nightly.
 WALL_RATIO_BUDGET = 10.0
-WALL_RATIO_TOLERANCE = 1.0
-# VISION common-path target — reported in results, gated only in full mode on
-# ``realistic`` scale (ci micro corpora are too small for a meaningful 1.3× claim).
 WALL_RATIO_VISION = 1.3
 WALL_RATIO_VISION_SAFETY = 2.0
 
@@ -522,7 +531,10 @@ def _structural_checks(
                     f"> unpacked×{SOLID_DECODE_FACTOR}={limit} (solid re-decode?)"
                 )
         if r.operation == "read_all" and r.unpacked_bytes is not None:
-            # Common-path formats: decompressed bytes should match what was read.
+            # Under-decode guard only. For zip/tar/gzip this equals unpacked by
+            # construction (counted at member output) — silent *re*-decode of the
+            # source is caught by the seek-count baseline below, not this axis.
+            # Solid sequential (above) is where the byte axis does real work.
             if (
                 r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2")
                 and r.bytes_decompressed < r.unpacked_bytes
@@ -546,12 +558,11 @@ def _structural_checks(
 
 def _wall_checks(
     results: list[CaseResult],
-    baseline: dict[str, Any] | None,
     *,
     enforce_vision: bool = False,
 ) -> list[str]:
+    """Sanity / informational wall checks — no committed wall-time baseline."""
     failures: list[str] = []
-    cases = (baseline or {}).get("cases", {}) if baseline else {}
     for r in results:
         if r.wall_ratio is None:
             continue
@@ -564,23 +575,16 @@ def _wall_checks(
                 f"{r.case}: wall_ratio={r.wall_ratio:.2f} > VISION safety "
                 f"{WALL_RATIO_VISION_SAFETY}× (target {WALL_RATIO_VISION}×)"
             )
-        if r.case in cases:
-            ref = float(cases[r.case]["wall_ratio"])
-            if r.wall_ratio > ref + WALL_RATIO_TOLERANCE:
-                failures.append(
-                    f"{r.case}: wall_ratio={r.wall_ratio:.2f} > baseline {ref:.2f} "
-                    f"+ tol {WALL_RATIO_TOLERANCE}"
-                )
     return failures
 
 
 def write_baselines(results: list[CaseResult]) -> None:
+    """Rewrite the committed structural (seek/bytes) baseline only."""
     BASELINES_DIR.mkdir(parents=True, exist_ok=True)
     structural: dict[str, Any] = {
         "solid_decode_factor": SOLID_DECODE_FACTOR,
         "cases": {},
     }
-    wall: dict[str, Any] = {"wall_ratio_budget": WALL_RATIO_BUDGET, "cases": {}}
     for r in results:
         structural["cases"][r.case] = {
             "bytes_decompressed": r.bytes_decompressed,
@@ -588,17 +592,7 @@ def write_baselines(results: list[CaseResult]) -> None:
             "unpacked_bytes": r.unpacked_bytes,
             "notes": r.notes,
         }
-        # Skip accel_on wall ratios: at CI/tiny scale indexing startup dominates and
-        # the ratio vs stdlib is not a meaningful regression signal (realistic scale
-        # is the interesting comparison; see RESULTS.md).
-        if r.wall_ratio is not None and not r.case.endswith("_accel_on"):
-            wall["cases"][r.case] = {
-                "wall_ratio": r.wall_ratio,
-                "wall_s": r.wall_s,
-                "stdlib_wall_s": r.stdlib_wall_s,
-            }
     STRUCTURAL_BASELINE.write_text(json.dumps(structural, indent=2) + "\n")
-    WALL_BASELINE.write_text(json.dumps(wall, indent=2) + "\n")
 
 
 def load_json(path: Path) -> dict[str, Any] | None:
@@ -629,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--update-baselines",
         action="store_true",
-        help="Rewrite benchmarks/baselines/*.json from this run (ci scale only)",
+        help="Rewrite benchmarks/baselines/structural.json from this run (ci scale only)",
     )
     parser.add_argument(
         "--json-out",
@@ -694,13 +688,12 @@ def main(argv: list[str] | None = None) -> int:
         check_seek_baselines=(args.scale == "ci"),
     )
     if args.mode == "full":
-        wall_base = load_json(WALL_BASELINE) if args.scale == "ci" else None
-        # Sanity ceiling (+ ci baseline drift) hard-fail. VISION ≤1.3× / ~2× on
-        # realistic corpora is printed as informational until variance is settled.
-        for f in _wall_checks(results, wall_base, enforce_vision=False):
+        # Sanity ceiling only — no committed wall_time.json (shared-runner noise).
+        # VISION ≤1.3× / ~2× on realistic corpora is informational drift signal.
+        for f in _wall_checks(results, enforce_vision=False):
             failures.append(f)
         if args.scale == "realistic":
-            for f in _wall_checks(results, None, enforce_vision=True):
+            for f in _wall_checks(results, enforce_vision=True):
                 if "VISION safety" in f:
                     print(f"VISION BUDGET (informational): {f}", file=sys.stderr)
 
