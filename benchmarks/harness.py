@@ -102,6 +102,14 @@ def _op_extract(path: Path, dest_root: Path) -> tuple[int, int]:
             return base.bytes_decompressed, base.source_seek_count
 
 
+def _op_read_all_unmeasured(path: Path) -> None:
+    """Read every member without measurement wrappers — fair wall-time peer."""
+    with open_archive(path) as reader:
+        for _member, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
+
+
 def _op_random_read_all(path: Path) -> tuple[int, int]:
     with enable_measurement():
         with open_archive(path) as reader:
@@ -116,6 +124,50 @@ def _timed(fn: Callable[[], Any]) -> tuple[float, Any]:
     t0 = time.perf_counter()
     result = fn()
     return time.perf_counter() - t0, result
+
+
+def _interleaved_pair_times(
+    archivey_fn: Callable[[], Any],
+    stdlib_fn: Callable[[], None],
+    *,
+    rounds: int = 5,
+) -> tuple[float, Any, float]:
+    """Alternate archivey/stdlib timing; return (median_ay_s, ay_result, median_std_s).
+
+    One shared warmup of each side first. Alternating order removes the
+    "whoever ran last left the page cache hot" bias. Diagnostic log spam is
+    silenced for the timed window — ZIP name-encoding advisories otherwise
+    flood stderr and skew sub-20ms samples (early runs reported archivey
+    *faster* than ``zipfile``, which is impossible as a steady state since we
+    wrap it).
+    """
+    import logging
+
+    archivey_fn()
+    stdlib_fn()
+    ay_samples: list[float] = []
+    std_samples: list[float] = []
+    last_ay: Any = None
+    prev_disable = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        for i in range(rounds):
+            if i % 2 == 0:
+                wall, last_ay = _timed(archivey_fn)
+                ay_samples.append(wall)
+                wall, _ = _timed(stdlib_fn)
+                std_samples.append(wall)
+            else:
+                wall, _ = _timed(stdlib_fn)
+                std_samples.append(wall)
+                wall, last_ay = _timed(archivey_fn)
+                ay_samples.append(wall)
+    finally:
+        logging.disable(prev_disable)
+    ay_samples.sort()
+    std_samples.sort()
+    mid = len(ay_samples) // 2
+    return ay_samples[mid], last_ay, std_samples[mid]
 
 
 def _stdlib_zip_read_all(path: Path) -> None:
@@ -155,16 +207,36 @@ def run_cases(
             fn()  # discard — fill page cache / import side effects
         return _timed(fn)
 
+    # Wall-ratio cases: interleaved medians when warmup is on (realistic scale).
+    # Structural metrics come from a separate measured pass — wall timing must not
+    # install seek/output counters (those change the ZIP open path and skew ~10ms
+    # samples enough to invent a bogus "faster than zipfile" ratio).
+    def pair_wall(
+        std_fn: Callable[[], None], path: Path
+    ) -> tuple[float, float]:
+        if warmup:
+            ay_wall, _ignored, std_wall = _interleaved_pair_times(
+                lambda: _op_read_all_unmeasured(path),
+                std_fn,
+                rounds=7,
+            )
+            return ay_wall, std_wall
+        wall, _ = timed_with_optional_warmup(lambda: _op_read_all_unmeasured(path))
+        std_wall, _ = timed_with_optional_warmup(std_fn)
+        return wall, std_wall
+
     # --- ZIP ---
     wall, (bdec, seeks) = timed_with_optional_warmup(
         lambda: _op_open_list(fixtures.zip_path)
     )
     results.append(CaseResult("zip_open_list", "zip", "open_list", wall, bdec, seeks))
-    wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+    # Structural bytes from a measured pass; wall ratio from an unmeasured peer race.
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
         lambda: _op_read_all(fixtures.zip_path)
     )
-    std_wall, _ = timed_with_optional_warmup(
-        lambda: _stdlib_zip_read_all(fixtures.zip_path)
+    wall, std_wall = pair_wall(
+        lambda: _stdlib_zip_read_all(fixtures.zip_path),
+        fixtures.zip_path,
     )
     results.append(
         CaseResult(
@@ -184,16 +256,17 @@ def run_cases(
     )
     results.append(CaseResult("zip_extract", "zip", "extract", wall, bdec, seeks))
 
-    # --- TAR ---
+    # --- TAR (plain / uncompressed — harness peer is tarfile r:) ---
     wall, (bdec, seeks) = timed_with_optional_warmup(
         lambda: _op_open_list(fixtures.tar_path)
     )
     results.append(CaseResult("tar_open_list", "tar", "open_list", wall, bdec, seeks))
-    wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
         lambda: _op_read_all(fixtures.tar_path)
     )
-    std_wall, _ = timed_with_optional_warmup(
-        lambda: _stdlib_tar_read_all(fixtures.tar_path)
+    wall, std_wall = pair_wall(
+        lambda: _stdlib_tar_read_all(fixtures.tar_path),
+        fixtures.tar_path,
     )
     results.append(
         CaseResult(
@@ -206,15 +279,17 @@ def run_cases(
             unpacked_bytes=unpacked,
             stdlib_wall_s=std_wall,
             wall_ratio=(wall / std_wall) if std_wall > 0 else None,
+            notes="plain uncompressed TAR vs tarfile r: (not .tar.gz)",
         )
     )
 
     # --- gzip single-file ---
-    wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
         lambda: _op_read_all(fixtures.gzip_path)
     )
-    std_wall, _ = timed_with_optional_warmup(
-        lambda: _stdlib_gzip_read_all(fixtures.gzip_path)
+    wall, std_wall = pair_wall(
+        lambda: _stdlib_gzip_read_all(fixtures.gzip_path),
+        fixtures.gzip_path,
     )
     results.append(
         CaseResult(
