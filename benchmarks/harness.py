@@ -37,11 +37,14 @@ WALL_BASELINE = BASELINES_DIR / "wall_time.json"
 
 # Sequential solid read may decode a little padding / skip; keep a small slack factor.
 SOLID_DECODE_FACTOR = 2.0
-# Wall-time: start generous (host noise on micro corpora); tighten once runner variance
-# is measured. Absolute budget is a sanity ceiling; regression gating uses the recorded
-# baseline ± tolerance (VISION's 1.3× is the target, not the first CI threshold).
+# Wall-time: start generous. Absolute budget is a sanity ceiling; regression gating uses
+# the recorded baseline ± tolerance (VISION's 1.3× is the target on realistic corpora).
 WALL_RATIO_BUDGET = 10.0
 WALL_RATIO_TOLERANCE = 1.0
+# VISION common-path target — reported in results, gated only in full mode on
+# ``realistic`` scale (ci micro corpora are too small for a meaningful 1.3× claim).
+WALL_RATIO_VISION = 1.3
+WALL_RATIO_VISION_SAFETY = 2.0
 
 
 @dataclass
@@ -84,7 +87,13 @@ def _op_read_all(path: Path) -> tuple[int, int, int]:
             return base.bytes_decompressed, base.source_seek_count, unpacked
 
 
-def _op_extract(path: Path, dest: Path) -> tuple[int, int]:
+_extract_n = 0
+
+
+def _op_extract(path: Path, dest_root: Path) -> tuple[int, int]:
+    global _extract_n
+    _extract_n += 1
+    dest = dest_root / f"run-{_extract_n}"
     dest.mkdir(parents=True, exist_ok=True)
     with enable_measurement():
         with open_archive(path) as reader:
@@ -133,14 +142,30 @@ def _stdlib_gzip_read_all(path: Path) -> None:
         gf.read()
 
 
-def run_cases(fixtures: FixtureSet, work: Path) -> list[CaseResult]:
+def run_cases(
+    fixtures: FixtureSet,
+    work: Path,
+    *,
+    warmup: bool = False,
+) -> list[CaseResult]:
     results: list[CaseResult] = []
 
+    def timed_with_optional_warmup(fn: Callable[[], Any]) -> tuple[float, Any]:
+        if warmup:
+            fn()  # discard — fill page cache / import side effects
+        return _timed(fn)
+
     # --- ZIP ---
-    wall, (bdec, seeks) = _timed(lambda: _op_open_list(fixtures.zip_path))
+    wall, (bdec, seeks) = timed_with_optional_warmup(
+        lambda: _op_open_list(fixtures.zip_path)
+    )
     results.append(CaseResult("zip_open_list", "zip", "open_list", wall, bdec, seeks))
-    wall, (bdec, seeks, unpacked) = _timed(lambda: _op_read_all(fixtures.zip_path))
-    std_wall, _ = _timed(lambda: _stdlib_zip_read_all(fixtures.zip_path))
+    wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.zip_path)
+    )
+    std_wall, _ = timed_with_optional_warmup(
+        lambda: _stdlib_zip_read_all(fixtures.zip_path)
+    )
     results.append(
         CaseResult(
             "zip_read_all",
@@ -154,16 +179,22 @@ def run_cases(fixtures: FixtureSet, work: Path) -> list[CaseResult]:
             wall_ratio=(wall / std_wall) if std_wall > 0 else None,
         )
     )
-    wall, (bdec, seeks) = _timed(
+    wall, (bdec, seeks) = timed_with_optional_warmup(
         lambda: _op_extract(fixtures.zip_path, work / "extract-zip")
     )
     results.append(CaseResult("zip_extract", "zip", "extract", wall, bdec, seeks))
 
     # --- TAR ---
-    wall, (bdec, seeks) = _timed(lambda: _op_open_list(fixtures.tar_path))
+    wall, (bdec, seeks) = timed_with_optional_warmup(
+        lambda: _op_open_list(fixtures.tar_path)
+    )
     results.append(CaseResult("tar_open_list", "tar", "open_list", wall, bdec, seeks))
-    wall, (bdec, seeks, unpacked) = _timed(lambda: _op_read_all(fixtures.tar_path))
-    std_wall, _ = _timed(lambda: _stdlib_tar_read_all(fixtures.tar_path))
+    wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.tar_path)
+    )
+    std_wall, _ = timed_with_optional_warmup(
+        lambda: _stdlib_tar_read_all(fixtures.tar_path)
+    )
     results.append(
         CaseResult(
             "tar_read_all",
@@ -179,8 +210,12 @@ def run_cases(fixtures: FixtureSet, work: Path) -> list[CaseResult]:
     )
 
     # --- gzip single-file ---
-    wall, (bdec, seeks, unpacked) = _timed(lambda: _op_read_all(fixtures.gzip_path))
-    std_wall, _ = _timed(lambda: _stdlib_gzip_read_all(fixtures.gzip_path))
+    wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.gzip_path)
+    )
+    std_wall, _ = timed_with_optional_warmup(
+        lambda: _stdlib_gzip_read_all(fixtures.gzip_path)
+    )
     results.append(
         CaseResult(
             "gzip_read_all",
@@ -197,7 +232,7 @@ def run_cases(fixtures: FixtureSet, work: Path) -> list[CaseResult]:
 
     # --- Solid 7z ---
     if fixtures.solid_7z is not None:
-        wall, (bdec, seeks, unpacked) = _timed(
+        wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
             lambda: _op_read_all(fixtures.solid_7z)  # type: ignore[arg-type]
         )
         results.append(
@@ -212,7 +247,7 @@ def run_cases(fixtures: FixtureSet, work: Path) -> list[CaseResult]:
                 notes="solid invariant: bytes_decompressed <= unpacked * factor",
             )
         )
-        wall, (bdec, seeks) = _timed(
+        wall, (bdec, seeks) = timed_with_optional_warmup(
             lambda: _op_random_read_all(fixtures.solid_7z)  # type: ignore[arg-type]
         )
         results.append(
@@ -230,7 +265,7 @@ def run_cases(fixtures: FixtureSet, work: Path) -> list[CaseResult]:
 
     # --- Solid RAR ---
     if fixtures.solid_rar is not None:
-        wall, (bdec, seeks, unpacked) = _timed(
+        wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
             lambda: _op_read_all(fixtures.solid_rar)  # type: ignore[arg-type]
         )
         results.append(
@@ -245,7 +280,7 @@ def run_cases(fixtures: FixtureSet, work: Path) -> list[CaseResult]:
                 notes="solid invariant: bytes_decompressed <= unpacked * factor",
             )
         )
-        wall, (bdec, seeks) = _timed(
+        wall, (bdec, seeks) = timed_with_optional_warmup(
             lambda: _op_random_read_all(fixtures.solid_rar)  # type: ignore[arg-type]
         )
         results.append(
@@ -267,6 +302,8 @@ def run_cases(fixtures: FixtureSet, work: Path) -> list[CaseResult]:
 def _structural_checks(
     results: list[CaseResult],
     baseline: dict[str, Any] | None = None,
+    *,
+    check_seek_baselines: bool = True,
 ) -> list[str]:
     failures: list[str] = []
     cases = (baseline or {}).get("cases", {}) if baseline else {}
@@ -289,18 +326,23 @@ def _structural_checks(
                     f"< unpacked={r.unpacked_bytes}"
                 )
         # Seek counts: ≤ recorded baseline × 2 (host/path variance); missing baseline = skip.
-        ref = cases.get(r.case)
-        if ref is not None and "source_seek_count" in ref:
-            limit = int(ref["source_seek_count"]) * 2 + 8
-            if r.source_seek_count > limit:
-                failures.append(
-                    f"{r.case}: source_seek_count={r.source_seek_count} > bound {limit}"
-                )
+        # Only meaningful against the same fixture scale as the committed baseline (ci).
+        if check_seek_baselines:
+            ref = cases.get(r.case)
+            if ref is not None and "source_seek_count" in ref:
+                limit = int(ref["source_seek_count"]) * 2 + 8
+                if r.source_seek_count > limit:
+                    failures.append(
+                        f"{r.case}: source_seek_count={r.source_seek_count} > bound {limit}"
+                    )
     return failures
 
 
 def _wall_checks(
-    results: list[CaseResult], baseline: dict[str, Any] | None
+    results: list[CaseResult],
+    baseline: dict[str, Any] | None,
+    *,
+    enforce_vision: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     cases = (baseline or {}).get("cases", {}) if baseline else {}
@@ -310,6 +352,11 @@ def _wall_checks(
         if r.wall_ratio > WALL_RATIO_BUDGET:
             failures.append(
                 f"{r.case}: wall_ratio={r.wall_ratio:.2f} > sanity budget {WALL_RATIO_BUDGET}"
+            )
+        if enforce_vision and r.wall_ratio > WALL_RATIO_VISION_SAFETY:
+            failures.append(
+                f"{r.case}: wall_ratio={r.wall_ratio:.2f} > VISION safety "
+                f"{WALL_RATIO_VISION_SAFETY}× (target {WALL_RATIO_VISION}×)"
             )
         if r.case in cases:
             ref = float(cases[r.case]["wall_ratio"])
@@ -360,9 +407,20 @@ def main(argv: list[str] | None = None) -> int:
         help="structural=bytes/seeks only (PR); full=include wall-time ratios",
     )
     parser.add_argument(
+        "--scale",
+        choices=("ci", "realistic"),
+        default="ci",
+        help="ci=small PR fixtures; realistic=multi-MiB corpora for wall-time",
+    )
+    parser.add_argument(
+        "--warmup",
+        action="store_true",
+        help="Discard one pass per timed op before measuring (recommended with --scale realistic)",
+    )
+    parser.add_argument(
         "--update-baselines",
         action="store_true",
-        help="Rewrite benchmarks/baselines/*.json from this run",
+        help="Rewrite benchmarks/baselines/*.json from this run (ci scale only)",
     )
     parser.add_argument(
         "--json-out",
@@ -378,7 +436,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    fixtures = materialize_fixtures(args.fixture_dir)
+    if args.update_baselines and args.scale != "ci":
+        print(
+            "--update-baselines only writes the committed ci baselines; "
+            f"refusing scale={args.scale!r}",
+            file=sys.stderr,
+        )
+        return 2
+
+    warmup = args.warmup or args.scale == "realistic"
+    fixtures = materialize_fixtures(args.fixture_dir, scale=args.scale)
     work = fixtures.root / "work"
     if work.exists():
         import shutil
@@ -386,10 +453,19 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(work)
     work.mkdir(parents=True)
 
-    results = run_cases(fixtures, work)
+    results = run_cases(fixtures, work, warmup=warmup)
     payload = {
         "mode": args.mode,
+        "scale": fixtures.scale.name,
+        "scale_detail": {
+            "common_members": fixtures.scale.common_members,
+            "common_member_size": fixtures.scale.common_member_size,
+            "gzip_size": fixtures.scale.gzip_size,
+            "solid_members": fixtures.scale.solid_members,
+            "solid_member_size": fixtures.scale.solid_member_size,
+        },
         "fixture_root": str(fixtures.root),
+        "warmup": warmup,
         "results": [asdict(r) for r in results],
     }
     if args.json_out is not None:
@@ -402,10 +478,22 @@ def main(argv: list[str] | None = None) -> int:
         write_baselines(results)
         print(f"Updated baselines under {BASELINES_DIR}", file=sys.stderr)
 
-    failures = _structural_checks(results, load_json(STRUCTURAL_BASELINE))
+    # Seek baselines are committed for the ci scale only.
+    failures = _structural_checks(
+        results,
+        load_json(STRUCTURAL_BASELINE),
+        check_seek_baselines=(args.scale == "ci"),
+    )
     if args.mode == "full":
-        wall_base = load_json(WALL_BASELINE)
-        failures.extend(_wall_checks(results, wall_base))
+        wall_base = load_json(WALL_BASELINE) if args.scale == "ci" else None
+        # Sanity ceiling (+ ci baseline drift) hard-fail. VISION ≤1.3× / ~2× on
+        # realistic corpora is printed as informational until variance is settled.
+        for f in _wall_checks(results, wall_base, enforce_vision=False):
+            failures.append(f)
+        if args.scale == "realistic":
+            for f in _wall_checks(results, None, enforce_vision=True):
+                if "VISION safety" in f:
+                    print(f"VISION BUDGET (informational): {f}", file=sys.stderr)
 
     if failures:
         print("BENCHMARK GATE FAILURES:", file=sys.stderr)

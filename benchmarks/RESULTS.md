@@ -1,69 +1,78 @@
 # Benchmark gate — sample results
 
-Captured on the agent host while landing `benchmark-gate` (2026-07-14).
 Re-run with:
 
 ```bash
-uv run --extra all python -m benchmarks.harness --mode structural
-uv run --extra all python -m benchmarks.harness --mode full
+# PR structural gate (small fixtures, fast)
+uv run --extra all python -m benchmarks.harness --mode structural --scale ci
+
+# Realistic wall-time vs stdlib (multi-MiB corpora; warmup on by default)
+uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-Fixtures: 8×~4 KiB ZIP/TAR members, one ~64 KiB gzip, solid 7z with 32×64 KiB
-members (~2.0 MiB unpacked). Solid RAR was skipped here (`rar` builder absent;
-`unrar` alone cannot create fixtures).
+## Realistic scale (2026-07-14, agent host)
 
-## Verdict
+**Corpus:** 64×256 KiB ZIP/TAR members (~16 MiB unpacked), 32 MiB gzip, solid 7z
+64×256 KiB (~16 MiB unpacked). Semi-compressible patterned payloads. One warmup
+pass discarded before each timed op. Solid RAR skipped (`rar` builder absent).
+
+### Verdict
 
 | Check | Result |
 | --- | --- |
-| Structural gate (`--mode structural`) | **PASS** (exit 0) |
-| Silent re-decode on ZIP/TAR/gzip sequential read | **None** (bytes_decompressed == unpacked) |
-| Solid 7z sequential (`stream_members`) | **Decode-once** (2,097,238 == unpacked) |
-| Solid 7z random `open()` / `read()` | **Re-decode visible** (16.5× bytes) — recorded, not gated |
-| Wall-time vs VISION ≤1.3× on this micro corpus | **Above 1.3×** (3.3–5.4×) — under sanity ceiling 10×; not PR-gated |
+| Structural (bytes / solid invariant) | **PASS** |
+| Silent re-decode ZIP/TAR/gzip sequential | **None** (exact byte match) |
+| Solid 7z sequential | **Decode-once** (16,777,216 == unpacked) |
+| Solid 7z random `read()` | **32.5× re-decode** (expected ≈ n/2 for n=64) — recorded, not gated |
+| ZIP wall vs `zipfile` | **~0.82×** — within VISION 1.3× (faster than stdlib here) |
+| gzip wall vs `gzip` | **~1.23×** — within VISION 1.3× |
+| TAR wall vs `tarfile` | **~2.0–2.8×** — at/above VISION ~2× safety band |
 
-## Structural results
+### Wall-time ratios (3 consecutive runs)
 
-| Case | wall (ms) | bytes decompressed | seeks | unpacked | notes |
-| --- | ---: | ---: | ---: | ---: | --- |
-| zip_open_list | 1.4 | 0 | 4 | — | list only |
-| zip_read_all | 1.1 | 32,784 | 28 | 32,784 | exact match |
-| zip_extract | 4.1 | 32,784 | 28 | — | |
-| tar_open_list | 0.5 | 0 | 8 | — | list only |
-| tar_read_all | 0.7 | 32,784 | 16 | 32,784 | exact match |
-| gzip_read_all | 0.6 | 65,538 | 1 | 65,538 | exact match |
-| sevenzip_solid_sequential | 5.2 | 2,097,238 | 4 | 2,097,238 | ≤ unpacked×2 → PASS |
-| sevenzip_solid_random | 56.9 | 34,604,317 | 35 | 2,097,238 | 16.5× re-decode; not gated |
+| Case | run 1 | run 2 | run 3 | archivey (typ.) | stdlib (typ.) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| zip_read_all | 0.821× | 0.820× | 0.824× | ~11 ms | ~13 ms |
+| tar_read_all | 2.605× | 1.987× | 2.225× | ~4–5 ms | ~2.1 ms |
+| gzip_read_all | 1.229× | 1.227× | 1.273× | ~38 ms | ~31 ms |
 
-### Solid O(n²) signal (the trap the gate is for)
+ZIP and gzip look healthy against VISION. Plain TAR is the outlier: stable
+~2×–2.6× with low absolute times (stdlib ~2 ms), so fixed per-member overhead
+still matters. Treat as a real signal to investigate / annotate, not noise from
+a tiny corpus — but absolute times are still small enough that further larger
+TAR corpora (or fewer members / bigger members) would refine the ratio.
 
-Random member opens on the solid 7z folder re-decode from the folder start each
-time:
+### Structural / solid (representative run)
 
-- sequential: **2.0 MiB** decoded in ~5 ms
-- random (32 members, reverse order): **33.0 MiB** decoded in ~57 ms
-- inflation: **16.5× bytes**, **11× wall** (≈ n/2 average prefix for n=32)
+| Case | wall | bytes decompressed | seeks | unpacked |
+| --- | ---: | ---: | ---: | ---: |
+| zip_read_all | 11 ms | 16,777,216 | 196 | 16,777,216 |
+| tar_read_all | 5 ms | 16,777,216 | 128 | 16,777,216 |
+| gzip_read_all | 37 ms | 33,554,432 | 16 | 33,554,432 |
+| sevenzip_solid_sequential | 8.5 ms | 16,777,216 | 4 | 16,777,216 |
+| sevenzip_solid_random | 155 ms | 545,259,520 | 67 | 16,777,216 |
 
-A harness case that counted that random pass as “sequential” would fail the
-structural gate (`bytes > unpacked×2`). The intentional `*_random` case only
-records the cost.
+Solid random inflation: **32.5× bytes**, **~18× wall** — the O(n²) trap the
+gate exists to catch. Sequential path does not re-decode.
 
-## Wall-time ratios (full mode, micro corpus)
+### Gate policy
 
-| Case | archivey / stdlib | vs VISION 1.3× | vs sanity 10× |
-| --- | ---: | --- | --- |
-| zip_read_all | ~4.9–5.0× | above | under |
-| tar_read_all | ~3.3–3.6× | above | under |
-| gzip_read_all | ~5.0–5.4× | above | under |
+- PR CI: `--mode structural --scale ci` (bytes/seeks only).
+- Realistic `--mode full`: sanity ceiling 10× hard-fails; VISION 1.3×/2×
+  overshoots print as informational until TAR (and variance) are settled.
 
-These are **tiny** archives (sub-millisecond stdlib baselines), so absolute
-ratios are dominated by fixed overhead and are **not** yet the VISION claim
-surface. PR CI gates structural invariants only; `--mode full` is for
-nightly/on-demand. Tighten corpora and tolerance once runner variance is
-measured.
+---
 
-## Not measured this run
+## Earlier ci-scale sample (micro corpus)
 
-- Solid RAR (needs `rar` to build; `unrar` is present for reading)
-- Larger common-path corpora that would make ≤1.3× meaningful
-- Peak RSS / tracemalloc (deferred fourth axis)
+Tiny 8×4 KiB / 64 KiB gzip fixtures produced 3–5× wall ratios dominated by fixed
+overhead — not usable for VISION claims. Retained below for contrast; prefer the
+realistic table above.
+
+| Case | wall ratio (ci) |
+| --- | ---: |
+| zip_read_all | ~4.9× |
+| tar_read_all | ~3.5× |
+| gzip_read_all | ~5.2× |
+| solid sequential | decode-once (~2 MiB) |
+| solid random | ~16.5× re-decode (n=32) |
