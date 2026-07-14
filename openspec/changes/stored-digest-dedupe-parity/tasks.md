@@ -17,5 +17,5 @@
 
 ## 4. Verify
 
-- [ ] 4.1 Run the parity sweep across `[all]`, `[all-lowest]`, `core-only`
-- [ ] 4.2 `openspec validate --strict stored-digest-dedupe-parity`
+- [x] 4.1 Run the parity sweep across `[all]`, `[all-lowest]`, `core-only`
+- [x] 4.2 `openspec validate --strict stored-digest-dedupe-parity`
