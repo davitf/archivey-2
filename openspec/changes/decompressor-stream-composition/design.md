@@ -142,20 +142,22 @@ class Decoder(Protocol):
     def finished(self) -> bool: ...
     @property
     def pending_error(self) -> BaseException | None: ...
+    def clear_pending_error(self) -> None: ...
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]: ...
 ```
 
-A small `BaseDecoder` supplies `points=[]`, `pending_error = None`, and a no-op
-`build_index → ([], None)`. Forward-only adapters (zlib/brotli/ppmd/bcj/deflate64)
-implement only `recreate`/`feed`/`flush`/`finished` and inherit the rest.
+A small `BaseDecoder` supplies `points=[]`, `pending_error = None`,
+`clear_pending_error`, and a no-op `build_index → ([], None)`. Forward-only adapters
+(zlib/brotli/ppmd/bcj/deflate64) implement only `recreate`/`feed`/`flush`/`finished`
+and inherit the rest.
 
 - **`pending_error`** (from PR #92, adopted) is a real Protocol property, not
   duck-typing. unix-compress sets it to `TruncatedError` after `flush` when leftover
-  bits are nonzero; the base raises and clears it on the next empty `read` after
-  delivering bytes. This deletes unix-compress's `read`/`_reset_to_seek_point`
-  overrides.
+  bits are nonzero; the base raises and clears it via `clear_pending_error` on the
+  next empty `read` after delivering bytes (and on seek reset). This deletes
+  unix-compress's `read`/`_reset_to_seek_point` overrides.
 - **`recreate`** replaces both `_create_decompressor` and `_make_decompressor`. XZ's
   `_XzState`-vs-`_XzBlockChain` choice lives inside XZ's `recreate` (keyed on
   `point.state`), not a union on the stream type.
@@ -235,6 +237,7 @@ forward-walk path in Decision 3).
 | unix-compress header-commit (origin `SeekPoint(0,3)` shift + gated cursor init) is the trickiest port | Land behind the `.Z` scenarios; the decoder emits the shifted origin point directly rather than the base mutating `_seek_points[0]` |
 | Decoder-emits-absolute-points couples decoder to offsets | It is arithmetic over deltas the decoder already tracks, not new I/O; `recreate(point,…)` supplies the base offset |
 | BGZF change forks seek semantics | Decision 7 — it re-targets onto `Decoder`; no new subclass leaf |
+| XZ `stream_cell` late-bound closures reach into `stream._seek_points` / `_index_built` | Faithful port of the old subclass coupling; leave as-is for XZ. When BGZF needs the same, pass an explicit seek-table / index-state handle into `make_decoder` instead of another private-attr cell |
 
 ## Open Questions
 

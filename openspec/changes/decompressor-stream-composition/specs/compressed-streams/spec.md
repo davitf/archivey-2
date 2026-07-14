@@ -27,6 +27,7 @@ class Decoder(Protocol):
     def finished(self) -> bool: ...
     @property
     def pending_error(self) -> BaseException | None: ...
+    def clear_pending_error(self) -> None: ...
     # Default no-op; only index-bearing codecs (xz, lzip, future BGZF) override it.
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
@@ -41,7 +42,8 @@ using the `inner` it retained from `recreate`, restoring `inner`'s position itse
 Forward-only codecs SHALL emit empty `points`, keep `pending_error` `None`, and
 inherit the no-op `build_index`. Deferred truncation (e.g. unix-compress leftover
 bits) SHALL surface through `pending_error`, raised on the next empty `read` after
-delivering bytes. Adding a codec SHALL add a `Decoder` and MUST NOT require a new
+delivering bytes; the stream SHALL clear it via `clear_pending_error` after raising
+(and on seek reset). Adding a codec SHALL add a `Decoder` and MUST NOT require a new
 stream subclass or a `SegmentedDecompressorStream` layer.
 
 #### Scenario: wrapper surface matrix

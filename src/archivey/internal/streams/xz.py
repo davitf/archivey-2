@@ -626,7 +626,15 @@ def XzDecompressorStream(
     collector: DiagnosticCollector | None = None,
     seekable: bool = True,
 ) -> DecompressorStream:
-    """Seekable XZ decompressor backed by stdlib ``lzma``."""
+    """Seekable XZ decompressor backed by stdlib ``lzma``.
+
+    ``stream_cell`` late-binds the constructed stream so ``XzDecoder.recreate`` can
+    read subsequent block ``SeekPoint``s / ``_index_built`` — the same coupling the
+    old ``XzDecompressorStream._make_decompressor`` had via ``self``. Fine for XZ;
+    when BGZF (or another indexed codec) needs the same, prefer an explicit
+    seek-table / index-state handle passed into ``make_decoder`` rather than another
+    private-attr cell.
+    """
     stream_cell: list[DecompressorStream | None] = [None]
 
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> XzDecoder:

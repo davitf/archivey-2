@@ -66,6 +66,10 @@ class Decoder(Protocol):
     @property
     def pending_error(self) -> BaseException | None: ...
 
+    def clear_pending_error(self) -> None:
+        """Clear :attr:`pending_error` after the stream has raised it (or on seek reset)."""
+        ...
+
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]: ...
@@ -79,6 +83,9 @@ class BaseDecoder:
     @property
     def pending_error(self) -> BaseException | None:
         return self._pending_error
+
+    def clear_pending_error(self) -> None:
+        self._pending_error = None
 
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
@@ -188,10 +195,18 @@ class DecompressorStream(ReadOnlyIOStream):
         index construction was not declared (no seek-point table is built), except for
         refining the origin's ``compressed_offset`` / ``state`` (unix-compress header
         commit must apply even when the table is not built).
+
+        Same-``decompressed_offset`` collisions: the origin (offset 0) may be refined
+        in place — that is the only intentional last-wins case. For any other offset,
+        codecs must not emit a second point with the same decompressed offset but a
+        different ``compressed_offset`` / ``state`` (xz/lzip filter with ``>`` /
+        ``>=``); we assert rather than silently replace.
         """
         for point in points:
             # Origin refinement always applies — resume must skip a committed header
-            # even when seek-point indexing was not declared.
+            # even when seek-point indexing was not declared. Last-wins here is
+            # intentional: unix-compress emits SeekPoint(0, HEADER_SIZE) to replace
+            # the placeholder SeekPoint(0, 0).
             origin = self._seek_points[0]
             if (
                 point.decompressed_offset == 0
@@ -209,20 +224,24 @@ class DecompressorStream(ReadOnlyIOStream):
                 i = bisect.bisect_left(self._seek_points, point)
                 if i < len(self._seek_points) and self._seek_points[i] == point:
                     existing = self._seek_points[i]
-                    if (
-                        existing.compressed_offset != point.compressed_offset
-                        or existing.state is not point.state
-                    ):
-                        self._seek_points[i] = point
+                    assert (
+                        existing.compressed_offset == point.compressed_offset
+                        and existing.state is point.state
+                    ), (
+                        "seek-point collision at the same decompressed_offset with "
+                        f"differing resume data: existing={existing!r} new={point!r}"
+                    )
                     continue
                 self._seek_points.insert(i, point)
             elif self._seek_points[-1] == point:
                 existing = self._seek_points[-1]
-                if (
-                    existing.compressed_offset != point.compressed_offset
-                    or existing.state is not point.state
-                ):
-                    self._seek_points[-1] = point
+                assert (
+                    existing.compressed_offset == point.compressed_offset
+                    and existing.state is point.state
+                ), (
+                    "seek-point collision at the same decompressed_offset with "
+                    f"differing resume data: existing={existing!r} new={point!r}"
+                )
                 continue
             else:
                 self._seek_points.append(point)
@@ -235,8 +254,7 @@ class DecompressorStream(ReadOnlyIOStream):
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
         self._inner.seek(point.compressed_offset)
         self._decoder = self._decoder.recreate(point, self._inner)
-        if isinstance(self._decoder, BaseDecoder):
-            self._decoder._pending_error = None
+        self._decoder.clear_pending_error()
         self._buffer.clear()
         self._eof = False
         self._pos = point.decompressed_offset
@@ -282,8 +300,7 @@ class DecompressorStream(ReadOnlyIOStream):
         if not data:
             err = self._decoder.pending_error
             if err is not None:
-                if isinstance(self._decoder, BaseDecoder):
-                    self._decoder._pending_error = None
+                self._decoder.clear_pending_error()
                 raise err
         return data
 
