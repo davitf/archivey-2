@@ -66,8 +66,9 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
    real solid archives is where the documented 7z solid-block O(n²) trap bites. Turns
    `VISION.md`'s central perf promise from prose into enforcement; prerequisite for any
    public perf claim.
-2. **`stored-digest-dedupe-parity`** and **`rar-blake2sp-verification`** (parallelizable,
-   both small) — the founding "hashes without decompression" story + a real integrity gap:
+2. **`stored-digest-dedupe-parity`** and **`rar-blake2sp-verification`** (✓ archived
+   2026-07-14; parallelizable, both small) — the founding "hashes without decompression"
+   story + a real integrity gap:
    - `stored-digest-dedupe-parity`: surface the gzip/lzip trailer CRC-32 without
      decompressing; document the cross-backend stored-digest matrix; assert parity in the
      conformance sweep.
