@@ -48,6 +48,75 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
 
 ---
 
+## Release-readiness sequencing (2026-07, toward the first public `0.2.0`)
+
+> Reading is effectively complete (ZIP/TAR/single-file/ISO/directory + native 7z/RAR),
+> which is `VISION.md`'s release bar. What stands between here and a credible **first
+> public release** is not more formats — it is (a) making the two load-bearing claims
+> *earned in public* (the perf budget is unenforced; the security disclosure process is
+> missing) and (b) closing the cross-platform sharp corners that surprise day-one users.
+> The **flagship of the first release is consistency + safety**, not a new capability.
+> Salvage/best-effort read mode and a fully-native ZIP parser are explicitly **later**
+> (post-`0.2.0`). Sequenced below; each concrete engineering item has an OpenSpec change.
+
+**Recommended order** (do earlier items first — they unblock later ones):
+
+1. **`benchmark-gate`** — stand up the perf budget as a CI gate (wall time + **bytes
+   decompressed + seek counts**) *before the CLI*, because the CLI's `test`/`extract` on
+   real solid archives is where the documented 7z solid-block O(n²) trap bites. Turns
+   `VISION.md`'s central perf promise from prose into enforcement; prerequisite for any
+   public perf claim.
+2. **`stored-digest-dedupe-parity`** and **`rar-blake2sp-verification`** (parallelizable,
+   both small) — the founding "hashes without decompression" story + a real integrity gap:
+   - `stored-digest-dedupe-parity`: surface the gzip/lzip trailer CRC-32 without
+     decompressing; document the cross-backend stored-digest matrix; assert parity in the
+     conformance sweep.
+   - `rar-blake2sp-verification`: RAR5 BLAKE2sp-only members are *surfaced but never
+     verified* today (`hashlib` has no `blake2sp`, so verification silently degrades to a
+     `DIGEST_UNVERIFIABLE` diagnostic — a corrupt member reads back clean). Implement
+     BLAKE2sp on stdlib `hashlib.blake2s` tree params (zero-dep) and wire verification;
+     reconciles the `format-rar` ↔ `compressed-streams` spec disagreement.
+3. **`cross-platform-name-safety`** (spike) — deterministic, cross-platform extraction
+   name handling keyed off `ExtractionPolicy`: casefold/NFC collision determinism (O2),
+   Windows-reserved / trailing-dot-space / `:` rejection under STRICT (O3/O4), and the
+   **open decision** of how to handle unrepresentable names (O7: reject vs reversible
+   portable-escape). O2/O3/O4 can land before the O7 scheme is settled. Coordinates with
+   the in-flight `adversarial-string-corpus-contract` (bidi/NUL) — no overlap.
+4. **`zip-native-codec-streams`** — route ZIP member decompression through archivey's
+   shared codec layer (keeping stdlib `zipfile` for central-directory parsing for now).
+   Unlocks DEFLATE64/ZSTD/PPMD ZIP members (the codec backends + registry entries already
+   exist; only the wiring is missing), unifies verification/error-translation, and is the
+   stepping-stone toward a native ZIP parser. **In `0.2.0`** (widens ZIP compatibility
+   beyond stdlib). Encrypted-member decryption stays on `zipfile` initially.
+5. **Release bundle** (existing Phase 7 + Phase 10 work, plus threat-model O5 follow-ups) —
+   what makes it a *public* release: the **CLI** (`archivey list|test|extract`, the
+   "unzip that can't be zip-slipped" demo — after the benchmark gate); **packaging
+   finalize** (extras→capability, PyPI metadata, drop `0.2.0.dev0`); **doc sweep +
+   migration guide** (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey);
+   **`SECURITY.md` + disclosure process** and an **explicit free-threading support
+   statement** (the `3.13t` job runs core-only — document the matrix rather than leaving
+   it implicit). Tag `0.2.0` after this.
+
+**Deferred to a later version (not `0.2.0`):**
+- **Salvage / best-effort read mode** — the founding use case (index truncated/corrupt
+  backups) and the highest-value *feature*, but the largest item (its own spec; ZIP
+  local-header walk, TAR resync, single-file decodable-prefix). First fast-follow after
+  `0.2.0`; ranks above `ArchivePath`/fsspec-write. (Backlog: `IDEAS.md`.)
+- **Fully-native ZIP parser** — VISION's "eventually ZIP" memory-safety differentiator +
+  salvage-via-local-headers. `zip-native-codec-streams` (item 4) captures most of the
+  near-term compat value incrementally; the full central-directory/EOCD parser is a
+  post-`0.2.0` change.
+- Per the deep review: keep the **libarchive backend cut** (contradicts the memory-safety
+  differentiator; only ever an off-by-default third-party plugin once the backend API is
+  public), and defer `ArchivePath` and the fsspec **write** direction past 1.0.
+
+New OpenSpec changes registered for this sequencing: `benchmark-gate`,
+`stored-digest-dedupe-parity`, `rar-blake2sp-verification`, `zip-native-codec-streams`,
+`cross-platform-name-safety`. (Provenance: the `review/` deep-review set — `roadmap.md`,
+`SUMMARY.md`, `QUESTIONS.md` — and `docs/internal/threat-model.md` O1–O7.)
+
+---
+
 ## Clean-slate, but layered
 
 Port-vs-rewrite is decided by **layer**, not file-by-file:
