@@ -25,11 +25,16 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 
 ## ZIP
 
-- Stdlib `zipfile` backend; seekable source only (even with `streaming=True`).
-- Multi-volume / split ZIP (`.z01`…`.zip`) is detected and rejected with
-  `UnsupportedFeatureError` — rejoin first.
+- Stdlib ``zipfile`` for **central-directory parsing / listing**; member **data** decodes
+  through archivey's shared codec layer (seekable source only, even with
+  ``streaming=True``).
+- Extended ZIP codecs when their extras are installed: Deflate64 and PPMd via ``[7z]``
+  (``inflate64`` / ``pyppmd`` — same packages as the 7z optional codecs), Zstd via
+  ``[zstd]`` (or stdlib on 3.14+). A missing backend raises ``PackageNotInstalledError``.
+- Multi-volume / split ZIP (``.z01``…``.zip``) is detected and rejected with
+  ``UnsupportedFeatureError`` — rejoin first.
 - Unsupported compression methods: listing succeeds; reading raises
-  `UnsupportedFeatureError`.
+  ``UnsupportedFeatureError``.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
 - **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
@@ -39,7 +44,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
   `open_archive` is authoritative — it is used verbatim and disables the sniff.
 - ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
-  [costs](costs.md).
+  [costs](costs.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
+  `[crypto]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
+  (integrity is the HMAC). Absent `[crypto]`, an AES member raises
+  `PackageNotInstalledError` but is still listed as encrypted.
 
 ## TAR (and compressed TAR)
 

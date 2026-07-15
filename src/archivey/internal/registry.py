@@ -77,12 +77,6 @@ class FormatAvailability:
 # multi-codec container still opens and lists). Single-codec formats (bare RAW_STREAM
 # compressors and compressed tars) are handled separately: their sole stream codec
 # missing makes them NONE, not PARTIAL.
-#
-# NOTE (Phase 3 → 7 gap): ZIP member *decode* currently goes through stdlib zipfile,
-# which cannot decompress deflate64/ppmd (or zstd before Python 3.14) even when these
-# codec packages are installed — such members raise UnsupportedFeatureError at read.
-# This table describes the intended post-Phase-7 composition, where the codec layer is
-# wired into ZIP member reads (see ``format-zip`` / ``compressed-streams``).
 _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
     ContainerFormat.SEVEN_Z: (
         Codec.PPMD,
@@ -209,15 +203,6 @@ class BackendRegistry:
                 requirement = codec_requirement(codec)
                 assert requirement is not None  # an optional codec always declares one
                 missing.append(requirement)
-
-        # ZIP exception (until Phase 7): member *data* still decodes via stdlib zipfile,
-        # which cannot use the optional codecs (deflate64/PPMd/zstd) even when installed,
-        # so ZIP never reports FULL — it is PARTIAL regardless of codec installation. The
-        # `missing` list still names absent packages, and is empty when all are present
-        # (the read-time gap is implementation stage, not a missing install). See the
-        # `backend-registry` / `format-zip` Phase 5 deltas.
-        if fmt.container == ContainerFormat.ZIP:
-            return FormatAvailability(fmt, FormatSupport.PARTIAL, tuple(missing))
 
         if not missing:
             return FormatAvailability(fmt, FormatSupport.FULL, ())

@@ -40,11 +40,13 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
+    PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
@@ -59,6 +61,11 @@ from archivey.internal.password_confirm import (
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.codecs import (
+    Codec,
+    CodecParams,
+    open_codec_stream,
+)
 from archivey.internal.streams.streamtools import (
     CloseLockedStream,
     SlicingStream,
@@ -66,7 +73,12 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     read_exact,
 )
+from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.zip_aes import (
+    open_winzip_aes_member,
+    parse_winzip_aes_extra,
+)
 from archivey.internal.zipcrypto import (
     parallel_plaintext_crc32,
     password_matches_check_byte,
@@ -109,6 +121,33 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     93: CompressionAlgorithm.ZSTD,
     98: CompressionAlgorithm.PPMD,
 }
+
+# ZIP method id -> shared codec-layer Codec for unencrypted member decode.
+_ZIP_METHOD_CODECS: dict[int, Codec] = {
+    0: Codec.STORED,
+    8: Codec.DEFLATE,
+    9: Codec.DEFLATE64,
+    12: Codec.BZIP2,
+    14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
+    93: Codec.ZSTD,
+    98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
+}
+
+# Local-file-header name/extra lengths are uint16; reject values that would push the
+# data region past a sane absolute offset (same absurd-length discipline as native parsers).
+_MAX_LOCAL_NAME_EXTRA = 65_535
+_MAX_DATA_OFFSET = 1 << 40
+
+# stdlib exposes no public decoder for a raw LZMA1 property blob → filter dict; zipfile and
+# the 7z reader rely on the same private helper.
+_raw_decode_filter_properties = getattr(lzma, "_decode_filter_properties", None)
+if _raw_decode_filter_properties is None:  # pragma: no cover
+    raise ImportError(
+        "This Python's `lzma` module no longer exposes `_decode_filter_properties`, which "
+        "archivey needs to decode ZIP LZMA (method 14) member properties. "
+        "Please report this to archivey (with your Python version)."
+    )
+_decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
 
 # ZIP create-system values whose entries use "\" as a path separator (DOS/Windows family).
 # For these, a stored backslash is a separator; for Unix/other entries it is a literal
@@ -329,10 +368,16 @@ class ZipReader(BaseArchiveReader):
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
         self._encoding = encoding
+        self._stream_config = stream_config_from_archivey(
+            self._config,
+            streaming=streaming,
+            seekable=MemberStreams.SEEKABLE in member_streams,
+        )
         # Free-threaded ZIP: stdlib zipfile races on _fileRefCnt across concurrent
         # ZipFile.open / ZipExtFile.close / ZipFile.close. Serialize those under
         # CONCURRENT; leave reads to zipfile's own _SharedFile lock so independent
-        # members can still decompress in parallel.
+        # members can still decompress in parallel. The unencrypted codec path uses
+        # the same ZipFile._lock via locked SlicingStream views.
         self._handle_lock: threading.Lock | None = (
             threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
         )
@@ -535,18 +580,30 @@ class ZipReader(BaseArchiveReader):
         algo = _ZIP_COMPRESSION_ALGOS.get(
             info.compress_type, CompressionAlgorithm.UNKNOWN
         )
+        aes_info = (
+            parse_winzip_aes_extra(info.extra) if info.compress_type == 99 else None
+        )
+        if aes_info is not None:
+            # Method 99 is a wrapper; surface the underlying compression algorithm.
+            algo = _ZIP_COMPRESSION_ALGOS.get(
+                aes_info.actual_method, CompressionAlgorithm.UNKNOWN
+            )
 
         modified, accessed, created, ts_issues = _zip_timestamps(info)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model spec:
         # "ZIP CRC32 … stored under the 'crc32' int key"), so a dedupe pass can key on it
         # without decompressing (VISION "hashes without decompression"). Only for FILE and
         # SYMLINK members, which have data: a directory's stored CRC is a meaningless 0.
-        # zipfile still runs its own CRC check on read; this only exposes the datum.
-        hashes: dict[str, int] = (
-            {"crc32": info.CRC & 0xFFFFFFFF}
-            if member_type in (MemberType.FILE, MemberType.SYMLINK)
-            else {}
-        )
+        # AE-2 stores CRC as 0 and relies on the HMAC — do not surface a fake crc32.
+        hashes: dict[str, int] = {}
+        if member_type in (MemberType.FILE, MemberType.SYMLINK):
+            if aes_info is None or not aes_info.is_ae2:
+                hashes = {"crc32": info.CRC & 0xFFFFFFFF}
+        extra: dict[str, object] = {"zip.compress_type": info.compress_type}
+        if aes_info is not None:
+            extra["zip.aes_vendor_version"] = aes_info.vendor_version
+            extra["zip.aes_strength"] = aes_info.strength
+            extra["zip.aes_actual_method"] = aes_info.actual_method
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -562,7 +619,7 @@ class ZipReader(BaseArchiveReader):
             comment=_decode_with_fallback(info.comment) if info.comment else None,
             create_system=create_system,
             hashes=hashes,
-            extra={"zip.compress_type": info.compress_type},
+            extra=extra,
             _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )
         if inferred_encoding is not None:
@@ -686,6 +743,75 @@ class ZipReader(BaseArchiveReader):
             finally:
                 fp.seek(saved)
 
+    def _open_aes_member(
+        self,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        *,
+        member_name: str,
+    ) -> ArchiveStream:
+        """Decrypt a WinZip AE (method 99) member and decode via the codec layer."""
+        aes = parse_winzip_aes_extra(info.extra)
+        if aes is None:
+            raise UnsupportedFeatureError(
+                "ZIP compression method 99 without a valid WinZip AES (0x9901) extra field",
+                archive_name=self._archive_name,
+                member_name=member_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        codec = _ZIP_METHOD_CODECS.get(aes.actual_method)
+        if codec is None:
+            raise UnsupportedFeatureError(
+                f"Unsupported ZIP compression method {aes.actual_method} under WinZip AES",
+                archive_name=self._archive_name,
+                member_name=member_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+
+        def decrypt(password: bytes) -> BinaryIO:
+            raw = self._raw_member_stream(info)
+            decrypted = open_winzip_aes_member(
+                raw,
+                aes=aes,
+                password=password,
+                compress_size=info.compress_size,
+            )
+            params = CodecParams()
+            body: BinaryIO = decrypted
+            if aes.actual_method == 14:
+                params = self._zip_lzma_params(body)
+            elif aes.actual_method == 98:
+                params = self._zip_ppmd_params(body)
+            return open_codec_stream(
+                codec,
+                body,
+                config=self._stream_config,
+                params=params,
+                seekable=self._stream_config.seekable,
+                collector=self._diagnostics_collector,
+            )
+
+        try:
+            decoded: BinaryIO = self._finish_password_attempt(
+                member, member_name, decrypt, ambiguous_holder=None
+            )
+        except PackageNotInstalledError:
+            raise
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise_member_error(exc, member_name)
+
+        hashes = member.hashes if member is not None else {}
+        if hashes:
+            decoded = VerifyingStream(
+                decoded,
+                hashes,
+                collector=self._diagnostics_collector,
+                member=member,
+                archive_name=self._archive_name,
+            )
+        size = member.size if member is not None else info.file_size
+        return self._wrap_member_stream(decoded, member_name, size=size)
+
     def _open_zip_entry(
         self,
         info: zipfile.ZipInfo,
@@ -693,11 +819,13 @@ class ZipReader(BaseArchiveReader):
         *,
         member_name: str,
     ) -> BinaryIO:
+        if info.compress_type == 99:
+            return self._open_aes_member(info, member, member_name=member_name)
+
         encrypted = bool(info.flag_bits & 0x1)
         if not encrypted:
-            return self._open_zipfile_member(
-                info, password=None, member_name=member_name
-            )
+            # Unencrypted members decode through the shared codec layer (not ZipExtFile).
+            return self._open_codec_member(info, member, member_name=member_name)
 
         # ZipCrypto's one-byte open check admits ~1/256 of wrong passwords. With more
         # than one possible candidate (or a provider), confirm before accepting.
@@ -708,6 +836,186 @@ class ZipReader(BaseArchiveReader):
         if info.compress_type == zipfile.ZIP_STORED:
             return self._open_stored_confirmed(info, member, member_name=member_name)
         return self._open_compressed_confirmed(info, member, member_name=member_name)
+
+    def _local_data_region(self, info: zipfile.ZipInfo) -> tuple[int, int]:
+        """Return ``(data_start, compress_size)`` for ``info`` from its local file header.
+
+        Parses only the fixed 30-byte local header plus the local name/extra lengths
+        (central-directory extra can differ). Rejects truncated/bad magic headers and
+        absurd name/extra lengths that would push the data offset past a sane bound.
+        """
+        zf = self._archive
+        with self._zipfile_lock():
+            fp = zf.fp
+            if fp is None:
+                raise ValueError("Attempt to use ZIP archive that was already closed")
+            saved = fp.tell()
+            try:
+                fp.seek(info.header_offset)
+                fheader = fp.read(30)
+                if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":
+                    raise zipfile.BadZipFile("Bad magic number for file header")
+                name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
+                if (
+                    name_len > _MAX_LOCAL_NAME_EXTRA
+                    or extra_len > _MAX_LOCAL_NAME_EXTRA
+                ):
+                    raise zipfile.BadZipFile(
+                        f"Absurd local-header name/extra lengths: {name_len}/{extra_len}"
+                    )
+                # General-purpose flag bit 11: UTF-8 filename (APPNOTE).
+                gp_flags = struct.unpack_from("<H", fheader, 6)[0]
+                local_name = fp.read(name_len)
+                if len(local_name) != name_len:
+                    raise zipfile.BadZipFile("Truncated file header")
+                if gp_flags & 0x800:
+                    fname_str = local_name.decode("utf-8")
+                else:
+                    fname_str = local_name.decode(self._encoding or "cp437")
+                if fname_str != info.orig_filename:
+                    raise zipfile.BadZipFile(
+                        "File name in directory %r and header %r differ."
+                        % (info.orig_filename, local_name)
+                    )
+                data_start = info.header_offset + 30 + name_len + extra_len
+                if data_start < 0 or data_start > _MAX_DATA_OFFSET:
+                    raise zipfile.BadZipFile(
+                        f"Absurd local-header data offset: {data_start}"
+                    )
+                # Mirror stdlib zipfile's overlap guard (ZipFile.open): a member whose
+                # compressed payload extends past the next entry's start is a zip bomb.
+                end_offset = getattr(info, "_end_offset", None)
+                if (
+                    end_offset is not None
+                    and data_start + max(0, info.compress_size) > end_offset
+                ):
+                    raise zipfile.BadZipFile(
+                        f"Overlapped entries: {info.orig_filename!r} (possible zip bomb)"
+                    )
+                return data_start, max(0, info.compress_size)
+            finally:
+                fp.seek(saved)
+
+    def _raw_member_stream(self, info: zipfile.ZipInfo) -> BinaryIO:
+        """Locked :class:`SlicingStream` over the member's raw compressed payload."""
+        data_start, length = self._local_data_region(info)
+        fp = self._archive.fp
+        if fp is None:
+            raise ValueError("Attempt to use ZIP archive that was already closed")
+
+        def _check_open() -> None:
+            if self._archive.fp is None:
+                raise ValueError("Attempt to use ZIP archive that was already closed")
+
+        return SlicingStream(
+            cast("BinaryIO", fp),
+            start=data_start,
+            length=length,
+            lock=self._zipfile_lock(),
+            check_open=_check_open,
+        )
+
+    def _zip_lzma_params(self, raw: BinaryIO) -> CodecParams:
+        """Peel the ZIP method-14 LZMA header and return RAW LZMA1 :class:`CodecParams`."""
+        # version (2) + properties size (2) + properties
+        header = read_exact(raw, 4)
+        if len(header) != 4:
+            raise TruncatedError(
+                "Truncated ZIP LZMA header",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        props_size = struct.unpack_from("<H", header, 2)[0]
+        if props_size > 256:
+            raise CorruptionError(
+                f"Absurd ZIP LZMA properties size: {props_size}",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        props = read_exact(raw, props_size)
+        if len(props) != props_size:
+            raise TruncatedError(
+                "Truncated ZIP LZMA properties",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        filters = [_decode_filter_properties(lzma.FILTER_LZMA1, props)]
+        return CodecParams(filters=filters)
+
+    def _zip_ppmd_params(self, raw: BinaryIO) -> CodecParams:
+        """Peel the ZIP method-98 2-byte PPMd8 header into :class:`CodecParams`."""
+        header = read_exact(raw, 2)
+        if len(header) != 2:
+            raise TruncatedError(
+                "Truncated ZIP PPMd header",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        word = struct.unpack("<H", header)[0]
+        order = (word & 0xF) + 1
+        mem_mb = ((word >> 4) & 0xFF) + 1
+        restore = (word >> 12) & 0xF
+        if order < 2 or order > 64 or mem_mb < 1:
+            raise CorruptionError(
+                f"Invalid ZIP PPMd header parameters: order={order} mem_mb={mem_mb}",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        return CodecParams(
+            ppmd_order=order,
+            ppmd_mem_size=mem_mb * 1024 * 1024,
+            ppmd_restore_method=restore,
+        )
+
+    def _open_codec_member(
+        self,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        *,
+        member_name: str,
+    ) -> ArchiveStream:
+        """Decode an unencrypted ZIP member through the shared codec layer."""
+        codec = _ZIP_METHOD_CODECS.get(info.compress_type)
+        if codec is None:
+            raise UnsupportedFeatureError(
+                f"Unsupported ZIP compression method {info.compress_type}",
+                archive_name=self._archive_name,
+                member_name=member_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+
+        try:
+            raw = self._raw_member_stream(info)
+            params = CodecParams()
+            if info.compress_type == 14:  # ZIP LZMA
+                params = self._zip_lzma_params(raw)
+            elif info.compress_type == 98:  # ZIP PPMd8
+                params = self._zip_ppmd_params(raw)
+
+            decoded: BinaryIO = open_codec_stream(
+                codec,
+                raw,
+                config=self._stream_config,
+                params=params,
+                seekable=self._stream_config.seekable,
+                collector=self._diagnostics_collector,
+            )
+        except PackageNotInstalledError:
+            raise
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise_member_error(exc, member_name)
+
+        hashes = member.hashes if member is not None else None
+        if hashes:
+            decoded = VerifyingStream(
+                decoded,
+                hashes,
+                collector=self._diagnostics_collector,
+                member=member,
+                archive_name=self._archive_name,
+            )
+        size = member.size if member is not None else info.file_size
+        return self._wrap_member_stream(decoded, member_name, size=size)
 
     def _open_zipfile_member(
         self,
@@ -949,7 +1257,7 @@ class ZipReader(BaseArchiveReader):
         # unset (following the link later fails with LinkTargetNotFoundError); other
         # errors surface translated like any member-read error.
         try:
-            with self._open_zip_entry(info, member, member_name=member.name) as f:
+            with self._open_member(member) as f:
                 member.link_target = f.read().decode("utf-8", errors="surrogateescape")
         except EncryptionError:
             message = (
@@ -983,8 +1291,14 @@ class ZipReader(BaseArchiveReader):
         assert isinstance(info, zipfile.ZipInfo), (
             "ZIP member is missing its ZipInfo handle"
         )
-        raw = self._open_zip_entry(info, member, member_name=member.name)
-        return self._wrap_member_stream(raw, member.name, size=member.size)
+        if info.compress_type == 99:
+            return self._open_aes_member(info, member, member_name=member.name)
+        if bool(info.flag_bits & 0x1):
+            # Traditional ZipCrypto stays on the stdlib zipfile decryption path.
+            raw = self._open_zip_entry(info, member, member_name=member.name)
+            return self._wrap_member_stream(raw, member.name, size=member.size)
+        # Unencrypted: codec layer already wrapped (+ VerifyingStream) in _open_codec_member.
+        return self._open_codec_member(info, member, member_name=member.name)
 
     def _get_archive_info(self) -> ArchiveInfo:
         comment = self._archive.comment

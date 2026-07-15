@@ -72,24 +72,45 @@ class BrotliDecoder(BaseDecoder):
 
 
 class PpmdDecoder(BaseDecoder):
-    """Decode a PPMd var.H stream via ``pyppmd.Ppmd7Decoder``."""
+    """Decode a PPMd stream via ``pyppmd``.
 
-    def __init__(self, *, order: int, mem_size: int) -> None:
+    Variant 7 (``Ppmd7Decoder``) is the 7z var.H coder. Variant 8 (``Ppmd8Decoder``)
+    is ZIP method 98 / WinZip ZIPX PPMd, which also carries a restore-method parameter.
+    """
+
+    def __init__(
+        self,
+        *,
+        order: int,
+        mem_size: int,
+        variant: int = 7,
+        restore_method: int = 0,
+    ) -> None:
         import pyppmd
 
         self._order = order
         self._mem_size = mem_size
-        self._decomp: Any = pyppmd.Ppmd7Decoder(order, mem_size)
+        self._variant = variant
+        self._restore_method = restore_method
+        if variant == 8:
+            self._decomp: Any = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
+        else:
+            self._decomp = pyppmd.Ppmd7Decoder(order, mem_size)
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> PpmdDecoder:
         del point, inner
-        return PpmdDecoder(order=self._order, mem_size=self._mem_size)
+        return PpmdDecoder(
+            order=self._order,
+            mem_size=self._mem_size,
+            variant=self._variant,
+            restore_method=self._restore_method,
+        )
 
     def feed(self, chunk: bytes) -> DecodeOut:
         return DecodeOut(self._decomp.decode(chunk, -1))
 
     def flush(self) -> DecodeOut:
-        # 7z PPMd streams sometimes need a trailing NUL to finish when the decoder
+        # 7z/ZIP PPMd streams sometimes need a trailing NUL to finish when the decoder
         # still reports needs_input at EOF (mirrors py7zr's PpmdDecompressor).
         if getattr(self._decomp, "needs_input", False) and not self._decomp.eof:
             return DecodeOut(self._decomp.decode(b"\0", -1))
@@ -179,11 +200,21 @@ def PpmdDecompressorStream(
     *,
     order: int,
     mem_size: int,
+    variant: int = 7,
+    restore_method: int = 0,
 ) -> DecompressorStream:
-    """Decode a PPMd var.H stream (forward-only)."""
+    """Decode a PPMd stream (forward-only).
+
+    ``variant=7`` is 7z PPMd var.H; ``variant=8`` is ZIP method 98 (PPMd8).
+    """
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: PpmdDecoder(order=order, mem_size=mem_size),
+        make_decoder=lambda _p, _i: PpmdDecoder(
+            order=order,
+            mem_size=mem_size,
+            variant=variant,
+            restore_method=restore_method,
+        ),
         codec_name="ppmd",
     )
 
