@@ -1,7 +1,7 @@
 ## 1. Close remaining parser UX decisions
 
 - [x] 1.1 Default `--overwrite` = `rename` (CLI); library stays `ERROR` — recorded in design
-- [x] 1.2 Extract dest = `-d`/`--dest` (default `.`); positionals after archive = filters only
+- [x] 1.2 Extract dest = `-d`/`--dest`; positionals after archive = filters only. Default (no `-d`) = smart enclosing dir (`./<stem>/`, reuse single archive root, single-file → cwd) to avoid tarbombs; `-d .` = classic splatter
 - [ ] 1.3 Record whether v1 needs `--include`/`--exclude` beyond positional filters
 - [ ] 1.4 Record exit-code map and whether multi-archive + stdin are in v1
 - [ ] 1.5 Record `test` verbosity (per-member vs summary)
@@ -23,7 +23,7 @@
 
 - [ ] 4.1 `list`: layer-1 default lines; `--digests` for stored hashes; `-v` diagnostics
 - [ ] 4.2 `test`: full-read + stored-digest verification; summary + non-zero on failure
-- [ ] 4.3 `extract`: map `--policy` to `ExtractionPolicy`; apply overwrite default from 1.1; patterns from 1.3
+- [ ] 4.3 `extract`: map `--policy` to `ExtractionPolicy`; apply overwrite default from 1.1; smart default dest from 1.2 (compute enclosing dir / detect single archive root); patterns from 1.3
 - [ ] 4.4 `info` / `detect`: format + identity summary without full member dump
 
 ## 5. Tests + docs

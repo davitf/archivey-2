@@ -102,22 +102,62 @@ archivey extract a.zip out '*.py' # still guessing which is dest
 
 Heuristics (exists-as-dir, trailing `/`) are fragile and platform-surprising.
 
-**Decision: destination is always `-d` / `--dest` (default `.`).** Remaining
-positionals after the archive are member filters only:
+**Decision: destination is always `-d` / `--dest`.** Remaining positionals after
+the archive are member filters only:
 
 ```
 archivey extract archive.zip
 archivey extract archive.zip -d out/
 archivey extract archive.zip -d out/ '*.py' 'docs/*'
-archivey extract archive.zip '*.py'          # dest = .
+archivey extract archive.zip '*.py'          # smart default dest (see 3c)
 ```
 
 Same `-d`/`--dest` shape as DEV and `unzip -d`. "Optional dest" means *omit the
-flag* (cwd), not *optional positional*.
+flag* (smart default, 3c), not *optional positional*.
 
 **Rejected:** bare positional dest; trailing-slash heuristics; requiring `--`
 before patterns as the only disambiguator (still fine as an *additional*
 include form later).
+
+### 3c. Default destination when `-d` is omitted (anti-tarbomb)
+
+The dest *mechanism* (3b) is settled; the dest *default* is separate. A default
+of literal `.` re-inherits the single worst `unzip`/`tar`/`7z` footgun: a
+**tarbomb** — an archive with many loose top-level entries splatters them across
+the current directory. archivey's pitch is "the safer unzip," so splattering cwd
+by default contradicts the reason the command exists.
+
+The user-friendly extractors converged on a **smart enclosing directory** rule:
+`unar` (creates a dir "if there is more than one top-level file or folder …
+helps prevent tarbombs"), `dtrx`, `aunpack`, and every GUI extractor (Ark, File
+Roller, macOS, Explorer "Extract All"). archivey adopts the same rule.
+
+**Decision:** when `-d` is omitted, derive the destination from the archive and
+avoid double-nesting:
+
+- **Multiple top-level entries** → extract into `./<archive-stem>/` (the
+  container that prevents the splatter).
+- **Single top-level directory** → extract into `.`; that existing root dir is
+  already the container, so wrapping it would only create redundant `foo/foo/`.
+- **Single-file / single-stream archives** (`.gz`, `.bz2`, `.xz` of one file) →
+  write the decompressed file into `.` with no wrapper dir (matches `gunzip`
+  expectations).
+- **Container-name collision** (`./foo/` already exists) → resolved by the
+  overwrite policy; default `rename` (Decision 3) yields `foo-1/`, `foo-2/`, ….
+
+When `-d DIR` **is** given, extract straight into `DIR` verbatim — no smart
+wrapping. Explicit dest means "I know what I want," including `-d .` which
+reproduces exactly the classic splatter-into-cwd behavior for anyone who wants
+it. That makes a separate `-C`/`--cwd` "splatter" flag redundant.
+
+```
+archivey extract archive.zip            # → ./archive/ (or reuse single root)
+archivey extract archive.zip -d out/    # → out/ verbatim
+archivey extract archive.zip -d .       # → cwd, classic tar/unzip splatter
+```
+
+**Rejected:** default dest `.` (the tarbomb footgun); a dedicated `-C`/`--cwd`
+flag (`-d .` already covers it).
 
 ### 4. List output layers
 

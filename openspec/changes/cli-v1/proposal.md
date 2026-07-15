@@ -15,8 +15,10 @@ extract with policy, detect/info, and a reserved path for hash + salvage).
   implementing them yet where noted.
 - `extract` exposes `ExtractionPolicy` (`strict` / `standard` / `trusted`;
   default `strict`) and defaults overwrite to `rename` (library stays `ERROR`).
-  Destination is `-d`/`--dest` (default `.`); positionals after the archive are
-  filters only — no bare positional dest.
+  Destination is `-d`/`--dest`; positionals after the archive are filters only —
+  no bare positional dest. When `-d` is omitted the dest defaults to a smart
+  enclosing directory (`./<archive-stem>/`, reusing a single archive root when
+  present) to prevent tarbombs; `-d .` opts back into classic splatter-into-cwd.
 - `list` defaults to a human layer-1 view (type, size, mtime, mode, encrypted,
   link target); stored digests opt-in so they do not pollute the default view.
 - Reserve `--salvage` as a future flag on `extract` / `convert` and on read-side

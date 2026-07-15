@@ -35,11 +35,17 @@ error. `test` MUST NOT require emitting computed content hashes.
 
 `extract` SHALL use safe-extraction defaults and SHALL expose
 `--policy {strict,standard,trusted}` mapping to `ExtractionPolicy` (CLI default
-`strict`). Destination SHALL be selected with `-d` / `--dest` (default `.`);
-remaining positionals after the archive path SHALL be member filters only (no
-bare positional destination). Overwrite SHALL default to `rename` once
-`OverwritePolicy.RENAME` exists (`--overwrite` may select `error` / `skip` /
-`replace` / `rename`).
+`strict`). Destination SHALL be selected with `-d` / `--dest`; remaining
+positionals after the archive path SHALL be member filters only (no bare
+positional destination). When `-d` is given, extraction SHALL write into that
+directory verbatim (`-d .` reproduces classic splatter-into-cwd behavior). When
+`-d` is omitted, the destination SHALL default to a smart enclosing directory to
+avoid tarbombs: extract into `./<archive-stem>/` when the archive has multiple
+top-level entries; extract into `.` when the archive already has a single
+top-level directory (no redundant nesting) or is a single-file/single-stream
+archive. Container-name collisions SHALL be resolved by the overwrite policy.
+Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
+(`--overwrite` may select `error` / `skip` / `replace` / `rename`).
 
 #### Scenario: CLI behavior matrix
 
@@ -49,8 +55,11 @@ bare positional destination). Overwrite SHALL default to `rename` once
 | `archivey list <archive>` / `archivey -l <archive>` | Layer-1 member listing |
 | `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
 | `archivey test <archive>` / `archivey -t <archive>` | Fully reads members, verifies stored digests, reports failures |
-| `archivey extract <archive>` / `archivey -x …` | Extracts to `.` under `--policy` default `strict` and overwrite default `rename` |
-| `archivey extract <archive> -d out/ '*.py'` | Dest is `out/`; `*.py` is a member filter |
+| `archivey extract <archive>` / `archivey -x …` | Extracts under `--policy` default `strict`, overwrite default `rename`, into the smart default dest |
+| `archivey extract <archive>` where archive has many top-level entries | Extracts into `./<archive-stem>/` (no cwd splatter) |
+| `archivey extract <archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
+| `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
+| `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
 | Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names |
 | `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
