@@ -7,9 +7,11 @@ origin for codec libraries that assume it.
 With an optional ``lock``, the same class is the concurrent-safe view minted by
 :class:`~archivey.internal.streams.streamtools.shared.SharedSource`: every ``read``
 re-seeks the underlying to the view's own absolute position under the lock, so interleaved
-views never clobber each other. Without a lock (the historical default) ``read`` continues
-from wherever the shared handle currently sits — correct for single-consumer use, which is
-how every pre-SharedSource caller uses it.
+views never clobber each other. Construction must not call unlocked ``tell``/``seek`` on
+that shared handle when ``start`` is already known — ``BufferedReader.tell`` is not
+thread-safe. Without a lock (the historical default) ``read`` continues from wherever the
+shared handle currently sits — correct for single-consumer use, which is how every
+pre-SharedSource caller uses it.
 """
 
 from __future__ import annotations
@@ -42,6 +44,10 @@ class SlicingStream(ReadOnlyIOStream):
     Optional ``lock`` (SharedSource mode):
       - Every ``read`` does ``seek(start + _pos); read(n)`` under the lock so the
         seek+read pair is atomic across interleaved views.
+      - Construction does not call ``tell``/``seek`` on the shared handle when
+        ``start`` is given (and takes the lock if ``start`` must be read from
+        ``tell``). Unlocked ``BufferedReader.tell`` under concurrency corrupts the
+        buffer even when every later ``read`` is locked.
       - ``seek`` only updates this view's ``_pos`` (the next ``read`` re-seeks); without
         a lock, ``seek`` also repositions the underlying (single-consumer behaviour).
       - Internally split into ``_io_guard`` (the lock or a shared ``nullcontext``) and
@@ -91,14 +97,23 @@ class SlicingStream(ReadOnlyIOStream):
         self._check_open_fn = check_open
 
         if self._seekable:
-            initial_pos = stream.tell()
-            if start is None:
-                start = initial_pos
-            # Re-seek mode: do not move the shared handle at construction — another view
-            # may be mid-read. The first read re-seeks under the guard. Otherwise keep
-            # the historical eager seek so a single-consumer slice starts at ``start``.
-            if not self._seek_before_read and initial_pos != start:
-                stream.seek(start)
+            # Re-seek mode (locked / SharedSource views): do not touch the shared handle
+            # at construction — not even ``tell()``. ``io.BufferedReader.tell`` is not
+            # thread-safe; concurrent unlocked tells while another view holds the lock
+            # for seek+read corrupt the buffer and yield wrong bytes / CRC mismatches
+            # (ZIP ``MemberStreams.CONCURRENT`` fan-out). Resolve a missing ``start``
+            # under the guard; otherwise leave the handle alone until the first read.
+            if self._seek_before_read:
+                if start is None:
+                    with self._io_guard:
+                        start = stream.tell()
+            else:
+                initial_pos = stream.tell()
+                if start is None:
+                    start = initial_pos
+                # Single-consumer: eager seek so the slice starts at ``start``.
+                if initial_pos != start:
+                    stream.seek(start)
         elif start is not None:
             raise ValueError("Cannot slice a non-seekable stream with a start position")
 

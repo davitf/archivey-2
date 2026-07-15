@@ -7,6 +7,9 @@ corner-case coverage (per CONTRIBUTING's narrow exception for stream primitives)
 from __future__ import annotations
 
 import io
+import threading
+import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -265,3 +268,98 @@ class TestSlicingStreamOwnSource:
         underlying = self._Tracked(DATA)
         SlicingStream(underlying, start=0, length=5, own_source=True).close()
         assert underlying.closed_flag is True
+
+
+class TestSlicingStreamLockedConstruction:
+    """Locked views must not probe the shared handle unlocked at construction.
+
+    ``io.BufferedReader.tell`` is not thread-safe. A concurrent unlocked ``tell`` while
+    another thread holds the lock for seek+read corrupts the buffer — the ZIP
+    ``MemberStreams.CONCURRENT`` CRC race.
+    """
+
+    def test_locked_with_start_does_not_call_tell(self) -> None:
+        class _NoTell(io.BytesIO):
+            def tell(self) -> int:
+                raise AssertionError("locked SlicingStream must not tell() at init")
+
+        lock = threading.Lock()
+        underlying = _NoTell(DATA)
+        sliced = SlicingStream(underlying, start=5, length=4, lock=lock)
+        assert sliced.read() == DATA[5:9]
+
+    def test_locked_without_start_tells_under_lock(self) -> None:
+        lock = threading.Lock()
+        held: list[bool] = []
+
+        class _TellUnderLock(io.BytesIO):
+            def tell(self) -> int:
+                held.append(lock.locked())
+                return super().tell()
+
+        underlying = _TellUnderLock(DATA)
+        underlying.seek(7)
+        sliced = SlicingStream(underlying, length=3, lock=lock)
+        assert held == [True]
+        assert sliced.read() == DATA[7:10]
+
+    def test_concurrent_locked_views_over_zipfile_fp(self, tmp_path: Path) -> None:
+        """Stress concurrent locked views on stdlib ``ZipFile.fp`` (a BufferedReader)."""
+        path = tmp_path / "a.zip"
+        payloads = {f"f{i}.txt": f"payload-{i}".encode() * 20 for i in range(16)}
+        with zipfile.ZipFile(path, "w") as zf:
+            for name, data in payloads.items():
+                zf.writestr(name, data)
+
+        # Enough trials that unlocked-init construction fails reliably on this fixture.
+        for _ in range(80):
+            with zipfile.ZipFile(path) as zf:
+                infos = [i for i in zf.infolist() if not i.is_dir()]
+                barrier = threading.Barrier(len(infos))
+                errors: list[BaseException] = []
+                err_lock = threading.Lock()
+
+                def worker(info: zipfile.ZipInfo) -> None:
+                    try:
+                        barrier.wait(timeout=5)
+                        with zf._lock:
+                            fp = zf.fp
+                            assert fp is not None
+                            saved = fp.tell()
+                            try:
+                                fp.seek(info.header_offset)
+                                header = fp.read(30)
+                                name_len = int.from_bytes(header[26:28], "little")
+                                extra_len = int.from_bytes(header[28:30], "little")
+                                fp.read(name_len)
+                                start = info.header_offset + 30 + name_len + extra_len
+                            finally:
+                                fp.seek(saved)
+                        # Construct outside the lock (as ZipReader does after
+                        # ``_local_data_region``) — must not unlock-tell the shared fp.
+                        raw = SlicingStream(
+                            zf.fp,  # type: ignore[arg-type]
+                            start=start,
+                            length=info.compress_size,
+                            lock=zf._lock,
+                        )
+                        compressed = raw.read()
+                        data = (
+                            zlib.decompress(compressed, -15)
+                            if info.compress_type == zipfile.ZIP_DEFLATED
+                            else compressed
+                        )
+                        assert data == payloads[info.filename]
+                    except BaseException as exc:  # noqa: BLE001
+                        with err_lock:
+                            errors.append(exc)
+
+                threads = [
+                    threading.Thread(target=worker, args=(info,)) for info in infos
+                ]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=30)
+                if errors:
+                    raise errors[0]
