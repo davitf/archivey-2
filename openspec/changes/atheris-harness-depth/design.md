@@ -25,9 +25,10 @@ Atheris on dense pure-Python decode paths.
 - Make the RAR open slice actually run in CI.
 - Exercise ZIP member **read** (bounded) under mutate-then-fixup of headers and
   compressed content, hitting archivey's codec/AES paths.
-- Add stream/codec Atheris targets starting with unix-compress; allow other
-  archivey-owned codecs as budget permits.
-- Rebalance the partitioned budget without starving 7z/RAR header slices.
+- Add stream/codec Atheris targets for **all** archivey-owned standalone codecs in
+  the default main-push partition (not “if budget allows”).
+- Size the partitioned wall budget to fit the target set; prefer longer runs over
+  dropping slices. Keep headers well-fed, but do not treat ~150s as a hard ceiling.
 
 **Non-Goals:**
 
@@ -35,8 +36,10 @@ Atheris on dense pure-Python decode paths.
 - OSS-Fuzz / custom libFuzzer mutators (Python-side fixup remains).
 - Turning Atheris into a PR-matrix requirement.
 - Replacing or shrinking the mutation harness.
-- Guaranteeing deep coverage of every optional ZIP codec (PPMD/ZSTD/Deflate64) on
-  the default ~150s budget — seeds + extras when present; skip-clean when absent.
+- Fuzzing filter-only codecs (BCJ / Delta) as standalone streams — they need a
+  composed chain; covered indirectly via 7z when present.
+- Guaranteeing deep optional ZIP member codecs (PPMD/ZSTD/Deflate64) on every run —
+  register when extras exist; skip-clean when absent.
 
 ## Investigations
 
@@ -62,28 +65,49 @@ After native codec streams, interesting ZIP bugs live in:
 Mutation fuzz does read member streams, but without coverage guidance and with
 whole-archive bitflips that often fail early CD/local consistency checks.
 
-### Stream layer
+### Stream layer — full codec set
 
-Unix-compress is zero-dep core and hostile-input dense (CLEAR realignment, seek
-points, header flags). XZ/lzip seek indexes and accelerator OFF paths are also
-candidates; start with `.Z` because it already proved Atheris-valuable via
-detect_format, then add others if budget allows.
+Archivey-owned standalone stream codecs worth direct targets (hostile headers,
+decode, seek-index / CLEAR, error translation), accelerators forced **off**:
 
-### Budget sketch (default main-push, ~150–170s)
+| Codec | Why |
+| --- | --- |
+| unix-compress (`.Z`) | Vendored LZW; CLEAR seek points; already found Atheris crash via detect_format |
+| xz | Seek-index / dual decoder state; footer enrichment |
+| lzip | Member segmentation + seek points |
+| gzip | Stdlib path + truncation/ISIZE; rapidgzip OFF |
+| bzip2 | Block codec; indexed_bzip2 OFF |
+| lzma-alone | Legacy FORMAT_ALONE |
+| zlib | Content-probe cousin; wrapped deflate |
+| zstd / brotli / lz4 / deflate64 | Optional extras — register targets; skip-clean if backend missing |
 
-| Slice | Seconds (proposed) | Notes |
+Filter-only (BCJ, Delta) stay out of the standalone stream set.
+
+### Budget sketch (default main-push — illustrative, not a ceiling)
+
+Grow total wall time to fit; exact seconds env-overridable; `budget_scale` multiplies.
+Illustrative partition (~4–5 minutes before scale):
+
+| Slice | Seconds (illustrative) | Notes |
 | --- | --- | --- |
-| 7z header | 40 | Keep largest pure-parser slice |
-| 7z open | 15 | Slight trim |
-| rar_header | 25 | Keep deep |
+| 7z header | 45 | Largest pure-parser slice |
+| 7z open | 20 | |
+| rar_header | 30 | |
 | rar open | 15 | Now actually runs |
-| detect_format | 10 | Slight trim |
-| zip (deepened) | 20 | List + bounded read |
-| tar (keep with zip or split) | 8 | Shallow list |
+| detect_format | 12 | |
+| zip (deepened) | 25 | List + bounded read |
+| tar | 10 | Shallow list |
 | iso | 8 | Hard timeout unchanged |
-| streams (unix-compress ±) | 15 | New |
+| stream: unix_compress | 15 | Per-input timeout |
+| stream: xz | 12 | Per-input timeout |
+| stream: lzip | 10 | |
+| stream: gzip | 10 | |
+| stream: bzip2 | 10 | |
+| stream: lzma_alone | 8 | |
+| stream: zlib | 8 | |
+| stream: optional extras (each) | 8 | skip if unavailable |
 
-Exact seconds remain env-overridable; `workflow_dispatch` `budget_scale` multiplies.
+Workflow `timeout-minutes` should rise with the partition (e.g. 45–60).
 
 ## Decisions
 
@@ -123,12 +147,16 @@ Practical v1 approach:
 **Rejected:** requiring unaided libFuzzer to solve CRC32; **Rejected:** stripping
 CRC checks in fuzz builds.
 
-### 4. Add `unix_compress` (and optionally other codec) Atheris targets
+### 4. Require stream/codec targets for all standalone archivey codecs now
 
-Direct `open_codec_stream(Codec.UNIX_COMPRESS, …)` with seekable ON/OFF variants or
-a single seekable=True target (the crash class). Per-input timeout like ISO.
-Accelerators forced off via existing fuzz `StreamConfig` / `ArchiveyConfig`.
-**Rejected:** relying solely on detect_format to reach codecs.
+Each codec in the investigation table gets its own Atheris target (or a tightly
+shared runner parameterized by codec) in the default main-push partition.
+Seekable-capable codecs run with seekable indexing on (the interesting crash
+class). Per-input timeout where hang classes exist (ISO pattern). Accelerators
+forced off. Optional-extra codecs skip-clean when the backend is absent.
+**Rejected:** “unix-compress only, others if budget allows”; **Rejected:** relying
+solely on detect_format to reach codecs; **Rejected:** a hard ~150s ceiling that
+forces dropping stream slices.
 
 ### 5. Mutation harness stays complementary
 
@@ -139,13 +167,15 @@ read/stream stress; mutation keeps whole-archive extract chaos.
 
 | Risk | Mitigation |
 | --- | --- |
-| Deeper ZIP/read + streams starve header budgets | Fixed partition table; headers stay largest; scale via `budget_scale` |
+| Longer CI wall time | Accept ~4–5+ min partition; bump workflow timeout; `budget_scale` for soaks |
+| Many stream targets dilute header exploration | Keep absolute seconds on 7z/RAR headers high; do not cut them to “fit” streams |
 | ZIP fixup complexity / false confidence | Unit-test fixup; minority broken CRC; don't claim perfect deflate CRC synthesis |
-| Stream hangs (LZW / xz) | Per-input `SIGALRM` timeouts; accelerators off |
+| Stream hangs (LZW / xz / bzip2) | Per-input `SIGALRM` timeouts; accelerators off |
 | AES/password ZIP paths need passwords | Seed known-password fixtures; try empty/`password` candidates; skip when crypto extra absent |
-| unrar apt flaky on runners | Same `\|\| true` pattern as ci.yml only if needed; prefer hard fail so skip is visible |
+| unrar apt flaky on runners | Prefer hard fail so skip is visible; `\|\| true` only if apt flakes prove chronic |
 
 ## Open Questions
 
-None blocking proposal — budget exact seconds can be tuned during implementation
-against a green main-push run.
+None blocking — per-codec second splits can be tuned after a green longer run.
+How aggressively to synthesize deflate CRCs vs accepting typed corruption on
+payload-only flips remains an implementation tuning choice, not a scope gate.

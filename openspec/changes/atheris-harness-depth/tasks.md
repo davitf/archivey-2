@@ -10,19 +10,20 @@
 - [ ] 2.3 Seed ZIP corpus/adversarial fixtures that exercise stored, deflate, and WinZip AES when extras/fixtures exist; try empty/`password` candidates for encrypted seeds.
 - [ ] 2.4 Split or rebalance ZIP vs TAR budgets so deepened ZIP does not starve TAR list coverage.
 
-## 3. Stream/codec Atheris targets
+## 3. Stream/codec Atheris targets (all standalone codecs)
 
-- [ ] 3.1 Add `unix_compress` (or `streams`) target: `open_codec_stream(Codec.UNIX_COMPRESS, …)` with seekable indexing on; seeds from tiny/hostile `.Z` blobs + corpus; per-input timeout.
-- [ ] 3.2 Wire target into `iter_target_specs`, DEFAULT_BUDGETS, and atheris-fuzz.yml budget env exports.
-- [ ] 3.3 Optionally add a second stream slice (xz or lzip) if remaining budget allows after a green run — skip-clean if deferred.
+- [ ] 3.1 Add parameterized stream targets (or one target per codec) for unix-compress, xz, lzip, gzip, bzip2, lzma-alone, and zlib: `open_codec_stream` with seekable indexing on when supported; seeds from tiny/hostile blobs + corpus; per-input timeout where hang classes exist; accelerators off.
+- [ ] 3.2 Register optional-extra stream targets for zstd, brotli, lz4, and deflate64 with skip-clean when the backend is absent.
+- [ ] 3.3 Wire all stream targets into `iter_target_specs`, `DEFAULT_BUDGETS` / `TARGET_NAMES`, and atheris-fuzz.yml budget env exports.
+- [ ] 3.4 Bump the atheris workflow job `timeout-minutes` to fit the full partition (illustrative ~4–5+ minutes before `budget_scale`).
 
 ## 4. Budget + docs
 
-- [ ] 4.1 Rebalance partitioned seconds (~150–170s total) per design table; keep `BUDGET_SCALE` multiplication.
-- [ ] 4.2 Sync threat-model / CONTRIBUTING one-liner if the target list changes (RAR open CI, stream slice, ZIP read).
+- [ ] 4.1 Set partitioned seconds for every required target (grow total wall time; do not drop stream slices to fit a short ceiling); keep `BUDGET_SCALE` multiplication.
+- [ ] 4.2 Sync threat-model / CONTRIBUTING one-liner for the expanded target list (RAR open CI, ZIP read, full stream/codec set).
 
 ## 5. Verify
 
-- [ ] 5.1 Unit tests for broadened ZIP fixup; smoke `python -m tests.atheris_fuzz --smoke` covering zip + unix_compress + rar (with unrar).
+- [ ] 5.1 Unit tests for broadened ZIP fixup; smoke `python -m tests.atheris_fuzz --smoke` covering zip, rar (with unrar), and each required stream codec.
 - [ ] 5.2 `openspec validate --strict atheris-harness-depth`
-- [ ] 5.3 Manual or CI check: atheris job log shows rar open running and new stream target completing without skip-for-missing-unrar.
+- [ ] 5.3 Manual or CI check: atheris job log shows rar open running and all required stream targets completing (optional extras may skip).
