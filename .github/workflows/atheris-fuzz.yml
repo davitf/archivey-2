@@ -1,78 +1,149 @@
 name: Atheris fuzz
 
-# Coverage-guided parser/entry-point fuzz (threat-model O5). Runs when main moves and
-# on manual dispatch — not on the default PR test matrix (see testing-contract).
+# Coverage-guided parser/entry-point fuzz (threat-model O5).
+#
+# Mirrors the benchmark split:
+# - pull_request: short partitioned budgets (blocks the PR; finds crashers cheaply)
+# - schedule (nightly) + change guard: full partition only when default-branch HEAD
+#   moved in the last ~3 days (dormant stretches cost only the guard step)
+# - workflow_dispatch: force the full partition on demand (optional budget_scale)
 on:
-  push:
-    branches: [main]
+  pull_request:
+  schedule:
+    # Offset from benchmark-wall (17 6) so the two nightlies do not start together.
+    - cron: "47 6 * * *"
   workflow_dispatch:
     inputs:
       budget_scale:
-        description: "Multiply default per-target budgets (e.g. 3 for a longer soak)"
+        description: "Multiply full (nightly) per-target budgets (e.g. 3 for a longer soak)"
         required: false
         default: "1"
 
 concurrency:
-  group: atheris-fuzz-${{ github.ref }}
+  group: atheris-fuzz-${{ github.event_name == 'pull_request' && github.ref || 'nightly' }}
   cancel-in-progress: true
 
 jobs:
   fuzz:
-    name: Atheris (partitioned)
+    name: Atheris (${{ github.event_name == 'pull_request' && 'PR short' || 'full' }})
     runs-on: ubuntu-latest
-    # Full partition is ~4–5+ min before budget_scale; leave headroom for sync + seeds.
-    timeout-minutes: 60
+    # PR: short budgets + seed build. Nightly/full: ~4–5+ min fuzz + headroom.
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 60 }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Decide whether to run (skip unchanged nightly)
+        id: guard
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "Event=$EVENT — running."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            if [ "$EVENT" = "pull_request" ]; then
+              echo "mode=pr" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=full" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          # Scheduled: run only if default-branch HEAD was committed within ~3 days.
+          # Daily cron + 72h window → up to a few nightlies after a burst, then skip
+          # until the next change (same idea as benchmark-wall's 25h guard).
+          last=$(git log -1 --format=%ct)
+          age=$(( $(date +%s) - last ))
+          window=$((3 * 24 * 3600))
+          if [ "$age" -lt "$window" ]; then
+            echo "HEAD committed ${age}s ago (< ${window}s / 3d) — changes recently; running full."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          else
+            echo "HEAD committed ${age}s ago (>= ${window}s / 3d) — no recent changes; skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install uv
+        if: steps.guard.outputs.run == 'true'
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
       - name: Set up Python
+        if: steps.guard.outputs.run == 'true'
         run: uv python install 3.12
 
       # RAR open+list target needs RARLAB unrar (header-only target does not). Mirror
       # ci.yml so the partitioned fuzz job does not silently skip the rar slice.
       - name: Install unrar
+        if: steps.guard.outputs.run == 'true'
         run: sudo apt-get update && sudo apt-get install -y unrar
 
       # fuzz = atheris; dev = fixture builders (py7zr, …); all = ISO/codecs the targets need.
       # Python 3.12: atheris publishes current wheels here (3.11 is capped at atheris 3.0.x).
       - name: Sync (fuzz + dev + all extras)
+        if: steps.guard.outputs.run == 'true'
         run: uv sync --python 3.12 --group fuzz --group dev --extra all
 
       - name: Run Atheris harness
+        if: steps.guard.outputs.run == 'true'
         env:
           ARCHIVEY_FUZZ_ARTIFACT_DIR: artifacts/atheris
           BUDGET_SCALE: ${{ github.event.inputs.budget_scale || '1' }}
+          ATHERIS_MODE: ${{ steps.guard.outputs.mode }}
         run: |
+          mode="${ATHERIS_MODE:-full}"
           scale="${BUDGET_SCALE:-1}"
-          export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=$((45 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=$((20 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT=$((12 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_ZIP=$((25 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_TAR=$((10 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_ISO=$((8 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=$((30 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_RAR=$((15 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS=$((15 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_XZ=$((12 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_LZIP=$((10 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_GZIP=$((10 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_BZIP2=$((10 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_LZMA_ALONE=$((8 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_ZLIB=$((8 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_ZSTD=$((8 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_BROTLI=$((8 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_LZ4=$((8 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_DEFLATE64=$((8 * scale))
-          echo "Budgets (scale=$scale): sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP tar=$ARCHIVEY_FUZZ_BUDGET_TAR rar=$ARCHIVEY_FUZZ_BUDGET_RAR unix_compress=$ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS"
+          if [ "$mode" = "pr" ]; then
+            # Short PR partition (~1 min of fuzz wall across all required targets).
+            # Still covers every target; depth comes from the change-guarded nightly.
+            export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=8
+            export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=4
+            export ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT=3
+            export ARCHIVEY_FUZZ_BUDGET_ZIP=5
+            export ARCHIVEY_FUZZ_BUDGET_TAR=2
+            export ARCHIVEY_FUZZ_BUDGET_ISO=2
+            export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=5
+            export ARCHIVEY_FUZZ_BUDGET_RAR=3
+            export ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS=3
+            export ARCHIVEY_FUZZ_BUDGET_XZ=3
+            export ARCHIVEY_FUZZ_BUDGET_LZIP=2
+            export ARCHIVEY_FUZZ_BUDGET_GZIP=2
+            export ARCHIVEY_FUZZ_BUDGET_BZIP2=2
+            export ARCHIVEY_FUZZ_BUDGET_LZMA_ALONE=2
+            export ARCHIVEY_FUZZ_BUDGET_ZLIB=2
+            export ARCHIVEY_FUZZ_BUDGET_ZSTD=2
+            export ARCHIVEY_FUZZ_BUDGET_BROTLI=2
+            export ARCHIVEY_FUZZ_BUDGET_LZ4=2
+            export ARCHIVEY_FUZZ_BUDGET_DEFLATE64=2
+            echo "PR short budgets: sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP rar=$ARCHIVEY_FUZZ_BUDGET_RAR"
+          else
+            export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=$((45 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=$((20 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT=$((12 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_ZIP=$((25 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_TAR=$((10 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_ISO=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=$((30 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_RAR=$((15 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS=$((15 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_XZ=$((12 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_LZIP=$((10 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_GZIP=$((10 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_BZIP2=$((10 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_LZMA_ALONE=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_ZLIB=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_ZSTD=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_BROTLI=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_LZ4=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_DEFLATE64=$((8 * scale))
+            echo "Full budgets (scale=$scale): sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP rar=$ARCHIVEY_FUZZ_BUDGET_RAR unix_compress=$ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS"
+          fi
           uv run --python 3.12 --no-sync python -m tests.atheris_fuzz
+
       - name: Upload crash artifacts
-        if: failure()
+        if: failure() && steps.guard.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: atheris-crashes
