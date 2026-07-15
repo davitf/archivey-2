@@ -49,18 +49,35 @@ def test_rapidgzip_corrupt_translates_to_corruption() -> None:
             s.read()
 
 
-def test_rapidgzip_macos_deflate_corruption_message_is_translated() -> None:
-    # The non-ISA-L rapidgzip backend (e.g. macOS) reports a corrupt deflate body as a
-    # ValueError "Failed to decode deflate block … backreferenced distance lies outside the
-    # window buffer!" — a different message than Linux's ISA-L wrapper. Assert the translator
-    # maps it (platform-independently, without needing that backend installed) so the raw
-    # ValueError never leaks. Regression for the macOS-only CI failure.
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Classic non-ISA-L (macOS) body-corruption wording.
+        (
+            "Failed to decode deflate block at 10 B 0 b because of: "
+            "The backreferenced distance lies outside the window buffer!"
+        ),
+        # Observed on macOS CI for a clobbered zlib body (Huffman tables invalid):
+        # "Failed to read deflate block header … The Huffman coding is not optimal!"
+        (
+            "Failed to read deflate block header at offset 2 B 0 b "
+            "(position after trying: 10 B 7 b: The Huffman coding is not optimal!"
+        ),
+        # Bare Huffman phrasing — keep covered even if the prefix changes.
+        "The Huffman coding is not optimal!",
+    ],
+    ids=["decode-block", "read-block-header-huffman", "huffman-only"],
+)
+def test_rapidgzip_macos_deflate_corruption_messages_are_translated(
+    message: str,
+) -> None:
+    # Non-ISA-L rapidgzip (macOS) reports corrupt deflate as ValueError with several
+    # message shapes; Linux ISA-L uses RuntimeError/IsalInflateWrapper instead. Assert
+    # every known shape maps to CorruptionError so a raw ValueError never leaks —
+    # platform-independently, without needing the macOS backend installed.
     from archivey.internal.streams.codecs import DeflateCodec, GzipCodec, ZlibCodec
 
-    exc = ValueError(
-        "Failed to decode deflate block at 10 B 0 b because of: "
-        "The backreferenced distance lies outside the window buffer!"
-    )
+    exc = ValueError(message)
     assert isinstance(GzipCodec()._translate_accelerator(exc), CorruptionError)
     assert isinstance(DeflateCodec()._translate_accelerator(exc), CorruptionError)
     assert isinstance(ZlibCodec()._translate_accelerator(exc), CorruptionError)

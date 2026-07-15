@@ -258,10 +258,13 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
     if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
-    if isinstance(exc, ValueError) and "Failed to decode deflate block" in text:
-        # Corrupt deflate body. On Linux this surfaces via the ISA-L wrapper above; the
-        # non-ISA-L backend (e.g. macOS) instead raises ValueError "Failed to decode
-        # deflate block … The backreferenced distance lies outside the window buffer!".
+    if isinstance(exc, ValueError) and (
+        "deflate block" in text or "Huffman coding is not optimal" in text
+    ):
+        # Corrupt deflate body / block header. Message varies by platform backend:
+        # - Linux ISA-L: RuntimeError via IsalInflateWrapper (above)
+        # - non-ISA-L (macOS): ValueError "Failed to decode deflate block …" or
+        #   "Failed to read deflate block header … The Huffman coding is not optimal!"
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
     if isinstance(exc, RuntimeError) and "Invalid deflate block" in text:
         # Raw DEFLATE / zlib body corruption (or an over-long unbounded slice that
