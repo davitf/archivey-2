@@ -34,11 +34,16 @@ MemberFilter = Callable[[ArchiveMember], "ArchiveMember | None"]
 
 
 class ExtractionPolicy(Enum):
-    """How much of an archive member's stored permission/ownership metadata to trust.
+    """How much of an archive member to trust when writing it to the destination.
 
     The universal path/symlink/special-file safety checks are enforced under **all**
-    policies (see ``safe-extraction``); the policy only governs the permission/ownership
-    transform applied to a member before it is written.
+    policies (see ``safe-extraction``). Beyond those, the policy governs two dimensions:
+    the permission/ownership transform applied before a member is written, and the
+    cross-platform name safety keyed off it — collision determinism (O2), reserved/mangled
+    name rejection (O3/O4), and portable-name normalization (O7). ``STRICT`` is
+    portable-by-default; ``TRUSTED`` defers to the local OS (faithful bytes, no name
+    rejection or rewrite). See
+    ``docs/decisions/0013-cross-platform-name-safety-policies.md``.
     """
 
     STRICT = "strict"  # default; untrusted archives
@@ -62,6 +67,7 @@ class OverwritePolicy(Enum):
     REPLACE = (
         "replace"  # unlink the existing entry, then create fresh (never write-through)
     )
+    RENAME = "rename"  # write a colliding entry under a derived "name (N)" spelling
 
 
 class OnError(Enum):
@@ -106,3 +112,9 @@ class ExtractionResult:
     # The failure, for FAILED/REJECTED under OnError.CONTINUE; an OSError when the failure
     # is a filesystem read/write error on this member (not translated to an ArchiveyError).
     error: ArchiveyError | OSError | None = None
+    # The destination the coordinator intended before overwrite/rename resolution. For an
+    # ordinary write it equals ``path``; under ``OverwritePolicy.RENAME`` a collided member
+    # is written to a derived name, so ``requested_path != path and status == EXTRACTED``
+    # marks the rename; a collision resolved by SKIP/ERROR sets ``requested_path`` with
+    # ``path=None``. ``None`` for members that never reached destination resolution.
+    requested_path: Path | None = None

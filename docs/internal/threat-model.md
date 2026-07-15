@@ -81,12 +81,17 @@ member fails with a confusing "already exists"; under `REPLACE` it **silently me
 — a crafted archive can use this to make content clobber other content on
 case-insensitive systems only (behavior differs by platform: a "surprise" squared).
 
-*Direction:* the coordinator tracks a casefolded+NFC key per written path and treats a
-collision as a first-class event on **all platforms** (deterministic cross-platform
-behavior): apply the `OverwritePolicy` deliberately, record the collision on the
-`ExtractionResult`, and consider a future `OverwritePolicy.RENAME` (extract as
-`name (1)`) for the archives-with-intentional-duplicates case. Needs a
-`safe-extraction` delta.
+*Direction (decided — `cross-platform-name-safety` / ADR 0013):* the coordinator tracks a
+casefolded+NFC key per written path and, under `STRICT`/`STANDARD`, treats a collision as a
+first-class event on **all platforms** (`TRUSTED` keys on the exact path and defers to the
+local OS): apply the `OverwritePolicy` deliberately, record `requested_path` on the
+`ExtractionResult` plus an `EXTRACTION_NAME_COLLISION` diagnostic, and add
+`OverwritePolicy.RENAME` (extract as `photo (1).jpg`, counter before the suffix) for the
+archives-with-intentional-duplicates case. Only content-bearing members (file/symlink/
+hardlink, including the deferred orphan-hardlink pass) are tracked; **directories are
+intentionally untracked** (they merge structurally), so a *file* `Foo` vs a *directory*
+`foo/` collision stays OS-dependent — a known, deferred residual (ADR 0013). Awaiting
+implementation of the `safe-extraction` delta.
 
 ### O3. Windows name mangling: reserved names, trailing dots/spaces
 
@@ -94,9 +99,11 @@ behavior): apply the `OverwritePolicy` deliberately, record the collision on the
 Win32 to `foo` (silent clobber / mismatch between reported and actual path). None of
 this is currently checked; behavior is platform-dependent.
 
-*Direction:* decide per policy — recommendation: `STRICT` rejects Windows-reserved and
-trailing-dot/space names on **every** platform (portability is part of no-surprises);
-`TRUSTED` allows what the local OS allows. `safe-extraction` delta.
+*Direction (decided — `cross-platform-name-safety` / ADR 0013):* `STRICT` rejects
+Windows-reserved and trailing-dot/space names on **every** platform (portability is part of
+no-surprises); `STANDARD` rejects reserved names + `:` but allows trailing dot/space;
+`TRUSTED` allows what the local OS allows. Awaiting implementation of the `safe-extraction`
+delta.
 
 ### O4. NTFS alternate data streams
 
@@ -193,14 +200,14 @@ but unrepresentable name is now translated by the extraction coordinator to a ty
 destination filesystem"), so callers get a typed signal instead of a bare `OSError`
 (`internal/extraction.py`; `test_unrepresentable_name_oserror_is_translated`).
 
-**Open follow-up (portable-name normalization):** fold into the O3/O4 policy work as the
-"cross-platform portable name" dimension. Recommendation: `STRICT` normalizes to an
-always-representable, portable form on **every** platform — decode-lossy names sanitized
-to a deterministic safe spelling (a reversible/percent-style escape, collision-tracked
-like O2), rejecting only when even that cannot be formed; `TRUSTED` attempts the faithful
-bytes and lets the local OS decide (today's behavior). This sanitization is **deferred**
-(deliberately not built with the error-translation above) and needs a `safe-extraction`
-delta shared with O3/O4.
+**Follow-up (portable-name normalization) — decided, not yet implemented:** the
+`cross-platform-name-safety` change settles this as the "cross-platform portable name"
+dimension shared with O2/O3/O4. Decision (design + ADR 0013): `STRICT`/`STANDARD` **sanitize**
+to a deterministic reversible spelling — each non-UTF-8 byte percent-escaped as `%XX` (`%` as
+`%25`), non-decodable bytes only, applied on every platform and collision-tracked like O2,
+still rejecting only names that cannot be `os.fsencode`d at all; `TRUSTED` attempts the
+faithful bytes and lets the local OS decide (today's behavior). Awaiting implementation of
+that `safe-extraction` delta.
 
 ## OPEN gaps — compatibility
 
