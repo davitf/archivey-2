@@ -13,7 +13,7 @@ feature — both must not be blocked by CLI grammar choices.
 ## Goals / Non-Goals
 
 **Goals:**
-- Hybrid CLI grammar (subcommands + short aliases) with **default verb = list**
+- Subcommand grammar (bare-word verbs + single-letter aliases) with **default verb = list**
 - First-cut verbs: `list`, `test`, `extract`, `info` (detect + archive identity)
 - Expose `ExtractionPolicy` on extract; keep other extract knobs minimal
 - Layered `list` output: human layer-1 default; stored digests opt-in
@@ -32,10 +32,10 @@ feature — both must not be blocked by CLI grammar choices.
 
 | Aspect | DEV behavior | Keep / change |
 | --- | --- | --- |
-| Mode shape | Flags `-l`/`-t`/`-x`, default **test** | Hybrid; default **list** |
+| Mode shape | Flags `-l`/`-t`/`-x`, default **test** | Bare-word subcommands + single-letter aliases (`l`/`t`/`x`/`i`); default **list** |
 | Listing line | enc, size, mode, crc, sha16, mtime, name | Layer-1 without digests by default |
 | Verify | Always compute SHA-256 + check stored CRC | `test` = stored-digest verify + full read; no mandatory SHA emit |
-| Patterns | After `--` | Prefer subcommand-native patterns; see open Q |
+| Patterns | After `--` | Positional includes + `--exclude` (Decision 11) |
 | Progress | tqdm | Same; degrade without `[cli]` |
 | Track IO | Monkeypatch `builtins.open` | Prefer library cost/`--track-io` if available; avoid builtins patch if possible |
 | Version | `--version` + dependency matrix | Keep |
@@ -48,19 +48,38 @@ CLI keeps **policy=strict** aligned with the library, but defaults **overwrite t
 
 ## Decisions
 
-### 1. Hybrid grammar; default verb = list
+### 1. Subcommand grammar (bare-word verbs, single-letter aliases); default = list
 
 ```
 archivey [global] <archive> [patterns…]           → list
 archivey [global] list|test|extract|info …        → named verb
-archivey [global] -l|-t|-x|-i …                   → alias for list|test|extract|info
+archivey [global] l|t|x|i …                        → single-letter alias for the same verb
 ```
 
-Short aliases are mutually exclusive with an explicit subcommand. Bare
-`archivey` with no archive path prints help and exits non-zero (usage).
+**Verbs are commands, not options: bare words, never dash-prefixed.** Each verb
+has a full name (`list`) and a single-letter alias (`l`), both plain words;
+short aliases are registered as argparse subparser aliases
+(`add_parser("extract", aliases=["x"])`). Options always take a dash (`-d`,
+`--policy`); verbs never do. This is the git / docker / cargo / **7z** model
+(`7z x`, `7z l`) and it matches the "commands have no dash, options do" mental
+model.
 
-**Rejected:** flag-only (DEV) — crowds write/convert later. Subcommand-only —
-worse daily ergonomics for the unzip audience.
+There is **no** dash-prefixed verb form: `archivey -x …` is not accepted (`-x`
+would read as an option, and the whole point is that verbs aren't options). One
+spelling per verb in each namespace — no tar-style accept-both. Because the
+letters are subparser aliases rather than a separate flag layer, there is no
+"alias vs explicit subcommand" conflict to resolve.
+
+Bare `archivey` with no archive path prints help and exits non-zero (usage).
+
+**Rejected:**
+- Flag-only mode selectors (DEV `-l`/`-t`/`-x`) — crowds write/convert later and
+  blurs the command/option line (the tar ambiguity).
+- Dash-prefixed aliases (`-x` = extract) *alongside* subcommands — the earlier
+  hybrid draft; reopened and dropped for the bare-letter form above. Trades a
+  little unzip muscle memory for a consistent, unambiguous grammar.
+- Subcommand-only (no single-letter aliases) — worse daily ergonomics for the
+  unzip audience; `x`/`l` recover the terseness without reintroducing dashes.
 
 ### 2. Verbs in v1 vs reserved
 
@@ -251,9 +270,9 @@ Selection rule: a member is processed when it matches an include (or none given)
 **and** matches no `--exclude` — exclude wins over include, as in tar/unzip.
 
 **Short form:** `--exclude` is **long-only** (no short flag). The classic short
-spelling `-x` is unavailable here — it is `extract`'s short form (see the alias
-question) — and tar hits the identical `-x`-is-extract collision and resolves it
-the same way, by keeping `--exclude` long-form. No letter needs reassigning.
+spelling `-x` is unavailable here — `x` is `extract`'s verb alias (Decision 1) —
+and tar hits the identical `-x`-is-extract collision and resolves it the same
+way, by keeping `--exclude` long-form. No letter needs reassigning.
 
 **Reserved (not v1):** `--include-from` / `--exclude-from FILE` (tar's `-T` /
 `-X`) — reading big pattern lists from a file is the one place a flag genuinely
@@ -268,7 +287,9 @@ exclude (collides with extract; long-only is clearer).
   using the library still get ERROR unless they opt in.
 - [Visible `--salvage` that errors] → Slightly noisy; better than silent ignore
   teaching false safety.
-- [Hybrid two ways to invoke] → Document aliases in `--help`; tests cover both.
+- [Verb + single-letter alias] → Both are bare words (`extract`/`x`); document in
+  `--help`; tests cover both. Dropping unzip's `-x` muscle memory is the accepted
+  cost of a consistent command/option split.
 - [info vs list overlap] → Keep info member-free; list path-free of format essay.
 - [argparse verbosity] → Acceptable; thin `main.py` keeps a future Click swap local.
 

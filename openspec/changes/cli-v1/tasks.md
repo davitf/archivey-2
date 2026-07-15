@@ -14,10 +14,10 @@
 ## 3. CLI scaffold
 
 - [ ] 3.1 Create `archivey/cli/` package (`main` parser, shared formatting/filters helpers)
-- [ ] 3.2 Hybrid argparse: subcommands + `-l`/`-t`/`-x`/`-i`; bare archive path → `list`
+- [ ] 3.2 argparse subparsers with bare-word verbs + single-letter aliases (`add_parser("extract", aliases=["x"])` etc.); bare archive path → `list`; reject dash-prefixed verb forms (`-x`)
 - [ ] 3.3 Global flags: `--password`, `--track-io`, `--version`, `-v`, progress hide/TTY
 - [ ] 3.4 Reserve `--salvage` (fail-fast not-implemented); reject unknown `hash`/`create`/`convert` verbs without falling through to list
-- [ ] 3.5 Ensure `-c` is not used for integrity check
+- [ ] 3.5 Ensure the verb letter `c` is not used for integrity check (reserve for future `create`)
 
 ## 4. Verbs
 

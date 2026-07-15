@@ -8,8 +8,10 @@ extract with policy, detect/info, and a reserved path for hash + salvage).
 
 ## What Changes
 
-- Implement the `archivey` command as a **hybrid** CLI: subcommands plus short
-  flag aliases; **bare invocation defaults to `list`**.
+- Implement the `archivey` command with **subcommand** verbs — each a bare word
+  with a single-letter bare-word alias (`list`/`l`, `test`/`t`, `extract`/`x`,
+  `info`/`i`); verbs are never dash-prefixed (no `-x` mode selectors). **Bare
+  invocation defaults to `list`**.
 - First-cut verbs: `list`, `test`, `extract`, `info`/`detect` (archive identity +
   format detection). Reserve `hash`, `create`, `convert` in the grammar without
   implementing them yet where noted.
@@ -40,7 +42,8 @@ extract with policy, detect/info, and a reserved path for hash + salvage).
 
 ### Modified Capabilities
 
-- `cli` — hybrid command shape, default-to-list, policy-aware extract, layered
+- `cli` — subcommand grammar (bare-word verbs + single-letter aliases),
+  default-to-list, policy-aware extract, layered
   list output, `info`/`detect`, reserved `--salvage` / `hash` / write verbs,
   exit-code and packaging notes.
 - `packaging-and-extras` — console script / `python -m archivey` ship with the

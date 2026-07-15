@@ -2,21 +2,23 @@
 
 ### Requirement: archivey command with list, test, and extract subcommands
 
-The system SHALL provide an `archivey` command as a **hybrid** CLI: named
-subcommands plus short mode aliases. When neither a subcommand nor a mode alias
-is present, the verb SHALL default to `list`. Progress output SHALL use `tqdm`
-from `[cli]` when available; core MUST NOT depend on `tqdm`. The console script
-and `python -m archivey` MUST be importable/runnable without installing `[cli]`
-(progress suppressed if `tqdm` is absent).
+The system SHALL provide an `archivey` command whose verbs are **subcommands**:
+each verb is a bare word (never dash-prefixed) with a single-letter bare-word
+alias. When no verb is present the verb SHALL default to `list`. Verbs MUST NOT
+be selectable via a dash-prefixed option form (e.g. `-x` SHALL NOT mean
+`extract`); options always take a dash, verbs never do. Progress output SHALL use
+`tqdm` from `[cli]` when available; core MUST NOT depend on `tqdm`. The console
+script and `python -m archivey` MUST be importable/runnable without installing
+`[cli]` (progress suppressed if `tqdm` is absent).
 
 Supported verbs in this capability:
 
-| Verb | Aliases | Role |
+| Verb | Alias | Role |
 | --- | --- | --- |
-| `list` | `-l`, `--list` | Inspect members (default verb) |
-| `test` | `-t`, `--test` | Full-read integrity check |
-| `extract` | `-x`, `--extract` | Safe extraction |
-| `info` | `-i`, `--info`, `detect` | Format detection + archive identity |
+| `list` | `l` | Inspect members (default verb) |
+| `test` | `t` | Full-read integrity check |
+| `extract` | `x` | Safe extraction |
+| `info` | `i`, `detect` | Format detection + archive identity |
 
 `list`, `test`, and `extract` SHALL support fnmatch member filters. Positional
 patterns after the archive path SHALL act as **include** filters (a member is
@@ -56,10 +58,10 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | Case | Expected |
 | --- | --- |
 | `archivey <archive>` | Same as `archivey list <archive>` |
-| `archivey list <archive>` / `archivey -l <archive>` | Layer-1 member listing |
+| `archivey list <archive>` / `archivey l <archive>` | Layer-1 member listing |
 | `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
-| `archivey test <archive>` / `archivey -t <archive>` | Fully reads members, verifies stored digests, reports failures |
-| `archivey extract <archive>` / `archivey -x …` | Extracts under `--policy` default `strict`, overwrite default `rename`, into the smart default dest |
+| `archivey test <archive>` / `archivey t <archive>` | Fully reads members, verifies stored digests, reports failures |
+| `archivey extract <archive>` / `archivey x …` | Extracts under `--policy` default `strict`, overwrite default `rename`, into the smart default dest |
 | `archivey extract <archive>` where archive has many top-level entries | Extracts into `./<archive-stem>/` (no cwd splatter) |
 | `archivey extract <archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
@@ -70,7 +72,7 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
 | `--track-io` supplied | Reports configured I/O instrumentation for the operation |
-| Mode alias combined with an explicit conflicting subcommand | Usage error |
+| `archivey -x <archive>` (dash-prefixed verb) | Usage error — verbs are bare words (`x`), not options; `-x` is not a mode selector |
 
 ## ADDED Requirements
 
@@ -105,13 +107,14 @@ not-implemented message so callers cannot assume best-effort reads.
 
 ### Requirement: reserved verbs do not collide with future write/hash UX
 
-The system SHALL NOT use short options that commonly mean create/compress for
-integrity checking (in particular `-c` MUST NOT mean "check"). Help text MAY
-mention `hash`, `create`, and `convert` as forthcoming without implementing them.
+The system SHALL NOT reuse a verb letter that commonly means create/compress for
+integrity checking (in particular `c` MUST NOT mean "check"; leave it for a
+future `create`). Help text MAY mention `hash`, `create`, and `convert` as
+forthcoming without implementing them.
 
 #### Scenario: flag hygiene
 
 | Case | Expected |
 | --- | --- |
-| `-t` | Means `test` (integrity), not create |
+| `t` | Means `test` (integrity), not create |
 | Unknown verb `hash` / `create` / `convert` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
