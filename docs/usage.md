@@ -153,6 +153,43 @@ provide an operation — seeking a non-seekable member, a format that can't list
 real `ArchiveyError`: `UnsupportedOperationError`.) See
 [decision 0012](decisions/0012-usage-errors-outside-archiveyerror.md).
 
+## Command-line interface
+
+The `archivey` command ships with the base package (`pip install archivey`). Progress bars
+need the optional `[cli]` extra (`tqdm`); without it the command still runs.
+
+```bash
+archivey photos.zip                 # same as: archivey list photos.zip
+archivey l photos.zip               # list (alias)
+archivey t photos.zip               # full-read integrity check
+archivey x photos.zip               # safe extract (alias for extract)
+archivey info photos.zip            # format / identity (alias: detect)
+```
+
+### Safer extract demo
+
+```bash
+# Default policy=strict, overwrite=rename. With no -d, a multi-entry archive lands in
+# ./photos/ instead of splattering the current directory (tarbomb-safe).
+archivey extract photos.zip
+
+# Classic unzip-into-cwd (opt-in):
+archivey extract photos.zip -d .
+
+# Filters: positionals are includes; --exclude subtracts.
+archivey extract photos.zip -d out/ '*.py' --exclude '*_test.py'
+archivey extract photos.zip --policy trusted -d /tmp/out
+```
+
+### Notes
+
+- Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
+- A file whose name is a verb word (e.g. `./x`) is reached with an explicit verb:
+  `archivey list ./x`.
+- Exit codes: `0` success, `1` operation failed, `2` usage error (argparse). Codes `≥3`
+  are reserved.
+- `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are reserved for later.
+
 ## Next
 
 - [Access costs and pitfalls](costs.md) — solid archives, seeking, concurrency

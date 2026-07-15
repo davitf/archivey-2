@@ -11,27 +11,27 @@
 
 ## 2. Packaging + entry points
 
-- [ ] 2.1 Add `[project.scripts] archivey = …` and `archivey.__main__` for `python -m archivey`
-- [ ] 2.2 Confirm `[cli]` remains tqdm-only; base install runs the command without progress
+- [x] 2.1 Add `[project.scripts] archivey = …` and `archivey.__main__` for `python -m archivey`
+- [x] 2.2 Confirm `[cli]` remains tqdm-only; base install runs the command without progress
 
 ## 3. CLI scaffold
 
-- [ ] 3.1 Create `archivey/cli/` package (`main` parser, shared formatting/filters helpers)
-- [ ] 3.2 argparse subparsers with bare-word verbs + single-letter aliases (`add_parser("extract", aliases=["x"])` etc.); known-verb-wins dispatch (bare archive path → `list`, reserved verbs still shadow same-named files); reject dash-prefixed verb forms (`-x`) and `-`/stdin with clear errors
-- [ ] 3.3 Global flags: `--password` (prompt on TTY when unset), `--version`, `-v`, progress hide/TTY; `--track-io` via `enable_measurement()` + `BaseArchiveReader` counters (task 1.8)
-- [ ] 3.4 Reserve `--salvage` (fail-fast not-implemented); reject unknown `hash`/`create`/`convert` verbs without falling through to list
-- [ ] 3.5 Ensure the verb letter `c` is not used for integrity check (reserve for future `create`)
-- [ ] 3.6 Exit-code mapping (`0`/`1`/`2`); output hygiene (data→stdout, progress/summaries/prompts→stderr); lazy `tqdm` import so `core-only` never imports it
+- [x] 3.1 Create `archivey/cli/` package (`main` parser, shared formatting/filters helpers)
+- [x] 3.2 argparse subparsers with bare-word verbs + single-letter aliases (`add_parser("extract", aliases=["x"])` etc.); known-verb-wins dispatch (bare archive path → `list`, reserved verbs still shadow same-named files); reject dash-prefixed verb forms (`-x`) and `-`/stdin with clear errors
+- [x] 3.3 Global flags: `--password` (prompt on TTY when unset), `--version`, `-v`, progress hide/TTY; `--track-io` via `enable_measurement()` + `BaseArchiveReader` counters (task 1.8)
+- [x] 3.4 Reserve `--salvage` (fail-fast not-implemented); reject unknown `hash`/`create`/`convert` verbs without falling through to list
+- [x] 3.5 Ensure the verb letter `c` is not used for integrity check (reserve for future `create`)
+- [x] 3.6 Exit-code mapping (`0`/`1`/`2`); output hygiene (data→stdout, progress/summaries/prompts→stderr); lazy `tqdm` import so `core-only` never imports it
 
 ## 4. Verbs
 
-- [ ] 4.1 `list`: layer-1 default lines; `--digests` for stored hashes; `-v` diagnostics
-- [ ] 4.2 `test`: full-read + stored-digest verification; summary + non-zero on failure
-- [ ] 4.3 `extract`: map `--policy` to `ExtractionPolicy`; apply overwrite default from 1.1; smart default dest from 1.2 (compute enclosing dir / detect single archive root); patterns from 1.3
-- [ ] 4.4 `info` / `detect`: format + identity summary without full member dump
+- [x] 4.1 `list`: layer-1 default lines; `--digests` for stored hashes; `-v` diagnostics
+- [x] 4.2 `test`: full-read + stored-digest verification; summary + non-zero on failure
+- [x] 4.3 `extract`: map `--policy` to `ExtractionPolicy`; apply overwrite default from 1.1; smart default dest from 1.2 (compute enclosing dir / detect single archive root); patterns from 1.3
+- [x] 4.4 `info` / `detect`: format + identity summary without full member dump
 
 ## 5. Tests + docs
 
-- [ ] 5.1 CLI behavior-matrix tests (argv → exit/stdout/stderr) covering default-list dispatch (incl. verb-named file), aliases, dash-verb + stdin rejection, policy, `--exclude`, exit codes, quiet-vs-`-v` test, salvage reserved, no-tqdm progress
-- [ ] 5.2 Short docs usage section for the four verbs + safer-extract demo
-- [ ] 5.3 `openspec validate --strict cli-v1`
+- [x] 5.1 CLI behavior-matrix tests (argv → exit/stdout/stderr) covering default-list dispatch (incl. verb-named file), aliases, dash-verb + stdin rejection, policy, `--exclude`, exit codes, quiet-vs-`-v` test, salvage reserved, no-tqdm progress
+- [x] 5.2 Short docs usage section for the four verbs + safer-extract demo
+- [x] 5.3 `openspec validate --strict cli-v1`

@@ -13,6 +13,9 @@ authors = [
     { name = "Davi Figueiredo", email = "gh@davitf.com" }
 ]
 
+[project.scripts]
+archivey = "archivey.cli.main:main"
+
 [project.optional-dependencies]
 7z = [
     # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
