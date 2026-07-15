@@ -238,6 +238,30 @@
   Note `pyzstd.SeekableZstdFile` is **not** a substitute either: it reads only the *Seekable
   Zstd* container, not plain `.zst`. See `docs/internal/library-analysis.md` (zstd).
 
+- **Opt-in free-space pre-flight for extraction** — before extracting, sum the *declared*
+  uncompressed sizes of the **selected** members and compare against
+  `shutil.disk_usage(dest).free`; if short, fail fast with a typed error *before writing
+  anything*, instead of dying partway and leaving a half-written mess (the current
+  behavior). Cheap where it matters: ZIP central directory, 7z/RAR headers, and TAR
+  per-member headers all carry uncompressed sizes, so the estimate needs no decompression.
+  **Deliberately opt-in and best-effort**, for real reasons — not laziness:
+  - It is **not** a zip-bomb defense and must not be sold as one. Declared sizes can be
+    absent, wrong, or adversarial; the ratio-guard / `ExtractionPolicy` already own the
+    hostile-archive axis. This knob is a *convenience* against honest "disk too small"
+    mistakes, so it trusts the metadata by design.
+  - Free space is **approximate and racy**: transparent FS compression (btrfs/zfs), sparse
+    files, reflink/dedupe, quotas, and other writers all move the target (TOCTOU). Advisory
+    only; never a hard guarantee.
+  - **Skip gracefully when the total is unknowable** — single-file `gz`/`bz2` (no reliable
+    stored size) or a streamed/piped TAR — rather than blocking extraction.
+  - Interacts with overwrite policy: replacing existing files changes the *net* delta, which
+    a naive sum ignores; best-effort accepts that imprecision.
+  Home: a library extract option / `ExtractionPolicy`-adjacent knob (the library has the
+  sizes), surfaced by the CLI as a flag (opt-in first; could default-on for the CLI later if
+  it proves low-friction). Small change of its own — not part of `cli-v1`. Verdict: a nice,
+  cheap UX win worth doing, provided it ships clearly labeled as advisory so nobody mistakes
+  it for a safety control.
+
 ## Strategy & adoption (2026-07 review backlog)
 
 > Parked here from the 2026-07 architecture-review discussion so nothing is lost.
