@@ -4,12 +4,12 @@ Run from the repo root:
 
     uv run python review/next/03-stream-decoder-findings/repro.py
 
-Findings 1, 3 and 4 need only the stdlib (they reproduce in every dependency
-config, including ``[core-only]``). Finding 2 needs the ``[seekable]`` extra
-(``rapidgzip``); it is skipped with a note when rapidgzip is absent. Finding 3's
-fixture uses ``ncompress`` (a test-only LZW *compressor*) when available; if it is
-absent the finding is demonstrated with a minimal in-tree decoder stand-in that
-mirrors ``UnixCompressDecoder``'s deferred-truncation contract.
+Findings F1, F3b and F4 need only the stdlib (they reproduce in every dependency
+config, including ``[core-only]``). F2 needs the ``[seekable]`` extra (``rapidgzip``)
+and F3a needs ``ncompress`` (a test-only LZW *compressor*); each is skipped with a note
+when its dependency is absent. F4's fixture uses ``ncompress`` when available; if it is
+absent the finding is demonstrated with a minimal in-tree decoder stand-in that mirrors
+``UnixCompressDecoder``'s deferred-truncation contract.
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ def _hr(title: str) -> None:
     print("\n" + "=" * 72 + f"\n{title}\n" + "=" * 72)
 
 
-def finding1_xz_collision_assert() -> None:
-    _hr("F1 (HIGH): multi-stream .xz seek-point collision -> AssertionError")
+def finding1a_xz_collision_valid_multistream() -> None:
+    _hr("F1a (HIGH): VALID multi-stream .xz + size-then-read -> AssertionError")
     part0, part1 = b"A" * 5000, b"B" * 5000
     data = b"".join(lzma.compress(p, format=lzma.FORMAT_XZ) for p in (part0, part1))
     # The common "size then read" access pattern on ONE stream instance:
@@ -53,6 +53,73 @@ def finding1_xz_collision_assert() -> None:
         print(f"  AssertionError raised on a VALID 2-stream .xz: {str(exc)[:70]}...")
     finally:
         stream.close()
+
+
+def _craft_zero_block_xz() -> bytes:
+    """A 72-byte .xz whose index declares two zero-uncompressed_size blocks."""
+    import struct
+    import zlib
+
+    from archivey.internal.streams.xz import (
+        _XZ_FOOTER_MAGIC,
+        _XZ_STREAM_MAGIC,
+        _encode_mbi,
+        _round_up_4,
+    )
+
+    check = 0x00
+
+    def stream_header() -> bytes:
+        flags = bytes([0x00, check])
+        return _XZ_STREAM_MAGIC + flags + struct.pack("<I", zlib.crc32(flags) & 0xFFFFFFFF)
+
+    records = [(10, 100), (10, 0), (10, 0)]  # (unpadded_size, uncompressed_size)
+    body = b"\x00" + _encode_mbi(len(records))
+    for unpadded, uncomp in records:
+        body += _encode_mbi(unpadded) + _encode_mbi(uncomp)
+    body += b"\x00" * (_round_up_4(len(body)) - len(body))
+    index = body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    backward_raw = (len(index) // 4) - 1
+    fbody = struct.pack("<I", backward_raw) + bytes([0x00, check])
+    footer = struct.pack("<I", zlib.crc32(fbody) & 0xFFFFFFFF) + fbody + _XZ_FOOTER_MAGIC
+
+    block_payload = b"\x00" * sum(_round_up_4(u) for u, _ in records)
+    return stream_header() + block_payload + index + footer
+
+
+def finding1b_xz_collision_crafted_zero_blocks() -> None:
+    _hr("F1b (HIGH): 72-byte crafted zero-block .xz crashes build_index")
+    data = _craft_zero_block_xz()
+    print(f"  crafted .xz size: {len(data)} bytes")
+    stream = XzDecompressorStream(io.BytesIO(data), seekable=True)
+    try:
+        stream.seek(0, io.SEEK_END)  # build_index alone -> collision, no decode needed
+        print("  no crash (python -O? assert compiled out -> silently-wrong seek)")
+    except AssertionError as exc:
+        print(f"  AssertionError on hostile input: {str(exc)[:70]}...")
+    finally:
+        stream.close()
+
+
+def finding3_lzw_memory_bomb() -> None:
+    _hr("F3a (MED): LZW eager feed -> ~9 KB .Z buffers ~20 MB on read(1)")
+    try:
+        import ncompress
+    except ImportError:
+        print("  SKIP: ncompress (test-only LZW compressor) not installed.")
+        return
+    payload = b"A" * 20_000_000
+    buf = io.BytesIO()
+    ncompress.compress(io.BytesIO(payload), buf)
+    z = buf.getvalue()
+    s = UnixCompressDecompressorStream(io.BytesIO(z), seekable=False)
+    one = s.read(1)  # asks for ONE byte
+    print(
+        f"  input .Z: {len(z):,} bytes; read(1) -> {one!r}; "
+        f"internal buffer now {len(s._buffer):,} bytes (unbounded per-read amplification)"
+    )
+    s.close()
 
 
 def finding2_accelerator_truncation() -> None:
@@ -124,8 +191,8 @@ class _TruncGuineaDecoder(BaseDecoder):
         return self._done
 
 
-def finding3_readall_swallows_pending_error() -> None:
-    _hr("F3 (MED): read(-1)/readall never checks pending_error (truncated .Z)")
+def finding4_readall_swallows_pending_error() -> None:
+    _hr("F4 (MED): read(-1)/readall never checks pending_error (truncated .Z)")
 
     # Real .Z fixture via ncompress when available; else the stand-in decoder.
     real_z: bytes | None = None
@@ -178,8 +245,8 @@ def finding3_readall_swallows_pending_error() -> None:
             print("  stand-in chunked: TruncatedError raised (correct)")
 
 
-def finding4_lzw_maxbits_unbounded() -> None:
-    _hr("F4 (LOW-MED): .Z maxbits accepted up to 31 (spec caps at 16)")
+def finding3b_lzw_maxbits_unbounded() -> None:
+    _hr("F3b (MED): .Z maxbits accepted up to 31 (spec caps at 16)")
     for mb in (16, 17, 24, 31):
         flag = 0x80 | mb
         mw, _ = _parse_header(bytes([0x1F, 0x9D, flag]))
@@ -188,9 +255,10 @@ def finding4_lzw_maxbits_unbounded() -> None:
 
 
 if __name__ == "__main__":
-    # F1 aborts the process under default python (AssertionError propagates), so run it
-    # in a child-safe order: everything else first, F1 last.
+    # Each finding catches its own AssertionError, so ordering is cosmetic.
+    finding1a_xz_collision_valid_multistream()
+    finding1b_xz_collision_crafted_zero_blocks()
     finding2_accelerator_truncation()
-    finding3_readall_swallows_pending_error()
-    finding4_lzw_maxbits_unbounded()
-    finding1_xz_collision_assert()
+    finding3_lzw_memory_bomb()
+    finding3b_lzw_maxbits_unbounded()
+    finding4_readall_swallows_pending_error()

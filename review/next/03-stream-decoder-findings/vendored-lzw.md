@@ -2,126 +2,145 @@
 
 `internal/streams/unix_compress.py` is hand-written LZW decompression of untrusted `.Z`
 bytes in the **zero-dep core** — VISION #2's "memory-safe hostile-input parsing" applies
-with no `[extra]` shield. The kernel itself holds up well (see "what's actually fine" in
-`SUMMARY.md`); the two findings are a base-class truncation swallow that only `.Z`
-exercises, and a missing upper bound on the `maxbits` header field.
+with no `[extra]` shield. The LZW kernel's decode logic is careful (KwKwK, code bounds,
+provenance; see "what's actually fine" in `SUMMARY.md`), but the *shape* of how it feeds
+the base stream, and one missing header bound, make a decompression bomb; and a truncated
+`.Z` is silently accepted on the single-shot read idiom.
 
-## F3 (Medium) — `read(-1)`/`readall()` swallow the deferred `TruncatedError`
+## F3 (Medium) — decompression bomb: eager per-`feed` decode + no `maxbits` ceiling
+
+### F3a — `feed()` has no output budget; the base buffers the whole result
+
+`LzwState._process` (`unix_compress.py:143`) decodes **all** currently-buffered compressed
+input into one `output` bytearray and returns it. The base reads a 64 KB compressed chunk
+and appends the *entire* decoded result to `self._buffer`, with no back-pressure between
+"bytes the caller asked for" and "bytes produced":
+
+```
+# decompressor_stream.py:302  read
+if len(self._buffer) < n and not self._eof:
+    self._buffer.extend(self._read_decompressed_chunk())   # extends by a full feed()'s output
+```
+
+LZW amplification is **unbounded** and grows with stream position (later codes reference
+ever-longer dictionary entries) — unlike deflate (~1032:1 hard cap) or the LZMA family,
+which archivey trusts to be roughly bounded per input chunk. So a single `read(1)` can
+force an arbitrarily large decode.
+
+**Measured** (`repro.py` F3 section, an all-`'A'` run that real `compress` also emits):
+
+```
+input .Z size: 9,450 bytes
+read(1) -> b'A'; internal buffer now 19,999,999 bytes    # one byte asked for, 20 MB resident
+```
+
+A ~9 KB attacker file forces ~20 MB of resident buffer on the **first byte read**, and the
+ratio scales with the payload length (a 50 KB `.Z` reaches hundreds of MB; PR #121 measured
+peak ~1.4 GB). The output is a legitimate all-`'A'` run (verified roundtrip, not an encoder
+artifact).
+
+Existing mitigations do not cover this:
+- The `ArchiveyConfig` decompression-ratio guard (`config.py:84`, `max_ratio=1000`,
+  `ratio_activation_threshold=5 MB`) only applies to `extract`/`extract_all`, and counts
+  bytes **after** each copy chunk is produced — the eager `feed()` balloons memory *inside*
+  a single `read()` before the guard's counter advances. It bounds total *extracted* bytes,
+  not *peak* memory per read.
+- `stream_members` / forward-only iteration enforce **no** caps at all (`config.py:104`).
+
+### F3b — `maxbits` bounded to 31, not the format's 16
+
+```
+# unix_compress.py:51
+max_width = flag_byte & _CODE_WIDTH_FLAG       # _CODE_WIDTH_FLAG = 0x1F  -> up to 31
+if max_width < _INITIAL_CODE_WIDTH:            # only the LOWER bound (>= 9) is checked
+    raise CorruptionError(...)
+```
+
+The `.Z` format and every real `compress`/`ncompress` cap `maxbits` at 16; 17–31 are
+invalid and rejected. archivey masks with `0x1F` and checks only the lower bound, so it
+accepts `maxbits` up to 31 (`repro.py` F4/maxbits section confirms 17/24/31 all accepted).
+The dictionary is bounded only by `2**maxbits` entries (`next_code <= current_mask`,
+`unix_compress.py:264`), so allowing 31 raises the ceiling from 2¹⁶ to 2³¹ and removes the
+natural per-entry-length bound 16 bits imposes — directly worsening F3a.
+
+**This is inherited, not introduced:** upstream `uncompresspy` has the identical mask with
+only a `< 9` check. The port is faithful — but the missing cap is now in archivey's trusted
+core, and the brief explicitly asks "is that field itself bounded?" The honest answer is
+"to 31, not to the format's 16."
+
+### Why it matters (VISION #2 / #4)
+
+A ~9 KB file forcing tens of MB (and, scaled up, hundreds of MB to > 1 GB) of resident
+buffer on the first byte read is a memory-safety problem in the trusted core, and the cost
+of `read(1)` is wildly non-local — undercutting the "honest cost signals" claim.
+Suggested direction (QUESTIONS Q3): cap `maxbits` at 16, **and** give the decoder an output
+budget (decode at most ~N bytes per `feed`, retaining un-consumed compressed input) so the
+base's existing chunking actually bounds peak memory.
+
+## F4 (Medium) — `.Z` truncation not raised on a single-shot `read(-1)`/`readall()`
 
 ### Mechanism
 
-Unlike xz/lzip, the LZW decoder reports `finished == True` at flush even when the stream
-was truncated, and signals truncation out-of-band via `pending_error`:
+Unlike xz/lzip, the LZW decoder reports `finished == True` at flush even when truncated,
+signalling truncation out-of-band via `pending_error`:
 
 ```
 # unix_compress.py:343  UnixCompressDecoder.flush
-def flush(self) -> DecodeOut:
-    data, units = self._state.flush()
-    ...
-    if self._state.truncated:
-        self._pending_error = TruncatedError(
-            "unix-compress (.Z) stream is truncated (nonzero leftover bits ...)")
-    return DecodeOut(data, points)
-
+if self._state.truncated:
+    self._pending_error = TruncatedError("unix-compress (.Z) stream is truncated ...")
+...
 @property
 def finished(self) -> bool:
     return self._state.is_finished()      # True after flush, truncated or not
 ```
 
-Because `finished` is `True`, the base's eager truncation check does **not** fire:
-
-```
-# decompressor_stream.py:274  _read_decompressed_chunk
-leftover = self._ingest_decode(self._decoder.flush())
-if not self._decoder.finished:            # False for .Z -> no raise here
-    raise TruncatedError("File is truncated")
-```
-
-The deferred error is only raised on the **next empty `read`**:
+Because `finished` is `True`, the base's eager truncation check (`decompressor_stream.py:279`,
+`if not self._decoder.finished: raise`) does not fire, and the deferred error is only raised
+on the **next empty `read`**:
 
 ```
 # decompressor_stream.py:296  read
 def read(self, n: int = -1, /) -> bytes:
     if n is None or n < 0:
-        data = self.readall()             # <-- readall never checks pending_error
+        data = self.readall()             # readall never checks pending_error
     else:
         ...
     if not data:                          # only reached when read RETURNS EMPTY
         err = self._decoder.pending_error
         if err is not None:
-            self._decoder.clear_pending_error()
-            raise err
+            self._decoder.clear_pending_error(); raise err
     return data
 ```
 
-`readall()` (`decompressor_stream.py:286`) loops until EOF and returns all bytes; it
-never consults `pending_error`. So the `read(-1)` idiom — `data = f.read()`, the single
-most common way to read a stream — returns the partial data with the `pending_error`
-still sitting unraised. The error only surfaces if the caller reads *again* and gets an
-empty result, which many callers never do.
+`readall()` (`decompressor_stream.py:286`) loops to EOF and returns all bytes without ever
+consulting `pending_error`. So the `read(-1)` idiom — `data = f.read()`, the most common
+way to read a member — returns the partial data with the `TruncatedError` unraised; it only
+surfaces if the caller reads *again* and gets empty.
 
 ### Reproduction (real `.Z` via `ncompress`)
 
 ```
-uv run python review/next/03-stream-decoder-findings/repro.py     # F3 section
+uv run python review/next/03-stream-decoder-findings/repro.py     # F3/F4 section
+  real .Z read(-1): 3975 bytes, NO error (SWALLOWED)
+  real .Z chunked: TruncatedError raised (inconsistent with above)
 ```
 
-```
-real .Z read(-1): 3975 bytes, NO error (SWALLOWED)
-real .Z chunked: TruncatedError raised (inconsistent with above)
-```
+The *same* truncated `.Z` raises `TruncatedError` when read in chunks but silently returns
+partial data with `read(-1)`. `xz`/`lzip` raise on the first `read(-1)` (their `flush()`
+raises directly inside `_read_decompressed_chunk`), so this is a per-codec, per-read-shape
+inconsistency — a VISION #3 violation. The `_copy_to_fileobj` extraction path reads in a
+bounded loop to empty, so it *does* surface the error; the exposed gap is single-shot
+`read()`/`readall()`.
 
-The *same* truncated `.Z` raises `TruncatedError` when read in 256-byte chunks but
-silently returns partial data when read with `read(-1)`. (The `repro.py` stand-in
-decoder shows the identical base-class behaviour when `ncompress` is not installed.)
-
-This is a VISION #3 violation ("damaged input is a first-class citizen → honest error")
-and a read-style inconsistency: whether a truncation is reported depends on *how* the
-caller reads, not on the data.
-
-### Note on scope
-
-Only `UnixCompressDecoder` uses the deferred `pending_error` path, so only `.Z` is
-affected today. But the defect is in the **base** (`readall`/`read(-1)` ignoring
-`pending_error`), so any future decoder that adopts the deferred-error contract inherits
-it. The narrow fix is to check `pending_error` at the end of `readall`/the `read(-1)`
-branch after the final chunk (delivering bytes first, then raising on the terminal
-empty state — preserving the "bytes before error" ordering VISION #3 also requires).
-
-The LZW-specific *undetectable* truncations (a cut landing on a code boundary with only
-zero leftover bits) are **not** a finding — the code comments acknowledge them
-(`unix_compress.py:111-117`, `:349`), and `.Z` has no length trailer to check against.
-F3 is strictly about the truncations the decoder *does* detect being dropped by
+The LZW *undetectable* truncations (a cut landing on a code boundary with only zero leftover
+bits) are **not** a finding — the code comments acknowledge them (`unix_compress.py:111-117`),
+and `.Z` has no length trailer. F4 is strictly about detected truncations being dropped by
 `read(-1)`.
 
-## F4 (Low-Medium) — `.Z` `maxbits` not bounded to the format ceiling of 16
+### Fix sketch
 
-```
-# unix_compress.py:44
-flag_byte = header[2]
-...
-max_width = flag_byte & _CODE_WIDTH_FLAG       # _CODE_WIDTH_FLAG = 0x1F  -> up to 31
-if max_width < _INITIAL_CODE_WIDTH:            # only a LOWER bound (>= 9) is checked
-    raise CorruptionError(...)
-```
-
-The `.Z` format (and every real `compress`/`ncompress`) restricts `maxbits` to 9–16;
-values 17–31 are invalid and rejected by standard tools. archivey masks with `0x1F` and
-checks only the lower bound, so it accepts `maxbits` up to 31:
-
-```
-uv run python review/next/03-stream-decoder-findings/repro.py     # F4 section
-  maxbits=16: accepted max_width=16
-  maxbits=17: accepted max_width=17  <-- out of spec, accepted
-  maxbits=24: accepted max_width=24  <-- out of spec, accepted
-  maxbits=31: accepted max_width=31  <-- out of spec, accepted
-```
-
-Consequence: the code table may grow to `2**maxbits` entries — up to 2³¹ with a crafted
-header, versus the standard 2¹⁶ ceiling. It is **not** a small-file OOM bomb: dictionary
-growth is bounded by the number of codes fed, so memory stays proportional to input
-size. The concern is (a) accepting files every other `.Z` tool rejects (a compatibility
-/ "honest parsing" gap — archivey may "successfully" decode something that is not a
-valid `.Z`), and (b) permitting a larger-than-standard resident code table. Recommend
-clamping to 16 (raise `CorruptionError` for `maxbits > 16`, matching the ecosystem) —
-see QUESTIONS Q3.
+Have `readall()`/the `read(-1)` branch check `pending_error` after the final chunk
+(delivering bytes first, then raising on the terminal state — preserving the "bytes before
+error" ordering), or have unix-compress raise from `flush()` directly like the other
+seekable decoders (the deferred mechanism buys nothing here — the leftover-bits signal is
+known at flush time).

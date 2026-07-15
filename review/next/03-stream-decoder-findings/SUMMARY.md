@@ -1,83 +1,105 @@
 # Brief 3 — Seekable decoder layer, accelerators & vendored LZW: findings
 
-Deep review of the post-#96 seekable decompressor layer, the #105 rapidgzip hot
-path, and the #89 vendored LZW core, following `review/next/03-stream-decoder-layer.md`.
-Docs-only change — no source is modified. Every finding is traced to `file:line`
-with a runnable reproduction (`repro.py`).
+Deep review of the post-#96 seekable decompressor layer, the #105 rapidgzip hot path,
+and the #89 vendored LZW core, following `review/next/03-stream-decoder-layer.md`.
+Docs-only — no source is modified. Every finding is traced to `file:line` with a runnable
+reproduction (`repro.py`).
+
+> **Consolidated deliverable.** This brief was accidentally run by two independent
+> reviews in parallel (PR #122 and PR #121). This document merges both. The two agreed on
+> the headline shape and on three findings, and each found something the other missed —
+> most usefully, PR #121 found the **LZW memory-amplification bomb** (F3a) and a **second,
+> hostile-input trigger** for the seek-point crash (F1b), and PR #122 found that the same
+> crash fires on **valid** multi-stream `.xz` via the ordinary size-then-read pattern
+> (F1a). All findings below were independently re-verified in this session (see
+> "Reconciliation" for what changed after cross-checking). PR #121's separate deliverable
+> lives at `review/next/03-stream-decoder-layer/`.
 
 ## Headline
 
-**The composition refactor (#96) is structurally sound** — the base
-`DecompressorStream` really is format-agnostic, `recreate()` rebuilds decoder state
-cleanly on every seek (no buffer/CRC/CTR carryover), and lzip's seek path is correct.
-The bugs are at the **seams the refactor and the accelerator work introduced**: the
-seek-point *merge* invariant that xz is supposed to uphold but doesn't, and two
-places where **truncated input is silently accepted** instead of raising — one on the
-new rapidgzip hot path (#105), one in the base read loop that only the vendored LZW
-decoder (#89) exercises. Two of the three touch VISION claim #3 ("damaged input is a
-first-class citizen"); one is a hard crash on valid input.
+**The composition refactor (#96) is structurally sound** — the base `DecompressorStream`
+is genuinely format-agnostic, `recreate()` rebuilds decoder state cleanly on every seek
+(no buffer/CRC/CTR carryover), the before/after placement policy lives entirely in the
+decoders, and the `_AcceleratorStream` finalizer is correct. The bugs are at the **seams
+the refactor and the accelerator work introduced**: a seek-point *merge* invariant that
+XZ is supposed to uphold but doesn't (crashing on both crafted and valid input), two
+places where **damaged input is silently accepted**, and an unbounded **memory bomb** in
+the trusted LZW core.
 
 None of these is caught by the current suite: every seek test reads forward-to-EOF
-*before* seeking, which is exactly the ordering that hides F1, and no test reads a
-truncated stream through both the `read(-1)` and chunked idioms.
+*before* seeking (the one ordering that hides F1a), no test reads a truncated stream
+through both `read(-1)` and chunked idioms (F4), and there is no property/randomized seek
+test at all (F5).
 
 ## Baseline (captured green)
 
 `uv run pytest` → **1555 passed, 120 skipped**. `pyrefly` 0 errors, `ty` all-pass,
-`ruff` clean. Config `[all]` (rapidgzip 0.16.0, py7zr 1.1.3, brotli 1.2.0, inflate64
-1.0.4, pyppmd 1.3.1, ncompress 1.0.2, cryptography 49). F1/F3/F4 reproduce in **every**
-dependency config (stdlib `lzma`/`zlib` + core); F2 needs the `[seekable]` extra
-(rapidgzip) and does **not** affect `[core-only]`, where the stdlib backend is used and
-raises correctly.
+`ruff` clean. Config `[all]` (rapidgzip 0.16.0 — the pinned floor —, py7zr 1.1.3, brotli
+1.2.0, inflate64 1.0.4, pyppmd 1.3.1, ncompress 1.0.2, cryptography 49). F1/F3/F4/F5
+reproduce in **every** dependency config (stdlib `lzma`/`zlib` + core); F2 needs the
+`[seekable]` extra (rapidgzip) and does **not** affect `[core-only]`, where the stdlib
+backend is used and raises correctly.
 
 ## Findings
 
 | # | Sev | Where | One-liner |
 |---|-----|-------|-----------|
-| F1 | **High** | `decompressor_stream.py:251`, `xz.py:564` | A valid multi-stream `.xz` read with the everyday *seek-to-end-then-read* (size probe) pattern trips `assert False` in `_resolve_same_offset_collision` → `AssertionError` (a raw crash, not an `ArchiveyError`). Under `python -O` the assert is compiled out and the point is silently dropped. The `add_seek_points` comment claims "xz/lzip should filter those away" — that invariant is violated. |
-| F2 | **High** | `codecs.py:953` / `:987` / `:365` | On the #105 hot path, a truncated **deflate/zlib** stream decoded through rapidgzip **silently returns partial data with no error**, where the stdlib backend raises `TruncatedError`. DEFLATE/ZLIB have no truncation backstop at all; the gzip ISIZE backstop (`_GzipTruncationCheckStream`) is defeated by any truncated payload whose tail contains a false `1f 8b 08` (near-certain for the >1 MiB incompressible members that trip the AUTO gate). VISION #3 regression. |
-| F3 | **Medium** | `decompressor_stream.py:286`, `:307` | `read(-1)`/`readall()` never consult `pending_error`, so a truncated `.Z` read with the `f.read()` idiom returns partial data and **swallows** the `TruncatedError` that the *same input* raises when read in chunks. Only the vendored LZW decoder uses the deferred-error path, so only `.Z` is affected — but the root cause is in the base. VISION #3. |
-| F4 | Low-Med | `unix_compress.py:51` | The `.Z` `maxbits` header field is bounded to ≤ 31 by the mask but never to the format's real ceiling of 16, so archivey accepts out-of-spec `.Z` files that `compress`/`ncompress` reject and permits a larger-than-standard code table. Input-proportional (not a tiny-file OOM), so severity is low. |
-| F5 | Med (test gap) | `tests/test_seekable_streams.py` | No randomized/property seek test exists (old review finding #6, still open). Every seek test reads forward-to-EOF before seeking — the one ordering that cannot expose F1. A seek-math property test across build-index-first vs read-first orderings would have caught it. |
+| F1 | **High** | `decompressor_stream.py:251` | Two distinct inputs make `add_seek_points` route colliding same-offset points to `assert False` in `_resolve_same_offset_collision` → raw `AssertionError` (outside the `ArchiveyError` tree; silent wrong-seek under `python -O`). **(a)** a *valid* multi-stream `.xz` read with the everyday seek-to-end-then-read (size probe) pattern — stream-start (`state=None`) collides with a first-block point (`state=block`) [`xz.py:564` vs `:615`]; **(b)** a 72-byte *crafted* `.xz` with ≥2 zero-`uncompressed_size` blocks, which `build_index` alone maps to the same offset with distinct `_XzBlockBounds` objects [`xz.py:158` accepts `uncompressed_size==0`]. XZ is the only decoder that stores non-`None` `state`, so it is the only one that trips this. |
+| F2 | **High** | `codecs.py:953`, `:987`, `:365` | On the #105 hot path, a truncated **deflate/zlib** stream decoded through rapidgzip **silently returns partial/zero bytes with no error**, where stdlib raises `TruncatedError`. deflate/zlib have no truncation backstop; the gzip ISIZE backstop (`_GzipTruncationCheckStream`) is skipped for non-path sources and is also defeated by a chance `1f 8b 08` in the >1 MiB payloads that trip the AUTO gate. (PR #121 additionally observed mid-stream *corruption* swallowed in some configs; that outcome is data-dependent — see accelerators.md.) VISION #3 regression. |
+| F3 | **Medium** | `unix_compress.py:143`, `:51`, `decompressor_stream.py:302` | LZW decodes a whole `feed()` eagerly with no output budget, and the base buffers it entirely, so **a 9.4 KB all-`'A'` `.Z` buffers ~20 MB on a `read(1)` that returns one byte** (amplification grows with stream length — LZW has no fixed ratio cap). Compounded by `maxbits` accepted up to 31 (format ceiling is 16), raising the dictionary ceiling from 2¹⁶ to 2³¹. `stream_members`/forward iteration apply no bomb guard. VISION #2/#4. |
+| F4 | **Medium** | `decompressor_stream.py:286`, `:307`; `unix_compress.py:347` | `read(-1)`/`readall()` never consult `pending_error`, so a truncated `.Z` read with the `f.read()` idiom returns partial data and **swallows** the `TruncatedError` that the *same input* raises when read in chunks. Only the vendored LZW decoder uses the deferred-error path, but the root cause is in the base. VISION #3. |
+| F5 | Low-Med (test gap) | `tests/test_seekable_streams.py` | No randomized/property seek test (old review finding #6, still open). Every seek test reads forward-to-EOF before seeking — the one ordering that cannot expose F1a. A seek-math property test would have caught F1. |
 
 Details and reproductions: `seek-index.md` (F1, F5), `accelerators.md` (F2),
 `vendored-lzw.md` (F3, F4). Maintainer decisions: `QUESTIONS.md`.
 
-## What's actually fine (verified, not assumed)
+## Reconciliation — where the two reviews differed, and what survived cross-checking
+
+- **F1 has two genuinely different triggers**, both re-verified this session. PR #122's
+  (a) is the more alarming for *reliability* (fires on a valid `cat a.xz b.xz`); PR #121's
+  (b) is the more alarming for *hostile input* (a 72-byte crafted file crashes the index
+  build with no decode). Same assert, same fix surface — merged into one finding with both
+  reproductions.
+- **F3 (LZW bomb) was found only by PR #121.** PR #122 had caught only the `maxbits`
+  sub-part (previously its own low-sev finding); it is folded in here as F3b. Re-verified:
+  9,450-byte input → 19,999,999-byte resident buffer on `read(1)`.
+- **F2 corruption angle.** PR #121 measured mid-stream *corruption* (not just truncation)
+  swallowed by rapidgzip while stdlib raised. In this session the **truncation** swallow
+  reproduced cleanly and repeatably (both reviews); a quick attempt to reproduce the
+  *corruption* split across several single-byte flips did **not** reproduce (a corrupt raw
+  deflate stream can also make stdlib stop at a spurious clean EOF). Corruption is
+  therefore reported as a secondary, data-dependent observation, not a firm claim; the
+  firm F2 finding is truncation.
+- **F4 / F5 were found by both** with the same root cause and are unchanged.
+
+## What's actually fine (verified, not assumed — both reviews concur)
 
 - **The base is genuinely format-agnostic.** No format constant leaked into
   `DecompressorStream`; the before/after placement asymmetry lives entirely in the
-  decoders (`lzip.py:275` before, `unix_compress.py:374` after), as the design claims.
-- **`recreate()` carries no stale state.** Traced every decoder: `ZlibDecoder`,
-  `BrotliDecoder`, `PpmdDecoder`, `BcjDecoder`, `Deflate64Decoder`, `XzDecoder`,
-  `LzipDecoder`, `UnixCompressDecoder` all construct fresh backend objects in
-  `recreate` — no buffer, CRC, or CTR accumulator survives a seek reset. `pending_error`
+  decoders (`lzip.py:275` before, `unix_compress.py:374` after).
+- **`recreate()` carries no stale state.** Every decoder constructs fresh backend objects
+  in `recreate` — no buffer, CRC, or CTR accumulator survives a seek reset; `pending_error`
   is cleared on reset (`decompressor_stream.py:264`).
 - **lzip's seek index is immune to F1.** Every lzip point carries `state=None`, so
   same-offset collisions resolve as forward-refinement last-wins, never the assert
-  (verified: `repro.py` runs the lzip analogue of F1 without incident).
-- **XZ progressive enrichment save/restore is airtight single-threaded.** The
-  `inner.tell()`/`try…finally: inner.seek(saved_pos)` around the footer scan
-  (`xz.py:574-603`) always restores position. (Concurrency is an explicitly documented
-  non-promise; not a finding.)
+  (verified with empty-member lzip fixtures on both sides).
+- **XZ progressive enrichment save/restore is airtight single-threaded**
+  (`xz.py:574-603`, `try…finally`); the `stream_cell` closures only *read* stream state and
+  are never interleaved with `feed` under the sync-only contract. Concurrency is a
+  documented non-promise.
 - **The LZW kernel's hostile-input core is careful.** KwKwK (`code == next_code`),
-  `code > next_code` rejection, and the `prev_entry is None` first-code guard are all
-  correct (`unix_compress.py:244-259`); the dictionary is truncated on CLEAR and at
-  flush; growth is input-proportional (no small-file OOM bomb). The BSD-3 `uncompresspy`
-  notice is intact and complete — no runtime import of the upstream package
-  (`unix_compress.py:412-443`; `grep` confirms no `import uncompresspy`).
-- **xz/lzip truncation is honest regardless of read style** — both raise via the
-  `not self._decoder.finished` path (`decompressor_stream.py:279`), which fires inside
-  the flush chunk, so `read(-1)` and chunked reads agree (verified). F3 is specific to
-  the *deferred* `pending_error` mechanism that only `.Z` uses.
-- **The AUTO size-gate boundary is consistent** — the `input_size < min_size` test
-  (`config.py:62`) is strict, so a member exactly at 1 MiB goes to rapidgzip and both
-  backends produce identical bytes for valid input; the only divergence is the F2
-  truncation behaviour.
+  `code > next_code` rejection, and the `prev_entry is None` first-code guard are correct
+  (`unix_compress.py:244-259`); `len(dictionary) == next_code` is invariant (no index past
+  the live table). The BSD-3 `uncompresspy` notice is intact and complete — no runtime
+  import of the upstream package (`unix_compress.py:412-443`).
+- **`_AcceleratorStream` finalizer** is correct and at the birth site (`codecs.py:139`);
+  valid accelerated output is byte-identical to stdlib (no correctness cliff at the AUTO
+  threshold). xz/lzip truncation is honest regardless of read style (the F4 gap is
+  specific to the deferred `pending_error` path that only `.Z` uses).
 
 ## Non-goals honored
 
 The composition refactor, the SeekTable-vs-decoder decision, and the five forward-only
-adapters are **not** re-litigated (all settled in the #96 design). BGZF's absence is
-not treated as a finding. F1 is reported as a correctness bug in the *result*, not a
-challenge to the folding of index discovery into the decoder.
+adapters are **not** re-litigated (all settled in the #96 design). BGZF's absence is not a
+finding. F1 is reported as a correctness bug in the *result*, not a challenge to folding
+index discovery into the decoder.

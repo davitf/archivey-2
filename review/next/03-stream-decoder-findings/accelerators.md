@@ -30,11 +30,23 @@ rapidgzip: returned 999997 bytes, NO error (truncation SWALLOWED)
 stdlib:    TruncatedError raised (this is the correct behaviour)
 ```
 
-The stdlib `ZlibDecompressorStream` raises `TruncatedError` (via the base
+The exact byte count is block-boundary dependent — a truncation before the first fully
+decodable block yields **0** bytes, one after it yields a partial prefix; either way, **no
+error**. The stdlib `ZlibDecompressorStream` raises `TruncatedError` (via the base
 `not self._decoder.finished` check, `decompressor_stream.py:279`) on the *same* input.
 So whether truncation is a first-class error now depends on a size threshold and whether
 the `[seekable]` extra is installed — a VISION #3 regression, and a
 same-input-different-answer inconsistency across dependency configs.
+
+**Mid-stream corruption (secondary, data-dependent).** The parallel review (PR #121)
+additionally measured mid-stream *corruption* of a deflate/zlib body returned as a
+truncated prefix with no error, where stdlib raised. In this session that split did **not**
+reproduce across several single-byte flips: a corrupt raw-deflate stream frequently makes
+*both* backends stop at a spurious clean EOF (raw deflate has no trailing integrity check),
+so stdlib does not reliably raise either. Corruption is therefore reported as a
+data-dependent observation, not a firm claim; the firm, repeatable F2 finding is
+truncation. (rapidgzip has no integrity signal for a mid-stream body flip in raw deflate,
+so where a real integrity gap exists it is downstream CRC — see below.)
 
 ### gzip: the ISIZE backstop is defeated by a false second member
 
@@ -67,7 +79,10 @@ that leave a clean block boundary — which is the common case for a mid-transfe
 
 The >1 MiB payloads that reach rapidgzip via the AUTO gate
 (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE = 1 MiB`, `config.py:73`) are exactly the ones most
-likely to defeat the scan.
+likely to defeat the scan. And the backstop is applied only for a **path** source
+(`GzipCodec.open`, `codecs.py:605-607`): a truncated gzip from a seekable **`BytesIO`**
+source skips it entirely and swallows the truncation unconditionally (confirmed by both
+reviews).
 
 ### Scope / mitigation
 
