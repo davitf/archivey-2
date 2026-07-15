@@ -8,6 +8,7 @@ scenarios (path traversal, symlink escape, zip bomb, entry-count bomb).
 from __future__ import annotations
 
 import errno
+import gzip
 import io
 import os
 import tarfile
@@ -37,11 +38,11 @@ from archivey.exceptions import (
     UnportableNameError,
 )
 from archivey.internal.extraction import (
+    _CHUNK,
     BombTracker,
     ExtractionCoordinator,
     _AlwaysStopExtractionError,
     _AlwaysStopResourceLimitError,
-    _CHUNK,
 )
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
@@ -877,7 +878,6 @@ def test_on_progress_dir_symlink_hardlink_zero_member_bytes(tmp_path: Path) -> N
 
 
 def test_on_progress_unknown_size_terminal_equals_observed(tmp_path: Path) -> None:
-    import gzip
 
     payload = b"z" * 12345
     src = tmp_path / "blob.gz"
@@ -890,7 +890,10 @@ def test_on_progress_unknown_size_terminal_equals_observed(tmp_path: Path) -> No
 
     assert len(reports) >= 1
     terminal = reports[-1]
-    assert terminal.member.size is None or terminal.member_bytes_written == terminal.member.size
+    assert (
+        terminal.member.size is None
+        or terminal.member_bytes_written == terminal.member.size
+    )
     assert terminal.member_bytes_written == len(payload)
     assert (dest / "blob").read_bytes() == payload
 
@@ -1313,7 +1316,6 @@ def test_seekable_targz_uses_static_not_live(tmp_path: Path) -> None:
 
 def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
     # A bare .gz single-file compressor from a pipe (SingleFileReader) is covered too.
-    import gzip
 
     from tests.streams_util import NonSeekableBytesIO
 

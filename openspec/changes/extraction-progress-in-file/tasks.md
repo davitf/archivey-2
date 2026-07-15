@@ -23,5 +23,5 @@
 
 ## 5. Validate
 
-- [ ] 5.1 `uv run pyrefly check` and `uv run ty check` clean
-- [ ] 5.2 `openspec validate --strict extraction-progress-in-file`
+- [x] 5.1 `uv run pyrefly check` and `uv run ty check` clean
+- [x] 5.2 `openspec validate --strict extraction-progress-in-file`

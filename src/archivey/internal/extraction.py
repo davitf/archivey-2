@@ -475,9 +475,7 @@ class ExtractionCoordinator:
                 total_estimate,
                 members_done,
                 members_total,
-                member_bytes_written=(
-                    tracker.member_bytes if member_started else 0
-                ),
+                member_bytes_written=(tracker.member_bytes if member_started else 0),
             )
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
