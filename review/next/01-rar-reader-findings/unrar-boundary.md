@@ -102,13 +102,22 @@ mislabel — you asked for a member and got a corruption error). The silent wron
 outcome needs a CRC-less member; the `@`-listfile local-file access, however, happens
 regardless of CRC.
 
-**Suggested fix.** Insert `"--"` right after the switches (before the archive path:
-`unrar p -inul … -- <archive> <member>`) so neither the archive path nor the member
-is parsed as a switch — **confirmed effective** for the `-` case (`-- <archive>
--inul` → exit 10, no output; and a real member still extracts). But `--` does **not**
-stop `@`-listfile expansion (`-- @list` still read the file), so `@`-leading member
-names need separate handling (reject them on the `unrar` path, or otherwise
-neutralize the leading `@`). Both must land together.
+**Suggested fix (updated after testing — see `QUESTIONS.md` Q2).** The simplest
+uniform fix is to stop passing the member as a positional argument and instead use the
+**`-n` include-mask switch with a `./` prefix**: `unrar p -inul … -n./<member>
+<archive>`. Because the hostile character is now *inside* the `-n` switch value (which
+itself starts with `.`), neither a leading `-` (not a switch) nor a leading `@` (not a
+listfile) is special. Confirmed against RARLAB unrar 7.00: `-n./-inul`, `-n./@atfile`,
+`-n./canary.txt`, and `-n./subdir/file2.txt` each extract exactly their member.
+
+`--` alone is **not** sufficient — it neutralizes the `-` switch case (`-- <archive>
+-inul` → exit 10) but does **not** stop `@`-listfile expansion (`-- @list` still read
+the file), which is why `-n./` (or rejecting `@` names) is required. Two caveats for
+`-n./`: (1) `-ver` history rows need `-ver` added to the call (the mask excludes them
+otherwise — reuse the existing `version_control` plumbing); (2) `-n` values are masks,
+so literal wildcard metacharacters (`* ? [ ]`) in a name match as wildcards — safe here
+because CRC + the Q3 length check catch any mis-match, but optionally reject such names
+for a precise error. Member *listing* keeps the original names regardless.
 
 ---
 
