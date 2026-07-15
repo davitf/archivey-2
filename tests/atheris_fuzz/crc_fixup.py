@@ -182,7 +182,10 @@ def fixup_zip_local_and_cd_crc(data: bytes, *, broken: bool | None = None) -> by
             # No recompute path — still exercise reject by flipping the stored CRC.
             old = int.from_bytes(buf[crc_off : crc_off + 4], "little")
             struct.pack_into("<I", buf, crc_off, old ^ 1)
-            if local_off + 18 <= len(buf) and buf[local_off : local_off + 4] == b"PK\x03\x04":
+            if (
+                local_off + 18 <= len(buf)
+                and buf[local_off : local_off + 4] == b"PK\x03\x04"
+            ):
                 struct.pack_into("<I", buf, local_off + 14, old ^ 1)
 
         pos += 46 + name_len + extra_len + comment_len

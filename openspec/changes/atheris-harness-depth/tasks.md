@@ -24,6 +24,6 @@
 
 ## 5. Verify
 
-- [ ] 5.1 Unit tests for broadened ZIP fixup; smoke `python -m tests.atheris_fuzz --smoke` covering zip, rar (with unrar), and each required stream codec.
-- [ ] 5.2 `openspec validate --strict atheris-harness-depth`
-- [ ] 5.3 Manual or CI check: atheris job log shows rar open running and all required stream targets completing (optional extras may skip).
+- [x] 5.1 Unit tests for broadened ZIP fixup; smoke `python -m tests.atheris_fuzz --smoke` covering zip, rar (with unrar), and each required stream codec.
+- [x] 5.2 `openspec validate --strict atheris-harness-depth`
+- [x] 5.3 Manual or CI check: atheris job log shows rar open running and all required stream targets completing (optional extras may skip).

@@ -109,13 +109,7 @@ def zip_seeds() -> list[bytes]:
             entry_ids=_ENC_SEED_ENTRY_IDS,
             allow_binaries=True,
         )
-        return (
-            tiny
-            + _synthetic_zip_seeds()
-            + corpus
-            + enc
-            + _adversarial_seeds(".zip")
-        )
+        return tiny + _synthetic_zip_seeds() + corpus + enc + _adversarial_seeds(".zip")
 
 
 def tar_seeds() -> list[bytes]:
@@ -194,7 +188,13 @@ def _safe_compress(fn: Callable[[], bytes]) -> list[bytes]:
 
 
 def unix_compress_seeds() -> list[bytes]:
-    tiny = [b"", b"\x1f\x9d", b"\x1f\x9d\x90", b"not compress", b"\x1f\x9d" + b"\xff" * 64]
+    tiny = [
+        b"",
+        b"\x1f\x9d",
+        b"\x1f\x9d\x90",
+        b"not compress",
+        b"\x1f\x9d" + b"\xff" * 64,
+    ]
     good: list[bytes] = []
     try:
         from tests.streams_util import make_unix_compress
@@ -240,9 +240,7 @@ def bzip2_seeds() -> list[bytes]:
 
 def lzma_alone_seeds() -> list[bytes]:
     tiny = [b"", b"]\x00\x00", b"not lzma"]
-    good = _safe_compress(
-        lambda: lzma.compress(_SAMPLE, format=lzma.FORMAT_ALONE)
-    )
+    good = _safe_compress(lambda: lzma.compress(_SAMPLE, format=lzma.FORMAT_ALONE))
     return tiny + good + _adversarial_seeds(".lzma")
 
 
@@ -277,7 +275,7 @@ def brotli_seeds() -> list[bytes]:
 
 
 def lz4_seeds() -> list[bytes]:
-    tiny = [b"", b"\x04\"M\x18", b"not lz4"]
+    tiny = [b"", b'\x04"M\x18', b"not lz4"]
     good: list[bytes] = []
     try:
         import lz4.frame
