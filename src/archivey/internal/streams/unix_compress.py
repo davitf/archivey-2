@@ -374,7 +374,13 @@ class UnixCompressDecoder(BaseDecoder):
             # After-placement: advance past CLEAR realignment, then emit the point.
             self._comp_cursor += comp_size
             self._decomp_cursor += decomp_size
-            points.append(SeekPoint(self._decomp_cursor, self._comp_cursor))
+            point = SeekPoint(self._decomp_cursor, self._comp_cursor)
+            # Consecutive CLEARs (zero decompressed output between them) share a
+            # decompressed_offset; keep the later compressed resume point only.
+            if points and points[-1].decompressed_offset == point.decompressed_offset:
+                points[-1] = point
+            else:
+                points.append(point)
         return points
 
 

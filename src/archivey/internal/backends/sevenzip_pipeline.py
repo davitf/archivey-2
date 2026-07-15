@@ -27,6 +27,7 @@ from archivey.internal.backends.sevenzip_methods import (
     require,
 )
 from archivey.internal.backends.sevenzip_parser import (
+    _MAX_NEXT_HEADER_SIZE,
     EncodedHeader,
     SevenZipArchive,
     SevenZipCoder,
@@ -403,6 +404,13 @@ def decode_encoded_header(
         compressed_size,
         uncompressed_size,
     ) in encoded_folder_slices(encoded):
+        # Hostile archives can claim a multi-EiB folder unpack size. Cap before
+        # ``read_exact`` / codec buffers allocate (Atheris: raw MemoryError).
+        if uncompressed_size > _MAX_NEXT_HEADER_SIZE:
+            raise CorruptionError(
+                f"Encoded 7z header unpack size {uncompressed_size} exceeds the "
+                f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
+            )
         source = SlicingStream(archive_fp, absolute_offset, compressed_size)
         decoded.extend(
             decode_folder_to_bytes(
