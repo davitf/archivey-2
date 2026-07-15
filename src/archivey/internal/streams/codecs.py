@@ -210,10 +210,15 @@ class CodecParams:
     - ``filters`` — the ``lzma`` raw filter chain (required for raw LZMA1/LZMA2; this is
       where Delta/BCJ stages and the coder properties enter).
     - ``properties`` — raw coder properties blob (e.g. 7z PPMd var.H parameters).
+    - ``ppmd_order`` / ``ppmd_mem_size`` / ``ppmd_restore_method`` — ZIP method-98 PPMd8
+      parameters (mutually exclusive with 7z ``properties`` for :class:`PpmdCodec`).
     """
 
     filters: list[dict] | None = None
     properties: bytes | None = None
+    ppmd_order: int | None = None
+    ppmd_mem_size: int | None = None
+    ppmd_restore_method: int = 0
 
 
 _DEFAULT_PARAMS = CodecParams()
@@ -1097,6 +1102,18 @@ class PpmdCodec(StreamCodec):
             raise PackageNotInstalledError(
                 "The 'pyppmd' package is required for PPMd streams (install the '7z' extra)."
             )
+        # ZIP method 98 supplies order/mem/restore directly (PPMd8). 7z supplies a
+        # var.H properties blob (PPMd7).
+        if params.ppmd_order is not None:
+            if params.ppmd_mem_size is None:
+                raise ValueError("ZIP PPMd requires ppmd_order and ppmd_mem_size")
+            return PpmdDecompressorStream(
+                source,
+                order=params.ppmd_order,
+                mem_size=params.ppmd_mem_size,
+                variant=8,
+                restore_method=params.ppmd_restore_method,
+            )
         order, mem_size = _parse_ppmd_var_h_properties(params.properties)
         return PpmdDecompressorStream(source, order=order, mem_size=mem_size)
 
@@ -1106,6 +1123,9 @@ class PpmdCodec(StreamCodec):
         if isinstance(exc, ValueError):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
         if _pyppmd is not None and isinstance(exc, getattr(_pyppmd, "PpmdError", ())):
+            return CorruptionError(f"Error reading PPMd stream: {exc!r}")
+        # A corrupt PPMd8 payload can surface as SystemError from the C extension.
+        if isinstance(exc, SystemError):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
         return None
 

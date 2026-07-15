@@ -53,15 +53,16 @@ always seek — no forward-only complication.
   reads from the shared source through the existing handle-lock/`SharedSource` discipline;
   reuse it so independent members still decode in parallel and free-threading stays correct.
 
-## Open questions (resolve during apply)
+## Open questions (resolved during apply)
 
-- **Deflate64 backend gating:** `inflate64` currently lives in the `[7z]` extra. Decide
-  whether ZIP Deflate64 reuses `[7z]` as-is (documented) or `inflate64` gets promoted into
-  a shared/`[recommended]` grouping so "ZIP compat" doesn't read as "install the 7z extra."
-- **Zstd/PPMd ZIP method framing:** confirm ZIP's method-93 zstd and method-98 PPMd wire
-  formats match what the existing `ZSTD`/`PPMD` backends expect (ZIP PPMd carries its own
-  2-byte parameter header — verify against a real fixture/oracle before enabling).
-- **Fixtures:** generating Deflate64/Zstd/PPMd ZIPs needs a producer (7-Zip/WinZip);
-  decide oracle + on-demand generation, skip-when-absent like the other oracle paths.
-- Whether STORED encrypted members (ZipCrypto over STORED — the existing hand-rolled
-  password path) also stay on the current path (yes, per the encryption decision).
+- **Deflate64 backend gating:** resolved — reuse `[7z]` (`inflate64`) as-is. Documented in
+  `docs/formats.md` so ZIP Deflate64/PPMd share the same extra as 7z's optional codecs.
+  No packaging promotion for v1.
+- **Zstd/PPMd ZIP method framing:** confirmed against real producers — ZIP method 93 is a
+  raw zstd frame (matches `Codec.ZSTD`); ZIP method 98 is PPMd8 with a 2-byte WinZip
+  header `(order-1) | ((memMB-1)<<4) | (restore<<12)`, decoded via `pyppmd.Ppmd8Decoder`
+  (distinct from 7z's PPMd7 var.H properties blob).
+- **Fixtures:** Deflate64/PPMd via `7z a -tzip -mm=…` (skip when absent); Zstd via a
+  hand-built minimal ZIP (7z 23.01 cannot write ZIP Zstd).
+- STORED encrypted members (ZipCrypto over STORED) stay on the `zipfile` path (yes, per
+  the encryption decision).

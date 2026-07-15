@@ -3,9 +3,9 @@
 ## Purpose
 
 ZIP archives are read through the unified `ArchiveReader` API using stdlib
-`zipfile` for the central directory and current member data path. ZIP listing is
-indexed, member access is direct, read sources must be seekable, and streaming
-write uses data descriptors.
+`zipfile` for the central directory and archivey's shared codec layer for
+member data. ZIP listing is indexed, member access is direct, read sources must
+be seekable, and streaming write uses data descriptors.
 
 ## Related specs
 
@@ -14,8 +14,8 @@ write uses data descriptors.
 | `archive-reading` | Reader API, password candidates, weak-check confirmation, bounded storage |
 | `access-mode-and-cost` | Random-access vs streaming rules; non-seekable random-access failure |
 | `diagnostics` | Timestamp and symlink-target diagnostic values / policy |
-| `backend-registry` | `format_availability(ZIP)` partial-read status |
-| `compressed-streams` | Future ZIP member-data codec path |
+| `backend-registry` | `format_availability(ZIP)` FULL/PARTIAL from optional member codecs |
+| `compressed-streams` | ZIP member-data decode path (method id → `StreamCodec`) |
 
 ## Requirements
 
@@ -25,7 +25,7 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 
 | Property | Value |
 | --- | --- |
-| Backend dependency | `zipfile` (stdlib) |
+| Backend dependency | `zipfile` (stdlib) for central-directory parsing; shared codec layer for member data |
 | Listing cost | `ListingCost.INDEXED` — central directory read at open |
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
 | Stream capability | `StreamCapability.SEEKABLE` |
@@ -33,16 +33,16 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 | Write support | Yes, including streaming write |
 
 `reader.get()` and other name lookups SHALL use the central-directory-derived
-member map without extra archive I/O. ZIP member data still goes through stdlib
-`zipfile`; unsupported methods such as Deflate64/PPMd and zstd before Python
-3.14 SHALL raise `UnsupportedFeatureError`. Until ZIP member reads use the
-shared codec layer, `format_availability(ZIP)` SHALL report **PARTIAL**
-regardless of optional codec installation. Installing `[7z]` / `[zstd]` alone
-does not unlock those member reads.
-
-The future raw-slice member-data path SHALL keep `zipfile` for the central
-directory, compute each member's compressed byte range from local headers, and
-decode via `compressed-streams`; `zipfile` has no decompressor plug-in point.
+member map without extra archive I/O. Unencrypted ZIP member data SHALL decode
+through the shared `compressed-streams` codec layer (bounded local-header parse
++ slice + method-id dispatch), including extended codecs when their backends are
+installed: Deflate64 (method 9, via `[7z]`/`inflate64`), ZSTD (method 93), PPMD
+(method 98, ZIP PPMd8 framing via `[7z]`/`pyppmd`). A missing optional backend
+SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
+raise `UnsupportedFeatureError`. `format_availability(ZIP)` SHALL report FULL
+when every optional ZIP member codec is installed, else PARTIAL with the missing
+components listed. Encrypted members (ZipCrypto / WinZip AE) MAY retain a
+separate decryption path.
 
 #### Scenario: ZIP property matrix
 
@@ -50,8 +50,38 @@ decode via `compressed-streams`; `zipfile` has no decompressor plug-in point.
 | --- | --- |
 | Open valid ZIP | `cost.listing_cost=INDEXED`, `cost.access_cost=DIRECT`, `cost.stream_capability=SEEKABLE` |
 | `reader.get("some/member.txt")` | Satisfied from the in-memory central-directory name map; no additional archive I/O |
-| Member uses unsupported stdlib method | Listing succeeds; reading raises `UnsupportedFeatureError`; availability remains `PARTIAL` |
+| Member uses unknown method id | Listing succeeds; reading raises `UnsupportedFeatureError` |
+| Deflate64/Zstd/PPMd member, backend present | Decodes via the shared codec layer |
+| Deflate64/Zstd/PPMd member, backend absent | `PackageNotInstalledError` |
+| Optional ZIP codecs all installed | `format_availability(ZIP)` is FULL |
 | Streaming write without pre-known size | Local header uses data-descriptor placeholders; data descriptor stores final CRC and sizes; standard ZIP tools can read the result |
+
+### Requirement: Decode ZIP member bodies through the shared codec layer
+
+The ZIP backend SHALL decode unencrypted member data through the shared
+`compressed-streams` codec layer rather than stdlib `zipfile`'s internal
+decoders. It SHALL locate a member's raw compressed bytes via a bounded
+local-file-header parse (fixed header + local name/extra lengths, with absurd-
+length rejection) and a slice over the source, then dispatch by ZIP method id
+to the codec's default backend. Central-directory parsing and listing MAY
+continue to use stdlib `zipfile`.
+
+Member reads SHALL verify `member.hashes["crc32"]` through the shared
+`VerifyingStream`. A corrupt member body SHALL raise `CorruptionError` (or
+`TruncatedError` when the payload is cut short) via the shared translation.
+Encrypted members (ZipCrypto / WinZip AE) SHALL retain their decryption path
+until a native AE composition change lands.
+
+#### Scenario: ZIP codec-layer decoding
+
+| Case | Expected |
+| --- | --- |
+| STORED / DEFLATE / BZIP2 / LZMA member, unencrypted | Decodes via the shared codec layer; CRC verified through `VerifyingStream` |
+| DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
+| ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
+| Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
+| Corrupt member body | `CorruptionError` / `TruncatedError` |
+| Encrypted (ZipCrypto / AE) member | Decrypts via the existing path; behavior unchanged |
 
 ### Requirement: Reject non-seekable ZIP read sources
 

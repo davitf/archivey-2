@@ -31,10 +31,12 @@ Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
   (``test_compat_lzip_3``).
 
 **ZIP**
-* **GAP** WinZip AES (method 99) / ZIPX PPMd/Zstd/XZ — stdlib ``zipfile`` does
-  not decode these; Archivey surfaces ``UnsupportedFeatureError``.
+* **GAP** WinZip AES (method 99) / ZIPX XZ — AES is a follow-on change; ZIPX XZ
+  (method 95) has no codec path yet.
+* ZIPX PPMd / Zstd decode via the shared codec layer when `[7z]` / `[zstd]` are
+  installed.
 * **GAP** ZIP members whose payload exceeds the declared size (libarchive
-  fixtures) — stdlib CRC/size checks reject them.
+  fixtures) — size/CRC checks reject them.
 * **GAP** assorted ZIP edge cases (extra padding, UTF-8 path presentation,
   MSDOS directory typing).
 
@@ -206,25 +208,11 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         "HARNESS: libarchive lists no members for this bare lzip fixture",
     ),
     # --- ZIP ---
-    "test_read_format_zip_ppmd8.zipx": (
-        True,
-        "GAP: ZIPX PPMd8 unsupported by stdlib zipfile",
-    ),
-    "test_read_format_zip_ppmd8_multi.zipx": (
-        True,
-        "GAP: ZIPX PPMd8 unsupported by stdlib zipfile",
-    ),
+    # ZIPX PPMd8 / Zstd now decode via the shared codec layer (zip-native-codec-streams);
+    # they are no longer xfailed.
     "test_read_format_zip_xz_multi.zipx": (
         True,
-        "GAP: ZIPX XZ unsupported by stdlib zipfile",
-    ),
-    "test_read_format_zip_zstd.zipx": (
-        True,
-        "GAP: ZIPX Zstd unsupported by stdlib zipfile",
-    ),
-    "test_read_format_zip_zstd_multi.zipx": (
-        True,
-        "GAP: ZIPX Zstd unsupported by stdlib zipfile",
+        "GAP: ZIPX XZ unsupported (no ZIP method-95 codec path yet)",
     ),
     "test_read_format_zip_winzip_aes128.zip": (
         True,

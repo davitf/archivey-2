@@ -158,19 +158,14 @@ def test_zip_partial_when_optional_codecs_missing(
     assert ArchiveFormat.ZIP in list_supported_formats()
 
 
-def test_zip_partial_even_when_codecs_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Resolved 2026-07 decision (see the phase-5 proposal): ZIP member *data* still decodes
-    # via stdlib zipfile, which cannot use the optional codecs even when installed, so ZIP
-    # reports PARTIAL (never FULL) until Phase 7 wires the codec layer into ZIP reads.
-    # `missing` is empty when every optional codec is present (the gap is implementation
-    # stage, not a missing install). Force them present so this holds regardless of which
-    # extras the test environment installed (the core-only CI legs have none).
+def test_zip_full_when_optional_codecs_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With the codec layer wired into ZIP member reads, ZIP reports FULL when every
+    # optional member codec backend is installed (deflate64 / zstd / ppmd).
     for sentinel in ("_inflate64", "_zstd", "_pyppmd"):
         monkeypatch.setattr(codecs_module, sentinel, object())
     avail = format_availability(ArchiveFormat.ZIP)
-    assert avail.support is FormatSupport.PARTIAL
+    assert avail.support is FormatSupport.FULL
     assert avail.missing == ()
-    # PARTIAL formats are still "supported" (readable for their common members).
     assert ArchiveFormat.ZIP in list_supported_formats()
 
 
