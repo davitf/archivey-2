@@ -208,11 +208,12 @@ def test_bzip2_accelerator_off_warns_on_rewind(
 
 
 def test_zlib_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
-    """zlib has no index: a rewind warns (no accelerator to name), a forward seek doesn't."""
+    """Stdlib-fallback zlib: a rewind warns and names the ``[seekable]`` accelerator."""
+    # Force stdlib (OFF) so the warning path is deterministic regardless of payload size /
+    # whether rapidgzip is installed — the accelerator path itself emits no rewind warning.
     compressed = zlib.compress(CONTENT)
-    with open_codec_stream(
-        Codec.ZLIB, io.BytesIO(compressed), config=StreamConfig(seekable=True)
-    ) as stream:
+    config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
+    with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed), config=config) as stream:
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.read(100) == CONTENT[:100]
             assert stream.seek(200) == 200  # forward seek: no warning
@@ -223,10 +224,28 @@ def test_zlib_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
             assert stream.seek(0) == 0  # rewind → re-decode from start
             assert stream.read(10) == CONTENT[:10]  # still correct
     msgs = [r.getMessage() for r in caplog.records]
-    assert sum("no random-access index" in m for m in msgs) == 1
-    assert not any(
-        "seekable" in m for m in msgs
-    )  # generic message, no accelerator named
+    assert sum("seekable" in m and "rapidgzip" in m for m in msgs) == 1
+
+
+def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+    """Stdlib-fallback raw deflate names the ``[seekable]`` accelerator on rewind."""
+    co = zlib.compressobj(wbits=-15)
+    compressed = co.compress(CONTENT) + co.flush()
+    config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
+    with open_codec_stream(
+        Codec.DEFLATE, io.BytesIO(compressed), config=config
+    ) as stream:
+        assert stream.read(100) == CONTENT[:100]
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.seek(0) == 0
+            assert stream.read(10) == CONTENT[:10]
+    assert (
+        sum(
+            "seekable" in r.getMessage() and "rapidgzip" in r.getMessage()
+            for r in caplog.records
+        )
+        == 1
+    )
 
 
 @requires("brotli")
@@ -312,3 +331,17 @@ def test_accelerator_mode_auto_resolution() -> None:
     # ON resolves to "use it" even when absent; the opener turns that into a clear
     # PackageNotInstalledError (asserted in the gzip/bzip2 ON-without-package tests).
     assert AcceleratorMode.ON.enabled_for(seekable=True, available=False)
+    # AUTO minimum-size gate: known size below min_size falls back; unknown size does not.
+    assert not AcceleratorMode.AUTO.enabled_for(
+        seekable=True, available=True, input_size=100, min_size=1024
+    )
+    assert AcceleratorMode.AUTO.enabled_for(
+        seekable=True, available=True, input_size=2048, min_size=1024
+    )
+    assert AcceleratorMode.AUTO.enabled_for(
+        seekable=True, available=True, input_size=None, min_size=1024
+    )
+    # ON ignores the size threshold.
+    assert AcceleratorMode.ON.enabled_for(
+        seekable=True, available=True, input_size=1, min_size=1024
+    )

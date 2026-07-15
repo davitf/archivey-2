@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
+    RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     AcceleratorMode,
     ArchiveyConfig,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "AcceleratorMode",
     "DEFAULT_ARCHIVEY_CONFIG",
     "DEFAULT_STREAM_CONFIG",
+    "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
     "ArchiveyConfig",
     "StreamConfig",
     "stream_config_from_archivey",
@@ -27,12 +29,16 @@ class StreamConfig:
     ``seekable`` is declared seek demand (``MemberStreams.SEEKABLE``): accelerator
     ``AUTO`` resolution and index construction key off it. ``streaming`` remains the
     archive access mode for backends that still need to know forward-only vs random.
+    ``compressed_input_size`` is the known compressed byte length of the source (path
+    size, slice length, …), used by ``use_rapidgzip`` AUTO's minimum-size gate; ``None``
+    means unknown (AUTO keeps pre-threshold behaviour).
     """
 
     streaming: bool = False
     seekable: bool = False
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    compressed_input_size: int | None = None
 
 
 def stream_config_from_archivey(

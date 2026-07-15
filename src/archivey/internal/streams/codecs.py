@@ -25,12 +25,13 @@ import os
 import struct
 import weakref
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from types import ModuleType
 from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar
 
+from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -56,6 +57,7 @@ from archivey.internal.streams.streamtools import (
     ensure_binaryio,
     ensure_bufferedio,
     fix_stream_start_position,
+    source_byte_size,
 )
 from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
@@ -222,16 +224,69 @@ _DEFAULT_PARAMS = CodecParams()
 # --- accelerator selection -------------------------------------------------------------
 
 
-def _gzip_uses_accelerator(config: StreamConfig) -> bool:
-    return _rapidgzip is not None and config.use_rapidgzip.enabled_for(
-        seekable=config.seekable, available=True
+def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
+    """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate."""
+    return config.use_rapidgzip.enabled_for(
+        seekable=config.seekable,
+        available=available,
+        input_size=config.compressed_input_size,
+        min_size=RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     )
+
+
+def _deflate_family_uses_accelerator(config: StreamConfig) -> bool:
+    """Whether gzip/zlib/deflate will open through rapidgzip for this config."""
+    return _rapidgzip is not None and _rapidgzip_enabled(config, available=True)
 
 
 def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
     return _rapidgzip_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
         seekable=config.seekable, available=True
     )
+
+
+def _open_rapidgzip(source: CodecSource) -> BinaryIO:
+    """Open ``source`` through rapidgzip with the close-on-finalize guard."""
+    assert _rapidgzip is not None
+    return _AcceleratorStream(_rapidgzip.open(source, parallelization=0))
+
+
+def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
+    """Map rapidgzip exceptions for a DEFLATE-family codec (gzip / zlib / deflate)."""
+    text = str(exc)
+    if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
+        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
+        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    if isinstance(exc, ValueError) and (
+        "deflate block" in text or "Huffman coding is not optimal" in text
+    ):
+        # Corrupt deflate body / block header. Message varies by platform backend:
+        # - Linux ISA-L: RuntimeError via IsalInflateWrapper (above)
+        # - non-ISA-L (macOS): ValueError "Failed to decode deflate block …" or
+        #   "Failed to read deflate block header … The Huffman coding is not optimal!"
+        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    if isinstance(exc, RuntimeError) and "Invalid deflate block" in text:
+        # Raw DEFLATE / zlib body corruption (or an over-long unbounded slice that
+        # rapidgzip mistook for a concatenated member).
+        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    if isinstance(exc, (ValueError, RuntimeError)) and (
+        "gzip/zlib header" in text or "gzip magic" in text or "zlib header" in text
+    ):
+        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    if isinstance(exc, ValueError) and "Failed to detect a valid file format" in text:
+        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    if isinstance(exc, (ValueError, RuntimeError)) and (
+        "End of file encountered" in text or "Unexpected end of file" in text
+    ):
+        return TruncatedError(f"{label} stream is truncated (rapidgzip): {exc!r}")
+    if isinstance(exc, ValueError) and "has no valid fileno" in text:
+        return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
+    if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
+        return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
+    if isinstance(exc, RuntimeError) and "std::exception" in text:
+        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    return None
 
 
 # --- shared stream wrappers ------------------------------------------------------------
@@ -533,15 +588,13 @@ class GzipCodec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if config.use_rapidgzip.enabled_for(
-            seekable=config.seekable, available=_rapidgzip is not None
-        ):
+        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(
                     "The 'rapidgzip' package is required for gzip random access "
                     "(install the 'seekable' extra)."
                 )
-            stream = _AcceleratorStream(_rapidgzip.open(source, parallelization=0))
+            stream = _open_rapidgzip(source)
             # rapidgzip does not reliably surface truncation; add the ISIZE backstop when we
             # have a seekable path to read the trailer / scan for extra members.
             if isinstance(source, (str, os.PathLike)):
@@ -570,57 +623,19 @@ class GzipCodec(StreamCodec):
         return None
 
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
-        if _gzip_uses_accelerator(config):
+        if _deflate_family_uses_accelerator(config):
             return self._translate_accelerator
         return self.translate
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         # The accelerator gives indexed random access; only the stdlib fallback rewinds slowly.
-        if _gzip_uses_accelerator(config):
+        if _deflate_family_uses_accelerator(config):
             return None
         return RewindWarning("gzip", accelerator="rapidgzip")
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the rapidgzip accelerator's exceptions to the library's error types."""
-        text = str(exc)
-        if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
-            return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
-        if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
-            return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
-        if isinstance(exc, ValueError) and "Failed to decode deflate block" in text:
-            # Corrupt deflate body. On Linux this surfaces via the ISA-L wrapper above; the
-            # non-ISA-L backend (e.g. macOS) instead raises ValueError "Failed to decode
-            # deflate block … The backreferenced distance lies outside the window buffer!".
-            return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
-        if isinstance(exc, (ValueError, RuntimeError)) and (
-            "gzip/zlib header" in text or "gzip magic" in text
-        ):
-            # Corrupt header. The type/message varies by platform backend (ISA-L on Linux vs
-            # the macOS fallback) and source type: RuntimeError "Failed to parse gzip/zlib
-            # header (… Invalid gzip/zlib wrapper)" or ValueError "Failed to read gzip/zlib
-            # header (… Invalid gzip magic bytes)". The gzip magic matched at open, so this is
-            # corruption.
-            return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
-        if (
-            isinstance(exc, ValueError)
-            and "Failed to detect a valid file format" in text
-        ):
-            # The gzip magic was present when we opened it, so a detection failure now means
-            # the stream is truncated/corrupt rather than not-a-gzip.
-            return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
-        if isinstance(exc, ValueError) and "End of file encountered" in text:
-            return TruncatedError(f"gzip stream is truncated (rapidgzip): {exc!r}")
-        if isinstance(exc, ValueError) and "has no valid fileno" in text:
-            return StreamNotSeekableError(
-                "rapidgzip does not support non-seekable streams"
-            )
-        if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
-            return StreamNotSeekableError(
-                "rapidgzip does not support non-seekable streams"
-            )
-        if isinstance(exc, RuntimeError) and "std::exception" in text:
-            return CorruptionError(f"Error reading gzip stream (rapidgzip): {exc!r}")
-        return None
+        return _translate_rapidgzip(exc, "gzip")
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface gzip's stored filename (FNAME), mtime, and trailer CRC when cheap.
@@ -921,10 +936,31 @@ class DeflateCodec(_ZlibErrorCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        # Raw deflate is container-only (ZIP/7z members), never a standalone stream: the
-        # container owns member offsets, so it isn't wrapped in the rewind-warning stream the
-        # standalone single-file codecs use.
+        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
+            if _rapidgzip is None:
+                raise PackageNotInstalledError(
+                    "The 'rapidgzip' package is required for deflate random access "
+                    "(install the 'seekable' extra)."
+                )
+            # rapidgzip auto-detects raw DEFLATE; pass the source unwrapped. Callers MUST
+            # bound the input (container SlicingStream / exact file) — rapidgzip over-reads
+            # past EOS looking for a concatenated member.
+            return _open_rapidgzip(source)
+        # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
+
+    def translator(self, config: StreamConfig) -> ExceptionTranslator:
+        if _deflate_family_uses_accelerator(config):
+            return self._translate_accelerator
+        return self.translate
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        if _deflate_family_uses_accelerator(config):
+            return None
+        return RewindWarning("deflate", accelerator="rapidgzip")
+
+    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
+        return _translate_rapidgzip(exc, "deflate")
 
 
 class ZlibCodec(_ZlibErrorCodec):
@@ -936,12 +972,29 @@ class ZlibCodec(_ZlibErrorCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        # zlib has no random-access index; a backward seek re-decodes from the start (the outer
-        # ArchiveStream warns — see rewind_warning).
+        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
+            if _rapidgzip is None:
+                raise PackageNotInstalledError(
+                    "The 'rapidgzip' package is required for zlib random access "
+                    "(install the 'seekable' extra)."
+                )
+            # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
+            return _open_rapidgzip(source)
+        # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS)
 
+    def translator(self, config: StreamConfig) -> ExceptionTranslator:
+        if _deflate_family_uses_accelerator(config):
+            return self._translate_accelerator
+        return self.translate
+
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return RewindWarning("zlib")
+        if _deflate_family_uses_accelerator(config):
+            return None
+        return RewindWarning("zlib", accelerator="rapidgzip")
+
+    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
+        return _translate_rapidgzip(exc, "zlib")
 
     def content_probe(self, prefix: bytes) -> bool:
         """Recognize a zlib stream: a known CMF/FLG header (fail-fast) that then decodes."""
@@ -1280,6 +1333,12 @@ def open_codec_stream(
         # otherwise read the wrong bytes. Streams at position 0 pass through unchanged
         # (see the stream-position contract in ``format-detection``).
         source = fix_stream_start_position(source)
+    # Fill the AUTO size gate when the caller did not already supply a known length
+    # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
+    if config.compressed_input_size is None:
+        size = source_byte_size(source)
+        if size is not None:
+            config = replace(config, compressed_input_size=size)
     backend = resolve_codec(codec, config)
     # Default True: internal/format callers may need to seek the codec stream even when
     # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes
