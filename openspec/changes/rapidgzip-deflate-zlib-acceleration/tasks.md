@@ -36,7 +36,7 @@
       mid-cut truncation limitation is the documented behaviour
 - [x] 4.4 Bounded-input: a deflate stream with trailing bytes fed through the codec's bounded slice
       decodes correctly (no over-read error)
-- [ ] 4.5 Run the suite in `[all]`, `[all-lowest]`, and `[core-only]` (core-only exercises the
+- [x] 4.5 Run the suite in `[all]`, `[all-lowest]`, and `[core-only]` (core-only exercises the
       stdlib fallback path)
 
 ## 5. Verify
