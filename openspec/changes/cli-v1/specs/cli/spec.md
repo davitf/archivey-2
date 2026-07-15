@@ -4,9 +4,14 @@
 
 The system SHALL provide an `archivey` command whose verbs are **subcommands**:
 each verb is a bare word (never dash-prefixed) with a single-letter bare-word
-alias. When no verb is present the verb SHALL default to `list`. Verbs MUST NOT
-be selectable via a dash-prefixed option form (e.g. `-x` SHALL NOT mean
-`extract`); options always take a dash, verbs never do. Progress output SHALL use
+alias. When no verb is present the verb SHALL default to `list`. Verb dispatch
+SHALL be **known-verb-wins**: if the first positional token is a registered verb
+or alias (including reserved verbs `hash` / `create` / `convert`), the system
+SHALL dispatch that verb; otherwise it SHALL treat the token as an archive path
+and run `list`. A file whose name equals a verb word SHALL be reachable by naming
+the verb explicitly (e.g. `archivey list x`). Verbs MUST NOT be selectable via a
+dash-prefixed option form (e.g. `-x` SHALL NOT mean `extract`); options always
+take a dash, verbs never do. Progress output SHALL use
 `tqdm` from `[cli]` when available; core MUST NOT depend on `tqdm`. The console
 script and `python -m archivey` MUST be importable/runnable without installing
 `[cli]` (progress suppressed if `tqdm` is absent).
@@ -26,8 +31,15 @@ selected when it matches any positional, or when no positional is given).
 `--exclude PATTERN` (repeatable, long-form only — no short flag) SHALL remove
 matching members; a member SHALL be processed when it matches an include (or none
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
-`--include` flag. `--track-io` SHALL report configured I/O instrumentation when
-supplied. `--password` SHALL be accepted for encrypted archives.
+`--include` flag. Each invocation SHALL accept exactly **one** archive positional
+(multi-archive is out of scope for this capability). `--password` SHALL be
+accepted for encrypted archives; when an encrypted archive is opened, no
+`--password` was supplied, and stdin is a TTY, the system SHALL prompt for the
+password without echoing it.
+
+Command data output (member listings, info summaries) SHALL be written to
+**stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
+written to **stderr**.
 
 `list` SHALL print a human layer-1 member view by default (type, size, mtime,
 mode, encrypted flag, name; link target for links) and MUST NOT show digests
@@ -37,7 +49,10 @@ unless `--digests` is set (stored `member.hashes` only; no body read). `-v` /
 `test` SHALL fully read selected file members and verify stored digests through
 the shared verification stage (including CRC32 and Blake2sp where supported).
 Members with no stored digest SHALL count as OK when fully readable without
-error. `test` MUST NOT require emitting computed content hashes.
+error. `test` MUST NOT require emitting computed content hashes. By default
+`test` SHALL be quiet — printing only failures and a one-line summary
+(`N OK, M failed`) to stderr — and SHALL exit non-zero if any member fails;
+`-v` / `--verbose` SHALL add a per-member OK/FAIL line.
 
 `extract` SHALL use safe-extraction defaults and SHALL expose
 `--policy {strict,standard,trusted}` mapping to `ExtractionPolicy` (CLI default
@@ -57,7 +72,9 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 
 | Case | Expected |
 | --- | --- |
-| `archivey <archive>` | Same as `archivey list <archive>` |
+| `archivey <archive>` | Same as `archivey list <archive>` (first token is not a known verb → list) |
+| `archivey ./x` where `x` is a file and also the `extract` alias | Dispatches `extract` (known-verb-wins); list the file via `archivey list ./x` |
+| `archivey create <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
 | `archivey list <archive>` / `archivey l <archive>` | Layer-1 member listing |
 | `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
 | `archivey test <archive>` / `archivey t <archive>` | Fully reads members, verifies stored digests, reports failures |
@@ -118,3 +135,35 @@ forthcoming without implementing them.
 | --- | --- |
 | `t` | Means `test` (integrity), not create |
 | Unknown verb `hash` / `create` / `convert` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
+
+### Requirement: exit codes are minimal and argparse-aligned
+
+The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
+verb/flag or bad arguments — the argparse default). All operational failures
+(unreadable, unsupported, or corrupt archive; read/integrity failure; extraction
+error) SHALL exit `1` in this capability. Exit codes `≥3` SHALL be reserved and
+MUST NOT be emitted in this change; documentation SHALL direct callers to treat
+any nonzero code other than `2` as a failure and MUST NOT assume `1` is the only
+failure code.
+
+#### Scenario: exit codes
+
+| Case | Expected |
+| --- | --- |
+| `archivey list <valid-archive>` | Exit `0` |
+| `archivey --badflag` / unknown verb | Exit `2` (usage) |
+| `archivey list <corrupt-or-unreadable>` | Exit `1` |
+| `archivey test <archive-with-failing-member>` | Exit `1` |
+
+### Requirement: stdin archives are reserved, not supported in v1
+
+The system SHALL treat `-` as a reserved token meaning "read archive from stdin"
+and SHALL fail fast with a clear "not supported yet" message rather than opening a
+filesystem entry literally named `-`.
+
+#### Scenario: stdin reserved
+
+| Case | Expected |
+| --- | --- |
+| `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
+| `archivey extract -` | Same |
