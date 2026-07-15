@@ -19,6 +19,8 @@ extract with policy, detect/info, and a reserved path for hash + salvage).
   no bare positional dest. When `-d` is omitted the dest defaults to a smart
   enclosing directory (`./<archive-stem>/`, reusing a single archive root when
   present) to prevent tarbombs; `-d .` opts back into classic splatter-into-cwd.
+- Member filters: positionals after the archive are **include** patterns;
+  `--exclude` (repeatable, long-only) subtracts; no redundant `--include`.
 - `list` defaults to a human layer-1 view (type, size, mtime, mode, encrypted,
   link target); stored digests opt-in so they do not pollute the default view.
 - Reserve `--salvage` as a future flag on `extract` / `convert` and on read-side

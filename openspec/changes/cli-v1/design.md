@@ -232,7 +232,35 @@ explore further unless packaging policy changes.
 
 `--password`, `--track-io`, `--version` (version + optional dependency matrix),
 `-v`/`--verbose`, `--hide-progress` (or auto-disable when not a TTY). Member
-patterns: see open question.
+patterns: see Decision 11.
+
+### 11. Member filters: positional include + `--exclude`
+
+Positionals after the archive path are **include** filters on `list` / `test` /
+`extract` (a member is selected when it matches any positional, or when there are
+none = all). A positional pattern *is* the include list, so a separate
+`--include` flag would just be a second spelling of the same thing.
+
+The one thing positionals cannot express is subtraction ("everything except
+`*.log`"). So add **`--exclude PATTERN` (repeatable)** and skip `--include` as
+redundant. This is the standard archive-tool split: unzip (`-x`), tar
+(`--exclude=`), 7z (`-x!`), rar (`-x`) all pair positional includes with a
+dedicated exclude, and none ships a bare `--include`.
+
+Selection rule: a member is processed when it matches an include (or none given)
+**and** matches no `--exclude` — exclude wins over include, as in tar/unzip.
+
+**Short form:** `--exclude` is **long-only** (no short flag). The classic short
+spelling `-x` is unavailable here — it is `extract`'s short form (see the alias
+question) — and tar hits the identical `-x`-is-extract collision and resolves it
+the same way, by keeping `--exclude` long-form. No letter needs reassigning.
+
+**Reserved (not v1):** `--include-from` / `--exclude-from FILE` (tar's `-T` /
+`-X`) — reading big pattern lists from a file is the one place a flag genuinely
+beats positionals; add on demand.
+
+**Rejected:** `--include` (redundant with positionals); a short `-x`/`-e` for
+exclude (collides with extract; long-only is clearer).
 
 ## Risks / Trade-offs
 
@@ -248,9 +276,9 @@ patterns: see open question.
 
 ### Should answer before locking the parser (important)
 
-1. **Pattern syntax beyond extract:** For `list`/`test`, same rule as extract
-   (positionals after archive = filters)? Also add `--include`/`--exclude`, or
-   enough with positionals only for v1?
+1. **Pattern syntax beyond extract:** *Resolved — see Decision 11.* Positionals
+   after the archive are include filters on `list`/`test`/`extract`; add
+   `--exclude` (long-only, repeatable); no `--include`.
 2. **Exit-code map:** rich (`0` ok, `1` usage, `2` open/format, `3` integrity,
    `4` extract policy rejections) vs simple `0`/`1`/`2`?
 3. **Multi-archive:** `archivey list *.zip` supported in v1?

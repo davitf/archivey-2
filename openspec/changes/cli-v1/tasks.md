@@ -2,7 +2,7 @@
 
 - [x] 1.1 Default `--overwrite` = `rename` (CLI); library stays `ERROR` — recorded in design
 - [x] 1.2 Extract dest = `-d`/`--dest`; positionals after archive = filters only. Default (no `-d`) = smart enclosing dir (`./<stem>/`, reuse single archive root, single-file → cwd) to avoid tarbombs; `-d .` = classic splatter
-- [ ] 1.3 Record whether v1 needs `--include`/`--exclude` beyond positional filters
+- [x] 1.3 Filters: positionals = include; add `--exclude` (repeatable, long-only); no `--include` (redundant); exclude wins over include. `--include-from`/`--exclude-from` reserved for later
 - [ ] 1.4 Record exit-code map and whether multi-archive + stdin are in v1
 - [ ] 1.5 Record `test` verbosity (per-member vs summary)
 

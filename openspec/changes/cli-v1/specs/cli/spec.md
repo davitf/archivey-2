@@ -18,10 +18,14 @@ Supported verbs in this capability:
 | `extract` | `-x`, `--extract` | Safe extraction |
 | `info` | `-i`, `--info`, `detect` | Format detection + archive identity |
 
-`list`, `test`, and `extract` SHALL support fnmatch member filters (exact pattern
-syntax deferred to the implementation design until the open parser question
-closes). `--track-io` SHALL report configured I/O instrumentation when supplied.
-`--password` SHALL be accepted for encrypted archives.
+`list`, `test`, and `extract` SHALL support fnmatch member filters. Positional
+patterns after the archive path SHALL act as **include** filters (a member is
+selected when it matches any positional, or when no positional is given).
+`--exclude PATTERN` (repeatable, long-form only — no short flag) SHALL remove
+matching members; a member SHALL be processed when it matches an include (or none
+is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
+`--include` flag. `--track-io` SHALL report configured I/O instrumentation when
+supplied. `--password` SHALL be accepted for encrypted archives.
 
 `list` SHALL print a human layer-1 member view by default (type, size, mtime,
 mode, encrypted flag, name; link target for links) and MUST NOT show digests
@@ -61,7 +65,9 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
-| Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names |
+| Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
+| `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
+| `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
 | `--track-io` supplied | Reports configured I/O instrumentation for the operation |
 | Mode alias combined with an explicit conflicting subcommand | Usage error |
