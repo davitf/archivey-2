@@ -149,6 +149,10 @@ class BombTracker:
     def total_bytes(self) -> int:
         return self._total_bytes
 
+    @property
+    def member_bytes(self) -> int:
+        return self._member_bytes
+
     def start_member(self, member: ArchiveMember) -> None:
         # Called with the ORIGINAL member (not a filter copy), so compressed_size and any
         # late-bound fields are accurate. Increments the entry-count guard, which — like
@@ -260,6 +264,9 @@ class ExtractionCoordinator:
         # Set for the duration of ``run()``; diagnostic emission reads these.
         self._diagnostics_collector: DiagnosticCollector
         self._archive_name: str | None = None
+        # Intra-member progress emit while copying a FILE (None when on_progress is unset
+        # or the current member has no streamed body). Built by ``run()`` per member.
+        self._emit_progress: Callable[[], None] | None = None
 
     # --- entry point ---------------------------------------------------------------
 
@@ -330,6 +337,8 @@ class ExtractionCoordinator:
         members_done = 0
 
         for original, stream in reader.stream_members(stream_selector):
+            member_started = False
+            self._emit_progress = None
             try:
                 # User filter sees every selected member (including non-current); the
                 # is_current skip is hardwired after the filter and does not force a write
@@ -370,6 +379,24 @@ class ExtractionCoordinator:
                         # members create nothing on disk and do not count toward max_entries
                         # (resolved 2026-07 decision).
                         tracker.start_member(original)
+                        member_started = True
+                        if self._on_progress is not None:
+                            # Capture counters for intra-member reports: members_done is
+                            # members fully completed *before* this one.
+                            done_so_far = members_done
+                            current = original
+
+                            def emit_progress() -> None:
+                                self._report_progress(
+                                    current,
+                                    tracker,
+                                    total_estimate,
+                                    done_so_far,
+                                    members_total,
+                                    member_bytes_written=tracker.member_bytes,
+                                )
+
+                            self._emit_progress = emit_progress
 
                         results[result_index] = self._write_member(
                             original,
@@ -438,11 +465,19 @@ class ExtractionCoordinator:
                     logger=logger,
                 )
             finally:
+                self._emit_progress = None
                 self._close(stream)
 
             members_done += 1
             self._report_progress(
-                original, tracker, total_estimate, members_done, members_total
+                original,
+                tracker,
+                total_estimate,
+                members_done,
+                members_total,
+                member_bytes_written=(
+                    tracker.member_bytes if member_started else 0
+                ),
             )
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
@@ -1167,7 +1202,9 @@ class ExtractionCoordinator:
         tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as dst:
-                self._copy_to_fileobj(stream, dst, tracker)
+                self._copy_to_fileobj(
+                    stream, dst, tracker, emit_progress=self._emit_progress
+                )
             if member is not None:
                 self._apply_metadata(tmp, member)
             os.replace(tmp, dest_path)
@@ -1180,10 +1217,19 @@ class ExtractionCoordinator:
 
     @staticmethod
     def _copy_to_fileobj(
-        stream: BinaryIO | None, dst: BinaryIO, tracker: BombTracker | None
+        stream: BinaryIO | None,
+        dst: BinaryIO,
+        tracker: BombTracker | None,
+        emit_progress: Callable[[], None] | None = None,
     ) -> None:
         """Copy ``stream`` into the already-open ``dst`` in chunks, counting each toward the
-        bomb tracker. Cleanup of a partial ``dst`` on failure is the caller's job."""
+        bomb tracker. Cleanup of a partial ``dst`` on failure is the caller's job.
+
+        When ``emit_progress`` is set, it is invoked after each full ``_CHUNK`` so callers
+        can report intra-member progress (~1 callback/MiB). Short final chunks are left to
+        the coordinator's terminal per-member report so sub-chunk members keep a single
+        callback. Pass ``None`` (the default) for the zero-cost path.
+        """
         if stream is None:
             # A FILE reaching the writer with no data stream is a backend bug, not a valid
             # empty file (a zero-byte FILE still yields a real, empty stream). Silently
@@ -1201,6 +1247,10 @@ class ExtractionCoordinator:
             if tracker is not None:
                 tracker.count(len(chunk))
             dst.write(chunk)
+            # Full chunks only: the terminal report covers the final (possibly short) chunk
+            # so a sub-chunk member still gets exactly one callback.
+            if emit_progress is not None and len(chunk) == _CHUNK:
+                emit_progress()
 
     def _place_link(
         self,
@@ -1274,6 +1324,8 @@ class ExtractionCoordinator:
         total_estimate: int | None,
         members_done: int,
         members_total: int | None,
+        *,
+        member_bytes_written: int = 0,
     ) -> None:
         if self._on_progress is None:
             return
@@ -1284,6 +1336,7 @@ class ExtractionCoordinator:
                 total_bytes_estimated=total_estimate,
                 members_done=members_done,
                 members_total=members_total,
+                member_bytes_written=member_bytes_written,
             )
         )
 

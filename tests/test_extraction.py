@@ -41,6 +41,7 @@ from archivey.internal.extraction import (
     ExtractionCoordinator,
     _AlwaysStopExtractionError,
     _AlwaysStopResourceLimitError,
+    _CHUNK,
 )
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
@@ -379,6 +380,18 @@ def test_entry_count_independent_of_bytes() -> None:
 
     # Alias still resolves for older imports.
     assert _AlwaysStopExtractionError is _AlwaysStopResourceLimitError
+
+
+def test_bomb_tracker_member_bytes_mirrors_count() -> None:
+    t = BombTracker(max_bytes=10**12, max_ratio=1e9)
+    t.start_member(_member("f"))
+    assert t.member_bytes == 0
+    t.count(100)
+    assert t.member_bytes == 100
+    assert t.total_bytes == 100
+    t.start_member(_member("g"))
+    assert t.member_bytes == 0
+    assert t.total_bytes == 100
 
 
 def test_file_writer_rejects_missing_stream() -> None:
@@ -795,6 +808,111 @@ def test_progress_counts_filter_skipped_members_as_done(tmp_path: Path) -> None:
     assert last.members_total == 3
     assert last.members_done == 3
     assert not (dest / "b.txt").exists()
+
+
+def test_on_progress_large_file_emits_intra_member(tmp_path: Path) -> None:
+    # A FILE larger than one copy chunk must produce multiple callbacks with
+    # non-decreasing member_bytes_written, ending at the member size.
+    payload = b"x" * (2 * _CHUNK + 100)
+    src = tmp_path / "big.zip"
+    _write_zip(src, {"big.bin": payload})
+    dest = tmp_path / "out"
+    reports: list = []
+    extract(src, dest, on_progress=reports.append)
+
+    for_member = [p for p in reports if p.member.name == "big.bin"]
+    assert len(for_member) > 1
+    mbw = [p.member_bytes_written for p in for_member]
+    assert mbw == sorted(mbw)
+    assert mbw[-1] == len(payload)
+    # Intra-member reports keep members_done at the pre-completion count; the
+    # terminal report advances it.
+    assert for_member[0].members_done == 0
+    assert for_member[-1].members_done == 1
+    assert (dest / "big.bin").read_bytes() == payload
+
+
+def test_on_progress_sub_chunk_file_single_callback(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"small.txt": b"hello"})
+    dest = tmp_path / "out"
+    reports: list = []
+    extract(src, dest, on_progress=reports.append)
+    assert len(reports) == 1
+    assert reports[0].member_bytes_written == 5
+    assert reports[0].member.name == "small.txt"
+
+
+def test_on_progress_dir_symlink_hardlink_zero_member_bytes(tmp_path: Path) -> None:
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("dir", "d/", None),
+                ("file", "d/f.txt", b"data"),
+                ("sym", "link", "d/f.txt"),
+                ("hard", "hard.txt", "d/f.txt"),
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    reports: list = []
+    extract(src, dest, on_progress=reports.append)
+
+    dir_reports = [p for p in reports if p.member.type == MemberType.DIRECTORY]
+    assert len(dir_reports) == 1
+    assert dir_reports[0].member_bytes_written == 0
+
+    sym_reports = [p for p in reports if p.member.type == MemberType.SYMLINK]
+    assert len(sym_reports) == 1
+    assert sym_reports[0].member_bytes_written == 0
+
+    hard_reports = [p for p in reports if p.member.type == MemberType.HARDLINK]
+    assert len(hard_reports) == 1
+    assert hard_reports[0].member_bytes_written == 0
+
+    file_reports = [p for p in reports if p.member.is_file]
+    assert len(file_reports) == 1
+    assert file_reports[0].member_bytes_written == 4
+
+
+def test_on_progress_unknown_size_terminal_equals_observed(tmp_path: Path) -> None:
+    import gzip
+
+    payload = b"z" * 12345
+    src = tmp_path / "blob.gz"
+    src.write_bytes(gzip.compress(payload))
+    dest = tmp_path / "out"
+    reports: list = []
+    with open_archive(src) as r:
+        assert r.members()[0].size is None
+        r.extract_all(dest, on_progress=reports.append)
+
+    assert len(reports) >= 1
+    terminal = reports[-1]
+    assert terminal.member.size is None or terminal.member_bytes_written == terminal.member.size
+    assert terminal.member_bytes_written == len(payload)
+    assert (dest / "blob").read_bytes() == payload
+
+
+def test_on_progress_none_leaves_byte_totals_unchanged(tmp_path: Path) -> None:
+    # Zero-cost path: no callback must not change written bytes or bomb accounting.
+    payload = b"y" * (_CHUNK + 50)
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": payload, "b.txt": b"bb"})
+    dest = tmp_path / "out"
+    results = extract(src, dest).results
+    assert {r.status for r in results} == {ExtractionStatus.EXTRACTED}
+    assert (dest / "a.txt").read_bytes() == payload
+    assert (dest / "b.txt").read_bytes() == b"bb"
+    # Ratio/limits still enforced when on_progress is unset.
+    dest2 = tmp_path / "out2"
+    with pytest.raises(ResourceLimitError):
+        extract(
+            src,
+            dest2,
+            limits=ExtractionLimits(max_extracted_bytes=100),
+        )
 
 
 def test_extract_one_shot_from_non_seekable_pipe(tmp_path: Path) -> None:

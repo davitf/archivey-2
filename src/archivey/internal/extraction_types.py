@@ -88,13 +88,21 @@ class ExtractionStatus(Enum):
 
 @dataclass
 class ExtractionProgress:
-    """Reported once per member through the ``on_progress`` callback."""
+    """Progress snapshot for the ``on_progress`` callback.
+
+    For FILE members the callback MAY fire multiple times as bytes are written
+    (about once per copy chunk); each member still gets a terminal report with
+    ``member_bytes_written`` equal to the member's size (or the final observed
+    byte count when size is unknown). Directories, symlinks, and hardlinks
+    produce a single report with ``member_bytes_written == 0``.
+    """
 
     member: ArchiveMember
     bytes_written: int  # cumulative bytes written across the whole call so far
     total_bytes_estimated: int | None  # None if the archive carries no size info
     members_done: int
     members_total: int | None  # None when the count would require a full scan
+    member_bytes_written: int  # output bytes written for the current member so far
 
 
 @dataclass(frozen=True)
