@@ -175,14 +175,16 @@ class ArchiveMember:
 ```
 
 `is_anti` SHALL be derived (`type == MemberType.ANTI`); there is no `is_anti` field.
-`is_current` SHALL mean last-entry-wins live path state (7z computes it; others may
-default `True`). Unavailable values SHALL be `None`; `name` follows normalization while
-`raw_name` preserves stored bytes; timestamp timezone semantics are preserved;
-digest keys name their real algorithms; there is no `crc32` alias. Sizes, link
-targets, hashes, and diagnostics MAY be completed in place during streaming.
-`member_id` / `archive_id` preserve source identity, convenience properties are
-derived, and `replace()` creates an edited copy. `hashes`, `diagnostics`, and
-`extra` SHALL be excluded from equality.
+`is_current` SHALL mean “live for default extract / path identity”: 7z computes
+last-entry-wins (including anti supersession); RAR file-version history rows
+(`format-rar`) SHALL set `is_current=False` while the live revision stays
+`True`; other formats MAY default `True`. Unavailable values SHALL be `None`;
+`name` follows normalization while `raw_name` preserves stored bytes; timestamp
+timezone semantics are preserved; digest keys name their real algorithms; there
+is no `crc32` alias. Sizes, link targets, hashes, and diagnostics MAY be
+completed in place during streaming. `member_id` / `archive_id` preserve source
+identity, convenience properties are derived, and `replace()` creates an edited
+copy. `hashes`, `diagnostics`, and `extra` SHALL be excluded from equality.
 
 `ArchiveMember` SHALL remain unhashable and non-frozen. The `diagnostics` tuple
 itself is immutable, but the library MAY replace it in place for later
@@ -201,7 +203,8 @@ point-in-time snapshots.
 | ZIP CRC32 and RAR5 Blake2sp hashes | Stored under `"crc32"` int and `"blake2sp"` bytes keys respectively |
 | Extraction report holds a member later completed in place | Report's result tuple is immutable; member object reflects late field update |
 | `type == MemberType.ANTI` | `is_anti` true; `is_file` false |
-| Content superseded by later same-name / anti | Earlier member `is_current` false |
+| Content superseded by later same-name / anti (7z) | Earlier member `is_current` false |
+| RAR `-ver` history row `path;n` | `is_current` false; live `path` remains true |
 
 ### Requirement: Member diagnostics attach under the shared budget
 

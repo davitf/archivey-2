@@ -63,13 +63,23 @@ def open_unrar_p(
     *,
     password: str | bytes | None = None,
     member: str | None = None,
+    version_control: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
-    """Spawn ``unrar p -inul [-pPWD|-p-] archive [member]``.
+    """Spawn ``unrar p -inul [-ver] [-pPWD|-p-] archive [member]``.
+
+    ``version_control`` adds ``-ver`` so the ALL-pipe includes WinRAR file-version
+    history payloads (needed for solid demux when versioned FILE rows are present).
+    Named per-member opens use the exact presented name (``path;n``) and do not
+    need ``-ver``.
 
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
     unrar = find_rarlab_unrar()
-    cmd = [unrar, "p", "-inul", _password_arg(password), str(archive_path)]
+    cmd = [unrar, "p", "-inul"]
+    if version_control:
+        cmd.append("-ver")
+    cmd.append(_password_arg(password))
+    cmd.append(str(archive_path))
     if member is not None:
         cmd.append(member)
     try:

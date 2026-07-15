@@ -92,6 +92,17 @@ _HARDLINKS: tuple[_File, ...] = (
     _File("hardlink_to_file2.txt", hardlink_to="subdir/file2.txt"),
 )
 
+# WinRAR ``-ver`` revisions of a single path (oldest → newest / live).
+_FILE_VERSION_REVISIONS: tuple[bytes, ...] = (
+    b"version-one",
+    b"version-two!!",
+    b"version-three!!!",
+)
+
+_FILE_VERSION_SOLID_V1 = b"AAA-v1"
+_FILE_VERSION_SOLID_OTHER = b"BBB-payload"
+_FILE_VERSION_SOLID_V2 = b"AAA-v2-longer"
+
 
 def _run(cmd: Sequence[str], *, cwd: Path) -> None:
     env = os.environ.copy()
@@ -185,12 +196,12 @@ def _resolve_rar(*, need_ma4: bool) -> Path:
 
     which = shutil.which("rar")
     if which is None:
-        if need_ma4:
-            print("No system rar; fetching RAR 6.24 for -ma4 support", file=sys.stderr)
-            return _fetch_rar624()
-        raise SystemExit(
-            "rar not found on PATH (install RARLAB rar, or set ARCHIVEY_RAR_BIN)"
+        print(
+            "No system rar; fetching RAR 6.24"
+            + (" for -ma4 support" if need_ma4 else ""),
+            file=sys.stderr,
         )
+        return _fetch_rar624()
 
     system = Path(which)
     if need_ma4 and not _supports_ma4(system):
@@ -222,6 +233,59 @@ def _rar_a(
             sibling.unlink()
     cmd = [str(rar_bin), "a", "-idq", "-oh", "-ol", *extra, str(archive), *names]
     _run(cmd, cwd=cwd)
+
+
+def _rar_a_update(
+    rar_bin: Path,
+    archive: Path,
+    names: Sequence[str],
+    *,
+    cwd: Path,
+    extra: Sequence[str] = (),
+) -> None:
+    """Append/update members into an existing archive (keeps ``-ver`` history)."""
+    cmd = [str(rar_bin), "a", "-idq", "-oh", "-ol", *extra, str(archive), *names]
+    _run(cmd, cwd=cwd)
+
+
+def _build_file_version(
+    rar_bin: Path,
+    out: Path,
+    revisions: Sequence[bytes],
+    *,
+    extra: Sequence[str] = (),
+    path_name: str = "file.txt",
+) -> None:
+    """Write ``path_name`` through ``revisions`` with ``-ver`` (last = live)."""
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        target = root / path_name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        extras = [*extra, "-ver"]
+        for i, payload in enumerate(revisions):
+            target.write_bytes(payload)
+            if i == 0:
+                _rar_a(rar_bin, out, [path_name], cwd=root, extra=extras)
+            else:
+                _rar_a_update(rar_bin, out, [path_name], cwd=root, extra=extras)
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
+def _build_file_version_solid(rar_bin: Path, out: Path) -> None:
+    """Solid RAR5 with ``a.txt`` history + a second payload for demux order checks."""
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "a.txt").write_bytes(_FILE_VERSION_SOLID_V1)
+        (root / "b.txt").write_bytes(_FILE_VERSION_SOLID_OTHER)
+        extras = ("-s", "-m3", "-ver")
+        _rar_a(rar_bin, out, ["a.txt", "b.txt"], cwd=root, extra=extras)
+        (root / "a.txt").write_bytes(_FILE_VERSION_SOLID_V2)
+        _rar_a_update(rar_bin, out, ["a.txt"], cwd=root, extra=extras)
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
 
 
 def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
@@ -293,6 +357,13 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         (_File("store.txt", b"stored payload"),),
         extra=("-m0", "-htb"),
     )
+    _build_file_version(
+        rar5_bin,
+        out_dir / "file_version__.rar",
+        _FILE_VERSION_REVISIONS,
+        extra=("-m0",),
+    )
+    _build_file_version_solid(rar5_bin, out_dir / "file_version_solid__.rar")
 
     # Multi-volume: 1600-byte payload, 900-byte volumes → two parts.
     with tempfile.TemporaryDirectory() as td:
@@ -354,6 +425,12 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         "symlinks_solid__rar4.rar",
         _SYMLINKS,
         extra=("-ma4", "-s", "-m3"),
+    )
+    _build_file_version(
+        rar4_bin,
+        out_dir / "file_version__rar4.rar",
+        _FILE_VERSION_REVISIONS,
+        extra=("-ma4", "-m0"),
     )
 
     kept = ", ".join(sorted(_LEGACY_KEEP))

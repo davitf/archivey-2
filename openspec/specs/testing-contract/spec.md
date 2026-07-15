@@ -111,8 +111,14 @@ than returning bytes that diverge from the oracle.
 
 The RAR corpus MUST cover RAR4 and RAR5, solid and nonsolid, stored M0, symlinks,
 hardlinks/`FILE_COPY`, multi-volume sets, header-encrypted RAR5 (under `[rar]`/
-`[crypto]`), and Blake2sp-only members. After the native RAR reader registers, RAR
-corpus entries MUST run (not skip solely for “reader not implemented”).
+`[crypto]`), Blake2sp-only members, and at least one RAR5 `-ver` file-version
+archive. After the native RAR reader registers, RAR corpus entries MUST run (not
+skip solely for “reader not implemented”).
+
+`rarfile` omits file-version history rows. Dedicated `-ver` tests SHALL assert
+native listing/read/`unrar` behavior directly and MUST NOT require rarfile list
+equality for those history members. Non-versioned RAR corpus entries continue to
+cross-check metadata and bytes against rarfile/`unrar`.
 
 #### Scenario: native-reader oracle matrix
 
@@ -122,6 +128,7 @@ corpus entries MUST run (not skip solely for “reader not implemented”).
 | RAR corpus entry read by native reader and `rarfile`/`unrar` | Metadata and bytes match; skipped if oracle unavailable |
 | 7z entry uses BCJ2 or unknown method ID | Documented unsupported-codec error; no guessed output |
 | RAR solid+links / multi-volume / header-encrypted entry | Exercised once native RAR is registered; skip only if `unrar`/crypto/oracle absent |
+| RAR5 `-ver` history members | Native exposes `path;n` + live path; bytes match `unrar p` exact name / `-ver`; rarfile list equality not required for history rows |
 
 ### Requirement: Cover solid RAR link demux in the corpus
 

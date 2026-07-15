@@ -18,6 +18,14 @@ Multi-volume fixtures:
 | `tinyvol.part1.rar` / `tinyvol.part2.rar` | RAR5 `-v` / `.partN.rar` naming |
 | `tinyvol_rnn.rar` / `tinyvol_rnn.r00` | RAR4 `-ma4 -vn` classic `.rar` + `.r00` naming |
 
+File-version (`-ver`) fixtures:
+
+| Files | Notes |
+| --- | --- |
+| `file_version__.rar` | RAR5 nonsolid `-m0 -ver`; three revisions of `file.txt` |
+| `file_version__rar4.rar` | RAR4 nonsolid `-ma4 -m0 -ver`; same revisions |
+| `file_version_solid__.rar` | RAR5 solid `-s -m3 -ver`; `a.txt` history + `b.txt` |
+
 ## Legacy (not regenerated)
 
 | File | Provenance |

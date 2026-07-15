@@ -82,6 +82,14 @@ def _member_stream_size(member: ArchiveMember) -> int:
     return member.size if member.size is not None else 0
 
 
+def _presented_filename(info: RarMemberInfo) -> str:
+    """Archive path, or WinRAR/``unrar`` ``path;n`` for file-version history."""
+    if info.is_file_version_history():
+        assert info.file_version is not None
+        return f"{info.filename};{info.file_version}"
+    return info.filename
+
+
 def _password_as_str(password: bytes | str | None) -> str | None:
     if password is None or password == b"" or password == "":
         return None
@@ -363,11 +371,14 @@ class RarReader(BaseArchiveReader):
 
     def _to_member(self, info: RarMemberInfo) -> ArchiveMember:
         member_type = self._member_type(info)
+        presented = _presented_filename(info)
         name = normalize_member_name(
-            info.filename,
+            presented,
             member_type,
             backslash_is_separator=True,
         )
+        # raw_name keeps archive-stored path bytes (RAR5 has no ``;n`` in header;
+        # RAR3 may store ``path;n`` bytes — we do not rewrite them).
         raw_name = (
             info.orig_filename
             if info.orig_filename is not None
@@ -379,6 +390,9 @@ class RarReader(BaseArchiveReader):
             link_target = info.file_redir[2]
             if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
                 extra[EXTRA_IS_JUNCTION] = True
+        if info.is_file_version_history():
+            assert info.file_version is not None
+            extra["rar.file_version"] = info.file_version
 
         create_system = (
             _RAR_HOST_OS_TO_CREATE_SYSTEM.get(info.host_os, CreateSystem.UNKNOWN)
@@ -407,6 +421,7 @@ class RarReader(BaseArchiveReader):
             mode=mode,
             compression=_compression_for(info),
             is_encrypted=info.is_encrypted,
+            is_current=not info.is_file_version_history(),
             create_system=create_system,
             windows_attrs=windows_attrs,
             hashes=_member_hashes(info),
@@ -417,7 +432,7 @@ class RarReader(BaseArchiveReader):
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
-            presented_name=info.filename,
+            presented_name=presented,
             archive_name=self._archive_name,
         )
         return member
@@ -439,7 +454,19 @@ class RarReader(BaseArchiveReader):
             return
 
         path = self._ensure_archive_path()
-        proc, stdout = open_unrar_p(path, password=self._unrar_password)
+        # Bare ``unrar p`` omits ``-ver`` history from the ALL pipe; pass ``-ver``
+        # when any versioned payload FILE is present so demux stays aligned.
+        version_control = any(
+            isinstance(m._raw, RarMemberInfo)
+            and m._raw.is_payload_file()
+            and m._raw.is_file_version_history()
+            for m in self._members
+        )
+        proc, stdout = open_unrar_p(
+            path,
+            password=self._unrar_password,
+            version_control=version_control,
+        )
         self._live_unrar = proc
         owned: BinaryIO = self._track_decompressed(_UnrarOwnedStream(stdout, proc))
         solid = SolidBlockReader(owned)
@@ -540,11 +567,12 @@ class RarReader(BaseArchiveReader):
             return self._wrap_payload_stream(inner, member)
 
         path = self._ensure_archive_path()
-        # unrar needs the archive-stored path (forward slashes), not the normalized name.
+        # unrar needs the archive path (forward slashes), or ``path;n`` for history.
+        # Do not use the normalized ``member.name`` (may differ on separators).
         proc, stdout = open_unrar_p(
             path,
             password=self._unrar_password,
-            member=raw.filename,
+            member=_presented_filename(raw),
         )
         self._live_unrar = proc
         owned = self._track_decompressed(_UnrarOwnedStream(stdout, proc))

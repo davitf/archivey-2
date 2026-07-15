@@ -157,15 +157,22 @@ def test_native_matches_rarfile_on_rarfile_corpus(
 
     with open_archive(archive, password=password, format=fmt) as native:
         native_by_name = {_normalize_name(m.name): m for m in native.members()}
+        # rarfile skips file-version history; dedicated ``-ver`` tests cover those
+        # rows. Compare only members rarfile exposes.
+        native_for_oracle = {
+            key: member
+            for key, member in native_by_name.items()
+            if "rar.file_version" not in member.extra
+        }
 
-        assert set(native_by_name) == set(oracle_infos), (
+        assert set(native_for_oracle) == set(oracle_infos), (
             f"member name mismatch for {archive.name}: "
-            f"only_native={sorted(set(native_by_name) - set(oracle_infos))} "
-            f"only_rarfile={sorted(set(oracle_infos) - set(native_by_name))}"
+            f"only_native={sorted(set(native_for_oracle) - set(oracle_infos))} "
+            f"only_rarfile={sorted(set(oracle_infos) - set(native_for_oracle))}"
         )
 
         for key, info in oracle_infos.items():
-            member = native_by_name[key]
+            member = native_for_oracle[key]
             expect_type = _rarfile_expect_type(info)
             assert member.type is expect_type, (
                 f"{archive.name}:{key}: type {member.type} != {expect_type}"
