@@ -7,7 +7,7 @@
 - [x] 1.5 `test` verbosity: quiet + summary by default, `-v` per-member (Decision 14)
 - [x] 1.6 Default-to-list dispatch = known-verb-wins; escape hatch `list <path>` for verb-named files (Decision 1)
 - [x] 1.7 `--password` prompts on TTY when none supplied; output hygiene stdout=data/stderr=noise (Decisions 16–17)
-- [ ] 1.8 **Maintainer call:** does the library expose an I/O-accounting hook for `--track-io`? If not, drop it from v1 — no `builtins.open` monkeypatch (Decision 10 / Open A)
+- [x] 1.8 `--track-io` backed by `benchmark-gate` measurement hook (PR #100): `enable_measurement()` + `BaseArchiveReader.{bytes_decompressed,source_seek_count,compressed_bytes_consumed}`; no monkeypatch; internal counters read via first-party guard (Decision 10)
 
 ## 2. Packaging + entry points
 
@@ -18,7 +18,7 @@
 
 - [ ] 3.1 Create `archivey/cli/` package (`main` parser, shared formatting/filters helpers)
 - [ ] 3.2 argparse subparsers with bare-word verbs + single-letter aliases (`add_parser("extract", aliases=["x"])` etc.); known-verb-wins dispatch (bare archive path → `list`, reserved verbs still shadow same-named files); reject dash-prefixed verb forms (`-x`) and `-`/stdin with clear errors
-- [ ] 3.3 Global flags: `--password` (prompt on TTY when unset), `--version`, `-v`, progress hide/TTY; `--track-io` only if backed by a library hook (task 1.8)
+- [ ] 3.3 Global flags: `--password` (prompt on TTY when unset), `--version`, `-v`, progress hide/TTY; `--track-io` via `enable_measurement()` + `BaseArchiveReader` counters (task 1.8)
 - [ ] 3.4 Reserve `--salvage` (fail-fast not-implemented); reject unknown `hash`/`create`/`convert` verbs without falling through to list
 - [ ] 3.5 Ensure the verb letter `c` is not used for integrity check (reserve for future `create`)
 - [ ] 3.6 Exit-code mapping (`0`/`1`/`2`); output hygiene (data→stdout, progress/summaries/prompts→stderr); lazy `tqdm` import so `core-only` never imports it

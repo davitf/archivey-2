@@ -41,6 +41,10 @@ Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
 written to **stderr**.
 
+`--track-io` SHALL report I/O accounting for the operation using the internal
+measurement hook (decode/seek counters), without patching `builtins.open`. It is
+a maintainer/debug affordance and MUST NOT add a public library performance API.
+
 `list` SHALL print a human layer-1 member view by default (type, size, mtime,
 mode, encrypted flag, name; link target for links) and MUST NOT show digests
 unless `--digests` is set (stored `member.hashes` only; no body read). `-v` /
@@ -88,7 +92,7 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
-| `--track-io` supplied | Reports configured I/O instrumentation for the operation |
+| `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |
 | `archivey -x <archive>` (dash-prefixed verb) | Usage error — verbs are bare words (`x`), not options; `-x` is not a mode selector |
 
 ## ADDED Requirements

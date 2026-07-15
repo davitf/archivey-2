@@ -274,14 +274,25 @@ explore further unless packaging policy changes.
 matrix), `-v`/`--verbose`, `--hide-progress` (or auto-disable when not a TTY).
 Member patterns: see Decision 11.
 
-**`--track-io` — scope down / gate on a real library API.** DEV implemented it by
-monkeypatching `builtins.open`, which v2 explicitly wants to avoid. `--track-io`
-is a maintainer/debug affordance, not part of the end-user "safer unzip" wedge,
-so it MUST NOT ship as a raw `builtins` patch. Keep it in v1 **only if** the
-library already exposes a supported I/O-accounting hook (cost API / instrumented
-opener); expose it then as a hidden/debug global. If no such surface exists yet,
-**cut `--track-io` from v1** and let it return with the library feature that
-backs it. (Open item flagged below.)
+**`--track-io` — backed by the `benchmark-gate` measurement hook (resolved).** DEV
+implemented it by monkeypatching `builtins.open`; v2 MUST NOT. The hook now exists
+(landed in `benchmark-gate`, PR #100): `archivey.internal.measurement.enable_measurement()`
+is a contextvar-gated, zero-overhead-when-off switch, and `BaseArchiveReader` exposes
+`bytes_decompressed`, `source_seek_count`, and `compressed_bytes_consumed`.
+
+**Decision:** keep `--track-io` in v1, implemented by wrapping the operation in
+`enable_measurement()` and reading those counters off the reader — no `builtins`
+patch. Two constraints:
+- What it reports changes from DEV: not OS-level opens, but **bytes decompressed,
+  compressed bytes consumed, and source seek count**. Reframe the help/output
+  accordingly (it is a decode/seek accounting view, arguably more useful than
+  open-counting).
+- Those counters are **internal / not on the public `ArchiveReader` ABC** (a
+  deliberate choice in PR #100 — "no public performance API"). The CLI reads them
+  as a first-party internal consumer (`isinstance(reader, BaseArchiveReader)` /
+  guarded `getattr`, to keep pyrefly/ty clean). The flag does **not** promote them
+  to the public library surface, so PR #100's intent is preserved. Treat
+  `--track-io` as a maintainer/debug global, not a headline end-user feature.
 
 ### 11. Member filters: positional include + `--exclude`
 
@@ -421,10 +432,9 @@ it, satisfying the packaging contract.
 
 ### Needs a maintainer call (not parser-blocking)
 
-A. **`--track-io` (Decision 10):** does the v2 library already expose a supported
-   I/O-accounting hook? If yes, ship `--track-io` as a hidden/debug global against
-   it; if no, cut it from v1. Needs a look at the library surface — do **not**
-   reintroduce DEV's `builtins.open` monkeypatch either way.
+A. **`--track-io` (Decision 10):** *Resolved.* The `benchmark-gate` measurement
+   hook (PR #100) backs it — `enable_measurement()` + `BaseArchiveReader`
+   counters. Kept in v1, no monkeypatch; reports decode/seek/compressed counts.
 B. **Exit code `3` (Decision 12):** ship a distinct "refused by safety policy"
    code in v1, or fold into `1` for now? Recommend fold-into-`1`; splitting later
    is compatible.
