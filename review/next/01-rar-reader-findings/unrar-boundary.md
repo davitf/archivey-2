@@ -6,7 +6,9 @@ the `unrar` CLI level (`repro.py` F3b) in addition to the argv construction (F3)
 A member literally named like a switch/`@`-listfile still can't be *created* here (no
 `rar` writer, only the `unrar` reader), so the archivey end-to-end open of such a
 member is argued from the confirmed `unrar` argv semantics rather than run against a
-crafted fixture.
+crafted fixture. `make_hostile_fixtures.py` (in this folder) builds and self-verifies
+exactly those fixtures — run it locally where the RARLAB `rar` writer is installed to
+turn F3 into an end-to-end fixture test.
 
 ---
 

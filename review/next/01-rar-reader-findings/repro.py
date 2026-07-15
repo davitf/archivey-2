@@ -43,7 +43,7 @@ def f1_wrong_password_contract() -> None:
             f"{FIX}/encrypted_header__rar4.rar",
             password=["WRONG_PASSWORD", "header_password"],
         ) as arc:
-            names = [m.name for m in arc.get_members()]
+            names = [m.name for m in arc.members()]
             print(f"  listed OK: {names[:3]}")
     except Exception as e:  # noqa: BLE001
         print(f"  {type(e).__name__} (FINDING: correct pw never tried): {e}")
