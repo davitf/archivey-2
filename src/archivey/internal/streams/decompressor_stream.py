@@ -196,11 +196,13 @@ class DecompressorStream(ReadOnlyIOStream):
         refining the origin's ``compressed_offset`` / ``state`` (unix-compress header
         commit must apply even when the table is not built).
 
-        Same-``decompressed_offset`` collisions: the origin (offset 0) may be refined
-        in place — that is the only intentional last-wins case. For any other offset,
-        codecs must not emit a second point with the same decompressed offset but a
-        different ``compressed_offset`` / ``state`` (xz/lzip filter with ``>`` /
-        ``>=``); we assert rather than silently replace.
+        Same-``decompressed_offset`` collisions:
+        - Origin (offset 0) may always be refined in place (unix-compress header commit).
+        - For other offsets, an exact duplicate is skipped; a *forward* refinement
+          (same ``state``, ``compressed_offset`` moves forward) last-wins — unix-compress
+          empty CLEAR segments legitimately re-emit the same decompressed offset at a
+          later compressed resume point. Divergent ``state`` or a backwards
+          ``compressed_offset`` still asserts (xz/lzip should filter those away).
         """
         for point in points:
             # Origin refinement always applies — resume must skip a committed header
@@ -223,28 +225,33 @@ class DecompressorStream(ReadOnlyIOStream):
             if point < self._seek_points[-1]:
                 i = bisect.bisect_left(self._seek_points, point)
                 if i < len(self._seek_points) and self._seek_points[i] == point:
-                    existing = self._seek_points[i]
-                    assert (
-                        existing.compressed_offset == point.compressed_offset
-                        and existing.state is point.state
-                    ), (
-                        "seek-point collision at the same decompressed_offset with "
-                        f"differing resume data: existing={existing!r} new={point!r}"
-                    )
+                    self._resolve_same_offset_collision(i, point)
                     continue
                 self._seek_points.insert(i, point)
             elif self._seek_points[-1] == point:
-                existing = self._seek_points[-1]
-                assert (
-                    existing.compressed_offset == point.compressed_offset
-                    and existing.state is point.state
-                ), (
-                    "seek-point collision at the same decompressed_offset with "
-                    f"differing resume data: existing={existing!r} new={point!r}"
-                )
+                self._resolve_same_offset_collision(len(self._seek_points) - 1, point)
                 continue
             else:
                 self._seek_points.append(point)
+
+    def _resolve_same_offset_collision(self, index: int, point: SeekPoint) -> None:
+        """Skip duplicates; allow forward compressed-offset refinement; else assert."""
+        existing = self._seek_points[index]
+        if (
+            existing.compressed_offset == point.compressed_offset
+            and existing.state is point.state
+        ):
+            return
+        if (
+            point.compressed_offset >= existing.compressed_offset
+            and existing.state is point.state
+        ):
+            self._seek_points[index] = point
+            return
+        assert False, (
+            "seek-point collision at the same decompressed_offset with "
+            f"differing resume data: existing={existing!r} new={point!r}"
+        )
 
     def _find_best_seek_point(self, pos: int) -> SeekPoint:
         """The last seek point with ``decompressed_offset <= pos``."""

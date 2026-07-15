@@ -905,6 +905,29 @@ def test_archive_property_payload_size_is_bounded() -> None:
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
+def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
+    """Hostile encoded-header unpack size must not raise MemoryError (Atheris finding)."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+
+    # CI crash input (sevenzip_header, 2026-07-15): ENCODED_HEADER claims ~7.26e17
+    # uncompressed bytes; previously blew up in lzma/read_exact as MemoryError.
+    blob = bytes.fromhex(
+        "377abcaf271c0004b94189d2e30000000000000024000000000000003393e6a2"
+        "e0002800255d00241949986f16028ce8e65bb147c6e8785df977f152c4a859c0"
+        "a9300dd98729229ab2993c9f00e0016d00ae5d0000813307ae0fd0d36d7c9f39"
+        "109c6cea561a8ee1ce421bf7dd8a7d61fa2b2e795eb720494abfaa6e563e7783"
+        "6034574bfe117d9bf2e6acdd947c4c39e3007228af9cc251620efa22eded9bf5"
+        "a5d5098d4562a390f7a8707038e8a889585b98fe0a641968b481d04b24eb5853"
+        "1946a77f37cd1773040ccbc8b9053fefb060f8b4b0b770e4be72e602741c8904"
+        "1b2c1343fbf55ece457ecb05f85ff07810e4d6b1959f3d4a90a6a92f3d532e00"
+        "00000017062d010980b600070b010001212101180cffffffffffffff110a0a0a"
+        "0a01000000000002830a0a0a0a0a0a0a0a0a0a0a0a816e0000"
+    )
+    with pytest.raises(CorruptionError, match="unpack size|parser limit"):
+        parse_sevenzip_archive(io.BytesIO(blob))
+
+
 # py7zr's empty.7z: signature + start_header with nextHeaderSize == 0.
 _EMPTY_7Z = bytes.fromhex(
     "377abcaf271c00038d9bd50f0000000000000000000000000000000000000000"

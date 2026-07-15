@@ -370,6 +370,31 @@ def test_unix_compress_clear_seek_points() -> None:
         )
 
 
+def test_unix_compress_consecutive_clear_seek_points_no_assert() -> None:
+    """Atheris: consecutive CLEARs at the same decompressed offset must not assert.
+
+    Empty CLEAR segments re-emit a SeekPoint at the prior decompressed offset with a
+    later compressed resume point; indexing must forward-refine rather than crash.
+    """
+    # CI crash input (detect_format target, 2026-07-15): triggers the collision during
+    # a seekable decode of a short hostile .Z prefix.
+    compressed = bytes.fromhex(
+        "1f9d8b008b000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000002e0100000010000003550100000000"
+        "0000035500e00008"
+    )
+    config = StreamConfig(seekable=True)
+    with open_codec_stream(
+        Codec.UNIX_COMPRESS, io.BytesIO(compressed), config=config
+    ) as stream:
+        # May raise typed ArchiveyError on corrupt payload; must not AssertionError.
+        try:
+            stream.read(4096)
+        except ArchiveyError:
+            pass
+
+
 def test_translated_error_is_stamped() -> None:
     """A stamp callback fills archive/member context on the translated error."""
 

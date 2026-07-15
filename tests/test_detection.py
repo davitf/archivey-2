@@ -321,6 +321,27 @@ def test_unix_compress_without_inner_tar_stays_bare_z() -> None:
     assert info.detected_by == "magic"
 
 
+@pytest.mark.parametrize(
+    "hex_blob",
+    [
+        # Atheris detect_format finds (2026-07-14..15): consecutive LZW CLEARs share a
+        # decompressed_offset; must not raise AssertionError during the inner-TAR probe.
+        "1f9d9d001ffd37250000000000000000000000001b001f9d9d061ffd377a00df0000000900",
+        "1f9d9d28a600000000000000000040f8000020000000ffff00000000f0",
+        "1f9d9e9d009e58000000002600e38623a800288027",
+        "1f9d8d8d00000000000000000000000000000000000000000000000000000000e2000000000000008d0000000000000000000000000000",
+        "1f9d8b008b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002e01000000100000035501000000000000035500e00008",
+    ],
+    ids=["clear-a", "clear-b", "clear-c", "clear-d", "clear-e"],
+)
+def test_detect_format_atheris_z_clear_collisions_do_not_assert(hex_blob: str) -> None:
+    """Atheris: hostile .Z with consecutive CLEARs must not crash detect_format."""
+    data = bytes.fromhex(hex_blob)
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.Z
+    assert info.detected_by == "magic"
+
+
 def test_inner_tar_over_lzma_alone_is_tar_lzma() -> None:
     import lzma
 
