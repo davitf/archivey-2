@@ -18,26 +18,28 @@ destination OS:
 
 Today these produce platform-dependent behavior — "a surprise squared." The fix is one
 coherent policy dimension: deterministic, cross-platform name handling keyed off the
-existing `ExtractionPolicy` (STRICT/STANDARD/TRUSTED). **Spike:** the O2 collision and
-O3/O4 rejection directions are decided; the O7 normalization scheme (reject vs sanitize to
-a reversible portable spelling) is the open decision this change must settle before full
-implementation.
+existing `ExtractionPolicy` (STRICT/STANDARD/TRUSTED). All directions are now settled
+(recorded in `design.md` and ADR 0013): O2 collision determinism, O3/O4 rejection, and the
+O7 normalization scheme (**sanitize** to a reversible percent-escaped portable spelling).
 
 ## What Changes
 
-- **O2 — deterministic collision handling on all platforms:** the coordinator tracks a
+- **O2 — deterministic collision handling under STRICT/STANDARD:** the coordinator tracks a
   casefold+NFC key per written path, treats a collision as a first-class event on **every**
-  OS (not just case-insensitive ones), applies `OverwritePolicy` deliberately, and records
-  it on the `ExtractionResult`. Adds `OverwritePolicy.RENAME` (`name (1)`) — in scope here
-  because it reuses this collision map, and the CLI's `extract` wants rename-on-collision
-  parity with `unzip`.
+  OS (not just case-insensitive ones) under `STRICT`/`STANDARD`, applies `OverwritePolicy`
+  deliberately, records `requested_path` on the `ExtractionResult`, and emits an
+  `EXTRACTION_NAME_COLLISION` diagnostic; `TRUSTED` keys on the exact path and defers to the
+  local OS. Adds `OverwritePolicy.RENAME` (` (N)` before the suffix, `photo (1).jpg`) — in
+  scope here because it reuses this collision map, and the CLI's `extract` wants
+  rename-on-collision parity with `unzip`.
 - **O3/O4 — portable-name enforcement:** under `STRICT`, reject Windows-reserved names,
   trailing dots/spaces, and `:` on **every** platform (portability is part of no-surprises);
   `TRUSTED` allows what the local OS allows; `STANDARD` sits between (decision below).
-- **O7 — portable-name normalization (the open decision):** under `STRICT`, either reject
-  unrepresentable names or normalize them to a deterministic, reversible portable spelling
-  (percent/escape style, collision-tracked like O2); `TRUSTED` attempts faithful bytes and
-  lets the OS decide (today's behavior). The scheme is chosen in this change's design pass.
+- **O7 — portable-name normalization (settled: sanitize):** under `STRICT`/`STANDARD`,
+  normalize unrepresentable names to a deterministic, reversible portable spelling
+  (percent-escape each non-UTF-8 byte as `%XX`, `%` as `%25`; non-decodable bytes only;
+  collision-tracked like O2); `TRUSTED` attempts faithful bytes and lets the OS decide
+  (today's behavior).
 - Coordinates with the in-flight `adversarial-string-corpus-contract` change (bidi-control
   warning, NUL-in-link-target rejection) — this change does **not** duplicate those; it owns
   the extraction-time filesystem-collision/mangling/representability dimension.
@@ -59,10 +61,11 @@ implementation.
 
 - `ExtractionCoordinator` (`internal/extraction.py`): casefold+NFC collision map; a
   pre-write portable-name check/transform keyed on `ExtractionPolicy`.
-- Public surface: STRICT may now *reject or rewrite* names it previously wrote as-is
-  (deliberate, documented); `ExtractionResult` gains a collision signal; new
-  `OverwritePolicy.RENAME` (`name (1)`), useful for the CLI's `extract`.
+- Public surface: STRICT/STANDARD may now *reject or rewrite* names previously written
+  as-is (deliberate, documented); `ExtractionResult` gains `requested_path`; new
+  `EXTRACTION_NAME_COLLISION` diagnostic; new `OverwritePolicy.RENAME` (` (N)` before the
+  suffix), useful for the CLI's `extract`.
 - Tests: cross-platform matrix (collision, reserved, trailing dot/space, `:`,
-  surrogateescape) asserted deterministically on all platforms (not gated on the runner OS).
-- **Spike marker:** the O7 normalization scheme is an open design decision; O2/O3/O4 can
-  proceed independently if O7 needs more exploration.
+  surrogateescape sanitize, RENAME) asserted deterministically on all platforms (not gated
+  on the runner OS).
+- Rationale for all six policy decisions recorded in ADR 0013.

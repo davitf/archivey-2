@@ -21,6 +21,7 @@ not fully recovered yet.
 | [0010](0010-no-silent-buffer-nonseekable.md) | Fail fast on non-seekable RA; no silent buffer | recorded |
 | [0011](0011-zero-dependency-core.md) | Zero third-party deps in core install | recorded |
 | [0012](0012-usage-errors-outside-archiveyerror.md) | `ArchiveyUsageError` ≠ `ArchiveyError` | recorded |
+| [0013](0013-cross-platform-name-safety-policies.md) | Cross-platform extraction name-safety policies | recorded |
 
 Related long-form material (not ADRs):
 
