@@ -91,22 +91,37 @@ caps are evaluated.
 | Archive within parser bounds but over `listing_limits.max_members` | Open may succeed; `members()` / materialization raises `ResourceLimitError` |
 | Default limits, typical archive | Open and listing succeed |
 
-### Requirement: Omit RAR5 file-version history rows from the member list
+### Requirement: Expose RAR file-version history members
 
-RAR5 archives created with WinRAR's file-versioning feature (`-ver`) store prior
-revisions of a path as additional FILE blocks carrying the RAR5 extra type
-`0x04` (file version). The native parser SHALL treat those history rows the same
-way `rarfile` does: parse them for forward progress through the header stream,
-but **omit** them from the exposed member list. Callers see only the current
-revision of each path (blocks without that extra). Listing MUST NOT surface
-versioned history as separate `ArchiveMember` entries.
+The system SHALL include RAR file-version history FILE blocks in the member list
+instead of omitting them. RAR5 extra type `0x04` (and RAR3 `FILE_VERSION` when
+present) identifies a prior revision. History members SHALL use the WinRAR /
+`unrar` presented name `path;n` (version `n != 0`), set
+`extra["rar.file_version"] = n`, and set `is_current=False`. The live revision of
+the same archive path (no version extra, or version 0) SHALL keep the plain path
+name and `is_current=True`.
+
+`open` / `read` of a history `FILE` SHALL return that revision’s bytes. For
+`unrar`-backed reads the backend SHALL request the exact presented member name
+(`path;n`). Solid ALL-pipe demux SHALL pass `unrar`’s `-ver` switch when the
+member list contains any versioned payload FILE so the pipe includes history
+bytes in archive order; otherwise solid demux MAY omit `-ver`.
+
+Default `extract` / `extract_all` SHALL skip history rows through the existing
+`is_current=False` coordinator behavior (`safe-extraction`). History rows SHALL
+count toward listing / parser member ceilings like any other FILE.
 
 #### Scenario: file-version matrix
 
 | Case | Expected |
 | --- | --- |
-| RAR5 archive with current file + older `-ver` revisions | Only the current file appears in `members()` |
-| RAR5 archive without file-version extras | All FILE members are listed as usual |
+| RAR5 `-ver` archive with revisions 1..k then live path | Members include `path;1`…`path;k` (`is_current=False`) and `path` (`is_current=True`) |
+| `read("path;1")` / `open` that member | Bytes of revision 1 |
+| `read("path")` | Bytes of the live revision |
+| `extract_all` default | Writes live `path` only; history rows `SKIPPED` |
+| Solid archive that includes versioned payload FILEs | ALL-pipe demux uses `-ver`; stream order stays aligned |
+| Nonsolid named `unrar p` of `path;n` | Exact member name; `-ver` not required |
+| Hostile archive with many version rows | Rows count toward member caps |
 
 ### Requirement: Use RARLAB unrar only for member data that needs it
 
