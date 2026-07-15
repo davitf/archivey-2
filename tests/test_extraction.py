@@ -878,7 +878,6 @@ def test_on_progress_dir_symlink_hardlink_zero_member_bytes(tmp_path: Path) -> N
 
 
 def test_on_progress_unknown_size_terminal_equals_observed(tmp_path: Path) -> None:
-
     payload = b"z" * 12345
     src = tmp_path / "blob.gz"
     src.write_bytes(gzip.compress(payload))
