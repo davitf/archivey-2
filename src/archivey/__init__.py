@@ -9,6 +9,7 @@ except PackageNotFoundError:
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
+    RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     AcceleratorMode,
     ArchiveyConfig,
     ExtractionLimits,
@@ -116,6 +117,7 @@ __all__ = [
     "ExtractionLimits",
     "ListingLimits",
     "AcceleratorMode",
+    "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
     "PasswordRequest",
     "PasswordProvider",
     "ExtractionPolicy",

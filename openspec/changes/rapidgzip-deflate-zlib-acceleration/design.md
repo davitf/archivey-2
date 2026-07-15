@@ -123,10 +123,18 @@ gzip, so the diagnostic tells users an accelerator would have avoided the O(n) r
 
 ## Open Questions
 
-- **Threshold value.** Benchmark rapidgzip vs stdlib `zlib` decode+seek across compressed sizes
-  (e.g. 1 KiB → 10 MiB) for raw deflate, zlib, and gzip, on Linux and macOS, measuring the
-  crossover where rapidgzip's setup cost is repaid. Pick a single conservative `AUTO` threshold
-  (likely one value across the family) and record it in design + user docs. Confirm the crossover
-  isn't dominated by the many-small-members aggregate case (repeated per-stream setup).
-- **Threshold location.** `AcceleratorMode.enabled_for(input_size=...)` vs codec-site check —
-  decide during apply based on which keeps gzip/bzip2/deflate/zlib sharing one gate cleanly.
+- ~~**Threshold value.**~~ **Resolved:** `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE = 1 MiB`
+  (1_048_576 bytes). Benchmarked with `scripts/bench_rapidgzip_auto_threshold.py` against
+  `rapidgzip==0.16.0` (`parallelization=0`, decode + mid-stream seek + rewind) on Linux.
+  Highly compressible payloads cross earlier (~3–30 KiB compressed); less-compressible
+  zlib/deflate need ~1–5 MiB compressed before rewind+decode reliably beats stdlib. The
+  many-small-members aggregate (200 × ~4 KiB) was 13–30× *slower* with rapidgzip — the
+  threshold's primary job. 1 MiB is the conservative family-wide pick: tiny members stay on
+  stdlib; `ON` remains the override for below-threshold cases. Re-run the script on macOS
+  when convenient; the constant can move if a second platform shows a materially different
+  crossover.
+- ~~**Threshold location.**~~ **Resolved:** widen `AcceleratorMode.enabled_for` with optional
+  `input_size` / `min_size`. Gzip/deflate/zlib pass
+  `min_size=RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`; bzip2 shares the same method but leaves
+  `min_size` unset (no size gate). `open_codec_stream` fills `StreamConfig.compressed_input_size`
+  via `source_byte_size` when the caller did not already supply it.

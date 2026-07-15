@@ -23,27 +23,54 @@ class AcceleratorMode(Enum):
       (``MemberStreams.SEEKABLE`` / seek demand). Without declared seek demand, AUTO
       leaves the cheaper sequential backend in place (no index/accelerator work). When
       AUTO would enable the accelerator but its package is absent, fall back to
-      sequential silently (it is an enhancement, not a requirement).
+      sequential silently (it is an enhancement, not a requirement). For the
+      ``rapidgzip`` DEFLATE-family path, AUTO also requires the known compressed
+      input size to reach :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (see
+      :meth:`enabled_for`).
     """
 
     AUTO = "auto"
     ON = "on"
     OFF = "off"
 
-    def enabled_for(self, *, seekable: bool, available: bool) -> bool:
+    def enabled_for(
+        self,
+        *,
+        seekable: bool,
+        available: bool,
+        input_size: int | None = None,
+        min_size: int | None = None,
+    ) -> bool:
         """Resolve the tri-state to "use the accelerator?".
 
         ``ON`` always returns ``True`` (the caller checks availability and raises
         ``PackageNotInstalledError`` if the package is missing — the user asked for it
-        explicitly). ``AUTO`` enables it only when seekability is declared and the
-        package is available, so a missing package falls back silently.
+        explicitly; ``min_size`` is ignored). ``AUTO`` enables it only when
+        seekability is declared and the package is available, so a missing package
+        falls back silently. When ``min_size`` is set and ``input_size`` is known and
+        strictly below that threshold, ``AUTO`` also falls back (tiny members do not
+        repay per-stream accelerator setup). Unknown ``input_size`` keeps the
+        pre-threshold AUTO behaviour.
         """
         if self is AcceleratorMode.OFF:
             return False
         if self is AcceleratorMode.ON:
             return True
         # AUTO: only pay for seek machinery when the caller asked for seekable streams.
-        return available and seekable
+        if not (available and seekable):
+            return False
+        if min_size is not None and input_size is not None and input_size < min_size:
+            return False
+        return True
+
+
+# Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
+# rapidgzip for a DEFLATE-family stream (gzip / zlib / raw deflate). Below this,
+# stdlib backends stay cheaper: rapidgzip's per-stream index/thread setup dominates
+# for tiny members (many-small ZIP/gzip case). Benchmarked in
+# ``scripts/bench_rapidgzip_auto_threshold.py``; see the rapidgzip-deflate-zlib
+# acceleration design note. ``ON`` ignores this; unknown size keeps pre-threshold AUTO.
+RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 1 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -97,7 +124,10 @@ class ArchiveyConfig:
     ``members``/``filter``/``policy``/…) stay keyword arguments — not part of this object.
     """
 
+    # Tri-state for the [seekable] rapidgzip accelerator (gzip / zlib / raw deflate).
+    # Under AUTO, also requires known compressed input ≥ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE.
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
+    # Tri-state for rapidgzip's bundled bzip2 random-access backend.
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     strict_archive_eof: bool = False
     # Legacy encoding for a ZIP member name stored without the UTF-8 flag whose bytes are

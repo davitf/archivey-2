@@ -55,13 +55,15 @@ def test_rapidgzip_macos_deflate_corruption_message_is_translated() -> None:
     # window buffer!" — a different message than Linux's ISA-L wrapper. Assert the translator
     # maps it (platform-independently, without needing that backend installed) so the raw
     # ValueError never leaks. Regression for the macOS-only CI failure.
-    from archivey.internal.streams.codecs import GzipCodec
+    from archivey.internal.streams.codecs import DeflateCodec, GzipCodec, ZlibCodec
 
     exc = ValueError(
         "Failed to decode deflate block at 10 B 0 b because of: "
         "The backreferenced distance lies outside the window buffer!"
     )
     assert isinstance(GzipCodec()._translate_accelerator(exc), CorruptionError)
+    assert isinstance(DeflateCodec()._translate_accelerator(exc), CorruptionError)
+    assert isinstance(ZlibCodec()._translate_accelerator(exc), CorruptionError)
 
 
 def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:

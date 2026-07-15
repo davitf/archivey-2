@@ -49,9 +49,15 @@ accelerators are not built until you ask.
 With `SEEKABLE`:
 
 - XZ / lzip can seek via native indexes
-- gzip / bzip2 can use `[seekable]` (`rapidgzip`) when installed
+- gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed
 - otherwise a backward seek may **re-decompress from the start** (loud diagnostic, not
   silent)
+
+Under `ArchiveyConfig.use_rapidgzip=AUTO` (the default), rapidgzip is selected only when
+seekability is declared **and** the known compressed input is at least
+`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (1 MiB). Smaller members stay on stdlib `zlib`/`gzip`
+so archives of many tiny entries do not pay per-stream accelerator setup. Set
+`use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
 
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
 
@@ -93,9 +99,10 @@ members.
 
 ## Accelerators and process aborts
 
-The `[seekable]` path uses `rapidgzip` (gzip + bzip2). Do not close the caller-owned
-source underneath a live accelerator-backed stream — some upstream defects can abort the
-process rather than raise. Details: [internal known issues](internal/known-issues.md).
+The `[seekable]` path uses `rapidgzip` (gzip / zlib / raw deflate + bzip2). Do not close
+the caller-owned source underneath a live accelerator-backed stream — some upstream
+defects can abort the process rather than raise. Details:
+[internal known issues](internal/known-issues.md).
 
 ## Checklist
 
@@ -103,7 +110,7 @@ process rather than raise. Details: [internal known issues](internal/known-issue
 | --- | --- |
 | Hash / process every member | `stream_members()` or `__iter__` |
 | Solid archive, many named opens | Reorder to archive order, or one streaming pass |
-| Need `seek()` on a member | `MemberStreams.SEEKABLE` (+ `[seekable]` for gz/bz2) |
+| Need `seek()` on a member | `MemberStreams.SEEKABLE` (+ `[seekable]` for gz/bz2/zlib/deflate) |
 | Thread pool of member readers | `MemberStreams.CONCURRENT` after `members()` |
 | stdin / socket | `streaming=True` |
 | “Just unzip it safely” | `archivey.extract(src, dest)` |
