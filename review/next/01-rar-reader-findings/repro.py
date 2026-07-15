@@ -4,14 +4,20 @@ Run from the repo root:
 
     uv run --no-sync python review/next/01-rar-reader-findings/repro.py
 
-Each check prints PASS (behaviour matches the finding) or reports what it saw.
-No unrar binary is required; F3 only demonstrates the argv that *would* be built.
+Each check reports what it saw. F1/F2 need no external binary. F3 shows the argv
+archivey builds; if RARLAB ``unrar`` is installed it also demonstrates, at the
+``unrar`` CLI level, that a switch/``@``-listfile member name is mis-parsed and
+that ``--`` fixes switches but not ``@`` (the behaviour a fix must account for).
 """
 
 from __future__ import annotations
 
 import io
+import shutil
+import subprocess
+import tempfile
 import time
+from pathlib import Path
 
 from archivey import open_archive
 from archivey.exceptions import CorruptionError, EncryptionError
@@ -74,14 +80,54 @@ def f3_unrar_argv_injection() -> None:
         def kill(self) -> None:  # pragma: no cover - not reached
             pass
 
+    orig_find = ru.find_rarlab_unrar
+    orig_popen = subprocess.Popen
     ru.find_rarlab_unrar = lambda: "/usr/bin/unrar"  # type: ignore[assignment]
-    ru.subprocess.Popen = FakePopen  # type: ignore[assignment,misc]
-    for name in ("-inul", "@/etc/passwd", "-p-secret", "normal.txt"):
-        ru.open_unrar_p("archive.rar", member=name)
-        print(f"  member={name!r:16} -> argv tail {captured['cmd'][3:]}")
+    subprocess.Popen = FakePopen  # type: ignore[assignment,misc]
+    try:
+        for name in ("-inul", "@/etc/passwd", "-p-secret", "normal.txt"):
+            ru.open_unrar_p("archive.rar", member=name)
+            print(f"  member={name!r:16} -> argv tail {captured['cmd'][3:]}")
+    finally:
+        ru.find_rarlab_unrar = orig_find  # type: ignore[assignment]
+        subprocess.Popen = orig_popen  # type: ignore[assignment,misc]
+
+
+def f3b_unrar_cli_behaviour() -> None:
+    """CLI-level proof of the mis-parse (needs a real RARLAB unrar)."""
+    unrar = shutil.which("unrar")
+    if unrar is None:
+        print("\n[F3b] skipped: unrar not on PATH")
+        return
+    print("\n[F3b] unrar CLI mis-parses switch/@ member names (RARLAB unrar):")
+    fx = f"{FIX}/basic_nonsolid__.rar"
+
+    def run(args: list[str]) -> tuple[int, bytes]:
+        p = subprocess.run(
+            [unrar, "p", "-inul", *args], capture_output=True, check=False
+        )
+        return p.returncode, p.stdout
+
+    rc, out = run([fx, "file1.txt"])
+    print(f"  real member 'file1.txt'      -> exit {rc}, {out!r}")
+    rc, out = run([fx, "-inul"])
+    print(f"  member '-inul' (a switch)    -> exit {rc}, {out!r}  <- ALL members' data")
+    with tempfile.TemporaryDirectory() as d:
+        lst = Path(d) / "list.txt"
+        lst.write_text("file1.txt\n")
+        rc, out = run([fx, f"@{lst}"])
+        print(f"  member '@{lst.name}'  -> exit {rc}, {out!r}  <- read a LOCAL file")
+    rc, out = run([fx, "--", "-inul"])
+    print(f"  '-- -inul' (`--` guard)      -> exit {rc}, {out!r}  <- switch neutralized")
+    with tempfile.TemporaryDirectory() as d:
+        lst = Path(d) / "list.txt"
+        lst.write_text("file1.txt\n")
+        rc, out = run([fx, "--", f"@{lst}"])
+        print(f"  '-- @list' (`--` guard)      -> exit {rc}, {out!r}  <- @ STILL expands")
 
 
 if __name__ == "__main__":
     f1_wrong_password_contract()
     f2_header_size_vint_dos()
     f3_unrar_argv_injection()
+    f3b_unrar_cli_behaviour()

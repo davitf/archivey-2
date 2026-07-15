@@ -1,9 +1,12 @@
 # `unrar` subprocess boundary (`rar_unrar.py`, `rar_reader.py`)
 
-`unrar` is **not installed** in this review container, so the member-*data* paths
-could not be exercised end-to-end. Findings here are from argv construction (shown
-live in `repro.py` F3) and code tracing of the exit-code / stream-length handling.
-Both should be re-confirmed against a real RARLAB `unrar` before fixing.
+RARLAB `unrar` 7.00 was installed (per `AGENTS.md`: `apt-get install -y unrar`,
+`multiverse` component) and both findings below are now **empirically confirmed** at
+the `unrar` CLI level (`repro.py` F3b) in addition to the argv construction (F3).
+A member literally named like a switch/`@`-listfile still can't be *created* here (no
+`rar` writer, only the `unrar` reader), so the archivey end-to-end open of such a
+member is argued from the confirmed `unrar` argv semantics rather than run against a
+crafted fixture.
 
 ---
 
@@ -35,16 +38,32 @@ member='@/etc/passwd' -> argv tail ['-p-', 'archive.rar', '@/etc/passwd']
 member='-p-secret'    -> argv tail ['-p-', 'archive.rar', '-p-secret']
 ```
 
-Concrete consequences from a crafted archive:
+Concrete consequences from a crafted archive, **confirmed against RARLAB unrar 7.00**
+(`repro.py` F3b, run on `basic_nonsolid__.rar` which has members `file1.txt`, … and
+whole-pipe output `Hello, world!Hello, universe!Hello there!`):
 
-- **`@`-prefixed name → local file read.** A member named `@somepath` makes `unrar`
-  read `somepath` from disk (relative to CWD) as a newline-separated list of member
-  names to extract. The untrusted archive thus influences `unrar` into opening an
-  attacker-chosen local path. Under `p -inul` this does not write to disk, but it is
-  an unintended local-file access driven by archive contents.
-- **`-`-prefixed name → switch injection.** A member named `-x…`, `-inul`, `-p-…`,
-  etc. is parsed as a switch. Best case the target member is simply not matched;
-  combined with F4 (below) that becomes a silent empty stream rather than an error.
+```
+real member 'file1.txt'   -> exit 0, b'Hello, world!'
+member '-inul' (a switch) -> exit 0, b'Hello, world!Hello, universe!Hello there!'  # ALL members
+member '@list.txt'        -> exit 0, b'Hello, world!'                              # read a LOCAL file
+'-- -inul' (`--` guard)   -> exit 10, b''                                          # switch neutralized
+'-- @list' (`--` guard)   -> exit 0, b'Hello, world!'                              # @ STILL expands
+```
+
+- **`-`-prefixed name → switch injection, and it returns the WRONG bytes.** A member
+  named `-inul` (or any `unrar` switch) is consumed as a switch, which leaves `unrar`
+  with *no member filter* — so it prints **every member's data concatenated**, exit 0.
+  The nonsolid `_open_member` path then slices the first `size` bytes off that
+  concatenation and hands them back as "this member". So `open("-inul")` silently
+  returns bytes belonging to *other* members — a content-confusion bug, not merely an
+  empty read. (A stored CRC on the named member would catch the mismatch via
+  `VerifyingStream`; a CRC-less member would not.)
+- **`@`-prefixed name → arbitrary local-file read.** A member named `@somepath` makes
+  `unrar` read `somepath` from disk (relative to CWD) as a newline-separated list of
+  names to extract — confirmed above (it opened `list.txt` and honoured its contents).
+  The untrusted archive thus steers `unrar` into opening an attacker-chosen local
+  path. Under `p -inul` nothing is written to disk, but it is an unintended local-file
+  access driven purely by a member name.
 
 This is precisely the axis the spec's **"Constrain unrar argv by call site"**
 requirement exists to protect (`openspec/specs/format-rar/spec.md`: *"MUST NOT pass
@@ -53,11 +72,13 @@ backend intends to build*, but not for the case where the hostile **member name
 itself** is a switch/`@listfile`. The spec's own constraint is therefore only
 half-enforced.
 
-**Suggested fix.** Insert `"--"` before the archive path so nothing after it is
-parsed as a switch, and reject (or otherwise neutralize) member names beginning with
-`@` before they reach the argv — `--` stops switch parsing but does **not** stop
-`unrar`'s `@`-listfile expansion of a file argument, so the two need separate
-handling. Verify the chosen mitigation against a real `unrar` (not testable here).
+**Suggested fix.** Insert `"--"` right after the switches (before the archive path:
+`unrar p -inul … -- <archive> <member>`) so neither the archive path nor the member
+is parsed as a switch — **confirmed effective** for the `-` case (`-- <archive>
+-inul` → exit 10, no output; and a real member still extracts). But `--` does **not**
+stop `@`-listfile expansion (`-- @list` still read the file), so `@`-leading member
+names need separate handling (reject them on the `unrar` path, or otherwise
+neutralize the leading `@`). Both must land together.
 
 ---
 
@@ -90,8 +111,13 @@ return self._wrap_payload_stream(sliced, member, track_output=False)
 `SlicingStream.read` clamps to available bytes and returns short at EOF without
 error. So if `unrar` emits fewer than `size` bytes — because the member is corrupt
 (rc 3), a fatal error occurred (rc 2), or the name didn't match (rc 10, e.g. the F3
-switch-injection case) — the reader hands back a **silently truncated or empty**
+`-- <switch-name>` case) — the reader hands back a **silently truncated or empty**
 stream and swallows the non-11 exit code.
+
+**Confirmed exit codes (RARLAB unrar 7.00):** a corrupted archive exits **3**
+(`repro.py` corrupt-member check: `unrar p` on a byte-flipped fixture → exit 3), and
+a non-matching name exits **10** (`repro.py` F3b `-- -inul` → exit 10, empty output).
+Neither is mapped by archivey — only 11 is.
 
 **Mitigation that already exists:** members carrying a CRC32 or BLAKE2sp hash are
 wrapped in `VerifyingStream` (`rar_reader.py:509-516`), which raises on a hash

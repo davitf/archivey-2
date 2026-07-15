@@ -6,20 +6,24 @@ the three files the brief owns — `internal/backends/rar_parser.py` (~1595),
 they lean on (`solid.py`, `slice.py`, `shared.py`), the shared error boundary in
 `base_reader.py`, `password.py`, and the `format-rar` spec.
 
-**Baseline (green):** `pytest tests/test_rar_reader.py tests/test_rar_oracle.py`
-= 12 passed / 34 skipped (skips are `unrar`-gated — the binary is **not** installed
-in this container, so member-*data* paths could not be exercised end-to-end; the
-metadata parser and argv construction were exercised directly). `ARCHIVEY_FUZZ=1`
-RAR fuzz harness passed; `test_mutation_fuzz` 208 passed / 44 skipped. `ruff`, `ty`,
-`pyrefly` all clean. `rarfile==4.3` present as oracle.
+**Baseline (green):** with RARLAB `unrar` 7.00 installed (per `AGENTS.md`),
+`pytest tests/test_rar_reader.py tests/test_rar_oracle.py tests/test_rarfile_corpus.py`
+= 44 passed / 4 skipped (before installing `unrar` the data-path tests skipped:
+12 passed / 34 skipped). `ARCHIVEY_FUZZ=1` RAR fuzz harness passed;
+`test_mutation_fuzz` 208 passed / 44 skipped. `ruff`, `ty`, `pyrefly` all clean.
+`rarfile==4.3` present as oracle. The `unrar`-boundary findings (F3/F4) are
+**empirically confirmed at the `unrar` CLI level** (`repro.py` F3b); a member
+*literally named* like a switch can't be authored here (no `rar` writer, only the
+`unrar` reader), so archivey's end-to-end open of such a member is argued from the
+confirmed `unrar` argv semantics.
 
 **Headline.** The parser is noticeably more defensive than the 7z parser was at the
 last review: vint decoding is length-capped, every count/length is bounds-checked
 before slicing, `_seek_after_packed` guards offset arithmetic, the member-count
 ceiling fires, mode/attr `OverflowError` is pre-masked, and out-of-range timestamps
 are swallowed rather than aborting a listing. The 7z-style unbounded-preallocation
-bug does **not** recur. But three real issues survive, two of them behaviourally
-reproduced with no `unrar` needed:
+bug does **not** recur. But three real issues survive, all behaviourally
+reproduced (F1/F2 in-process, F3 against RARLAB `unrar` 7.00):
 
 1. **Wrong-password header decryption is reported as `CorruptionError`, not
    `EncryptionError`, whenever there is no usable password check value** — always
@@ -45,8 +49,8 @@ reproduced with no `unrar` needed:
 |---|-----|---------|-------|-------|
 | F1 | High | Wrong header password → `CorruptionError` (not `EncryptionError`) with no check value; breaks multi-password candidate iteration for RAR3 header encryption and mislabels the error. | `rar_parser.py:598-601,877-883,1197`; `rar_reader.py:317,331`; `password.py:178` | `repro.py` F1 (confirmed) |
 | F2 | Med-High | RAR5 header-size vint pre-read loop is uncapped + O(n²) (`start_bytes += b` per continuation byte); a few-MB all-`0x80` input → tens of seconds CPU. VISION #2 (bounded hostile parsing). | `rar_parser.py:1340-1344` | `repro.py` F2 (confirmed quadratic) |
-| F3 | Med | Hostile member name passed to `unrar` argv with no `--` guard → leading `-` parsed as a switch, leading `@` as a local list-file read. Contradicts the spec's argv-constraint intent on the hostile-name axis. | `rar_unrar.py:78-84`; `rar_reader.py:574-576` | `repro.py` F3 (argv shown; `unrar` absent → not run end-to-end) |
-| F4 | Med | `unrar` exit-code map only handles code 11 (bad password). Codes 2/3/10 (fatal / CRC / no-match) are unmapped; the nonsolid single-member `SlicingStream` never checks it produced `size` bytes, so a mis-parsed/corrupt member without a CRC yields a silent short/empty stream. VISION #3 (honest error on damage). | `rar_reader.py:159-164,578-583` | code-traced |
+| F3 | Med | Hostile member name passed to `unrar` argv with no `--` guard → leading `-` parsed as a switch (which drops the filter and emits **all** members' data — wrong-bytes confusion, exit 0), leading `@` as an **arbitrary local-file read**. Contradicts the spec's argv-constraint intent on the hostile-name axis. `--` fixes the switch case but not `@`. | `rar_unrar.py:78-84`; `rar_reader.py:574-576` | `repro.py` F3+F3b (confirmed vs RARLAB unrar 7.00) |
+| F4 | Med | `unrar` exit-code map only handles code 11 (bad password). Codes 2/3/10 (fatal / CRC / no-match) are unmapped; the nonsolid single-member `SlicingStream` never checks it produced `size` bytes, so a mis-parsed/corrupt member without a CRC yields a silent short/empty stream. VISION #3 (honest error on damage). | `rar_reader.py:159-164,578-583` | corrupt→exit 3, no-match→exit 10 confirmed (`repro.py`) |
 | F5 | Low-Med | RAR3 `FILE_LARGE` member >4 GiB: `add_size` used for `_seek_after_packed` is only the low 32 bits; `HIGH_PACK_SIZE` extends `compress_size` but not the skip, so the walk under-seeks and misparses every member after a >4 GiB one. | `rar_parser.py:851-854,945` vs `1009-1013` | code-traced (needs >4 GiB fixture) |
 | F6 | Low | `_merge_split_member` merges a `split_before` continuation into the previous member with **no name/attribute check**; a crafted continuation flag after an unrelated complete member silently folds sizes/CRC into the wrong member (and can hide a member). | `rar_parser.py:291-295,918-923,1285-1289` | code-traced |
 

@@ -27,14 +27,18 @@ coordinating so both briefs land the same contract.
 
 The spec's "Constrain unrar argv by call site" requirement forbids the *backend* from
 passing globs/`@listfile`, but a hostile archive can *name a member* `@listfile` or
-`-somebswitch`, and that name reaches `unrar` unescaped. Minimal hardening is `"--"`
-before the archive path (stops switch parsing) plus rejecting/neutralizing `@`-leading
-member names (`--` does not stop `unrar`'s `@`-listfile expansion).
+`-someswitch`, and that name reaches `unrar` unescaped. **Verified against RARLAB
+unrar 7.00** (`repro.py` F3b): a `-`-named member is parsed as a switch and makes
+`unrar` emit *all* members' data (wrong bytes for the requested member); an
+`@`-named member makes `unrar` read an arbitrary local file. `"--"` before the member
+argument neutralizes the switch case (`-- -inul` → exit 10, empty) but does **not**
+stop `@`-listfile expansion (`-- @list` still read the file).
 
-Is inserting `"--"` + rejecting `@`-leading names on the `unrar` path the fix you
-want, or do you prefer to normalize/escape names elsewhere? I can't verify the exact
-`unrar` behaviour here (binary not installed) — do you want me to hold the fix until
-it's validated against a real RARLAB `unrar`, or land the defensive `--` now?
+So the fix is two parts that must land together: insert `"--"` **and** reject (or
+neutralize) `@`-leading member names on the `unrar` path. Is that the shape you want,
+or would you rather normalize/escape names further upstream? Both parts are now
+validated here, so I can land them without waiting on further `unrar` checks — say
+the word.
 
 ## Q3 — `unrar` non-11 exit codes and short output (F4)
 
@@ -43,9 +47,11 @@ Only exit code 11 (bad password) is translated; codes 2 (fatal), 3 (CRC/corrupt)
 never checks it received `size` bytes — so a mis-parsed/corrupt member without a
 stored CRC yields a silent short/empty stream.
 
-Proposed mapping: `3 → CorruptionError`, `2 → CorruptionError` (or a generic
-`ArchiveError`), `10 → CorruptionError`/`TruncatedError` (member vanished), plus a
-length assertion on the nonsolid path mirroring the solid path's `EOFError →
-TruncatedError`. Does that match how you want `unrar` failures surfaced, and are there
-other codes (e.g. 9 create-error — shouldn't occur under `p`) you want mapped? Again,
-worth confirming against a real `unrar` before I encode specific numbers.
+Codes **3 (CRC/corrupt)** and **10 (no files matched)** are confirmed here against
+RARLAB unrar 7.00 (`repro.py`: a byte-flipped archive → exit 3; a non-matching name →
+exit 10, empty output). Proposed mapping: `3 → CorruptionError`, `2 → CorruptionError`
+(or a generic `ArchiveError`), `10 → CorruptionError`/`TruncatedError` (member
+vanished), plus a length assertion on the nonsolid path mirroring the solid path's
+`EOFError → TruncatedError`. Does that match how you want `unrar` failures surfaced,
+and are there other codes (e.g. 9 create-error — shouldn't occur under `p`) you want
+mapped?
