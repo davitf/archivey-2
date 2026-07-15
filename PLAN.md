@@ -52,16 +52,17 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
 
 > Reading is effectively complete (ZIP/TAR/single-file/ISO/directory + native 7z/RAR),
 > which is `VISION.md`'s release bar. What stands between here and a credible **first
-> public release** is not more formats — it is (a) making the two load-bearing claims
-> *earned in public* (the perf budget is unenforced; the security disclosure process is
-> missing) and (b) closing the cross-platform sharp corners that surprise day-one users.
-> The **flagship of the first release is consistency + safety**, not a new capability.
-> Salvage/best-effort read mode and a fully-native ZIP parser are explicitly **later**
-> (post-`0.2.0`). Sequenced below; each concrete engineering item has an OpenSpec change.
+> public release** is not more formats — it is (a) making the remaining load-bearing
+> claims *earned in public* (the perf budget is now gated via `benchmark-gate`; the
+> security disclosure process is still missing) and (b) closing the cross-platform sharp
+> corners that surprise day-one users. The **flagship of the first release is consistency
+> + safety**, not a new capability. Salvage/best-effort read mode and a fully-native ZIP
+> parser are explicitly **later** (post-`0.2.0`). Sequenced below; each concrete
+> engineering item has an OpenSpec change.
 
 **Recommended order** (do earlier items first — they unblock later ones):
 
-1. **`benchmark-gate`** — stand up the perf budget as a CI gate (wall time + **bytes
+1. **`benchmark-gate`** (✓ archived 2026-07-15) — stand up the perf budget as a CI gate (wall time + **bytes
    decompressed + seek counts**) *before the CLI*, because the CLI's `test`/`extract` on
    real solid archives is where the documented 7z solid-block O(n²) trap bites. Turns
    `VISION.md`'s central perf promise from prose into enforcement; prerequisite for any
@@ -85,20 +86,21 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
    the archived `adversarial-string-corpus-contract` (bidi/NUL) — no overlap. **Includes
    `OverwritePolicy.RENAME`** (`name (1)`), which reuses the O2 collision map — sequence
    this **before the CLI** so `extract` can offer rename-on-collision (parity with `unzip`).
-4. **`zip-native-codec-streams`** → then **`zip-aes-decryption`** — route ZIP member
-   decompression through archivey's shared codec layer (keeping stdlib `zipfile` for
-   central-directory parsing for now). Unlocks DEFLATE64/ZSTD/PPMD ZIP members (the codec
-   backends + registry entries already exist; only the wiring is missing), unifies
-   verification/error-translation, and is the stepping-stone toward a native ZIP parser.
-   `zip-native-codec-streams` deliberately keeps **encrypted** members on the `zipfile`
-   path; **`zip-aes-decryption`** then closes the real compat gap — archivey cannot read
-   **WinZip AES** (method 99 / `0x9901`) ZIPs *at all* today (stdlib `zipfile` has no AES),
-   so it composes AE-1/AE-2 decryption (`[crypto]` AES-CTR + PBKDF2 + HMAC-SHA1) onto the
-   raw-data path. Both **in `0.2.0`** (widen ZIP compatibility beyond stdlib).
-5. **`rar-file-version-members`** (already proposed) — land it **in `0.2.0` because it is
-   BREAKING to the listing contract** (WinRAR `-ver` history rows appear in `members()`).
-   Pre-release that break is free; post-release it costs users. Niche and small, so low
-   priority *within* 0.2.0 — but it should not slip past the tag for the breaking reason.
+4. **`zip-native-codec-streams`** → then **`zip-aes-decryption`** (✓ archived 2026-07-15) —
+   route ZIP member decompression through archivey's shared codec layer (keeping stdlib
+   `zipfile` for central-directory parsing for now). Unlocks DEFLATE64/ZSTD/PPMD ZIP
+   members (the codec backends + registry entries already exist; only the wiring is
+   missing), unifies verification/error-translation, and is the stepping-stone toward a
+   native ZIP parser. `zip-native-codec-streams` deliberately kept **encrypted** members
+   on the `zipfile` path; **`zip-aes-decryption`** then closed the real compat gap —
+   WinZip AES (method 99 / `0x9901`) via AE-1/AE-2 decryption (`[crypto]` AES-CTR +
+   PBKDF2 + HMAC-SHA1) on the raw-data path. Both **in `0.2.0`** (widen ZIP compatibility
+   beyond stdlib).
+5. **`rar-file-version-members`** (✓ archived 2026-07-15) — landed **in `0.2.0` because it
+   is BREAKING to the listing contract** (WinRAR `-ver` history rows appear in
+   `members()`). Pre-release that break is free; post-release it costs users. Niche and
+   small, so low priority *within* 0.2.0 — but it should not slip past the tag for the
+   breaking reason.
 6. **Release bundle** (existing Phase 7 + Phase 10 work, plus threat-model O5 follow-ups) —
    what makes it a *public* release: the **CLI** (`archivey list|test|extract`, the
    "unzip that can't be zip-slipped" demo — after the benchmark gate *and* after
@@ -122,11 +124,12 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
   differentiator; only ever an off-by-default third-party plugin once the backend API is
   public), and defer `ArchivePath` and the fsspec **write** direction past 1.0.
 
-New OpenSpec changes registered for this sequencing: `benchmark-gate`,
-`stored-digest-dedupe-parity`, `rar-blake2sp-verification`, `zip-native-codec-streams`,
-`zip-aes-decryption`, `cross-platform-name-safety` (which also lands
-`OverwritePolicy.RENAME`). Plus the already-proposed `rar-file-version-members`, pulled
-into 0.2.0 because it is breaking. (Provenance: the `review/` deep-review set —
+OpenSpec changes for this sequencing (active vs archived):
+`cross-platform-name-safety` remains active (lands `OverwritePolicy.RENAME`). Archived:
+`benchmark-gate`, `zip-native-codec-streams`, `zip-aes-decryption`,
+`rapidgzip-deflate-zlib-acceleration` (2026-07-15); `stored-digest-dedupe-parity`,
+`rar-blake2sp-verification`, `adversarial-string-corpus-contract` (2026-07-14);
+`rar-file-version-members` (2026-07-15). (Provenance: the `review/` deep-review set —
 `roadmap.md`, `SUMMARY.md`, `QUESTIONS.md` — and `docs/internal/threat-model.md` O1–O7.)
 
 ---
