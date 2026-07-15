@@ -43,8 +43,8 @@ feature — both must not be blocked by CLI grammar choices.
 ### Library defaults (extract)
 
 `ExtractionPolicy.STRICT` and `OverwritePolicy.ERROR` are the library defaults today.
-CLI should not invent a divergent "safer" story than the library unless we
-consciously choose unzip-like overwrite (`RENAME`) for the demo wedge.
+CLI keeps **policy=strict** aligned with the library, but defaults **overwrite to
+`rename`** for unzip-like demos — a deliberate CLI/library split (Decision 3).
 
 ## Decisions
 
@@ -83,11 +83,41 @@ Expose `--policy {strict,standard,trusted}` mapping 1:1 to `ExtractionPolicy`.
 **CLI default = `strict`** (matches library). Do not expose `OnError` or custom
 member filters in v1.
 
-Overwrite: expose `--overwrite {error,skip,replace,rename}` once `RENAME` lands;
-**default left open** (see Open Questions) — spec will say "default documented;
-MUST be one of ERROR or RENAME" until chosen.
+Overwrite: expose `--overwrite {error,skip,replace,rename}` once `RENAME` lands.
+**CLI default = `rename`** (unzip-like wedge). Library API stays `ERROR` —
+intentional CLI/library split: the command is the pleasant demo; the library
+stays conservative for programmatic callers.
 
 **Rejected:** full remote-control of every extract kwarg.
+
+### 3b. Extract dest vs filters (no competing positionals)
+
+Positional `[dest]` plus positional patterns is ambiguous:
+
+```
+archivey extract a.zip out        # dest or filter named "out"?
+archivey extract a.zip '*.py'     # filter — clear only by luck
+archivey extract a.zip out '*.py' # still guessing which is dest
+```
+
+Heuristics (exists-as-dir, trailing `/`) are fragile and platform-surprising.
+
+**Decision: destination is always `-d` / `--dest` (default `.`).** Remaining
+positionals after the archive are member filters only:
+
+```
+archivey extract archive.zip
+archivey extract archive.zip -d out/
+archivey extract archive.zip -d out/ '*.py' 'docs/*'
+archivey extract archive.zip '*.py'          # dest = .
+```
+
+Same `-d`/`--dest` shape as DEV and `unzip -d`. "Optional dest" means *omit the
+flag* (cwd), not *optional positional*.
+
+**Rejected:** bare positional dest; trailing-slash heuristics; requiring `--`
+before patterns as the only disambiguator (still fine as an *additional*
+include form later).
 
 ### 4. List output layers
 
@@ -135,11 +165,28 @@ output") and the current cli scenario about core remaining functional.
 **Rejected:** requiring `[cli]` to get the command at all (blocks the ten-second
 demo).
 
-### 9. Implementation layout
+### 9. Implementation layout + CLI framework
 
 `archivey/cli/` package: `main.py` (parser), `list.py`, `test.py`, `extract.py`,
-`info.py`, shared formatting/filters. `argparse` only (stdlib). DEV's single
-module is reference, not a port target.
+`info.py`, shared formatting/filters. DEV's single module is reference, not a
+port target.
+
+**Framework: stay on stdlib `argparse` + optional `tqdm`.** A short comparison
+(not a multi-day spike) is enough — the packaging constraint decides it:
+
+| Option | DX | Dep impact on `pip install archivey` | Fits zero-dep core? |
+| --- | --- | --- | --- |
+| `argparse` + optional tqdm | Verbose, adequate for 4 verbs | none (tqdm only via `[cli]`) | yes |
+| Click / Typer | Better subcommands, `CliRunner`, nesting for create/convert later | Click/Typer become **core** deps if the command always ships | **no** — conflicts with packaging "no third-party when no extras" |
+| Click only behind `[cli]` | Nice DX | Command gated on extra | Conflicts with "command always installed" demo goal |
+| Rich / rich-click | Pretty help | more core or `[cli]` weight | same tension |
+
+Click would be worth it if we dropped either zero-dep core *or* always-on
+entry points. We are keeping both, so argparse wins. Structure the package so a
+future swap is localized to `cli/main.py` (thin parser façade) — no need to
+explore further unless packaging policy changes.
+
+**Rejected:** Click/Typer as v1 default; a longer framework bake-off.
 
 ### 10. Global options (v1)
 
@@ -149,36 +196,30 @@ patterns: see open question.
 
 ## Risks / Trade-offs
 
-- [Default overwrite undecided] → Spec leaves an explicit TBD; implementation
-  blocked on that one call for extract demos.
+- [CLI default overwrite ≠ library] → Document clearly; demos use rename, scripts
+  using the library still get ERROR unless they opt in.
 - [Visible `--salvage` that errors] → Slightly noisy; better than silent ignore
   teaching false safety.
 - [Hybrid two ways to invoke] → Document aliases in `--help`; tests cover both.
 - [info vs list overlap] → Keep info member-free; list path-free of format essay.
+- [argparse verbosity] → Acceptable; thin `main.py` keeps a future Click swap local.
 
 ## Open Questions
 
-### Must answer before extract ships (blocking)
-
-1. **Default `--overwrite`:** `error` (library-aligned) vs `rename` (unzip-like
-   wedge)? Recommendation lean: **`rename` for CLI only**, library stays `ERROR`
-   — CLI is the demo of pleasant safe extract; library stays conservative.
-2. **Extract destination:** positional `[dest]` vs required `--dest` vs default
-   `.`? Lean: positional optional, default `.`.
-
 ### Should answer before locking the parser (important)
 
-3. **Pattern syntax:** positional `archivey list a.zip '*.py'`, `--include`/
-   `--exclude`, DEV-style `--` separator, or combination?
-4. **Exit-code map:** rich (`0` ok, `1` usage, `2` open/format, `3` integrity,
+1. **Pattern syntax beyond extract:** For `list`/`test`, same rule as extract
+   (positionals after archive = filters)? Also add `--include`/`--exclude`, or
+   enough with positionals only for v1?
+2. **Exit-code map:** rich (`0` ok, `1` usage, `2` open/format, `3` integrity,
    `4` extract policy rejections) vs simple `0`/`1`/`2`?
-5. **Multi-archive:** `archivey list *.zip` supported in v1?
-6. **`test` chatty vs quiet:** print per-member lines (DEV) or quiet + summary?
-7. **Stdin / `-` archives** in v1?
+3. **Multi-archive:** `archivey list *.zip` supported in v1?
+4. **`test` chatty vs quiet:** print per-member lines (DEV) or quiet + summary?
+5. **Stdin / `-` archives** in v1?
 
 ### Can defer (hash / polish)
 
-8. Hash v1 timing relative to CLI land (same change vs follow-up).
-9. `--json` on `list`/`info` in a follow-up.
-10. Whether `detect` should stay a pure alias or gain distinct magic-only
-    defaults vs `info`.
+6. Hash v1 timing relative to CLI land (same change vs follow-up).
+7. `--json` on `list`/`info` in a follow-up.
+8. Whether `detect` should stay a pure alias or gain distinct magic-only
+   defaults vs `info`.

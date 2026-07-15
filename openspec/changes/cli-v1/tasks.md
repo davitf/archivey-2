@@ -1,9 +1,10 @@
-## 1. Close blocking UX decisions (before extract implementation)
+## 1. Close remaining parser UX decisions
 
-- [ ] 1.1 Record default `--overwrite` (`error` vs `rename`) in design.md Open Questions → Decisions
-- [ ] 1.2 Record extract dest grammar (positional optional default `.` vs required `--dest`)
-- [ ] 1.3 Record pattern syntax choice (positional / `--include` / `--` separator)
+- [x] 1.1 Default `--overwrite` = `rename` (CLI); library stays `ERROR` — recorded in design
+- [x] 1.2 Extract dest = `-d`/`--dest` (default `.`); positionals after archive = filters only
+- [ ] 1.3 Record whether v1 needs `--include`/`--exclude` beyond positional filters
 - [ ] 1.4 Record exit-code map and whether multi-archive + stdin are in v1
+- [ ] 1.5 Record `test` verbosity (per-member vs summary)
 
 ## 2. Packaging + entry points
 

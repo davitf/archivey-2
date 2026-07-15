@@ -13,15 +13,17 @@ extract with policy, detect/info, and a reserved path for hash + salvage).
 - First-cut verbs: `list`, `test`, `extract`, `info`/`detect` (archive identity +
   format detection). Reserve `hash`, `create`, `convert` in the grammar without
   implementing them yet where noted.
-- `extract` exposes `ExtractionPolicy` (`strict` / `standard` / `trusted`) but
-  not the full library knob surface; overwrite/default-policy values stay open
-  until decided (see design).
+- `extract` exposes `ExtractionPolicy` (`strict` / `standard` / `trusted`;
+  default `strict`) and defaults overwrite to `rename` (library stays `ERROR`).
+  Destination is `-d`/`--dest` (default `.`); positionals after the archive are
+  filters only — no bare positional dest.
 - `list` defaults to a human layer-1 view (type, size, mtime, mode, encrypted,
   link target); stored digests opt-in so they do not pollute the default view.
 - Reserve `--salvage` as a future flag on `extract` / `convert` and on read-side
   verbs (`list` / `test` / `hash`) — no behavior in this change.
-- Keep CLI-only deps (`tqdm`) behind `[cli]`; core library remains importable
-  without them. Exact install/entry-point packaging decision recorded in design.
+- Keep CLI-only deps (`tqdm`) behind `[cli]`; parser is stdlib `argparse` so the
+  base install stays zero-third-party. Core library remains importable without
+  CLI deps.
 - **BREAKING** (pre-release only): widens the `cli` capability contract beyond
   the current three-subcommand matrix; no published package yet, so no user
   breakage.

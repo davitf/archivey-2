@@ -35,9 +35,11 @@ error. `test` MUST NOT require emitting computed content hashes.
 
 `extract` SHALL use safe-extraction defaults and SHALL expose
 `--policy {strict,standard,trusted}` mapping to `ExtractionPolicy` (CLI default
-`strict`). Overwrite handling SHALL be selectable once `OverwritePolicy.RENAME`
-exists; the default overwrite value is documented in design until finalized as
-either `error` or `rename`.
+`strict`). Destination SHALL be selected with `-d` / `--dest` (default `.`);
+remaining positionals after the archive path SHALL be member filters only (no
+bare positional destination). Overwrite SHALL default to `rename` once
+`OverwritePolicy.RENAME` exists (`--overwrite` may select `error` / `skip` /
+`replace` / `rename`).
 
 #### Scenario: CLI behavior matrix
 
@@ -47,9 +49,10 @@ either `error` or `rename`.
 | `archivey list <archive>` / `archivey -l <archive>` | Layer-1 member listing |
 | `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
 | `archivey test <archive>` / `archivey -t <archive>` | Fully reads members, verifies stored digests, reports failures |
-| `archivey extract <archive> [dest]` / `archivey -x …` | Extracts under `--policy` (default `strict`) and the chosen overwrite default |
+| `archivey extract <archive>` / `archivey -x …` | Extracts to `.` under `--policy` default `strict` and overwrite default `rename` |
+| `archivey extract <archive> -d out/ '*.py'` | Dest is `out/`; `*.py` is a member filter |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
-| Subcommand includes fnmatch pattern(s) | Operation limited to matching member names |
+| Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names |
 | `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
 | `--track-io` supplied | Reports configured I/O instrumentation for the operation |
 | Mode alias combined with an explicit conflicting subcommand | Usage error |
