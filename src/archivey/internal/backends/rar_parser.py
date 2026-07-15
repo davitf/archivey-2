@@ -1498,7 +1498,7 @@ def _parse_rar5_file_block(
     if is_directory and not is_symlink:
         filename = filename + "/"
 
-    member = RarMemberInfo(
+    return RarMemberInfo(
         filename=filename,
         orig_filename=orig_filename,
         file_size=file_size,
@@ -1526,7 +1526,6 @@ def _parse_rar5_file_block(
         split_after=split_after,
         file_version=file_version,
     )
-    return member
 
 
 def _parse_rar5_xtime(

@@ -186,7 +186,9 @@ def test_file_version_list_and_read(name: str) -> None:
                 assert "rar.file_version" not in member.extra
             else:
                 assert member.is_current is False
-                assert member.extra["rar.file_version"] == int(member_name.rsplit(";", 1)[1])
+                assert member.extra["rar.file_version"] == int(
+                    member_name.rsplit(";", 1)[1]
+                )
             assert archive.read(member) == expected
             assert archive.read(member_name) == expected
 

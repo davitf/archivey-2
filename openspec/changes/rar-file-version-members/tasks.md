@@ -18,5 +18,5 @@
 
 ## 4. Verify
 
-- [ ] 4.1 Targeted pytest for the new fixture + solid/`unrar` cases (`requires_binary("unrar")` where needed)
-- [ ] 4.2 `openspec validate --strict rar-file-version-members`
+- [x] 4.1 Targeted pytest for the new fixture + solid/`unrar` cases (`requires_binary("unrar")` where needed)
+- [x] 4.2 `openspec validate --strict rar-file-version-members`
