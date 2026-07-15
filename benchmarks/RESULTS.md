@@ -4,8 +4,9 @@
 decode-once). Wall-time / VISION ≤1.3× runs off the PR path as a **change-guarded
 nightly** (`benchmark-wall.yml`): a daily schedule whose expensive realistic run is
 skipped unless the default branch changed since the previous run (this project is
-bursty/dormant, and per-PR taxed every PR). It records drift (JSON artifact +
-informational VISION print) and goes red only on a gross regression.
+bursty/dormant, and per-PR taxed every PR). It records drift (JSON + markdown report
+artifacts, job summary table, and informational VISION print) and goes red only on a gross
+regression.
 
 Re-run with:
 
@@ -117,7 +118,9 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
 
 - **PR CI (blocking):** `--mode structural --scale ci` + unit decode-once tests.
 - **Change-guarded nightly (off the PR path, `benchmark-wall.yml`):** `--mode full
-  --scale realistic` with JSON artifact upload — a daily schedule that skips its
-  expensive run unless the default branch changed since the previous run (bursty/dormant
-  project; per-PR was rejected for taxing every PR). `workflow_dispatch` forces a run.
+  --scale realistic` with JSON + markdown report artifact upload (the markdown is also
+  written to the Actions job summary so it is readable without downloading) — a daily
+  schedule that skips its expensive run unless the default branch changed since the previous
+  run (bursty/dormant project; per-PR was rejected for taxing every PR). `workflow_dispatch`
+  forces a run.
 - Wall timing: unmeasured archivey vs stdlib; VISION band informational.

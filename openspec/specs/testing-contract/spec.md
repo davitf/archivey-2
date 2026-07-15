@@ -456,7 +456,8 @@ Structural invariants SHALL gate (block) every PR. Full wall-time ratio checks S
 off the PR path (non-blocking) as a separate scheduled job on a daily cadence, guarded so
 the expensive run is SKIPPED unless the default branch changed since the previous run
 (commit-recency guard), and MAY be forced on demand via `workflow_dispatch`. The job records
-results (JSON artifact + informational VISION print) and fails visibly (notifying) only on a
+results (JSON + human-readable markdown report artifacts, plus the same report on the GitHub
+Actions job summary) and an informational VISION print, and fails visibly (notifying) only on a
 real structural regression or a gross wall regression past the sanity ceiling. Per-PR
 wall-time execution SHALL NOT be required (it taxes every PR with a multi-minute run), and a
 plain always-on nightly SHALL be avoided in favour of the change-guarded schedule — this

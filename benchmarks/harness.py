@@ -601,6 +601,129 @@ def load_json(path: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text())
 
 
+def _fmt_seconds(seconds: float) -> str:
+    if seconds <= 0:
+        return "—"
+    if seconds < 1.0:
+        return f"{seconds * 1000:.1f} ms"
+    return f"{seconds:.3f} s"
+
+
+def _fmt_bytes(n: int | None) -> str:
+    if n is None:
+        return "—"
+    if n < 1024:
+        return str(n)
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KiB"
+    return f"{n / (1024 * 1024):.2f} MiB"
+
+
+def _vision_label(ratio: float | None) -> str:
+    if ratio is None:
+        return "—"
+    if ratio <= WALL_RATIO_VISION:
+        return f"within ≤{WALL_RATIO_VISION}×"
+    if ratio <= WALL_RATIO_VISION_SAFETY:
+        return f"above {WALL_RATIO_VISION}×, under {WALL_RATIO_VISION_SAFETY}×"
+    return f"above {WALL_RATIO_VISION_SAFETY}× safety"
+
+
+def format_text_report(payload: dict[str, Any]) -> str:
+    """Render a human-friendly markdown report from harness JSON payload."""
+    results = [
+        CaseResult(**r) if isinstance(r, dict) else r for r in payload["results"]
+    ]
+    scale = payload.get("scale", "?")
+    detail = payload.get("scale_detail") or {}
+    lines: list[str] = [
+        "# Benchmark report",
+        "",
+        f"- **mode:** `{payload.get('mode', '?')}`",
+        f"- **scale:** `{scale}`",
+        f"- **warmup:** `{payload.get('warmup', False)}`",
+    ]
+    if detail:
+        lines.extend(
+            [
+                "",
+                "## Corpus",
+                "",
+                f"- common members: {detail.get('common_members', '?')} × "
+                f"{_fmt_bytes(detail.get('common_member_size'))}",
+                f"- gzip size: {_fmt_bytes(detail.get('gzip_size'))}",
+                f"- solid members: {detail.get('solid_members', '?')} × "
+                f"{_fmt_bytes(detail.get('solid_member_size'))}",
+            ]
+        )
+
+    wall_cases = [r for r in results if r.wall_ratio is not None]
+    other_cases = [r for r in results if r.wall_ratio is None]
+
+    if wall_cases:
+        lines.extend(
+            [
+                "",
+                "## Wall-time vs stdlib",
+                "",
+                "| Case | archivey | stdlib | ratio | vs VISION |",
+                "| --- | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for r in wall_cases:
+            ratio = f"{r.wall_ratio:.2f}×" if r.wall_ratio is not None else "—"
+            lines.append(
+                f"| `{r.case}` | {_fmt_seconds(r.wall_s)} | "
+                f"{_fmt_seconds(r.stdlib_wall_s or 0.0)} | {ratio} | "
+                f"{_vision_label(r.wall_ratio)} |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## All cases",
+            "",
+            "| Case | format | op | wall | bytes_dec | seeks | notes |",
+            "| --- | --- | --- | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for r in results:
+        notes = r.notes.replace("|", "\\|") if r.notes else ""
+        lines.append(
+            f"| `{r.case}` | {r.format} | {r.operation} | "
+            f"{_fmt_seconds(r.wall_s)} | {_fmt_bytes(r.bytes_decompressed)} | "
+            f"{r.source_seek_count} | {notes} |"
+        )
+
+    if other_cases and any(r.case.endswith("_sequential") for r in other_cases):
+        lines.extend(["", "## Solid decode notes", ""])
+        for r in results:
+            if not r.case.endswith(("_sequential", "_random")):
+                continue
+            unpacked = r.unpacked_bytes or 0
+            factor = (r.bytes_decompressed / unpacked) if unpacked else None
+            factor_s = f"{factor:.2f}× unpacked" if factor is not None else "—"
+            lines.append(
+                f"- `{r.case}`: bytes_decompressed={_fmt_bytes(r.bytes_decompressed)} "
+                f"({factor_s}); seeks={r.source_seek_count}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## Policy reminder",
+            "",
+            f"- VISION target ≤{WALL_RATIO_VISION}× stdlib on common paths "
+            f"(~{WALL_RATIO_VISION_SAFETY}× safety band is informational on nightly).",
+            f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job; VISION band "
+            "jitter is printed, not failed.",
+            "- Structural seek/bytes gates live on the PR path (`ci.yml`), not here.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -630,6 +753,12 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help="Write full results JSON to this path",
+    )
+    parser.add_argument(
+        "--text-out",
+        type=Path,
+        default=None,
+        help="Write a human-friendly markdown report to this path",
     )
     parser.add_argument(
         "--fixture-dir",
@@ -671,11 +800,18 @@ def main(argv: list[str] | None = None) -> int:
         "warmup": warmup,
         "results": [asdict(r) for r in results],
     }
+    report = format_text_report(payload)
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(payload, indent=2) + "\n")
+    if args.text_out is not None:
+        args.text_out.parent.mkdir(parents=True, exist_ok=True)
+        args.text_out.write_text(report)
 
-    print(json.dumps(payload, indent=2))
+    # Friendly table first (CI logs / terminals); full JSON still available via --json-out.
+    print(report)
+    if args.json_out is None:
+        print(json.dumps(payload, indent=2))
 
     if args.update_baselines:
         write_baselines(results)
