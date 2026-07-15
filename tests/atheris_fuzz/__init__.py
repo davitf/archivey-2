@@ -10,7 +10,8 @@ from __future__ import annotations
 
 __all__ = ["TARGET_NAMES", "DEFAULT_BUDGETS"]
 
-# Default main-push partition (~4–5+ min). Overridable via ARCHIVEY_FUZZ_BUDGET_<NAME>.
+# Default full / nightly partition (~4–5+ min). Overridable via ARCHIVEY_FUZZ_BUDGET_<NAME>.
+# CI PR jobs set shorter env budgets; local defaults match the nightly depth.
 # Keep header slices well-fed; stream/codec slices are required (not dropped to fit).
 DEFAULT_BUDGETS: dict[str, int] = {
     "sevenzip_header": 45,

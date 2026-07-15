@@ -143,12 +143,16 @@ workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /
 
 ### Coverage-guided fuzz (Atheris)
 
-Atheris is **not** part of the everyday `pytest` / PR matrix. It lives in the PEP 735
-`fuzz` dependency group (`atheris`) and runs as a separate main-branch gate
-(`.github/workflows/atheris-fuzz.yml`: `push` to `main` + `workflow_dispatch`,
-partitioned ~4–5+ min across 7z/RAR headers+open, `detect_format`, deepened ZIP
-read, TAR/ISO, and all standalone stream/codec targets; CI installs `unrar` so RAR
-open runs). Mutation fuzz (`tests/test_mutation_fuzz.py`) and `ARCHIVEY_FUZZ=1` /
+Atheris lives in the PEP 735 `fuzz` dependency group (`atheris`) and runs via
+`.github/workflows/atheris-fuzz.yml` — same shape as the benchmark wall split:
+
+- **Every PR:** short partitioned budgets over all targets (blocks the PR; sharded
+  across parallel jobs because each target pays a large Atheris cold-start).
+- **Nightly schedule:** full partition, but only if default-branch HEAD moved in the
+  last ~3 days (commit-recency guard; dormant stretches skip the expensive run).
+- **`workflow_dispatch`:** force the full partition (optional `budget_scale`).
+
+Mutation fuzz (`tests/test_mutation_fuzz.py`) and `ARCHIVEY_FUZZ=1` /
 `tests/fuzz_sevenzip_parser.py` / `tests/fuzz_rar_parser.py` stay as they are.
 
 Local smoke (Linux; needs corpus fixture builders). Prefer Python 3.12 for current

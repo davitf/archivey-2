@@ -288,9 +288,9 @@ NOT rely on unaided libFuzzer CMP feedback to solve CRC32. A minority of inputs
 (or a small dedicated budget) SHALL retain broken CRCs so the reject path stays
 exercised.
 
-The default main-branch run SHALL partition wall-clock budget across the targets
-below (exact seconds MAY be env-overridable). The partition MUST size the total
-budget to include every required stream/codec target — there is no hard short
+The default main-branch / nightly run SHALL partition wall-clock budget across the
+targets below (exact seconds MAY be env-overridable). The partition MUST size the
+total budget to include every required stream/codec target — there is no hard short
 ceiling that permits dropping those slices. `workflow_dispatch` MAY lengthen
 budgets further.
 
@@ -315,11 +315,18 @@ Full member **extract** remains out of scope for this harness (covered by the
 mutation harness). Filter-only codecs (BCJ, Delta) are not required as standalone
 stream targets.
 
-CI SHALL run the harness on every push to `main` and via `workflow_dispatch`
-(longer budgets allowed). It MUST NOT be part of the default pull-request test
-matrix. On failure the job SHALL upload reproducing inputs as artifacts and
-print a one-line local re-run command. Always-on nightly schedules are not
-required. The workflow job timeout MUST accommodate the full partition.
+CI SHALL run a **short** partitioned harness on every pull request (same target
+set, reduced per-target budgets, and MAY shard targets across parallel jobs so
+wall time stays on the order of a few minutes — each Atheris target pays a large
+process cold-start cost). The **full** partition SHALL run off the PR path as a
+separate scheduled nightly job, guarded so the expensive run is SKIPPED unless
+the default branch changed within roughly the past 3 days (commit-recency
+guard), and MAY be forced on demand via `workflow_dispatch` (longer budgets
+allowed). A plain always-on nightly and a full partition on every `main` push
+are NOT required — same bursty / dormant trade-off as the change-guarded
+benchmark wall job. On failure the job SHALL upload reproducing inputs as
+artifacts and print a one-line local re-run command. The workflow job timeout
+MUST accommodate the active partition (short for PRs; full for nightly/dispatch).
 
 The existing corpus mutation harness and Hypothesis property tests remain
 mandatory complementary layers; Atheris does not replace them. `atheris` is
@@ -329,9 +336,11 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 
 | Case | Expected |
 | --- | --- |
-| Push to `main` | Fuzz workflow runs the full partitioned target set (including all required stream/codec slices); green if no crash/hang/raw exception |
-| `workflow_dispatch` with longer env budget | Same targets; extended exploration |
-| Pull request (default matrix) | Atheris job not required |
+| Pull request | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception |
+| Scheduled nightly, HEAD commit within ~3 days | Full partitioned target set runs |
+| Scheduled nightly, HEAD older than ~3 days | Expensive fuzz skipped (guard only) |
+| `workflow_dispatch` (optional longer env budget) | Full partition; extended exploration allowed |
+| Push to `main` alone | Full Atheris job not required (covered by PR short + change-guarded nightly) |
 | RAR backend absent | RAR targets skipped; other targets still run |
 | RAR backend present + `unrar` installed (Atheris CI) | RAR open+list target runs (not skipped for missing binary) |
 | Fuzzer finds a crashing input | Job fails; repro bytes uploaded; re-run command printed |

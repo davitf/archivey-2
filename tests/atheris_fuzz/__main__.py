@@ -102,6 +102,31 @@ def _spawn_target(name: str, *, smoke: bool, repro: Path | None) -> int:
     return int(completed.returncode)
 
 
+def _apply_shard(names: list[str]) -> list[str]:
+    """Optional CI sharding: ``ARCHIVEY_FUZZ_SHARD_INDEX`` / ``ARCHIVEY_FUZZ_SHARD_COUNT``.
+
+    Used on PR to cut wall time: each target pays a large Atheris cold-start cost, so
+    running shards in parallel is much cheaper than cutting per-target budgets alone.
+    """
+    raw_count = os.environ.get("ARCHIVEY_FUZZ_SHARD_COUNT", "1")
+    raw_index = os.environ.get("ARCHIVEY_FUZZ_SHARD_INDEX", "0")
+    try:
+        count = max(1, int(raw_count))
+        index = int(raw_index)
+    except ValueError:
+        return names
+    if count <= 1:
+        return names
+    if index < 0 or index >= count:
+        print(
+            f"[atheris] invalid shard {index}/{count}; running no targets",
+            file=sys.stderr,
+            flush=True,
+        )
+        return []
+    return [name for i, name in enumerate(names) if i % count == index]
+
+
 def main(argv: list[str] | None = None) -> int:
     from tests.atheris_fuzz import DEFAULT_BUDGETS, TARGET_NAMES
 
@@ -143,6 +168,15 @@ def main(argv: list[str] | None = None) -> int:
         return _spawn_target(args.target, smoke=False, repro=args.repro)
 
     selected = [args.target] if args.target else list(TARGET_NAMES)
+    if args.target is None:
+        selected = _apply_shard(selected)
+        shard_idx = os.environ.get("ARCHIVEY_FUZZ_SHARD_INDEX", "0")
+        shard_count = os.environ.get("ARCHIVEY_FUZZ_SHARD_COUNT", "1")
+        if int(shard_count) > 1:
+            print(
+                f"[atheris] shard {shard_idx}/{shard_count}: {', '.join(selected) or '(empty)'}",
+                flush=True,
+            )
     exit_code = 0
     for name in selected:
         # Always spawn: libFuzzer Setup() is once-per-process.
