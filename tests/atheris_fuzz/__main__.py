@@ -108,17 +108,25 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
     if args.list:
-        from tests.atheris_fuzz.targets import rar_available, rar_open_available
+        from tests.atheris_fuzz.targets import iter_target_specs
 
+        specs = {s["name"]: s for s in iter_target_specs()}
         for name in TARGET_NAMES:
             skip = ""
-            if name == "rar_header" and not rar_available():
-                skip = " (skipped: RAR backend not registered)"
-            elif name == "rar" and not rar_open_available():
-                if not rar_available():
+            spec = specs.get(name)
+            skip_unless = spec.get("skip_unless") if spec else None
+            if skip_unless is not None and not skip_unless():
+                if name == "rar_header":
                     skip = " (skipped: RAR backend not registered)"
+                elif name == "rar":
+                    from tests.atheris_fuzz.targets import rar_available
+
+                    if not rar_available():
+                        skip = " (skipped: RAR backend not registered)"
+                    else:
+                        skip = " (skipped: RARLAB unrar not on PATH)"
                 else:
-                    skip = " (skipped: RARLAB unrar not on PATH)"
+                    skip = " (skipped: codec backend unavailable)"
             print(f"{name:20s} default={DEFAULT_BUDGETS[name]}s{skip}")
         return 0
 

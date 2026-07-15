@@ -87,6 +87,13 @@ def test_fixup_sevenzip_known_good_header_unchanged(basic_7z: bytes) -> None:
     assert fixed[8:12] == basic_7z[8:12]
 
 
+def _zip_cd_crc_slice(data: bytes) -> tuple[int, bytes]:
+    eocd = data.rfind(b"PK\x05\x06")
+    cd_offset = int.from_bytes(data[eocd + 16 : eocd + 20], "little")
+    assert data[cd_offset : cd_offset + 4] == b"PK\x01\x02"
+    return cd_offset, data[cd_offset + 16 : cd_offset + 20]
+
+
 def test_fixup_zip_stored_member_crc(tmp_path: Path) -> None:
     import zipfile
 
@@ -96,21 +103,59 @@ def test_fixup_zip_stored_member_crc(tmp_path: Path) -> None:
     data = path.read_bytes()
 
     # Corrupt the central-directory CRC field, then fix it back.
-    eocd = data.rfind(b"PK\x05\x06")
-    cd_offset = int.from_bytes(data[eocd + 16 : eocd + 20], "little")
-    assert data[cd_offset : cd_offset + 4] == b"PK\x01\x02"
+    cd_offset, good_crc = _zip_cd_crc_slice(data)
     corrupted = bytearray(data)
     corrupted[cd_offset + 16] ^= 0xFF
     restored = fixup_zip_local_and_cd_crc(bytes(corrupted), broken=False)
-    assert (
-        restored[cd_offset + 16 : cd_offset + 20]
-        == data[cd_offset + 16 : cd_offset + 20]
-    )
+    assert restored[cd_offset + 16 : cd_offset + 20] == good_crc
 
     broken = fixup_zip_local_and_cd_crc(data, broken=True)
-    assert (
-        broken[cd_offset + 16 : cd_offset + 20] != data[cd_offset + 16 : cd_offset + 20]
-    )
+    assert broken[cd_offset + 16 : cd_offset + 20] != good_crc
+
+
+def test_fixup_zip_deflate_member_crc(tmp_path: Path) -> None:
+    """Deflate (method 8): recompute CRC from a successful raw inflate of the payload."""
+    import zipfile
+
+    payload = b"deflate zip crc payload " * 20
+    path = tmp_path / "deflate.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("d.txt", payload)
+    data = path.read_bytes()
+
+    cd_offset, good_crc = _zip_cd_crc_slice(data)
+    expected = _crc32(payload).to_bytes(4, "little")
+    assert good_crc == expected
+
+    corrupted = bytearray(data)
+    corrupted[cd_offset + 16] ^= 0xFF
+    restored = fixup_zip_local_and_cd_crc(bytes(corrupted), broken=False)
+    assert restored[cd_offset + 16 : cd_offset + 20] == expected
+
+    # Local header CRC must match too.
+    local_off = int.from_bytes(restored[cd_offset + 42 : cd_offset + 46], "little")
+    assert restored[local_off + 14 : local_off + 18] == expected
+
+    broken = fixup_zip_local_and_cd_crc(data, broken=True)
+    assert broken[cd_offset + 16 : cd_offset + 20] != expected
+
+
+def test_fixup_zip_broken_flips_when_no_recompute(tmp_path: Path) -> None:
+    """Unsupported method: broken mode still flips CD/local CRC for reject coverage."""
+    import zipfile
+
+    path = tmp_path / "stored.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.txt", b"x")
+    data = bytearray(path.read_bytes())
+    # Point the local method at an unsupported value so inflate/recompute is skipped.
+    eocd = data.rfind(b"PK\x05\x06")
+    cd_offset = int.from_bytes(data[eocd + 16 : eocd + 20], "little")
+    local_off = int.from_bytes(data[cd_offset + 42 : cd_offset + 46], "little")
+    data[local_off + 8 : local_off + 10] = (99).to_bytes(2, "little")
+    original_crc = bytes(data[cd_offset + 16 : cd_offset + 20])
+    flipped = fixup_zip_local_and_cd_crc(bytes(data), broken=True)
+    assert flipped[cd_offset + 16 : cd_offset + 20] != original_crc
 
 
 @pytest.fixture(scope="module")

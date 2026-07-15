@@ -10,15 +10,28 @@ from __future__ import annotations
 
 __all__ = ["TARGET_NAMES", "DEFAULT_BUDGETS"]
 
-# Default main-push partition (~150s). Overridable via ARCHIVEY_FUZZ_BUDGET_<NAME>.
+# Default main-push partition (~4–5+ min). Overridable via ARCHIVEY_FUZZ_BUDGET_<NAME>.
+# Keep header slices well-fed; stream/codec slices are required (not dropped to fit).
 DEFAULT_BUDGETS: dict[str, int] = {
     "sevenzip_header": 45,
     "sevenzip_open": 20,
     "detect_format": 12,
-    "zip_tar": 12,
+    "zip": 25,
+    "tar": 10,
     "iso": 8,
     "rar_header": 30,
-    "rar": 15,  # open+list once native RAR is registered
+    "rar": 15,
+    "unix_compress": 15,
+    "xz": 12,
+    "lzip": 10,
+    "gzip": 10,
+    "bzip2": 10,
+    "lzma_alone": 8,
+    "zlib": 8,
+    "zstd": 8,
+    "brotli": 8,
+    "lz4": 8,
+    "deflate64": 8,
 }
 
 TARGET_NAMES: tuple[str, ...] = tuple(DEFAULT_BUDGETS)
