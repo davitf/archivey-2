@@ -26,9 +26,11 @@ missing.
 - **Build on stdlib `hashlib.blake2s` tree parameters.** BLAKE2sp with parallelism degree
   8 is a two-level tree: 8 leaf `blake2s` instances (`fanout=8`, `depth=2`,
   `inner_size=32`, `node_depth=0`, `node_offset=i` for leaf `i`, `last_node=True` on leaf
-  7) feeding one root `blake2s` (`node_depth=1`, `node_offset=0`, `last_node=True`), digest
-  size 32. Input bytes are distributed to leaves in **round-robin 32-byte blocks** (the
-  BLAKE2sp block size). This keeps the core zero-dependency — no C extension, no new wheel.
+  7, `leaf_size=0`) feeding one root `blake2s` (`node_depth=1`, `node_offset=0`,
+  `last_node=True`), digest size 32. Input bytes are distributed to leaves in
+  **round-robin 64-byte blocks** (`BLAKE2S_BLOCKBYTES` — confirmed against the official
+  BLAKE2sp KATs and the RAR5 `-htb` fixture). This keeps the core zero-dependency — no C
+  extension, no new wheel.
 - **Incremental interface.** Implement the `_IncrementalHasher` protocol (`update(data)`,
   `digest()`, `digest_size`). `update` maintains a small carry buffer so arbitrary chunk
   boundaries route to the correct leaf; `digest()` finalizes each leaf, feeds the 8 leaf

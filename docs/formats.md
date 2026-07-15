@@ -95,12 +95,36 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 
 - One synthetic member (name from the source path, or `data` for anonymous streams).
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
+- `.gz` surfaces the trailer CRC-32 as `member.hashes["crc32"]` for a **single-member**
+  file on a seekable/path source (omit for multi-member gzip — the trailer covers only
+  the last member — and for non-seekable sources).
+- `.lz` surfaces the trailer CRC-32 the same way **size** is exposed: only when
+  `MemberStreams.SEEKABLE` is declared on a path source (seekable lzip backend).
+- `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored CRC.
 - `.Z` (unix-compress) is core (native LZW). Truncation is best-effort: nonzero leftover
   bits after the last complete code raise `TruncatedError` on the next `read()` after
   delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
   non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
+
+## Stored digests (cheap dedupe)
+
+`member.hashes` holds digests the archive **already stores**, keyed by algorithm
+(`"crc32"` as `int`, `"blake2sp"` as `bytes`). They are readable without decompressing
+when the backend documents them. They are **not** computed digests — a full `read()` still
+verifies through the normal path.
+
+| Format | When present | Keys |
+| --- | --- | --- |
+| ZIP | FILE / SYMLINK (central directory) | `crc32` |
+| 7z | FILE | `crc32` |
+| RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
+| single-file `.gz` | single member, seekable/path | `crc32` |
+| single-file `.lz` | seekable path + `MemberStreams.SEEKABLE` | `crc32` |
+| `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
+
+See [usage](usage.md#cheap-dedupe-with-stored-hashes) for the cheap→computed fallback recipe.
 
 ## Detection
 

@@ -24,6 +24,7 @@ from archivey import (
     EncryptionError,
     ExtractionStatus,
     FormatSupport,
+    MemberStreams,
     MemberType,
     OnError,
     OverwritePolicy,
@@ -122,6 +123,7 @@ def _check_listing(ar, entry: CorpusEntry, key: str) -> None:
                 assert act.uid == exp.uid, f"uid of {name!r}"
             if exp.comment is not None and key == "zip":
                 assert act.comment == exp.comment, f"comment of {name!r}"
+            _assert_stored_digest_parity(act, key)
 
     # Unexpected extras: only implicit parent DIRECTORY members are tolerated (the
     # directory/ISO backends materialize parents the shape left implicit).
@@ -133,6 +135,39 @@ def _check_listing(ar, entry: CorpusEntry, key: str) -> None:
 
     if entry.archive_comment is not None and key == "zip":
         assert ar.info.comment == entry.archive_comment
+
+
+def _assert_stored_digest_parity(member, key: str) -> None:
+    """Assert documented stored-digest keys are present/absent (testing-contract)."""
+    keys = set(member.hashes)
+    digest_keys = keys & {"crc32", "blake2sp"}
+    if key == "zip":
+        if member.type in (MemberType.FILE, MemberType.SYMLINK):
+            assert "crc32" in keys, f"zip {member.name!r} missing crc32"
+        else:
+            assert "crc32" not in keys, f"zip {member.name!r} unexpected crc32"
+        return
+    if key == "7z":
+        if member.type is MemberType.FILE:
+            assert "crc32" in keys, f"7z {member.name!r} missing crc32"
+        elif member.type is MemberType.DIRECTORY:
+            assert "crc32" not in keys, f"7z {member.name!r} unexpected crc32"
+        # SYMLINK may carry a CRC of the stored link payload; do not require or forbid.
+        return
+    if key == "rar":
+        if member.type is MemberType.FILE:
+            # RAR5 may store Blake2sp instead of (or in addition to) CRC32.
+            assert digest_keys, f"rar FILE {member.name!r} missing stored digest"
+            if "blake2sp" in keys and "crc32" not in keys:
+                return
+            assert "crc32" in keys or "blake2sp" in keys
+        else:
+            assert not digest_keys, (
+                f"rar {member.name!r} unexpected digests {digest_keys}"
+            )
+        return
+    # TAR, directory, ISO, compressed-TAR: no cheap whole-member stored digest.
+    assert not digest_keys, f"{key} {member.name!r} unexpected digests {digest_keys}"
 
 
 def _check_reads(ar, entry: CorpusEntry) -> None:
@@ -234,3 +269,15 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
             assert member.raw_name == payload.name.encode()
             assert member.modified is not None
             assert int(member.modified.timestamp()) == payload.mtime
+        # Stored-digest parity: single-member gzip always (path source); lzip only with
+        # declared SEEKABLE (same gate as size); other codecs omit.
+        if key in ("gz", "gz-meta"):
+            assert "crc32" in member.hashes
+        elif key == "lz":
+            assert "crc32" not in member.hashes
+        else:
+            assert "crc32" not in member.hashes
+            assert "blake2sp" not in member.hashes
+    if key == "lz":
+        with open_archive(source, member_streams=MemberStreams.SEEKABLE) as ar:
+            assert "crc32" in ar.members()[0].hashes

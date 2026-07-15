@@ -77,6 +77,37 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
 In streaming mode, `members()` / `get()` / `open()` / `read()` raise
 `UnsupportedOperationError`. Use `__iter__`, `stream_members`, or `extract_all` once.
 
+## Cheap dedupe with stored hashes
+
+Prefer digests the archive already stores (`member.hashes`) before computing your own —
+see the [stored-digest matrix](formats.md#stored-digests-cheap-dedupe). Recipe:
+
+```python
+import hashlib
+import archivey
+
+def content_key(reader, member):
+    """Best available digest for a first-pass dedupe index."""
+    if "blake2sp" in member.hashes:
+        return ("stored", "blake2sp", member.hashes["blake2sp"])
+    if "crc32" in member.hashes:
+        return ("stored", "crc32", member.hashes["crc32"])
+    # No cheap stored digest (e.g. tar, bzip2): compute while reading.
+    h = hashlib.sha256()
+    with reader.open(member) as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            h.update(chunk)
+    return ("computed", "sha256", h.digest())
+
+with archivey.open_archive("backups.zip") as reader:
+    for member in reader:
+        if member.is_file:
+            print(member.name, content_key(reader, member))
+```
+
+Stored digests are weaker or format-specific; computed digests are stronger but cost a
+full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
+
 ## Passwords
 
 ```python

@@ -1,6 +1,6 @@
 # stored-digest-dedupe-parity — surface cheap stored hashes for dedupe, everywhere
 
-**Status:** Ready to implement. Depends on nothing. Not breaking (purely additive). Effort: small.
+**Status:** Complete — all ten tasks done; ready to archive. Depends on nothing. Not breaking (purely additive). Effort: small.
 
 **Why it matters:** the founding use case is indexing and de-duplicating decades of backups, and the vision calls out using hashes the archive already stores without decompressing. Coverage is currently uneven: 7z, ZIP, and RAR5 surface their stored checksums, but single-file gzip and lzip do not — even though both store a checksum of the decompressed content in their trailer that is cheap to read. There is also no written policy for which format surfaces which digest, so parity can drift silently.
 

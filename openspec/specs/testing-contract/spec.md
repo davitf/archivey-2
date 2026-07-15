@@ -362,3 +362,51 @@ affect buffering, materialization, or decompression work.
 | Multi-thread workers cover core backends (directory, ZIP, stdlib single-file, SharedSource, plain TAR) | Exact member bytes and documented misuse errors |
 | TAR/ISO correctness lock implemented | Practical serialization metrics recorded without a correctness speed threshold |
 | Later performance claim changes handle sharing, decoding, or locks | Focused before/after metrics for affected resources |
+
+### Requirement: Stored-digest parity across backends
+
+The corpus conformance sweep SHALL assert stored-digest parity: for every applicable
+member, each backend SHALL surface the stored digest(s) documented for its format, and
+SHALL omit digest keys where the format stores none. This turns silent parity drift ("a
+backend quietly stopped populating `crc32`") into a test failure.
+
+The asserted matrix SHALL match the documented policy:
+
+| Format | Member kind | Expected `hashes` keys |
+| --- | --- | --- |
+| ZIP | FILE / SYMLINK | `crc32` present |
+| 7z | FILE | `crc32` present |
+| RAR5 | FILE with CRC32 | `crc32` present |
+| RAR5 | FILE with Blake2sp only | `blake2sp` present, `crc32` absent |
+| single-file GZIP | single member, seekable | `crc32` present |
+| single-file GZIP | multi-member or non-seekable | `crc32` absent |
+| single-file LZIP | via seekable lzip backend | `crc32` present |
+| single-file BZ2/XZ/ZLIB/BR/`.Z`, TAR, directory | any | no stored-digest key |
+
+#### Scenario: parity sweep
+
+| Case | Expected |
+| --- | --- |
+| Backend surfaces its documented stored digest for an applicable member | Sweep passes |
+| A backend stops populating a documented digest | Sweep fails |
+| A backend populates a digest the format does not store | Sweep fails |
+
+
+### Requirement: BLAKE2sp verification is tested with KATs and a RAR5 oracle
+
+The suite SHALL include BLAKE2sp known-answer tests (reference BLAKE2 vectors) proving
+the internal hasher independent of RAR fixtures, and SHALL assert end-to-end that a native
+read of a RAR5 BLAKE2sp-only member verifies: an intact member reads clean and a
+corrupted-payload member raises `CorruptionError` (not a silent `DIGEST_UNVERIFIABLE`).
+The oracle cross-check (`unrar`/`rarfile`) SHALL confirm the intact bytes; oracle-backed
+cases SHALL skip when the tool/library is unavailable.
+
+#### Scenario: BLAKE2sp verification
+
+| Case | Expected |
+| --- | --- |
+| BLAKE2sp known-answer vectors | Internal hasher matches reference digests |
+| Intact RAR5 BLAKE2sp-only member, native read | Reads clean; digest verified (no `DIGEST_UNVERIFIABLE`) |
+| Corrupted RAR5 BLAKE2sp-only member payload | `CorruptionError` at terminal read |
+| `unrar`/`rarfile` unavailable | Oracle cross-check skips; KATs and native read still run |
+
