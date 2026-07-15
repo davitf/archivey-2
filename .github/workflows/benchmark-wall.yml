@@ -69,9 +69,20 @@ jobs:
           uv run --no-sync python -m benchmarks.harness
           --mode full --scale realistic
           --json-out benchmark-wall-realistic.json
+          --text-out benchmark-wall-realistic.md
+      - name: Publish report to job summary
+        if: always() && steps.guard.outputs.run == 'true'
+        run: |
+          if [ -f benchmark-wall-realistic.md ]; then
+            cat benchmark-wall-realistic.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No benchmark report produced (harness did not write text output)." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload wall-time results
         if: always() && steps.guard.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-wall-realistic
-          path: benchmark-wall-realistic.json
+          path: |
+            benchmark-wall-realistic.md
+            benchmark-wall-realistic.json
