@@ -787,7 +787,7 @@ class ZipReader(BaseArchiveReader):
                 body,
                 config=self._stream_config,
                 params=params,
-                seekable=False,
+                seekable=self._stream_config.seekable,
                 collector=self._diagnostics_collector,
             )
 
@@ -810,9 +810,7 @@ class ZipReader(BaseArchiveReader):
                 archive_name=self._archive_name,
             )
         size = member.size if member is not None else info.file_size
-        return self._wrap_member_stream(
-            decoded, member_name, size=size, track_output=False
-        )
+        return self._wrap_member_stream(decoded, member_name, size=size)
 
     def _open_zip_entry(
         self,
@@ -999,7 +997,7 @@ class ZipReader(BaseArchiveReader):
                 raw,
                 config=self._stream_config,
                 params=params,
-                seekable=False,
+                seekable=self._stream_config.seekable,
                 collector=self._diagnostics_collector,
             )
         except PackageNotInstalledError:
@@ -1017,9 +1015,7 @@ class ZipReader(BaseArchiveReader):
                 archive_name=self._archive_name,
             )
         size = member.size if member is not None else info.file_size
-        return self._wrap_member_stream(
-            decoded, member_name, size=size, track_output=False
-        )
+        return self._wrap_member_stream(decoded, member_name, size=size)
 
     def _open_zipfile_member(
         self,

@@ -239,10 +239,61 @@ def test_aes_multi_password_selects_winner() -> None:
         assert ar.read(ar.members()[0]) == _PAYLOAD
 
 
-def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    data = _build_aes_zip(
-        payload=_PAYLOAD, password=_PASSWORD, vendor_version=2, strength=3, method=0
+def _minimal_aes_zip_bytes() -> bytes:
+    """A tiny method-99 ZIP with a valid 0x9901 extra (no cryptography needed to build).
+
+    The ciphertext body is garbage — only used to exercise the ``[crypto]``-absent path,
+    which fails before decryption.
+    """
+    name = b"x.txt"
+    # AE-2, strength 1 (128), actual method STORED
+    aes_extra = struct.pack("<H2sBH", 2, b"AE", 1, 0)
+    extra = struct.pack("<HH", 0x9901, len(aes_extra)) + aes_extra
+    # salt(8) + verify(2) + cipher(1) + hmac(10)
+    body = b"\0" * (8 + 2 + 1 + 10)
+    flags = 0x1
+    local = struct.pack(
+        "<IHHHHHIIIHH",
+        0x04034B50,
+        51,
+        flags,
+        99,
+        0,
+        0,
+        0,
+        len(body),
+        1,
+        len(name),
+        len(extra),
     )
+    local += name + extra + body
+    cd = struct.pack(
+        "<IHHHHHHIIIHHHHHII",
+        0x02014B50,
+        51,
+        51,
+        flags,
+        99,
+        0,
+        0,
+        0,
+        len(body),
+        1,
+        len(name),
+        len(extra),
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    cd += name + extra
+    eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cd), len(local), 0)
+    return local + cd + eocd
+
+
+def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    data = _minimal_aes_zip_bytes()
     import archivey.internal.zip_aes as zip_aes_module
 
     monkeypatch.setattr(zip_aes_module, "_crypto_available", lambda: False)
