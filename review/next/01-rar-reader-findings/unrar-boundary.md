@@ -112,12 +112,15 @@ listfile) is special. Confirmed against RARLAB unrar 7.00: `-n./-inul`, `-n./@at
 
 `--` alone is **not** sufficient — it neutralizes the `-` switch case (`-- <archive>
 -inul` → exit 10) but does **not** stop `@`-listfile expansion (`-- @list` still read
-the file), which is why `-n./` (or rejecting `@` names) is required. Two caveats for
-`-n./`: (1) `-ver` history rows need `-ver` added to the call (the mask excludes them
-otherwise — reuse the existing `version_control` plumbing); (2) `-n` values are masks,
-so literal wildcard metacharacters (`* ? [ ]`) in a name match as wildcards — safe here
-because CRC + the Q3 length check catch any mis-match, but optionally reject such names
-for a precise error. Member *listing* keeps the original names regardless.
+the file), which is why `-n./` is required. Caveats for `-n./` (all tested, details in
+`QUESTIONS.md` Q2): (1) `-ver` history rows need `-ver` added to the call (the mask
+excludes them otherwise — reuse the existing `version_control` plumbing); (2) `-n`
+values are *masks* in which **only `*` and `?` are metacharacters** and there is **no
+escape** (`[ ]` are literal — unrar has no char-class support — and `\` doesn't escape),
+so a name containing a literal `*`/`?` cannot be addressed to one member and should be
+**rejected with a typed error** on the `unrar` path (CRC + the Q3 length check are the
+backstop). Every other character — `[`, `]`, `;`, space, unicode — needs no special
+handling. Member *listing* keeps the original names regardless.
 
 ---
 
