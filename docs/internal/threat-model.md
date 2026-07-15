@@ -137,11 +137,12 @@ not the in-tree gate:
    member read (native codec/AES), TAR/ISO open+list, and standalone stream/codec
    targets (unix-compress, xz, lzip, gzip, bzip2, lzma-alone, zlib; optional
    zstd/brotli/lz4/deflate64 skip-clean when absent). CI runs a **short** partition on
-   every **pull request**, and the **full** partition on a **change-guarded nightly**
-   (skip unless default-branch HEAD moved in ~3 days) plus **`workflow_dispatch`** —
-   same pattern as the benchmark wall job; not an always-on nightly and not a full
-   run on every `main` push. `atheris` lives in the PEP 735 `fuzz` dependency group
-   only — never a runtime extra. See `openspec/specs/testing-contract/spec.md`.
+   every **pull request** (sharded for wall time), and the **full** partition on a
+   **change-guarded nightly** (skip unless default-branch HEAD moved in ~3 days) plus
+   **`workflow_dispatch`** — same pattern as the benchmark wall job; not an always-on
+   nightly and not a full run on every `main` push. `atheris` lives in the PEP 735
+   `fuzz` dependency group only — never a runtime extra. See
+   `openspec/specs/testing-contract/spec.md`.
 4. **Still open (public release):** OSS-Fuzz onboarding; `SECURITY.md` with a disclosure
    process. Accelerator hang sandbox (below) remains a separate follow-up.
 

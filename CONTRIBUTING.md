@@ -146,7 +146,8 @@ workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /
 Atheris lives in the PEP 735 `fuzz` dependency group (`atheris`) and runs via
 `.github/workflows/atheris-fuzz.yml` — same shape as the benchmark wall split:
 
-- **Every PR:** short partitioned budgets over all targets (blocks the PR).
+- **Every PR:** short partitioned budgets over all targets (blocks the PR; sharded
+  across parallel jobs because each target pays a large Atheris cold-start).
 - **Nightly schedule:** full partition, but only if default-branch HEAD moved in the
   last ~3 days (commit-recency guard; dormant stretches skip the expensive run).
 - **`workflow_dispatch`:** force the full partition (optional `budget_scale`).

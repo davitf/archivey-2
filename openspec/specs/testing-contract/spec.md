@@ -316,16 +316,17 @@ mutation harness). Filter-only codecs (BCJ, Delta) are not required as standalon
 stream targets.
 
 CI SHALL run a **short** partitioned harness on every pull request (same target
-set, reduced per-target budgets — enough to catch crashers without a multi-minute
-tax). The **full** partition SHALL run off the PR path as a separate scheduled
-nightly job, guarded so the expensive run is SKIPPED unless the default branch
-changed within roughly the past 3 days (commit-recency guard), and MAY be forced
-on demand via `workflow_dispatch` (longer budgets allowed). A plain always-on
-nightly and a full partition on every `main` push are NOT required — same bursty /
-dormant trade-off as the change-guarded benchmark wall job. On failure the job
-SHALL upload reproducing inputs as artifacts and print a one-line local re-run
-command. The workflow job timeout MUST accommodate the active partition (short
-for PRs; full for nightly/dispatch).
+set, reduced per-target budgets, and MAY shard targets across parallel jobs so
+wall time stays on the order of a few minutes — each Atheris target pays a large
+process cold-start cost). The **full** partition SHALL run off the PR path as a
+separate scheduled nightly job, guarded so the expensive run is SKIPPED unless
+the default branch changed within roughly the past 3 days (commit-recency
+guard), and MAY be forced on demand via `workflow_dispatch` (longer budgets
+allowed). A plain always-on nightly and a full partition on every `main` push
+are NOT required — same bursty / dormant trade-off as the change-guarded
+benchmark wall job. On failure the job SHALL upload reproducing inputs as
+artifacts and print a one-line local re-run command. The workflow job timeout
+MUST accommodate the active partition (short for PRs; full for nightly/dispatch).
 
 The existing corpus mutation harness and Hypothesis property tests remain
 mandatory complementary layers; Atheris does not replace them. `atheris` is
@@ -335,7 +336,7 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 
 | Case | Expected |
 | --- | --- |
-| Pull request | Short partitioned budgets over the full target set; green if no crash/hang/raw exception |
+| Pull request | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception |
 | Scheduled nightly, HEAD commit within ~3 days | Full partitioned target set runs |
 | Scheduled nightly, HEAD older than ~3 days | Expensive fuzz skipped (guard only) |
 | `workflow_dispatch` (optional longer env budget) | Full partition; extended exploration allowed |
