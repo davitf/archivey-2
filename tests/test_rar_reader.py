@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import ExtractionStatus, open_archive
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -161,6 +161,76 @@ def test_stored_m0_direct_read() -> None:
         member = next(m for m in archive.members() if m.is_file)
         assert member.compression[0].algo.name == "STORED"
         assert archive.read(member) == b"stored payload"
+
+
+_FILE_VERSION_CONTENTS = {
+    "file.txt;1": b"version-one",
+    "file.txt;2": b"version-two!!",
+    "file.txt": b"version-three!!!",
+}
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "name",
+    ["file_version__.rar", "file_version__rar4.rar"],
+)
+def test_file_version_list_and_read(name: str) -> None:
+    with open_archive(_fixture(name)) as archive:
+        files = {m.name: m for m in archive.members() if m.is_file}
+        assert set(files) == set(_FILE_VERSION_CONTENTS)
+        for member_name, expected in _FILE_VERSION_CONTENTS.items():
+            member = files[member_name]
+            if member_name == "file.txt":
+                assert member.is_current is True
+                assert "rar.file_version" not in member.extra
+            else:
+                assert member.is_current is False
+                assert member.extra["rar.file_version"] == int(member_name.rsplit(";", 1)[1])
+            assert archive.read(member) == expected
+            assert archive.read(member_name) == expected
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "name",
+    ["file_version__.rar", "file_version__rar4.rar"],
+)
+def test_file_version_extract_all_skips_history(name: str, tmp_path: Path) -> None:
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with open_archive(_fixture(name)) as archive:
+        results = archive.extract_all(dest).results
+    by_name = {r.member.name: r for r in results if r.member.is_file}
+    assert by_name["file.txt;1"].status is ExtractionStatus.SKIPPED
+    assert by_name["file.txt;2"].status is ExtractionStatus.SKIPPED
+    assert by_name["file.txt"].status is ExtractionStatus.EXTRACTED
+    assert (dest / "file.txt").read_bytes() == _FILE_VERSION_CONTENTS["file.txt"]
+    assert not (dest / "file.txt;1").exists()
+    assert not (dest / "file.txt;2").exists()
+
+
+@requires_binary("unrar")
+def test_file_version_solid_demux_aligned() -> None:
+    expected = {
+        "a.txt;1": b"AAA-v1",
+        "b.txt": b"BBB-payload",
+        "a.txt": b"AAA-v2-longer",
+    }
+    with open_archive(_fixture("file_version_solid__.rar")) as archive:
+        assert archive.info.is_solid is True
+        streamed = {
+            member.name: stream.read()
+            for member, stream in archive.stream_members()
+            if member.is_file and stream is not None
+        }
+        assert streamed == expected
+        for member_name, payload in expected.items():
+            assert archive.read(member_name) == payload
+        history = archive.get("a.txt;1")
+        assert history is not None
+        assert history.is_current is False
+        assert history.extra["rar.file_version"] == 1
 
 
 @requires_binary("unrar")

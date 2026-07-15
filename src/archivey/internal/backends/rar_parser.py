@@ -193,6 +193,9 @@ class RarMemberInfo:
     split_after: bool
     comment: str | None = None
     spanned_volumes: bool = False
+    # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
+    # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
+    file_version: int | None = None
 
     def needs_password(self) -> bool:
         return self.is_encrypted
@@ -200,6 +203,10 @@ class RarMemberInfo:
     def is_payload_file(self) -> bool:
         """True if ``unrar p`` emits this member's bytes (regular file, not dir/link/redir)."""
         return not (self.is_directory or self.is_symlink or self.is_hardlink_or_copy)
+
+    def is_file_version_history(self) -> bool:
+        """True for a prior ``-ver`` revision (presented as ``path;n``)."""
+        return self.file_version is not None and self.file_version != 0
 
 
 @dataclass
@@ -907,17 +914,17 @@ def _parse_rar3(
                 # Do not reject extract_version ≤ 20 — that also false-positives
                 # modern RAR3 archives whose stored/small members advertise
                 # unp_ver=20.
-                if not (flags & _RAR3_FILE_VERSION):
-                    if member.split_before:
-                        if members:
-                            _merge_split_member(members[-1], member)
-                        else:
-                            # Continuation without a prior part in this volume.
-                            _append_member(members, member)
+                # File-version history rows (FILE_VERSION) are kept as members.
+                if member.split_before:
+                    if members:
+                        _merge_split_member(members[-1], member)
                     else:
+                        # Continuation without a prior part in this volume.
                         _append_member(members, member)
-                    if member.split_after:
-                        needs_next_volume = True
+                else:
+                    _append_member(members, member)
+                if member.split_after:
+                    needs_next_volume = True
             elif (
                 block_type == _RAR3_SUB
                 and member.filename == "CMT"
@@ -1031,6 +1038,9 @@ def _parse_rar3_file_header(
         and mode is not None
         and (mode & 0xF000) == 0xA000
     )
+    file_version: int | None = None
+    if flags & _RAR3_FILE_VERSION:
+        filename, file_version = _rar3_split_file_version(filename)
     if is_directory:
         filename = filename + "/"
 
@@ -1072,8 +1082,21 @@ def _parse_rar3_file_header(
         volume_index=volume_index,
         split_before=bool(flags & _RAR3_FILE_SPLIT_BEFORE),
         split_after=bool(flags & _RAR3_FILE_SPLIT_AFTER),
+        file_version=file_version,
     )
     return member, crc_pos
+
+
+def _rar3_split_file_version(filename: str) -> tuple[str, int | None]:
+    """Split a RAR3 ``path;n`` version suffix into ``(path, n)``.
+
+    RAR3 stores the version in the header name when ``FILE_VERSION`` is set.
+    Returns ``(filename, None)`` when no trailing decimal ``;n`` is present.
+    """
+    stem, sep, ver = filename.rpartition(";")
+    if not sep or not ver.isdigit():
+        return filename, None
+    return stem, int(ver)
 
 
 def _parse_rar3_ext_time(
@@ -1246,7 +1269,7 @@ def _parse_rar5(
             break
 
         if block_type in (_RAR5_FILE, _RAR5_SERVICE):
-            member, skip_version = _parse_rar5_file_block(
+            member = _parse_rar5_file_block(
                 hdata,
                 pos,
                 block_flags=block_flags,
@@ -1257,7 +1280,8 @@ def _parse_rar5(
                 add_size=add_size,
                 volume_index=volume_index,
             )
-            if block_type == _RAR5_FILE and not skip_version:
+            if block_type == _RAR5_FILE:
+                # File-version history rows (extra 0x04) are kept as members.
                 if member.split_before:
                     if members:
                         _merge_split_member(members[-1], member)
@@ -1394,7 +1418,7 @@ def _parse_rar5_file_block(
     data_offset: int,
     add_size: int,
     volume_index: int,
-) -> tuple[RarMemberInfo, bool]:
+) -> RarMemberInfo:
     file_flags, pos = _load_vint(hdata, pos)
     file_size, pos = _load_vint(hdata, pos)
     mode, pos = _load_vint(hdata, pos)
@@ -1421,7 +1445,7 @@ def _parse_rar5_file_block(
     blake2sp_hash: bytes | None = None
     file_redir: tuple[int, int, str] | None = None
     file_encryption: RarEncryptionInfo | None = None
-    skip_version = False
+    file_version: int | None = None
     flags = 0
 
     if extra_size:
@@ -1455,8 +1479,7 @@ def _parse_rar5_file_block(
                 )
             elif xtype == _RAR5_XFILE_VERSION:
                 _vflags, xpos = _load_vint(xdata, xpos)
-                _version, xpos = _load_vint(xdata, xpos)
-                skip_version = True
+                file_version, xpos = _load_vint(xdata, xpos)
             # OWNER / SERVICE / unknown: ignore
 
     is_symlink = False
@@ -1501,8 +1524,9 @@ def _parse_rar5_file_block(
         volume_index=volume_index,
         split_before=split_before,
         split_after=split_after,
+        file_version=file_version,
     )
-    return member, skip_version
+    return member
 
 
 def _parse_rar5_xtime(

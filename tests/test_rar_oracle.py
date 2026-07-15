@@ -65,11 +65,23 @@ def test_native_rar_matches_rarfile_metadata_and_bytes(
             for member in native.members()
             if member.type is MemberType.FILE
         }
+        # rarfile omits ``-ver`` history rows; those are covered by dedicated
+        # file-version tests and must not break list equality here.
+        native_for_oracle = {
+            name: member
+            for name, member in native_files.items()
+            if "rar.file_version" not in member.extra
+        }
+        assert set(native_for_oracle) == set(oracle_infos), (
+            f"member name mismatch for {name}: "
+            f"only_native={sorted(set(native_for_oracle) - set(oracle_infos))} "
+            f"only_rarfile={sorted(set(oracle_infos) - set(native_for_oracle))}"
+        )
         # Compare file members that rarfile exposes as regular files.
-        common = set(native_files) & set(oracle_bytes)
+        common = set(native_for_oracle) & set(oracle_bytes)
         assert common, "expected overlapping file members with rarfile"
         for filename in common:
-            member = native_files[filename]
+            member = native_for_oracle[filename]
             info = oracle_infos[filename]
             assert member.size == info.file_size
             assert native.read(member) == oracle_bytes[filename]
@@ -101,9 +113,10 @@ def test_corpus_rar_matches_rarfile(entry: CorpusEntry, tmp_path: Path) -> None:
         }
 
     with open_archive(archive, password=password) as native:
+        # Exclude WinRAR ``-ver`` history (rarfile omits these rows).
         native_files = {
             member.name: native.read(member)
             for member in native.members()
-            if member.type is MemberType.FILE
+            if member.type is MemberType.FILE and "rar.file_version" not in member.extra
         }
         assert native_files == oracle_files
