@@ -79,4 +79,13 @@ conflicts rather than open space.
   first public release freezes it.
 - Public surface grows by one `ExtractionResult` field (`requested_path`, appended with a
   default), one diagnostic code, and one `OverwritePolicy` member (`RENAME`).
-- O2/O3/O4 and O7 share one coordinator collision map; sanitized spellings flow through it.
+- O2/O3/O4 and O7 share one coordinator collision map; sanitized spellings flow through it,
+  and the deferred (orphaned) hardlink second pass consults and updates the same map so it
+  cannot bypass collision determinism.
+- **Directories are intentionally untracked in the collision map.** Directory entries recur
+  structurally (auto-created parents, re-listed dir members) and merge by design, so folding
+  them into O2 would break legitimate archives. The residual gap — a *file* `Foo` and a
+  *directory* `foo/` differing only by case — is not made deterministic across case-sensitive
+  and case-insensitive filesystems by this change. It is a rare, low-value adversarial shape
+  (the primary O2 threat is file-content silent-merge, which is covered); tracking file↔dir
+  cross-collisions is deferred rather than risk regressing normal directory handling.

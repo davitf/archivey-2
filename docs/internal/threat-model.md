@@ -87,8 +87,11 @@ first-class event on **all platforms** (`TRUSTED` keys on the exact path and def
 local OS): apply the `OverwritePolicy` deliberately, record `requested_path` on the
 `ExtractionResult` plus an `EXTRACTION_NAME_COLLISION` diagnostic, and add
 `OverwritePolicy.RENAME` (extract as `photo (1).jpg`, counter before the suffix) for the
-archives-with-intentional-duplicates case. Awaiting implementation of the `safe-extraction`
-delta.
+archives-with-intentional-duplicates case. Only content-bearing members (file/symlink/
+hardlink, including the deferred orphan-hardlink pass) are tracked; **directories are
+intentionally untracked** (they merge structurally), so a *file* `Foo` vs a *directory*
+`foo/` collision stays OS-dependent — a known, deferred residual (ADR 0013). Awaiting
+implementation of the `safe-extraction` delta.
 
 ### O3. Windows name mangling: reserved names, trailing dots/spaces
 

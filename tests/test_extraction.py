@@ -1519,10 +1519,17 @@ def test_o3_reserved_name_rejected(tmp_path: Path, name: str, policy) -> None:
     assert isinstance(report.results[0].error, UnportableNameError)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows itself refuses the NUL device name at write time; TRUSTED defers to "
+    "the OS, so the 'written' outcome is a POSIX-only assertion (spec: 'written if the "
+    "OS allows').",
+)
 def test_o3_reserved_name_written_under_trusted(tmp_path: Path) -> None:
     archive = _tar_bytes([("file", "NUL", b"x")])
     dest = tmp_path / "out"
     report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.TRUSTED)
+    # TRUSTED does not apply the O3 name rejection — the member is not REJECTED by policy.
     assert report.results[0].status is ExtractionStatus.EXTRACTED
     assert (dest / "NUL").read_bytes() == b"x"
 
@@ -1640,3 +1647,90 @@ def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:
     report = extract(io.BytesIO(archive), dest)
     result = report.results[0]
     assert result.requested_path == result.path == dest / "a.txt"
+
+
+# --- Additional O2 edge cases (review follow-up) ---------------------------
+
+
+def test_o2_casefold_collision_standard_replace_no_silent_merge(tmp_path: Path) -> None:
+    # STANDARD collision-tracks exactly like STRICT (only TRUSTED defers).
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert sorted(p.name for p in dest.iterdir()) == ["README"]
+    assert (dest / "README").read_bytes() == b"B"
+    assert _collisions(report) == 1
+
+
+def test_o7_sanitized_name_collides_with_literal_percent_name(tmp_path: Path) -> None:
+    # A surrogateescape name sanitizes to caf%E9.txt, which must collide with a member
+    # literally named caf%E9.txt (the sanitized spelling feeds the collision map).
+    literal = "caf%E9.txt"
+    surro = b"caf\xe9.txt".decode("utf-8", errors="surrogateescape")
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", encoding="utf-8", errors="surrogateescape"
+    ) as tf:
+        for nm, data in [(literal, b"A"), (surro, b"B")]:
+            info = tarfile.TarInfo(nm)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(buf.getvalue()), dest, overwrite=OverwritePolicy.REPLACE
+    )
+    assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
+    assert _collisions(report) == 1
+
+
+def test_o2_orphan_hardlink_honours_collision_map(tmp_path: Path) -> None:
+    # Deferred (orphaned) hardlink recovery must not bypass the collision map: a hardlink
+    # whose source is excluded is orphaned before its casefold-partner file is written, so
+    # the second pass has to re-check the (now-populated) map instead of silently writing a
+    # second casefold-equivalent file on a case-sensitive FS.
+    archive = _tar_bytes(
+        [
+            ("file", "src.bin", b"data"),
+            ("hard", "readme", "src.bin"),
+            ("file", "README", b"other"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            members=lambda m: (
+                m.name != "src.bin"
+            ),  # exclude the source -> readme orphans
+        )
+    # One casefold-equivalent file, not README + readme.
+    assert sorted(p.name for p in dest.iterdir()) == ["README"]
+    assert _collisions(report) >= 1
+
+
+def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> None:
+    # TRUSTED defers: readme and README are distinct on a case-sensitive FS, so the orphan
+    # recovery writes both (no collision event). Asserts the OS-independent invariant that
+    # TRUSTED raises no collision diagnostic.
+    archive = _tar_bytes(
+        [
+            ("file", "src.bin", b"data"),
+            ("hard", "readme", "src.bin"),
+            ("file", "README", b"other"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            overwrite=OverwritePolicy.REPLACE,
+            members=lambda m: m.name != "src.bin",
+        )
+    assert _collisions(report) == 0

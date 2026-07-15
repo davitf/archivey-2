@@ -449,7 +449,9 @@ class ExtractionCoordinator:
         # excluded. Only populated for a seekable source; forward-only orphans already
         # failed at the link during the main pass.
         if orphans:
-            self._resolve_orphans(reader, source_paths, orphans, tracker, results)
+            self._resolve_orphans(
+                reader, source_paths, orphans, tracker, results, collision_map, dest
+            )
 
         return results
 
@@ -498,34 +500,9 @@ class ExtractionCoordinator:
                 requested_path=requested,
             )
 
-        # --- O2 collision resolution --------------------------------------------------
-        # Directories are structural (parents recur, entries merge) and are not tracked as
-        # content collisions. For a tracked member, a key already claimed THIS run is a
-        # deterministic collision on every OS: route it to the prior path so the existing
-        # OverwritePolicy machinery handles ERROR/SKIP/REPLACE uniformly, or derive a fresh
-        # "name (N)" under RENAME. TRUSTED keys on the exact name and defers to the local OS
-        # (no collision *event*, but RENAME still needs the map to avoid re-deriving names).
-        dest_path = requested
-        redirected = False
-        tracked = transformed.type != MemberType.DIRECTORY
-        key = collision_key(transformed.name, self._policy) if tracked else None
-        prior = collision_map.get(key) if key is not None else None
-
-        if key is not None and self._overwrite is OverwritePolicy.RENAME:
-            if prior is not None or os.path.lexists(requested):
-                # A derived path with requested_path left as the original surfaces the
-                # rename to callers as requested_path != path.
-                dest_path = self._derive_free_name(
-                    requested, transformed, collision_map, dest
-                )
-                if prior is not None and self._policy is not ExtractionPolicy.TRUSTED:
-                    self._emit_collision(original, transformed, prior, "renamed")
-        elif prior is not None and self._policy is not ExtractionPolicy.TRUSTED:
-            dest_path = prior  # merge into the prior claimed path; policy applied below
-            redirected = True
-            self._emit_collision(
-                original, transformed, prior, _COLLISION_RESOLUTION[self._overwrite]
-            )
+        dest_path, redirected = self._resolve_collision(
+            original, transformed, requested, collision_map, dest
+        )
 
         result = self._dispatch_write(
             original,
@@ -548,15 +525,7 @@ class ExtractionCoordinator:
             result = replace(result, requested_path=result.path)
         else:
             result = replace(result, requested_path=requested)
-
-        # Claim the key for the actually-written path so later members collide against it.
-        if (
-            key is not None
-            and result.status is ExtractionStatus.EXTRACTED
-            and result.path is not None
-        ):
-            written_key = collision_key(self._rel_name(dest, result.path), self._policy)
-            collision_map[written_key] = result.path
+        self._register_collision_key(collision_map, dest, transformed, result)
         return result
 
     def _dispatch_write(
@@ -617,6 +586,62 @@ class ExtractionCoordinator:
         raise ExtractionError(
             f"Unsupported member type {transformed.type!r} for {transformed.name!r}"
         )
+
+    def _resolve_collision(
+        self,
+        original: ArchiveMember,
+        transformed: ArchiveMember,
+        requested: Path,
+        collision_map: dict[str, Path],
+        dest: Path,
+    ) -> tuple[Path, bool]:
+        """Resolve an O2 name collision, returning ``(dest_path, redirected)``.
+
+        Directories are structural (parents recur, entries merge) and are not tracked as
+        content collisions. For a tracked member whose key is already claimed THIS run, a
+        collision is deterministic on every OS: route ERROR/SKIP/REPLACE to the prior path
+        so the existing OverwritePolicy machinery handles it uniformly (``redirected``), or
+        derive a fresh ``name (N)`` under RENAME. TRUSTED keys on the exact name and defers
+        to the local OS (no collision *event*, but RENAME still uses the map to avoid
+        re-deriving names). Shared by the main pass and the orphan second pass so deferred
+        hardlinks honour the map too. Emits the audit-trail diagnostic on a real collision.
+        """
+        if transformed.type == MemberType.DIRECTORY:
+            return requested, False
+        key = collision_key(self._rel_name(dest, requested), self._policy)
+        prior = collision_map.get(key)
+        if self._overwrite is OverwritePolicy.RENAME:
+            if prior is not None or os.path.lexists(requested):
+                if prior is not None and self._policy is not ExtractionPolicy.TRUSTED:
+                    self._emit_collision(original, transformed, prior, "renamed")
+                return (
+                    self._derive_free_name(requested, transformed, collision_map, dest),
+                    False,
+                )
+            return requested, False
+        if prior is not None and self._policy is not ExtractionPolicy.TRUSTED:
+            self._emit_collision(
+                original, transformed, prior, _COLLISION_RESOLUTION[self._overwrite]
+            )
+            return prior, True
+        return requested, False
+
+    def _register_collision_key(
+        self,
+        collision_map: dict[str, Path],
+        dest: Path,
+        transformed: ArchiveMember,
+        result: ExtractionResult,
+    ) -> None:
+        """Claim the key for an actually-written non-directory member so later members (in
+        this pass and the orphan second pass) collide against it."""
+        if (
+            transformed.type != MemberType.DIRECTORY
+            and result.status is ExtractionStatus.EXTRACTED
+            and result.path is not None
+        ):
+            key = collision_key(self._rel_name(dest, result.path), self._policy)
+            collision_map[key] = result.path
 
     @staticmethod
     def _rel_name(dest: Path, path: Path) -> str:
@@ -828,6 +853,8 @@ class ExtractionCoordinator:
         orphans: list[_Orphan],
         tracker: BombTracker,
         results: list[ExtractionResult],
+        collision_map: dict[str, Path],
+        dest: Path,
     ) -> None:
         orphans_by_source: dict[int, list[_Orphan]] = {}
         for orphan in orphans:
@@ -839,7 +866,9 @@ class ExtractionCoordinator:
         needed: set[int] = set()
         for source_id, group in orphans_by_source.items():
             if source_id in source_paths:
-                self._link_orphan_group(group, source_paths, source_id, results)
+                self._link_orphan_group(
+                    group, source_paths, source_id, results, collision_map, dest
+                )
             else:
                 needed.add(source_id)
         if not needed:
@@ -856,7 +885,14 @@ class ExtractionCoordinator:
             group = orphans_by_source[member.member_id]
             try:
                 self._materialize_orphan_source(
-                    member, stream, group, source_paths, tracker, results
+                    member,
+                    stream,
+                    group,
+                    source_paths,
+                    tracker,
+                    results,
+                    collision_map,
+                    dest,
                 )
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
@@ -910,6 +946,8 @@ class ExtractionCoordinator:
         source_paths: dict[int, list[Path]],
         tracker: BombTracker,
         results: list[ExtractionResult],
+        collision_map: dict[str, Path],
+        dest: Path,
     ) -> None:
         # Count the recovered source bytes toward the cumulative/ratio guards too.
         tracker.start_member(source_member)
@@ -919,31 +957,56 @@ class ExtractionCoordinator:
         # link), never to the source's own name — atomically (temp + os.replace), same as a
         # normal FILE, so a failure while re-reading doesn't clobber an existing entry. The
         # link's transformed copy supplies the on-disk mode/timestamps: hardlinks share one
-        # inode, so the metadata must be applied to the file that carries the content.
+        # inode, so the metadata must be applied to the file that carries the content. Each
+        # link's destination is O2-collision-resolved against the map the main pass built
+        # (a deferred link's key may have been claimed after it was orphaned).
         writer: _Orphan | None = None
+        writer_path: Path | None = None
+        writer_redirected = False
         remaining: list[_Orphan] = []
         for orphan in group:
             if writer is not None:
                 remaining.append(orphan)
-            elif self._prepare_destination(
-                orphan.transformed, orphan.dest_path, atomic=True
-            ):
-                writer = orphan
+                continue
+            resolved, redirected = self._resolve_collision(
+                orphan.original,
+                orphan.transformed,
+                orphan.dest_path,
+                collision_map,
+                dest,
+            )
+            if self._prepare_destination(orphan.transformed, resolved, atomic=True):
+                writer, writer_path, writer_redirected = orphan, resolved, redirected
             else:
                 results[orphan.result_index] = ExtractionResult(
-                    orphan.original, None, ExtractionStatus.SKIPPED, None
+                    orphan.original,
+                    None,
+                    ExtractionStatus.SKIPPED,
+                    None,
+                    requested_path=orphan.dest_path,
                 )
-        if writer is None:
+        if writer is None or writer_path is None:
             return  # every link's destination already exists under SKIP: nothing to write
 
-        os.makedirs(writer.dest_path.parent, exist_ok=True)
-        self._write_file_atomic(stream, writer.dest_path, writer.transformed, tracker)
-        source_paths.setdefault(source_member.member_id, []).append(writer.dest_path)
-        results[writer.result_index] = ExtractionResult(
-            writer.original, writer.dest_path, ExtractionStatus.EXTRACTED, None
+        os.makedirs(writer_path.parent, exist_ok=True)
+        self._write_file_atomic(stream, writer_path, writer.transformed, tracker)
+        source_paths.setdefault(source_member.member_id, []).append(writer_path)
+        result = ExtractionResult(
+            writer.original,
+            writer_path,
+            ExtractionStatus.EXTRACTED,
+            None,
+            requested_path=writer_path if writer_redirected else writer.dest_path,
         )
+        results[writer.result_index] = result
+        self._register_collision_key(collision_map, dest, writer.transformed, result)
         self._link_orphan_group(
-            remaining, source_paths, source_member.member_id, results
+            remaining,
+            source_paths,
+            source_member.member_id,
+            results,
+            collision_map,
+            dest,
         )
 
     def _link_orphan_group(
@@ -952,26 +1015,42 @@ class ExtractionCoordinator:
         source_paths: dict[int, list[Path]],
         source_id: int,
         results: list[ExtractionResult],
+        collision_map: dict[str, Path],
+        dest: Path,
     ) -> None:
         """Link each orphan in ``group`` against the source content already on disk
-        (recorded under ``source_id``), applying the OverwritePolicy per link and
-        recording per-link results; per-link failures follow ``OnError``."""
+        (recorded under ``source_id``), applying the OverwritePolicy per link (O2 collisions
+        resolved against the map) and recording per-link results; failures follow
+        ``OnError``."""
         for orphan in group:
+            resolved, redirected = self._resolve_collision(
+                orphan.original,
+                orphan.transformed,
+                orphan.dest_path,
+                collision_map,
+                dest,
+            )
             try:
-                if not self._prepare_destination(orphan.transformed, orphan.dest_path):
+                if not self._prepare_destination(orphan.transformed, resolved):
                     results[orphan.result_index] = ExtractionResult(
-                        orphan.original, None, ExtractionStatus.SKIPPED, None
+                        orphan.original,
+                        None,
+                        ExtractionStatus.SKIPPED,
+                        None,
+                        requested_path=orphan.dest_path,
                     )
                     continue
-                os.makedirs(orphan.dest_path.parent, exist_ok=True)
-                self._place_link(
-                    source_paths, source_id, orphan.dest_path, orphan.transformed
-                )
+                os.makedirs(resolved.parent, exist_ok=True)
+                self._place_link(source_paths, source_id, resolved, orphan.transformed)
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
                 results[orphan.result_index] = ExtractionResult(
-                    orphan.original, None, ExtractionStatus.FAILED, exc
+                    orphan.original,
+                    None,
+                    ExtractionStatus.FAILED,
+                    exc,
+                    requested_path=orphan.dest_path,
                 )
                 if self._on_error is OnError.STOP:
                     raise
@@ -988,8 +1067,16 @@ class ExtractionCoordinator:
                     logger=logger,
                 )
                 continue
-            results[orphan.result_index] = ExtractionResult(
-                orphan.original, orphan.dest_path, ExtractionStatus.EXTRACTED, None
+            result = ExtractionResult(
+                orphan.original,
+                resolved,
+                ExtractionStatus.EXTRACTED,
+                None,
+                requested_path=resolved if redirected else orphan.dest_path,
+            )
+            results[orphan.result_index] = result
+            self._register_collision_key(
+                collision_map, dest, orphan.transformed, result
             )
 
     # --- filesystem helpers --------------------------------------------------------

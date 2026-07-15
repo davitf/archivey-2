@@ -34,11 +34,16 @@ MemberFilter = Callable[[ArchiveMember], "ArchiveMember | None"]
 
 
 class ExtractionPolicy(Enum):
-    """How much of an archive member's stored permission/ownership metadata to trust.
+    """How much of an archive member to trust when writing it to the destination.
 
     The universal path/symlink/special-file safety checks are enforced under **all**
-    policies (see ``safe-extraction``); the policy only governs the permission/ownership
-    transform applied to a member before it is written.
+    policies (see ``safe-extraction``). Beyond those, the policy governs two dimensions:
+    the permission/ownership transform applied before a member is written, and the
+    cross-platform name safety keyed off it — collision determinism (O2), reserved/mangled
+    name rejection (O3/O4), and portable-name normalization (O7). ``STRICT`` is
+    portable-by-default; ``TRUSTED`` defers to the local OS (faithful bytes, no name
+    rejection or rewrite). See
+    ``docs/decisions/0013-cross-platform-name-safety-policies.md``.
     """
 
     STRICT = "strict"  # default; untrusted archives
