@@ -12,6 +12,7 @@ import pytest
 
 from archivey import ExtractionStatus, open_archive
 from archivey.exceptions import (
+    ArchiveyError,
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
@@ -568,3 +569,45 @@ def test_rar3_non_bmp_filename_not_truncated() -> None:
         assert not any(
             0xE000 <= ord(c) <= 0xF8FF or 0xD800 <= ord(c) <= 0xDFFF for c in name
         )
+
+
+# Fixtures built by review/next/01-rar-reader-findings/make_hostile_fixtures.py:
+# nonsolid, compressed members whose stored names are a bare unrar switch and an
+# ``@listfile`` argument, alongside a normal control member.
+_HOSTILE_ARGV_CONTENTS = {
+    "canary.txt": b"CANARY-CANARY-CANARY-\n" * 64,
+    "-inul": b"DASH-INUL-PAYLOAD-\n" * 64,
+    "@atfile": b"AT-ATFILE-PAYLOAD-\n" * 64,
+}
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", ["hostile_argv__.rar", "hostile_argv__rar4.rar"])
+def test_hostile_member_name_never_leaks_other_members(name: str) -> None:
+    """F3 (review/next/01-rar-reader-findings/unrar-boundary.md): a member whose
+    stored name is a bare ``unrar`` switch (``-inul``) or an ``@listfile`` argument
+    (``@atfile``) reaches the ``unrar`` argv unescaped, so ``unrar`` mis-parses it
+    and emits the wrong data.
+
+    The load-bearing safety invariant: reading such a member MUST NOT silently
+    return some *other* member's bytes. Today the per-member CRC check turns the
+    mis-parse into a ``CorruptionError``; a correct fix (a ``--`` end-of-switches
+    guard) would instead return the member's own bytes. Either outcome satisfies
+    this test — only silently returning the wrong bytes fails it.
+    """
+    with open_archive(_fixture(name)) as archive:
+        members = {m.name: m for m in archive.members() if m.is_file}
+        assert {"canary.txt", "-inul", "@atfile"} <= set(members)
+        # Control member with a normal name reads correctly through unrar.
+        assert archive.read(members["canary.txt"]) == _HOSTILE_ARGV_CONTENTS["canary.txt"]
+        for hostile in ("-inul", "@atfile"):
+            try:
+                data = archive.read(members[hostile])
+            except ArchiveyError:
+                # Acceptable: the mis-parse is caught (today via CRC verification).
+                continue
+            # If the read succeeds it must be THIS member's own bytes.
+            assert data == _HOSTILE_ARGV_CONTENTS[hostile], (
+                f"reading {hostile!r} returned bytes that are not its own — "
+                "unrar argv injection leaked another member (F3)"
+            )

@@ -1,14 +1,15 @@
 # `unrar` subprocess boundary (`rar_unrar.py`, `rar_reader.py`)
 
 RARLAB `unrar` 7.00 was installed (per `AGENTS.md`: `apt-get install -y unrar`,
-`multiverse` component) and both findings below are now **empirically confirmed** at
-the `unrar` CLI level (`repro.py` F3b) in addition to the argv construction (F3).
-A member literally named like a switch/`@`-listfile still can't be *created* here (no
-`rar` writer, only the `unrar` reader), so the archivey end-to-end open of such a
-member is argued from the confirmed `unrar` argv semantics rather than run against a
-crafted fixture. `make_hostile_fixtures.py` (in this folder) builds and self-verifies
-exactly those fixtures — run it locally where the RARLAB `rar` writer is installed to
-turn F3 into an end-to-end fixture test.
+`multiverse` component) and both findings below are **empirically confirmed** — at the
+`unrar` CLI level (`repro.py` F3b) and, for F3, **end-to-end through archivey** against
+committed adversarial fixtures. `make_hostile_fixtures.py` (in this folder) built
+`tests/fixtures/rar/hostile_argv__.rar` (RAR5) and `hostile_argv__rar4.rar` (RAR4) — the
+`rar` writer isn't available in the review container, so the maintainer ran it locally
+and pushed the results. Each archive is nonsolid + compressed with three members:
+`canary.txt` (control) and two hostile names, `-inul` (a `unrar` switch) and `@atfile`
+(a `@listfile` arg), verified to be stored verbatim and compressed (so archivey routes
+them through `unrar`, not a direct read).
 
 ---
 
@@ -67,12 +68,39 @@ member '@list.txt'        -> exit 0, b'Hello, world!'                           
   path. Under `p -inul` nothing is written to disk, but it is an unintended local-file
   access driven purely by a member name.
 
+**End-to-end through archivey** (committed fixtures, from a scratch CWD):
+
+```
+open_archive("hostile_argv__.rar")     # RAR5;  RAR4 variant identical
+  read "canary.txt" -> MATCH (1408 B)
+  read "-inul"      -> CorruptionError: Digest mismatch for 'crc32'
+  read "@atfile"    -> CorruptionError: Digest mismatch for 'crc32'
+```
+
+So opening either hostile member does **not** return its bytes: `unrar` emits the
+wrong data (all members / a local file), the size-`n` slice fails CRC verification,
+and archivey raises `CorruptionError`. The canary reads fine, confirming the archive
+itself is sound and the failure is specifically the mis-parsed member name.
+
+**The `@atfile` local-file read, shown directly.** Planting a listfile named `atfile`
+in the CWD and running archivey's own command (`unrar p -inul <archive> @atfile`) makes
+`unrar` read that local file and emit whatever members it names — here the canary's
+1408 bytes. A hostile *member name* thus drives `unrar` to open an attacker-chosen
+local path. (Because the name doesn't match a real member, the bytes still fail the
+`@atfile` member's CRC inside archivey — but the local-file access already happened.)
+
 This is precisely the axis the spec's **"Constrain unrar argv by call site"**
 requirement exists to protect (`openspec/specs/format-rar/spec.md`: *"MUST NOT pass
 … globs, or `@listfile` filters"*). The current code honours that for the argv *the
 backend intends to build*, but not for the case where the hostile **member name
 itself** is a switch/`@listfile`. The spec's own constraint is therefore only
 half-enforced.
+
+Note the CRC nuance: because normal `rar` output always carries a CRC32, the
+wrong-bytes confusion is *caught* here and surfaces as `CorruptionError` (itself a
+mislabel — you asked for a member and got a corruption error). The silent wrong-bytes
+outcome needs a CRC-less member; the `@`-listfile local-file access, however, happens
+regardless of CRC.
 
 **Suggested fix.** Insert `"--"` right after the switches (before the archive path:
 `unrar p -inul … -- <archive> <member>`) so neither the archive path nor the member
