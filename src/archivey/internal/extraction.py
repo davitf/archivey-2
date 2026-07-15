@@ -28,12 +28,16 @@ import shutil
 import stat
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Literal
 
 from archivey.config import ExtractionLimits
-from archivey.diagnostics import DiagnosticCode, ExtractionOutcomeContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    ExtractionOutcomeContext,
+    NameCollisionContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     DiagnosticRaisedError,
@@ -54,7 +58,12 @@ from archivey.internal.extraction_types import (
     OnError,
     OverwritePolicy,
 )
-from archivey.internal.filters import POLICY_TRANSFORMS, check_universal
+from archivey.internal.filters import (
+    POLICY_TRANSFORMS,
+    apply_name_policy,
+    check_universal,
+    collision_key,
+)
 from archivey.internal.selection import normalize_member_selector
 from archivey.types import ArchiveMember, MemberType
 
@@ -77,6 +86,16 @@ DEFAULT_MAX_EXTRACTED_BYTES = 2 * 2**30  # 2 GiB
 DEFAULT_MAX_RATIO = 1000.0
 DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB
 DEFAULT_MAX_ENTRIES = 1_048_576  # 2**20
+
+# How an O2 collision routed through OverwritePolicy is recorded in its diagnostic. RENAME
+# is handled on its own path (a derived name), so it is not in this ERROR/SKIP/REPLACE map.
+_COLLISION_RESOLUTION: dict[
+    OverwritePolicy, Literal["replaced", "skipped", "errored"]
+] = {
+    OverwritePolicy.ERROR: "errored",
+    OverwritePolicy.SKIP: "skipped",
+    OverwritePolicy.REPLACE: "replaced",
+}
 
 
 class _AlwaysStopResourceLimitError(ResourceLimitError):
@@ -302,6 +321,11 @@ class ExtractionCoordinator:
         # source member_id -> list of on-disk paths holding that source's content.
         source_paths: dict[int, list[Path]] = {}
         written_paths: set[Path] = set()
+        # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> written path.
+        # Tracks non-directory members written THIS run so a second member resolving to the
+        # same key is a deterministic collision on every OS (not a platform-dependent silent
+        # merge). See _write_member / docs/decisions/0013.
+        collision_map: dict[str, Path] = {}
         orphans: list[_Orphan] = []
         members_done = 0
 
@@ -333,6 +357,7 @@ class ExtractionCoordinator:
                             tracker,
                             source_paths,
                             written_paths,
+                            collision_map,
                             orphans,
                             forward_only,
                             result_index,
@@ -355,6 +380,7 @@ class ExtractionCoordinator:
                             tracker,
                             source_paths,
                             written_paths,
+                            collision_map,
                             orphans,
                             forward_only,
                             result_index,
@@ -443,7 +469,9 @@ class ExtractionCoordinator:
                 return None
             # A caller filter can rename/relink; re-run the universal check on the result.
             check_universal(transformed, dest_root)
-        return transformed
+        # Portable-name policy (O3/O4 reject, O7 sanitize) on the FINAL name — after the
+        # user filter, so a filter rename is checked too, and TRUSTED keeps faithful bytes.
+        return apply_name_policy(transformed, self._policy)
 
     # --- per-member write ----------------------------------------------------------
 
@@ -457,15 +485,94 @@ class ExtractionCoordinator:
         tracker: BombTracker,
         source_paths: dict[int, list[Path]],
         written_paths: set[Path],
+        collision_map: dict[str, Path],
         orphans: list[_Orphan],
         forward_only: bool,
         result_index: int,
     ) -> ExtractionResult:
-        dest_path = dest / transformed.name
+        requested = dest / transformed.name
 
         if original.is_anti:
-            return self._apply_anti_item(original, dest_path, written_paths)
+            return replace(
+                self._apply_anti_item(original, requested, written_paths),
+                requested_path=requested,
+            )
 
+        # --- O2 collision resolution --------------------------------------------------
+        # Directories are structural (parents recur, entries merge) and are not tracked as
+        # content collisions. For a tracked member, a key already claimed THIS run is a
+        # deterministic collision on every OS: route it to the prior path so the existing
+        # OverwritePolicy machinery handles ERROR/SKIP/REPLACE uniformly, or derive a fresh
+        # "name (N)" under RENAME. TRUSTED keys on the exact name and defers to the local OS
+        # (no collision *event*, but RENAME still needs the map to avoid re-deriving names).
+        dest_path = requested
+        redirected = False
+        tracked = transformed.type != MemberType.DIRECTORY
+        key = collision_key(transformed.name, self._policy) if tracked else None
+        prior = collision_map.get(key) if key is not None else None
+
+        if key is not None and self._overwrite is OverwritePolicy.RENAME:
+            if prior is not None or os.path.lexists(requested):
+                # A derived path with requested_path left as the original surfaces the
+                # rename to callers as requested_path != path.
+                dest_path = self._derive_free_name(
+                    requested, transformed, collision_map, dest
+                )
+                if prior is not None and self._policy is not ExtractionPolicy.TRUSTED:
+                    self._emit_collision(original, transformed, prior, "renamed")
+        elif prior is not None and self._policy is not ExtractionPolicy.TRUSTED:
+            dest_path = prior  # merge into the prior claimed path; policy applied below
+            redirected = True
+            self._emit_collision(
+                original, transformed, prior, _COLLISION_RESOLUTION[self._overwrite]
+            )
+
+        result = self._dispatch_write(
+            original,
+            transformed,
+            stream,
+            dest_path,
+            dest_root,
+            tracker,
+            source_paths,
+            written_paths,
+            orphans,
+            forward_only,
+            result_index,
+        )
+
+        # Record the intended destination. A REPLACE merge into a prior path is not a
+        # rename, so it reports the actual (merged) path; every other outcome reports the
+        # member's own intended destination, so RENAME shows up as requested_path != path.
+        if redirected and result.status is ExtractionStatus.EXTRACTED:
+            result = replace(result, requested_path=result.path)
+        else:
+            result = replace(result, requested_path=requested)
+
+        # Claim the key for the actually-written path so later members collide against it.
+        if (
+            key is not None
+            and result.status is ExtractionStatus.EXTRACTED
+            and result.path is not None
+        ):
+            written_key = collision_key(self._rel_name(dest, result.path), self._policy)
+            collision_map[written_key] = result.path
+        return result
+
+    def _dispatch_write(
+        self,
+        original: ArchiveMember,
+        transformed: ArchiveMember,
+        stream: BinaryIO | None,
+        dest_path: Path,
+        dest_root: Path,
+        tracker: BombTracker,
+        source_paths: dict[int, list[Path]],
+        written_paths: set[Path],
+        orphans: list[_Orphan],
+        forward_only: bool,
+        result_index: int,
+    ) -> ExtractionResult:
         if transformed.type == MemberType.DIRECTORY:
             existed = os.path.lexists(dest_path)
             if not self._prepare_destination(transformed, dest_path):
@@ -509,6 +616,61 @@ class ExtractionCoordinator:
         # MemberType.OTHER is rejected by check_universal; nothing else should reach here.
         raise ExtractionError(
             f"Unsupported member type {transformed.type!r} for {transformed.name!r}"
+        )
+
+    @staticmethod
+    def _rel_name(dest: Path, path: Path) -> str:
+        """The written path's location relative to the extraction root, for a collision key."""
+        return path.relative_to(dest).as_posix()
+
+    def _derive_free_name(
+        self,
+        requested: Path,
+        transformed: ArchiveMember,
+        collision_map: dict[str, Path],
+        dest: Path,
+    ) -> Path:
+        """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
+
+        The counter goes before the final suffix so the extension is preserved
+        (``photo.jpg`` → ``photo (1).jpg``); a directory has no suffix and appends to the
+        whole segment."""
+        parent = requested.parent
+        if transformed.type == MemberType.DIRECTORY:
+            stem, suffix = requested.name, ""
+        else:
+            stem, suffix = requested.stem, requested.suffix
+        n = 1
+        while True:
+            candidate = parent / f"{stem} ({n}){suffix}"
+            candidate_key = collision_key(self._rel_name(dest, candidate), self._policy)
+            if candidate_key not in collision_map and not os.path.lexists(candidate):
+                return candidate
+            n += 1
+
+    def _emit_collision(
+        self,
+        original: ArchiveMember,
+        transformed: ArchiveMember,
+        prior: Path,
+        resolution: Literal["renamed", "replaced", "skipped", "errored"],
+    ) -> None:
+        """Emit the O2 audit-trail diagnostic. Makes a REPLACE merge — whose result is a
+        plain EXTRACTED — non-silent, and records skip/error/rename resolutions too."""
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.EXTRACTION_NAME_COLLISION,
+            message=(
+                f"Name collision for {transformed.name!r} with already-written "
+                f"{prior}: {resolution}"
+            ),
+            context=NameCollisionContext(
+                archive_name=self._archive_name,
+                member_name=original.name,
+                member_id=original._member_id,
+                prior_path=str(prior),
+                resolution=resolution,
+            ),
+            logger=logger,
         )
 
     def _apply_anti_item(
@@ -887,7 +1049,9 @@ class ExtractionCoordinator:
         if self._overwrite is OverwritePolicy.SKIP:
             return False
 
-        # REPLACE: never write-through a symlink. For an atomic FILE write, os.replace
+        # REPLACE (and RENAME for the residual directory case — non-directory RENAME members
+        # are pre-resolved to a free path, so they never reach an existing entry here):
+        # never write-through a symlink. For an atomic FILE write, os.replace
         # handles a file/symlink target atomically, so only a real directory must be
         # removed up front. Otherwise unlink a symlink/file (bytes never follow the link)
         # and rmtree a real directory tree.

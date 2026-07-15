@@ -62,6 +62,7 @@ class OverwritePolicy(Enum):
     REPLACE = (
         "replace"  # unlink the existing entry, then create fresh (never write-through)
     )
+    RENAME = "rename"  # write a colliding entry under a derived "name (N)" spelling
 
 
 class OnError(Enum):
@@ -106,3 +107,9 @@ class ExtractionResult:
     # The failure, for FAILED/REJECTED under OnError.CONTINUE; an OSError when the failure
     # is a filesystem read/write error on this member (not translated to an ArchiveyError).
     error: ArchiveyError | OSError | None = None
+    # The destination the coordinator intended before overwrite/rename resolution. For an
+    # ordinary write it equals ``path``; under ``OverwritePolicy.RENAME`` a collided member
+    # is written to a derived name, so ``requested_path != path and status == EXTRACTED``
+    # marks the rename; a collision resolved by SKIP/ERROR sets ``requested_path`` with
+    # ``path=None``. ``None`` for members that never reached destination resolution.
+    requested_path: Path | None = None

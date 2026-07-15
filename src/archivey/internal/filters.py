@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Callable
 
@@ -23,6 +24,7 @@ from archivey.exceptions import (
     PathTraversalError,
     SpecialFileError,
     SymlinkEscapeError,
+    UnportableNameError,
 )
 from archivey.internal.extraction_types import ExtractionPolicy
 from archivey.types import ArchiveMember, MemberType
@@ -198,3 +200,100 @@ POLICY_TRANSFORMS: dict[ExtractionPolicy, Callable[[ArchiveMember], ArchiveMembe
     ExtractionPolicy.STANDARD: transform_standard,
     ExtractionPolicy.TRUSTED: transform_trusted,
 }
+
+
+# --- Cross-platform portable-name policy (safe-extraction O3/O4/O7) ------------------
+#
+# These rules are keyed on ``ExtractionPolicy`` and applied to the FINAL member name (after
+# the policy permission transform and any user filter). They make destination-name handling
+# deterministic on every OS: ``STRICT`` is portable-by-default, ``STANDARD`` is portable but
+# not paranoid, ``TRUSTED`` defers to the local OS (no name rejection or rewrite). See
+# ``docs/decisions/0013-cross-platform-name-safety-policies.md``.
+
+# Windows reserved device names (case-insensitive, with or without an extension). Matched
+# against the first dot-separated component of each path segment — ``NUL`` and ``NUL.txt``
+# both mangle on Win32.
+_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def _sanitize_portable_name(name: str) -> str:
+    """O7: rewrite a name carrying non-UTF-8 (surrogateescape) bytes to a deterministic,
+    reversible portable spelling. Each surrogateescape char ``U+DC80``–``U+DCFF`` (a raw
+    byte 0x80–0xFF that did not decode as UTF-8) becomes ``%XX`` (uppercase hex of the
+    byte); a literal ``%`` becomes ``%25`` so the escaping is unambiguously reversible.
+
+    Only names that actually carry such bytes are rewritten — valid Unicode (including
+    NFC/NFD forms) is representable on every filesystem and is returned unchanged; its
+    cross-platform folding is the collision-tracking concern, not a representability one.
+    """
+    if not any("\udc80" <= c <= "\udcff" for c in name):
+        return name
+    out: list[str] = []
+    for c in name:
+        if "\udc80" <= c <= "\udcff":
+            out.append("%%%02X" % (ord(c) - 0xDC00))
+        elif c == "%":
+            out.append("%25")
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
+    """Enforce the portable-name policy on ``member``'s final name.
+
+    Under ``STRICT``/``STANDARD``, rejects the dangerous Windows name shapes (O3/O4) and
+    normalizes non-representable bytes (O7); ``TRUSTED`` returns the member unchanged
+    (faithful bytes, defer to the local OS). Raises :class:`UnportableNameError` (a
+    ``FilterRejectionError``, so the coordinator records ``REJECTED``) on a rejected name;
+    otherwise returns ``member`` or an O7-sanitized ``.replace()`` copy.
+    """
+    if policy is ExtractionPolicy.TRUSTED:
+        return member
+
+    name = member.name
+    for segment in _SEP_SPLIT.split(name):
+        if not segment:
+            continue
+        # Reserved device names and ':' are unambiguous hazards — rejected under STRICT and
+        # STANDARD on every platform (':' writes an NTFS alternate data stream; a reserved
+        # name is a device capture / silent mangle).
+        stem = segment.split(".", 1)[0].strip().upper()
+        if stem in _RESERVED_NAMES:
+            raise UnportableNameError(
+                f"Windows-reserved device name in path: {segment!r}", member_name=name
+            )
+        if ":" in segment:
+            raise UnportableNameError(
+                f"Colon in path segment (NTFS alternate data stream): {segment!r}",
+                member_name=name,
+            )
+        # A trailing dot/space is silently stripped by Win32 (a name mismatch / clobber
+        # vector). Rare and low-risk, so STRICT rejects it (portable-by-default) while
+        # STANDARD tolerates it — the crafted-merge variant is still caught by STRICT.
+        if policy is ExtractionPolicy.STRICT and segment != segment.rstrip(". "):
+            raise UnportableNameError(
+                f"Trailing dot or space in path segment: {segment!r}", member_name=name
+            )
+
+    sanitized = _sanitize_portable_name(name)
+    if sanitized != name:
+        return member.replace(name=sanitized)
+    return member
+
+
+def collision_key(name: str, policy: ExtractionPolicy) -> str:
+    """The per-run duplicate-detection key for a member's relative ``name`` (O2).
+
+    ``STRICT``/``STANDARD`` fold case and Unicode normalization so ``README``/``readme`` and
+    NFC/NFD ``café`` collide on every platform; ``TRUSTED`` keys on the exact name (defer to
+    the local OS). Separators are normalized so ``a/b`` and ``a\\b`` share a key.
+    """
+    rel = name.replace("\\", "/").rstrip("/")
+    if policy is ExtractionPolicy.TRUSTED:
+        return rel
+    return unicodedata.normalize("NFC", rel).casefold()

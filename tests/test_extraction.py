@@ -11,6 +11,7 @@ import errno
 import io
 import os
 import tarfile
+import unicodedata
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,12 +27,14 @@ from archivey import (
     extract,
     open_archive,
 )
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ExtractionError,
     PathTraversalError,
     ResourceLimitError,
     SpecialFileError,
     SymlinkEscapeError,
+    UnportableNameError,
 )
 from archivey.internal.extraction import (
     BombTracker,
@@ -1418,3 +1421,222 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
                     * 2**20,  # high, so the cap is not what trips
                 ),
             )
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform name safety (safe-extraction O2/O3/O4/O7) — asserted
+# deterministically on every platform, not gated on the runner OS.
+# See docs/decisions/0013-cross-platform-name-safety-policies.md.
+# ---------------------------------------------------------------------------
+
+
+def _collisions(report) -> int:
+    return report.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_COLLISION, 0)
+
+
+def _surrogate_tar(stored_name: str, payload: bytes = b"abc") -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", encoding="utf-8", errors="surrogateescape"
+    ) as tf:
+        info = tarfile.TarInfo(stored_name)
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()
+
+
+# --- O2: casefold / normalization collisions -------------------------------
+
+
+def test_o2_casefold_collision_strict_error_is_deterministic(tmp_path: Path) -> None:
+    # README and readme are distinct in the archive but the same file on Windows/macOS.
+    # Under STRICT the second is a deterministic collision on EVERY platform (on
+    # case-sensitive Linux it would otherwise silently become a second file).
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.ERROR,
+        on_error=OnError.CONTINUE,
+    )
+    statuses = [r.status for r in report.results]
+    assert statuses == [ExtractionStatus.EXTRACTED, ExtractionStatus.FAILED]
+    assert _collisions(report) == 1
+
+
+def test_o2_casefold_collision_strict_replace_no_silent_merge(tmp_path: Path) -> None:
+    # REPLACE must not silently merge into two files on a case-sensitive FS: the second
+    # member deterministically overwrites the first at one path, and it is recorded.
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    on_disk = sorted(p.name for p in dest.iterdir())
+    assert on_disk == ["README"]  # one file, not README + readme
+    assert (dest / "README").read_bytes() == b"B"  # second member won
+    assert _collisions(report) == 1
+
+
+def test_o2_collision_trusted_defers_to_local_os(tmp_path: Path) -> None:
+    # TRUSTED keys on the exact path and never raises a collision event (it defers to the
+    # OS). The deterministic, OS-independent assertion is "no collision diagnostic".
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert _collisions(report) == 0
+
+
+def test_o2_nfc_nfd_collision_strict(tmp_path: Path) -> None:
+    nfc = unicodedata.normalize("NFC", "café.txt")
+    nfd = unicodedata.normalize("NFD", "café.txt")
+    assert nfc != nfd
+    archive = _tar_bytes([("file", nfc, b"A"), ("file", nfd, b"B")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    assert _collisions(report) == 1
+    assert len(list(dest.iterdir())) == 1
+
+
+# --- O3/O4: reserved names, colon, trailing dot/space ----------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["NUL", "nul", "COM1", "LPT9", "NUL.txt", "AUX.tar.gz"]
+)
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_o3_reserved_name_rejected(tmp_path: Path, name: str, policy) -> None:
+    archive = _tar_bytes([("file", name, b"x")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
+    )
+    assert report.results[0].status is ExtractionStatus.REJECTED
+    assert isinstance(report.results[0].error, UnportableNameError)
+
+
+def test_o3_reserved_name_written_under_trusted(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "NUL", b"x")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.TRUSTED)
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+    assert (dest / "NUL").read_bytes() == b"x"
+
+
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_o4_colon_rejected_strict_and_standard(tmp_path: Path, policy) -> None:
+    archive = _tar_bytes([("file", "file:hidden", b"x")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
+    )
+    assert report.results[0].status is ExtractionStatus.REJECTED
+    assert isinstance(report.results[0].error, UnportableNameError)
+
+
+@pytest.mark.parametrize("name", ["foo.", "bar "])
+def test_o3_trailing_dot_space_rejected_strict_allowed_standard(
+    tmp_path: Path, name: str
+) -> None:
+    archive = _tar_bytes([("file", name, b"x")])
+    # STRICT rejects the Windows-mangled shape...
+    report = extract(
+        io.BytesIO(archive),
+        tmp_path / "strict",
+        policy=ExtractionPolicy.STRICT,
+        on_error=OnError.CONTINUE,
+    )
+    assert report.results[0].status is ExtractionStatus.REJECTED
+    # ...STANDARD allows it (rare, low-risk, POSIX-valid).
+    report2 = extract(
+        io.BytesIO(archive), tmp_path / "standard", policy=ExtractionPolicy.STANDARD
+    )
+    assert report2.results[0].status is ExtractionStatus.EXTRACTED
+
+
+# --- O7: surrogateescape sanitize ------------------------------------------
+
+
+def test_o7_surrogateescape_sanitized_under_strict(tmp_path: Path) -> None:
+    # caf<0xe9>.txt carries a raw non-UTF-8 byte; STRICT rewrites it to a portable spelling
+    # deterministically on every OS (rather than depending on whether the FS accepts it).
+    stored = b"caf\xe9.txt".decode("utf-8", errors="surrogateescape")
+    archive = _surrogate_tar(stored)
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
+
+
+def test_o7_percent_escaped_when_sanitizing(tmp_path: Path) -> None:
+    # A literal '%' in a name that also carries a non-UTF-8 byte is escaped as %25 so the
+    # spelling is unambiguously reversible.
+    stored = b"a%b\xe9".decode("utf-8", errors="surrogateescape")
+    archive = _surrogate_tar(stored)
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert sorted(p.name for p in dest.iterdir()) == ["a%25b%E9"]
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+
+
+def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
+    # A name with no non-UTF-8 bytes is never rewritten, even if it contains '%'.
+    archive = _tar_bytes([("file", "50%.txt", b"x")])
+    dest = tmp_path / "out"
+    extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert sorted(p.name for p in dest.iterdir()) == ["50%.txt"]
+
+
+# --- OverwritePolicy.RENAME ------------------------------------------------
+
+
+def test_rename_inserts_counter_before_suffix(tmp_path: Path) -> None:
+    archive = _tar_bytes(
+        [
+            ("file", "photo.jpg", b"A"),
+            ("file", "photo.jpg", b"B"),
+            ("file", "photo.jpg", b"C"),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert sorted(p.name for p in dest.iterdir()) == [
+        "photo (1).jpg",
+        "photo (2).jpg",
+        "photo.jpg",
+    ]
+    assert (dest / "photo.jpg").read_bytes() == b"A"
+    assert (dest / "photo (1).jpg").read_bytes() == b"B"
+    # The rename is observable via requested_path != path.
+    second = report.results[1]
+    assert second.path.name == "photo (1).jpg"
+    assert second.requested_path.name == "photo.jpg"
+    assert second.requested_path != second.path
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        (".bashrc", ".bashrc (1)"),  # leading-dot dotfile: no suffix split
+        ("archive.tar.gz", "archive.tar (1).gz"),  # single final suffix
+        ("noext", "noext (1)"),  # no suffix
+    ],
+)
+def test_rename_suffix_edge_cases(tmp_path: Path, name: str, expected: str) -> None:
+    archive = _tar_bytes([("file", name, b"A"), ("file", name, b"B")])
+    dest = tmp_path / "out"
+    extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+    assert expected in {p.name for p in dest.iterdir()}
+
+
+def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "a.txt", b"x")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest)
+    result = report.results[0]
+    assert result.requested_path == result.path == dest / "a.txt"

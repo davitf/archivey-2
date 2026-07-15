@@ -58,6 +58,7 @@ class DiagnosticCode(str, Enum):
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     EXTRACTION_MEMBER_REJECTED = "extraction_member_rejected"
     EXTRACTION_MEMBER_FAILED = "extraction_member_failed"
+    EXTRACTION_NAME_COLLISION = "extraction_name_collision"
 
 
 class DiagnosticSeverity(str, Enum):
@@ -193,6 +194,20 @@ class ExtractionOutcomeContext(_JsonSafeContext):
     failure_group_size: int | None = None
 
 
+@dataclass(frozen=True)
+class NameCollisionContext(_JsonSafeContext):
+    """A member whose casefold/NFC (or exact, under TRUSTED) name key clashed with an
+    earlier written member this run — the O2 audit trail. ``prior_path`` is the path the
+    earlier member claimed; ``resolution`` records how ``OverwritePolicy`` handled it."""
+
+    kind: Literal["name_collision"] = "name_collision"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    prior_path: str = ""
+    resolution: Literal["renamed", "replaced", "skipped", "errored"] = "errored"
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -205,6 +220,7 @@ DiagnosticContext = (
     | SeekIndexContext
     | StreamRewindContext
     | ExtractionOutcomeContext
+    | NameCollisionContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -222,6 +238,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.EXTRACTION_MEMBER_REJECTED: "extraction_outcome",
         DiagnosticCode.EXTRACTION_MEMBER_FAILED: "extraction_outcome",
+        DiagnosticCode.EXTRACTION_NAME_COLLISION: "name_collision",
     }
 )
 
@@ -375,6 +392,7 @@ __all__ = [
     "ExtractionReport",
     "FormatConflictContext",
     "MemberTimestampContext",
+    "NameCollisionContext",
     "NameEncodingContext",
     "NameNormalizationContext",
     "OnDiagnostic",

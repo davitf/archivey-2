@@ -99,6 +99,15 @@ class SpecialFileError(FilterRejectionError):
     """Device node, FIFO, socket — always rejected."""
 
 
+class UnportableNameError(FilterRejectionError):
+    """A member name is unsafe on the destination OS under the active policy.
+
+    Covers the cross-platform name hazards (see ``safe-extraction``): Windows-reserved
+    device names, a trailing dot/space, or ``:`` in a path segment, rejected under
+    ``STRICT`` on every platform (``STANDARD`` rejects the reserved/``:`` subset).
+    """
+
+
 class ResourceLimitError(ArchiveyError):
     """A configured listing or extraction resource limit was exceeded.
 
