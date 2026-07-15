@@ -33,6 +33,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      # RAR open+list target needs RARLAB unrar (header-only target does not). Mirror
+      # ci.yml so the partitioned fuzz job does not silently skip the rar slice.
+      - name: Install unrar
+        run: sudo apt-get update && sudo apt-get install -y unrar
+
       # fuzz = atheris; dev = fixture builders (py7zr, …); all = ISO/codecs the targets need.
       # Python 3.12: atheris publishes current wheels here (3.11 is capped at atheris 3.0.x).
       - name: Sync (fuzz + dev + all extras)
