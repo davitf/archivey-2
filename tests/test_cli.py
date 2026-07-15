@@ -159,6 +159,33 @@ def test_extract_policy_and_dest(sample_zip: Path, tmp_path: Path) -> None:
     assert (dest / "a.txt").read_bytes() == b"hello"
 
 
+def test_extract_strict_abort_explains_stop(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Windows-reserved device names are still rejected under STRICT; OnError.STOP must
+    # say so clearly (trailing-dot names are stripped, not rejected — see #123).
+    bad = _zip(tmp_path / "bad.zip", {"NUL": b"x", "ok.txt": b"y"})
+    dest = tmp_path / "out"
+    code = main(["extract", str(bad), "-d", str(dest), "--policy", "strict"])
+    assert code == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "NUL" in err
+    assert "extraction stopped" in err.lower()
+    assert "remaining members" in err.lower()
+    assert not (dest / "ok.txt").exists()
+
+
+def test_extract_zip_root_slash_under_default_strict(tmp_path: Path) -> None:
+    # ZIP root entry "/" normalizes to "."; STRICT must not abort on that spelling.
+    archive = tmp_path / "rooted.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("/"), b"")
+        zf.writestr("a.txt", b"hello")
+    dest = tmp_path / "out"
+    assert main(["extract", str(archive), "-d", str(dest)]) == EXIT_OK
+    assert (dest / "a.txt").read_bytes() == b"hello"
+
+
 def test_extract_smart_dest_multi_toplevel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

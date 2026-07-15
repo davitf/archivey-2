@@ -8,10 +8,12 @@ from typing import TextIO
 
 from archivey import ExtractionPolicy, OverwritePolicy
 from archivey.cli.common import open_for_cli, reject_salvage
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import member_predicate
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import make_progress_callback
 from archivey.config import PasswordInput
+from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
 
@@ -111,11 +113,21 @@ def run_extract(
                 print(f"extracting into {target}/", file=err)
 
         on_progress = make_progress_callback(hide_progress=hide_progress, stream=err)
-        reader.extract_all(
-            target,
-            members=pred,
-            policy=policy_enum,
-            overwrite=overwrite_enum,
-            on_progress=on_progress,
-        )
-    return 0
+        try:
+            reader.extract_all(
+                target,
+                members=pred,
+                policy=policy_enum,
+                overwrite=overwrite_enum,
+                on_progress=on_progress,
+            )
+        except ArchiveyError as exc:
+            # OnError.STOP (library default) re-raises the first member failure. Say so
+            # explicitly — a bare rejection line looks like a warning, not a hard stop.
+            print(exc, file=err)
+            print(
+                "extraction stopped; remaining members were not extracted",
+                file=err,
+            )
+            return EXIT_FAIL
+    return EXIT_OK

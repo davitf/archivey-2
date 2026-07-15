@@ -850,6 +850,27 @@ def test_unflagged_utf8_name_is_sniffed() -> None:
     assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] == 4
 
 
+def test_unflagged_ascii_name_is_not_an_encoding_override(tmp_path: Path) -> None:
+    # Pure ASCII is valid UTF-8 *and* identical under cp437 — the sniff "selecting" UTF-8
+    # is not an observable override, so no MEMBER_NAME_ENCODING_INFERRED spam.
+    path = tmp_path / "ascii.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("digital_codex/readme.txt", b"x")
+        z.writestr("digital_codex/.DS_Store", b"y")
+        z.writestr("__MACOSX/digital_codex/._.DS_Store", b"z")
+    with open_archive(path) as ar:
+        names = {m.name for m in ar.members()}
+        counts = ar.diagnostics.counts
+        for info in zipfile.ZipFile(path).infolist():
+            assert info.flag_bits & 0x800 == 0  # unflagged (stdlib leaves ASCII clear)
+    assert names == {
+        "digital_codex/readme.txt",
+        "digital_codex/.DS_Store",
+        "__MACOSX/digital_codex/._.DS_Store",
+    }
+    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
 def test_explicit_encoding_disables_sniff() -> None:
     # An explicit encoding= is authoritative: it is used verbatim and the sniff never runs.
     with open_archive(
