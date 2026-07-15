@@ -50,8 +50,10 @@ def test_blake2sp_matches_rar5_fixture_payload() -> None:
     from archivey import open_archive
 
     fixture = Path(__file__).parent / "fixtures" / "rar" / "blake2sp.rar"
-    if not fixture.is_file():
-        pytest.skip("missing vendored blake2sp.rar")
+    assert fixture.is_file(), (
+        "vendored tests/fixtures/rar/blake2sp.rar is required "
+        "(regenerate via scripts/gen_rar_fixtures.py)"
+    )
     payload = b"stored payload"
     with open_archive(fixture) as archive:
         member = next(m for m in archive.members() if m.is_file)

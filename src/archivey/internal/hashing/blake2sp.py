@@ -1,13 +1,4 @@
-"""BLAKE2sp — 8-way parallel BLAKE2s tree hash (RAR5 integrity).
-
-Implements the BLAKE2sp construction from the BLAKE2 paper / reference C code on top of
-stdlib ``hashlib.blake2s`` tree parameters, so RAR5 members that store a BLAKE2sp digest
-can be verified with no third-party dependency.
-
-Parameters match WinRAR/`unrar` ``-htb`` and the official unkeyed BLAKE2sp KATs:
-degree 8, unkeyed, 32-byte output, ``leaf_size=0``, round-robin **64-byte** blocks
-(``BLAKE2S_BLOCKBYTES``).
-"""
+"""RAR5 BLAKE2sp hasher on stdlib blake2s (zero-dependency)."""
 
 from __future__ import annotations
 

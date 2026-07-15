@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import io
 import os
+import struct
+from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Iterator, TypeVar
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -59,6 +61,8 @@ from archivey.types import (
     MemberStreams,
     MemberType,
 )
+
+_T = TypeVar("_T")
 
 # Lowercased standalone-compression extensions, for the "strip vs append .uncompressed" rule
 # in member-name inference. Sourced from the codec objects. (The combined `tar.gz`/`.tgz`
@@ -178,7 +182,7 @@ class SingleFileReader(BaseArchiveReader):
             peek_header=self._peek_header,
             peek_trailer=self._peek_trailer,
             probe_decompressed_size=self._probe_decompressed_size,
-            gzip_is_single_member=self._gzip_is_single_member,
+            probe_gzip_stored_crc32=self._probe_gzip_stored_crc32,
         )
 
     def _peek_header(self, length: int) -> bytes:
@@ -193,35 +197,44 @@ class SingleFileReader(BaseArchiveReader):
             self._header_cache = self._read_source_prefix(length)
         return self._header_cache[:length]
 
-    def _peek_trailer(self, length: int) -> bytes | None:
-        """The last ``length`` bytes of the compressed source, when cheaply readable.
+    def _with_seekable_source(self, fn: Callable[[BinaryIO], _T | None]) -> _T | None:
+        """Run ``fn`` on a seekable handle over the source; restore stream position.
 
-        Returns ``None`` for a non-seekable source (never forces a decode pass) or when the
-        source is shorter than ``length``.
+        Path sources get a fresh FD. Seekable streams are passed through with the caller's
+        position restored afterward. Non-seekable sources return ``None`` without calling
+        ``fn`` (never forces a decode pass).
         """
         src = self._source
         assert src is not None
         try:
             if isinstance(src, Path):
                 with open(src, "rb") as f:
-                    size = f.seek(0, io.SEEK_END)
-                    if size < length:
-                        return None
-                    f.seek(-length, io.SEEK_END)
-                    return f.read(length)
+                    return fn(f)
             if is_seekable(src):
                 pos = src.tell()
                 try:
-                    size = src.seek(0, io.SEEK_END)
-                    if size < length:
-                        return None
-                    src.seek(-length, io.SEEK_END)
-                    return src.read(length)
+                    return fn(src)
                 finally:
                     src.seek(pos)
         except OSError:
             return None
         return None
+
+    def _peek_trailer(self, length: int) -> bytes | None:
+        """The last ``length`` bytes of the compressed source, when cheaply readable.
+
+        Returns ``None`` for a non-seekable source (never forces a decode pass) or when the
+        source is shorter than ``length``.
+        """
+
+        def read_trailer(f: BinaryIO) -> bytes | None:
+            size = f.seek(0, io.SEEK_END)
+            if size < length:
+                return None
+            f.seek(-length, io.SEEK_END)
+            return f.read(length)
+
+        return self._with_seekable_source(read_trailer)
 
     def _read_source_prefix(self, length: int) -> bytes:
         from archivey.internal.streams.peekable import PeekableStream
@@ -243,33 +256,25 @@ class SingleFileReader(BaseArchiveReader):
             return data
         return b""
 
-    def _gzip_is_single_member(self) -> bool | None:
-        """Whether the gzip source has exactly one member, when cheaply knowable.
+    def _probe_gzip_stored_crc32(self) -> int | None:
+        """Trailer CRC-32 for a single-member gzip, in one seekable pass.
 
-        ``None`` when the source is non-seekable or too short to trust; ``False`` when a
-        second gzip header is found after offset 0.
+        Returns ``None`` when the source is non-seekable, too short, or multi-member.
         """
-        src = self._source
-        assert src is not None
-        try:
-            if isinstance(src, Path):
-                with open(src, "rb") as f:
-                    size = f.seek(0, io.SEEK_END)
-                    if size < 18:  # header(10) + min deflate + trailer(8)
-                        return None
-                    return not gzip_has_additional_member(f)
-            if is_seekable(src):
-                pos = src.tell()
-                try:
-                    size = src.seek(0, io.SEEK_END)
-                    if size < 18:
-                        return None
-                    return not gzip_has_additional_member(src)
-                finally:
-                    src.seek(pos)
-        except OSError:
-            return None
-        return None
+
+        def probe(f: BinaryIO) -> int | None:
+            size = f.seek(0, io.SEEK_END)
+            if size < 18:  # header(10) + min deflate + trailer(8)
+                return None
+            if gzip_has_additional_member(f):
+                return None
+            f.seek(-8, io.SEEK_END)
+            trailer = f.read(8)
+            if len(trailer) < 8:
+                return None
+            return struct.unpack_from("<I", trailer, 0)[0]
+
+        return self._with_seekable_source(probe)
 
     def _probe_decompressed_size(self) -> int | None:
         """Decompressed size from the stream index/trailer, when cheaply available.

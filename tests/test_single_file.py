@@ -246,6 +246,25 @@ def test_multi_member_gzip_omits_crc32(tmp_path: Path) -> None:
         assert "crc32" not in ar.members()[0].hashes
 
 
+def test_gzip_metadata_omits_crc_without_gzip_magic() -> None:
+    """Non-gzip bytes must not get a fake trailer CRC (PR 104 review #1)."""
+    from archivey.internal.streams.codecs import GzipCodec, MetadataContext
+    from archivey.types import ArchiveMember, MemberType
+
+    def boom() -> int | None:
+        raise AssertionError("must not probe CRC without gzip magic")
+
+    member = ArchiveMember(type=MemberType.FILE, name="data")
+    ctx = MetadataContext(
+        peek_header=lambda _n: b"NOT_A_GZIP_HEADER!!!!!!!!",
+        peek_trailer=lambda _n: b"\x11\x22\x33\x44\x55\x66\x77\x88",
+        probe_decompressed_size=lambda: None,
+        probe_gzip_stored_crc32=boom,
+    )
+    GzipCodec().extract_metadata(ctx, member)
+    assert "crc32" not in member.hashes
+
+
 def test_gzip_omits_crc32_on_nonseekable_source() -> None:
     data = gzip.compress(b"pipe-payload")
     with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
