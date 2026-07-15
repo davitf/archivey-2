@@ -31,10 +31,9 @@ Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
   (``test_compat_lzip_3``).
 
 **ZIP**
-* **GAP** WinZip AES (method 99) / ZIPX XZ — AES is a follow-on change; ZIPX XZ
-  (method 95) has no codec path yet.
+* **GAP** ZIPX XZ (method 95) — no codec path yet.
 * ZIPX PPMd / Zstd decode via the shared codec layer when `[7z]` / `[zstd]` are
-  installed.
+  installed; WinZip AES (method 99) decrypts via `[crypto]`.
 * **GAP** ZIP members whose payload exceeds the declared size (libarchive
   fixtures) — size/CRC checks reject them.
 * **GAP** assorted ZIP edge cases (extra padding, UTF-8 path presentation,
@@ -208,27 +207,11 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         "HARNESS: libarchive lists no members for this bare lzip fixture",
     ),
     # --- ZIP ---
-    # ZIPX PPMd8 / Zstd now decode via the shared codec layer (zip-native-codec-streams);
-    # they are no longer xfailed.
+    # ZIPX PPMd8 / Zstd / WinZip AES now decode via the shared codec / [crypto] paths;
+    # they are no longer xfailed (AES fixtures use passwords from `_PASSWORDS`).
     "test_read_format_zip_xz_multi.zipx": (
         True,
         "GAP: ZIPX XZ unsupported (no ZIP method-95 codec path yet)",
-    ),
-    "test_read_format_zip_winzip_aes128.zip": (
-        True,
-        "GAP: WinZip AES (method 99) unsupported by stdlib zipfile",
-    ),
-    "test_read_format_zip_winzip_aes256.zip": (
-        True,
-        "GAP: WinZip AES (method 99) unsupported by stdlib zipfile",
-    ),
-    "test_read_format_zip_winzip_aes256_large.zip": (
-        True,
-        "GAP: WinZip AES (method 99) unsupported by stdlib zipfile",
-    ),
-    "test_read_format_zip_winzip_aes256_stored.zip": (
-        True,
-        "GAP: WinZip AES (method 99) unsupported by stdlib zipfile",
     ),
     "test_read_data_into_fd_size_exceeds_declared_deflate.zip": (
         True,

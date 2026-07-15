@@ -44,7 +44,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
   `open_archive` is authoritative — it is used verbatim and disables the sniff.
 - ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
-  [costs](costs.md). WinZip AES (method 99) decryption is a follow-on capability.
+  [costs](costs.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
+  `[crypto]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
+  (integrity is the HMAC). Absent `[crypto]`, an AES member raises
+  `PackageNotInstalledError` but is still listed as encrypted.
 
 ## TAR (and compressed TAR)
 

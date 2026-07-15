@@ -67,10 +67,11 @@ to the codec's default backend. Central-directory parsing and listing MAY
 continue to use stdlib `zipfile`.
 
 Member reads SHALL verify `member.hashes["crc32"]` through the shared
-`VerifyingStream`. A corrupt member body SHALL raise `CorruptionError` (or
-`TruncatedError` when the payload is cut short) via the shared translation.
-Encrypted members (ZipCrypto / WinZip AE) SHALL retain their decryption path
-until a native AE composition change lands.
+`VerifyingStream` when a CRC is surfaced. A corrupt member body SHALL raise
+`CorruptionError` (or `TruncatedError` when the payload is cut short) via the
+shared translation. Traditional ZipCrypto members keep the stdlib `zipfile`
+decryption path; WinZip AES (method 99) SHALL decrypt natively (see below) and
+then feed the codec layer.
 
 #### Scenario: ZIP codec-layer decoding
 
@@ -81,7 +82,40 @@ until a native AE composition change lands.
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
 | Corrupt member body | `CorruptionError` / `TruncatedError` |
-| Encrypted (ZipCrypto / AE) member | Decrypts via the existing path; behavior unchanged |
+| Encrypted ZipCrypto member | Decrypts via the existing `zipfile` path; behavior unchanged |
+
+### Requirement: Read WinZip AES-encrypted members
+
+The ZIP backend SHALL read WinZip AES (AE-x) encrypted members: compression
+method 99 with the AES extra field `0x9901` giving vendor version (AE-1/AE-2),
+key strength (128/192/256), and the actual underlying compression method.
+Decryption SHALL derive keys via PBKDF2-HMAC-SHA1 (1000 iterations) over the
+password and per-member salt (strength/16 bytes) into encryption key ‖
+authentication key ‖ 2-byte verification value, decrypt with AES-CTR
+(little-endian counter), and authenticate the ciphertext with HMAC-SHA1
+truncated to 10 bytes. Decrypted bytes SHALL be decompressed through the shared
+codec layer for the actual method.
+
+A wrong password SHALL fail fast on the 2-byte verification value with
+`EncryptionError` (no bytes returned). A ciphertext HMAC mismatch SHALL raise
+at the terminal read (`CorruptionError`). AE-2 members SHALL surface no
+`crc32` (the ZIP CRC is 0; integrity is the HMAC) and run no CRC check; AE-1
+members SHALL surface and verify `crc32` in addition to the HMAC. AES
+decryption requires `[crypto]`; when it is absent an AE member SHALL raise
+`PackageNotInstalledError` (detection still identifies the member as
+AES-encrypted). Traditional ZipCrypto behavior is unchanged.
+
+#### Scenario: WinZip AES matrix
+
+| Case | Expected |
+| --- | --- |
+| AE-1 or AE-2 member, 128/192/256, correct password, `[crypto]` present | Decrypts, decompresses via codec layer, HMAC verified at EOF |
+| Wrong password | `EncryptionError` on the 2-byte verification value; no bytes |
+| Tampered ciphertext, correct password | HMAC mismatch → `CorruptionError` at terminal read |
+| AE-2 member | `crc32` absent; no CRC check; HMAC is the integrity signal |
+| AE-1 member | `crc32` present and verified alongside the HMAC |
+| AES member without `[crypto]` installed | `PackageNotInstalledError`; still reported as encrypted |
+| Traditional ZipCrypto member | Unchanged (existing weak-check confirmation path) |
 
 ### Requirement: Reject non-seekable ZIP read sources
 

@@ -42,12 +42,11 @@ member-bytes slice + codec dispatch this composes onto.
 - **Strength coverage.** Support 128/192/256; the salt/key lengths derive from the
   strength byte, so all three fall out of one code path.
 
-## Open questions (resolve during apply)
+## Open questions (resolved during apply)
 
-- Whether to verify pw_verify *and* still run to the HMAC, or trust pw_verify for the
-  fast path — decision: always finalize HMAC (pw_verify is only a cheap early-out).
-- Oracle for fixtures: `7z`/`py7zr` can produce AES ZIPs; confirm they emit AE-2 (most do)
-  and whether an AE-1 fixture needs a specific tool/flag. Skip-when-absent like other
-  oracle paths.
-- Interaction with the multi-candidate password model (`archive-reading`): AE pw_verify is
-  the per-candidate weak check; confirm the candidate-sequence flow reuses it cleanly.
+- Always finalize HMAC (pw_verify is only a cheap early-out) — confirmed.
+- Fixtures: `7z a -tzip -mem=AES256` emits AE-2; AE-1 covered by a hand-built
+  fixture helper in `tests/test_zip_aes.py` (skip-when-absent for the 7z path).
+- Multi-candidate password flow: AE pw_verify is the per-candidate weak check via
+  the existing `_PasswordCandidates.attempt` path; confirmed by
+  `test_aes_multi_password_selects_winner`.

@@ -189,11 +189,19 @@ def test_zip_corrupt_deflate_body_raises_corruption() -> None:
 
 
 def test_zip_unknown_method_raises_unsupported() -> None:
-    data = _build_minimal_zip(b"x.bin", b"raw", b"raw", method=99)
-    # Method 99 without encryption flag is still an unknown codec for the native path.
+    data = _build_minimal_zip(b"x.bin", b"raw", b"raw", method=97)
     with open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
-        with pytest.raises(UnsupportedFeatureError, match="compression method 99"):
+        with pytest.raises(UnsupportedFeatureError, match="compression method 97"):
+            ar.read(member)
+
+
+def test_zip_method_99_without_aes_extra_raises() -> None:
+    # Method 99 with no 0x9901 extra is not a valid AE member.
+    data = _build_minimal_zip(b"x.bin", b"raw", b"raw", method=99)
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        with pytest.raises(UnsupportedFeatureError, match="0x9901"):
             ar.read(member)
 
 

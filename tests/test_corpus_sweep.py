@@ -143,7 +143,13 @@ def _assert_stored_digest_parity(member, key: str) -> None:
     digest_keys = keys & {"crc32", "blake2sp"}
     if key == "zip":
         if member.type in (MemberType.FILE, MemberType.SYMLINK):
-            assert "crc32" in keys, f"zip {member.name!r} missing crc32"
+            # AE-2 (WinZip AES) stores CRC as 0 and relies on the HMAC — no crc32 digest.
+            if member.extra.get("zip.aes_vendor_version") == 2:
+                assert "crc32" not in keys, (
+                    f"zip AE-2 {member.name!r} should not surface crc32"
+                )
+            else:
+                assert "crc32" in keys, f"zip {member.name!r} missing crc32"
         else:
             assert "crc32" not in keys, f"zip {member.name!r} unexpected crc32"
         return
