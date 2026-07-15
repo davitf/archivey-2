@@ -104,12 +104,20 @@ def fixup_sevenzip_header_crcs(data: bytes, *, broken: bool | None = None) -> by
 
 
 def fixup_zip_local_and_cd_crc(data: bytes, *, broken: bool | None = None) -> bytes:
-    """Best-effort ZIP local-header + central-directory CRC32 patch for shallow open+list.
+    """Best-effort ZIP local-header + central-directory CRC32 patch for open+read.
 
     Stdlib ``zipfile`` lists from the central directory; member CRC mismatches mainly
-    surface on read. We still patch CD ``CRC-32`` (and matching local headers when the
-    relative offset is sane) so wrapper paths behind those fields can be reached. This is
-    intentionally conservative: malformed EOCD / spans return ``data`` unchanged.
+    surface on read (archivey's native codec path verifies ``crc32``). We patch CD
+    ``CRC-32`` (and matching local headers when the relative offset is sane) so
+    post-CRC read paths can be reached.
+
+    - Stored (method 0): CRC over the compressed (== uncompressed) payload.
+    - Deflate (method 8): inflate the local payload with raw zlib; on success CRC over
+      the decompressed bytes (covers header-only mutations that leave compressed data
+      intact). Failed inflate leaves the stored CRC unchanged.
+    - Other methods: leave CRC unchanged unless ``broken`` flips the existing field.
+
+    Intentionally conservative: malformed EOCD / spans return ``data`` unchanged.
     """
     if len(data) < 22:
         return data
@@ -142,8 +150,6 @@ def fixup_zip_local_and_cd_crc(data: bytes, *, broken: bool | None = None) -> by
         comment_len = int.from_bytes(buf[pos + 32 : pos + 34], "little")
         local_off = int.from_bytes(buf[pos + 42 : pos + 46], "little")
 
-        # Prefer recomputing from the local compressed payload when the layout is sane;
-        # otherwise leave the stored CRC and only optionally break it.
         new_crc: int | None = None
         if (
             local_off + 30 <= len(buf)
@@ -156,17 +162,28 @@ def fixup_zip_local_and_cd_crc(data: bytes, *, broken: bool | None = None) -> by
             if payload_end <= len(buf) and uncomp_size == 0 and comp_size == 0:
                 new_crc = 0
             elif payload_end <= len(buf):
-                # Stored (method 0) payloads: CRC is over uncompressed == compressed bytes.
                 method = int.from_bytes(buf[local_off + 8 : local_off + 10], "little")
+                payload = bytes(buf[payload_start:payload_end])
                 if method == 0:
-                    new_crc = _crc32(bytes(buf[payload_start:payload_end]))
+                    new_crc = _crc32(payload)
+                elif method == 8:
+                    # Raw DEFLATE (ZIP); successful inflate → CRC of uncompressed bytes.
+                    try:
+                        new_crc = _crc32(zlib.decompress(payload, -zlib.MAX_WBITS))
+                    except zlib.error:
+                        new_crc = None
 
         if new_crc is not None:
             if broken:
                 new_crc ^= 1
             struct.pack_into("<I", buf, crc_off, new_crc)
-            # Mirror into the local header CRC field when present.
             struct.pack_into("<I", buf, local_off + 14, new_crc)
+        elif broken:
+            # No recompute path — still exercise reject by flipping the stored CRC.
+            old = int.from_bytes(buf[crc_off : crc_off + 4], "little")
+            struct.pack_into("<I", buf, crc_off, old ^ 1)
+            if local_off + 18 <= len(buf) and buf[local_off : local_off + 4] == b"PK\x03\x04":
+                struct.pack_into("<I", buf, local_off + 14, old ^ 1)
 
         pos += 46 + name_len + extra_len + comment_len
 

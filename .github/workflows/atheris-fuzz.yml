@@ -20,7 +20,8 @@ jobs:
   fuzz:
     name: Atheris (partitioned)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Full partition is ~4–5+ min before budget_scale; leave headroom for sync + seeds.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -52,11 +53,23 @@ jobs:
           export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=$((45 * scale))
           export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=$((20 * scale))
           export ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT=$((12 * scale))
-          export ARCHIVEY_FUZZ_BUDGET_ZIP_TAR=$((12 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_ZIP=$((25 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_TAR=$((10 * scale))
           export ARCHIVEY_FUZZ_BUDGET_ISO=$((8 * scale))
           export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=$((30 * scale))
           export ARCHIVEY_FUZZ_BUDGET_RAR=$((15 * scale))
-          echo "Budgets: header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER open=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN detect=$ARCHIVEY_FUZZ_BUDGET_DETECT_FORMAT zip_tar=$ARCHIVEY_FUZZ_BUDGET_ZIP_TAR iso=$ARCHIVEY_FUZZ_BUDGET_ISO rar_header=$ARCHIVEY_FUZZ_BUDGET_RAR_HEADER rar=$ARCHIVEY_FUZZ_BUDGET_RAR"
+          export ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS=$((15 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_XZ=$((12 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_LZIP=$((10 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_GZIP=$((10 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_BZIP2=$((10 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_LZMA_ALONE=$((8 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_ZLIB=$((8 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_ZSTD=$((8 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_BROTLI=$((8 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_LZ4=$((8 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_DEFLATE64=$((8 * scale))
+          echo "Budgets (scale=$scale): sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP tar=$ARCHIVEY_FUZZ_BUDGET_TAR rar=$ARCHIVEY_FUZZ_BUDGET_RAR unix_compress=$ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS"
           uv run --python 3.12 --no-sync python -m tests.atheris_fuzz
       - name: Upload crash artifacts
         if: failure()
