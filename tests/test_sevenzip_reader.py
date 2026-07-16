@@ -163,11 +163,11 @@ def _windows_isolated_codec_roundtrip(
     each codec contains the blast radius and surfaces which label crashed (non-zero rc /
     NTSTATUS) instead of a suite-wide fatal exception with an ambiguous stack.
 
-    Isolation pinned the flake to the ``ppmd`` label (valid solid PPMd / ``pyppmd``); that
-    param is now skipped on ``win32`` in the required matrix and stress-tested by
-    ``scripts/ppmd_native_stress.py`` / the non-blocking ``PPMd native stress``
-    workflow — see ``docs/internal/known-issues.md``. Other codec labels still use this
-    harness on Windows.
+    Isolation pinned the flake to the ``ppmd`` label (valid solid PPMd / ``pyppmd``).
+    With PPMd decodes now bounded by folder ``unpack_size``, that param runs on
+    ``win32`` again through this harness like the other codec labels; the non-blocking
+    ``PPMd native stress`` workflow / ``scripts/ppmd_native_stress.py`` keep watching
+    for regressions — see ``docs/internal/known-issues.md``.
 
     The child writes flushed phase breadcrumbs to ``phase.txt`` so a hard abort still
     leaves a last-known step for the parent to report.

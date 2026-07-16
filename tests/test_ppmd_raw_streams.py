@@ -20,6 +20,7 @@ import sys
 
 import pytest
 
+from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.decompress import PpmdDecoder, PpmdDecompressorStream
 from archivey.internal.streams.streamtools import read_exact
@@ -228,3 +229,98 @@ def test_archivey_ppmd7_repeated_construct_destroy() -> None:
             unpack_size=len(_CONTENT),
         ) as stream:
             assert read_exact(stream, len(_CONTENT)) == _CONTENT
+
+
+# ---------------------------------------------------------------------------
+# Adversarial-input regression tests (pyppmd 1.3.x native aborts)
+#
+# pyppmd 1.3.x heap corruption fires when the native decoder runs past the true
+# end of stream (unbounded budget); see docs/internal/known-issues.md and
+# docs/internal/pyppmd-upstream-report.md. These tests pin the shapes damaged or
+# hostile archives can force — truncation, early close, garbage tails — which
+# must fail cleanly (archivey exception or bounded output) and never abort the
+# process. Subprocess-isolated soak versions of the same shapes live in
+# ``scripts/pyppmd_crash_repro.py`` (modes ``underfed-sized`` / ``hostile-tail``).
+# ---------------------------------------------------------------------------
+
+_skip_win32_unfinished_teardown = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Tears down a mid-stream PPMd7 decoder in-process; unfinished-decoder "
+        "teardown has aborted Windows CI — the PPMd native stress workflow "
+        "covers this axis in isolated children"
+    ),
+)
+
+
+@_skip_win32_unfinished_teardown
+def test_archivey_ppmd7_truncated_input_raises_truncated_error() -> None:
+    """Truncated member: flush must not fabricate the missing output.
+
+    ``PpmdDecoder.flush`` injects at most the one documented extra NUL; a stream
+    cut mid-payload must surface as ``TruncatedError``, not silently complete.
+    """
+    packed = _encode_ppmd7(_CONTENT)
+    with PpmdDecompressorStream(
+        io.BytesIO(packed[: len(packed) // 2]),
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=7,
+        unpack_size=len(_CONTENT),
+    ) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+
+
+@_skip_win32_unfinished_teardown
+def test_ppmd_decoder_truncated_flush_reports_unfinished() -> None:
+    """Decoder-level truncation: single-NUL flush leaves ``finished`` False."""
+    packed = _encode_ppmd7(_CONTENT)
+    dec = PpmdDecoder(order=_ORDER, mem_size=_MEM, variant=7, unpack_size=len(_CONTENT))
+    out = dec.feed(packed[: len(packed) // 2]).data
+    out += dec.flush().data
+    assert len(out) < len(_CONTENT)
+    assert not dec.finished
+
+
+@_skip_win32_unfinished_teardown
+def test_archivey_ppmd7_early_close_partial_read() -> None:
+    """Closing mid-member (native decoder mid-stream) must not abort or raise."""
+    packed = _encode_ppmd7(_CONTENT)
+    for _ in range(5):
+        stream = PpmdDecompressorStream(
+            io.BytesIO(packed),
+            order=_ORDER,
+            mem_size=_MEM,
+            variant=7,
+            unpack_size=len(_CONTENT),
+        )
+        assert read_exact(stream, 16) == _CONTENT[:16]
+        stream.close()
+
+
+@_skip_win32_unfinished_teardown
+def test_archivey_ppmd7_hostile_tail_stays_bounded() -> None:
+    """Inflated declared size + garbage tail: decode stays bounded, fails cleanly.
+
+    Models a hostile 7z header whose folder ``unpack_size`` exceeds the true
+    payload while the packed stream carries trailing garbage. Bytes past the
+    true payload are undefined (garbage symbols), but output must never exceed
+    the declared size, the true payload prefix must be intact, and any failure
+    must surface as an archivey error — never a native abort.
+    """
+    payload = b"alpha\n" * 100
+    packed = _encode_ppmd7(payload) + bytes(range(64))
+    claimed = len(payload) + 64
+    props = struct.pack("<BL", _ORDER, _MEM)
+    with open_codec_stream(
+        Codec.PPMD,
+        io.BytesIO(packed),
+        params=CodecParams(properties=props, unpack_size=claimed),
+    ) as stream:
+        try:
+            data = stream.read()
+        except ArchiveyError:
+            return
+        assert len(data) <= claimed
+        assert data[: len(payload)] == payload
