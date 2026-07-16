@@ -76,6 +76,15 @@ class PpmdDecoder(BaseDecoder):
 
     Variant 7 (``Ppmd7Decoder``) is the 7z var.H coder. Variant 8 (``Ppmd8Decoder``)
     is ZIP method 98 / WinZip ZIPX PPMd, which also carries a restore-method parameter.
+
+    ``unpack_size`` (when known, e.g. 7z folder unpack size) is passed through as
+    ``max_length`` on every ``decode`` call. PPMd7 has no end mark: ``decode(..., -1)``
+    can overshoot the true payload and stress the native allocator; bounding matches
+    py7zr's ``PpmdDecompressor.decompress(..., max_length)``.
+
+    At compressed EOF, PPMd may still need an extra NUL input byte when the encoder
+    omitted a trailing null (documented by pyppmd). That path feeds one NUL with the
+    remaining ``max_length``, same as py7zr / the pyppmd PyPI sample.
     """
 
     def __init__(
@@ -85,6 +94,7 @@ class PpmdDecoder(BaseDecoder):
         mem_size: int,
         variant: int = 7,
         restore_method: int = 0,
+        unpack_size: int | None = None,
     ) -> None:
         import pyppmd
 
@@ -92,6 +102,8 @@ class PpmdDecoder(BaseDecoder):
         self._mem_size = mem_size
         self._variant = variant
         self._restore_method = restore_method
+        self._unpack_size = unpack_size
+        self._produced = 0
         if variant == 8:
             self._decomp: Any = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
         else:
@@ -104,20 +116,53 @@ class PpmdDecoder(BaseDecoder):
             mem_size=self._mem_size,
             variant=self._variant,
             restore_method=self._restore_method,
+            unpack_size=self._unpack_size,
         )
 
+    def _max_length(self) -> int:
+        if self._unpack_size is None:
+            return -1
+        return max(0, self._unpack_size - self._produced)
+
+    def _decode(self, data: bytes, max_length: int) -> bytes:
+        if max_length == 0:
+            return b""
+        # Empty input + needs_input: feed the PPMd "extra" NUL (pyppmd / py7zr).
+        if (
+            not data
+            and getattr(self._decomp, "needs_input", False)
+            and not self._decomp.eof
+        ):
+            return self._decomp.decode(b"\0", max_length)
+        return self._decomp.decode(data, max_length)
+
     def feed(self, chunk: bytes) -> DecodeOut:
-        return DecodeOut(self._decomp.decode(chunk, -1))
+        out = self._decode(chunk, self._max_length())
+        self._produced += len(out)
+        return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        # 7z/ZIP PPMd streams sometimes need a trailing NUL to finish when the decoder
-        # still reports needs_input at EOF (mirrors py7zr's PpmdDecompressor).
-        if getattr(self._decomp, "needs_input", False) and not self._decomp.eof:
-            return DecodeOut(self._decomp.decode(b"\0", -1))
-        return DecodeOut(b"")
+        # Drain with extra NULs while the decoder still wants input and we have room
+        # under unpack_size (or unbound when size is unknown). Cap iterations so a
+        # stuck needs_input cannot loop forever.
+        parts: list[bytes] = []
+        for _ in range(8):
+            max_length = self._max_length()
+            if max_length == 0:
+                break
+            if self._decomp.eof or not getattr(self._decomp, "needs_input", False):
+                break
+            chunk = self._decomp.decode(b"\0", max_length)
+            if not chunk:
+                break
+            parts.append(chunk)
+            self._produced += len(chunk)
+        return DecodeOut(b"".join(parts))
 
     @property
     def finished(self) -> bool:
+        if self._unpack_size is not None and self._produced >= self._unpack_size:
+            return True
         return bool(self._decomp.eof)
 
 
@@ -202,10 +247,12 @@ def PpmdDecompressorStream(
     mem_size: int,
     variant: int = 7,
     restore_method: int = 0,
+    unpack_size: int | None = None,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
 
     ``variant=7`` is 7z PPMd var.H; ``variant=8`` is ZIP method 98 (PPMd8).
+    Pass ``unpack_size`` when known (7z folder size) so PPMd7 decode calls are bounded.
     """
     return DecompressorStream(
         path,
@@ -214,6 +261,7 @@ def PpmdDecompressorStream(
             mem_size=mem_size,
             variant=variant,
             restore_method=restore_method,
+            unpack_size=unpack_size,
         ),
         codec_name="ppmd",
     )

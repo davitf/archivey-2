@@ -18,6 +18,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, NoReturn, cast
@@ -991,6 +992,11 @@ class ZipReader(BaseArchiveReader):
                 params = self._zip_lzma_params(raw)
             elif info.compress_type == 98:  # ZIP PPMd8
                 params = self._zip_ppmd_params(raw)
+                # Bound PPMd decode to the member size when known (defensive; PPMd8
+                # usually has an end mark, but max_length still matches py7zr practice).
+                size = member.size if member is not None else info.file_size
+                if size is not None and size >= 0:
+                    params = replace(params, unpack_size=size)
 
             decoded: BinaryIO = open_codec_stream(
                 codec,

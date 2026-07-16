@@ -223,7 +223,13 @@ uv run --no-sync pytest -m ppmd_native_stress -k warmup --timeout=600 -o addopts
   required suite.
 - Deterministic **raw** PPMd coverage (no 7z) lives in `tests/test_ppmd_raw_streams.py` and
   stays in the required suite — those paths have been stable in short soaks.
-- Not a product-runtime change: archivey still uses `pyppmd` for PPMd.
+- **Product hardening (related, not a proven crash fix):** archivey now passes the 7z
+  folder unpack size into PPMd as `max_length` (and ZIP member size for PPMd8), and on
+  flush feeds the pyppmd “extra NUL” only within the remaining length — matching py7zr /
+  the [pyppmd PyPI note](https://pypi.org/project/pyppmd/). Previously `decode(..., -1)`
+  could overshoot the true payload on PPMd7 (no end mark); that is a correctness issue and
+  a plausible native-stress contributor, but the intermittent abort after other-codec
+  warmup is still open.
 
 ### Non-blocking stress check (investigation vehicle)
 
