@@ -411,6 +411,91 @@ def test_extract_version_20_payload_accepted() -> None:
     assert member.compress_size == 2
 
 
+def _rar3_file_block(
+    name: bytes,
+    *,
+    flags: int,
+    pack_lo: int,
+    unp_lo: int,
+    pack_hi: int = 0,
+    unp_hi: int = 0,
+    method: int = 0x30,
+) -> bytes:
+    """Build one RAR3 FILE block with a valid 16-bit header CRC."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR3_FILE_LARGE,
+        _RAR3_LONG_BLOCK,
+        _crc32,
+    )
+
+    file_fields = struct.pack(
+        "<LLBLLBBHL",
+        pack_lo,
+        unp_lo,
+        3,  # Unix
+        0,  # crc32
+        0,  # dos time
+        20,  # extract version
+        method,
+        len(name),
+        0o100644,
+    )
+    if flags & _RAR3_FILE_LARGE:
+        file_fields += struct.pack("<LL", pack_hi, unp_hi)
+    file_fields += name
+    flags |= _RAR3_LONG_BLOCK
+    header_without_crc = struct.pack("<BHH", 0x74, flags, 7 + len(file_fields))
+    header_without_crc += file_fields
+    file_crc = _crc32(header_without_crc) & 0xFFFF
+    return struct.pack("<H", file_crc) + header_without_crc
+
+
+def _rar3_main_and_end() -> tuple[bytes, bytes]:
+    from archivey.internal.backends.rar_parser import _crc32
+
+    main_without_crc = struct.pack("<BHH", 0x73, 0, 7 + 6) + b"\x00" * 6
+    main_hdr = struct.pack("<H", _crc32(main_without_crc) & 0xFFFF) + main_without_crc
+    end_without_crc = struct.pack("<BHH", 0x7B, 0, 7)
+    end_hdr = struct.pack("<H", _crc32(end_without_crc) & 0xFFFF) + end_without_crc
+    return main_hdr, end_hdr
+
+
+def test_rar3_large_packed_member_skips_full_64bit_size() -> None:
+    """F5: a RAR3 ``FILE_LARGE`` member's packed-data skip must use the full 64-bit
+    size (HIGH_PACK_SIZE), not just the low 32 bits.
+
+    The first member claims a 4 GiB packed size (low 32 = 0, high = 1) with no actual
+    data, immediately followed by a second FILE header. Skipping only the low 32 bits
+    (0 bytes) would misparse that second header as a member; skipping the full 4 GiB
+    lands past EOF, so exactly one member is seen.
+    """
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_LARGE
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    big = _rar3_file_block(
+        b"big.bin", flags=_RAR3_FILE_LARGE, pack_lo=0, unp_lo=0, pack_hi=1, unp_hi=1
+    )
+    trailing = _rar3_file_block(b"sneaky.txt", flags=0, pack_lo=0, unp_lo=0)
+    blob = RAR_ID + main_hdr + big + trailing + end_hdr
+    archive = parse_rar_archive(io.BytesIO(blob))
+    assert [m.filename for m in archive.members] == ["big.bin"]
+    assert archive.members[0].compress_size == 1 << 32
+
+
+def test_rar3_mismatched_split_continuation_is_corruption() -> None:
+    """F6: a SPLIT_BEFORE continuation that names a different file (or follows a
+    non-split member) must not be silently merged into the previous member."""
+    main_hdr, end_hdr = _rar3_main_and_end()
+    first = _rar3_file_block(b"a.txt", flags=0, pack_lo=0, unp_lo=0)
+    # SPLIT_BEFORE continuation naming a different file — not a real continuation.
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_SPLIT_BEFORE
+
+    forged = _rar3_file_block(b"b.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=0, unp_lo=0)
+    blob = RAR_ID + main_hdr + first + forged + end_hdr
+    with pytest.raises(CorruptionError):
+        parse_rar_archive(io.BytesIO(blob))
+
+
 def test_rar5_hostile_packed_size_is_corruption() -> None:
     """Atheris: huge RAR5 vint add_size must not raise raw OverflowError on seek."""
     import zlib

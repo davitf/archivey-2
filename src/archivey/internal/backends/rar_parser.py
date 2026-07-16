@@ -562,7 +562,18 @@ def _decode_name(raw: bytes) -> str:
 
 
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
-    """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style)."""
+    """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style).
+
+    A genuine continuation repeats the same file name and follows a part that was itself
+    marked SPLIT_AFTER. Reject a continuation that names a different file or follows a
+    non-split member, so a crafted split_before flag cannot silently fold an unrelated
+    member's size/CRC into the previous one (and hide it from the listing).
+    """
+    if not old.split_after or old.filename != new.filename:
+        raise CorruptionError(
+            "Mismatched RAR split continuation: "
+            f"{new.filename!r} does not continue {old.filename!r}"
+        )
     old.compress_size += new.compress_size
     if new.crc32 is not None:
         old.crc32 = new.crc32
@@ -966,7 +977,12 @@ def _parse_rar3(
                 else:
                     comment = cmt
 
-            _seek_after_packed(source, data_offset, add_size)
+            # For a >4 GiB packed member the LONG_BLOCK ``add_size`` holds only the low
+            # 32 bits; ``member.compress_size`` carries the full 64-bit size (with
+            # HIGH_PACK_SIZE) so the walk skips the whole packed region and does not land
+            # mid-data on the next header.
+            packed_size = member.compress_size if (flags & _RAR3_FILE_LARGE) else add_size
+            _seek_after_packed(source, data_offset, packed_size)
             continue
 
         # Unknown / skippable block

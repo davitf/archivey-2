@@ -63,7 +63,14 @@ all three dependency configs (`[all]` 1580 passed, `[all-lowest]` 1579, `[core-o
   has no hash to verify — a hashed member's CRC is authoritative, avoiding legacy-format
   false positives); a new `LengthVerifyingStream` enforces exact member length on the
   hash-less forward-only path (truncation → `TruncatedError`).
-- **F5 / F6** deferred (F5 needs a >4 GiB fixture; F6 is a low-severity fidelity nit).
+- **F5** — a RAR3 `FILE_LARGE` member now skips its full 64-bit packed size
+  (HIGH_PACK_SIZE), so the walk no longer under-seeks and misparses the next header on
+  a >4 GiB packed member. Covered by a synthetic RAR3 test (a real fixture would be
+  >4 GiB — infeasible to commit; `make_large_packed_fixture.py` builds one for optional
+  local end-to-end validation).
+- **F6** — `_merge_split_member` now rejects a split continuation that names a different
+  file or follows a non-split member, so a crafted `split_before` flag can't fold an
+  unrelated member's size/CRC into the previous one.
 
 See `QUESTIONS.md` for the two design calls that shaped F3/Q3 (reject `*`/`?`; length
 check as a hash-less-only backstop, not a global `SlicingStream` change).
