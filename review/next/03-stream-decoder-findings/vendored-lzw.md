@@ -9,12 +9,13 @@ the base stream, and one missing header bound, make a decompression bomb; and a 
 
 ## F3 (Medium) — decompression bomb: eager per-`feed` decode + no `maxbits` ceiling
 
-### F3a — `feed()` has no output budget; the base buffers the whole result
+### F3a — no per-`feed` output budget; the base buffers the whole result (all feed codecs)
 
-`LzwState._process` (`unix_compress.py:143`) decodes **all** currently-buffered compressed
-input into one `output` bytearray and returns it. The base reads a 64 KB compressed chunk
-and appends the *entire* decoded result to `self._buffer`, with no back-pressure between
-"bytes the caller asked for" and "bytes produced":
+> **Scope corrected after maintainer review (2026-07-16).** This is **not** LZW-specific.
+> The root cause is in the base: `_read_decompressed_chunk` reads a 64 KB *compressed*
+> chunk and appends the **entire** decoded result to `self._buffer`, with no back-pressure
+> between "bytes the caller asked for" and "bytes produced". Every `DecompressorStream`-based
+> codec inherits it. LZW is the sharpest instance (below), not the only one.
 
 ```
 # decompressor_stream.py:302  read
@@ -22,22 +23,35 @@ if len(self._buffer) < n and not self._eof:
     self._buffer.extend(self._read_decompressed_chunk())   # extends by a full feed()'s output
 ```
 
-LZW amplification is **unbounded** and grows with stream position (later codes reference
-ever-longer dictionary entries) — unlike deflate (~1032:1 hard cap) or the LZMA family,
-which archivey trusts to be roughly bounded per input chunk. So a single `read(1)` can
-force an arbitrarily large decode.
+`LzwState._process` (`unix_compress.py:143`) decodes **all** currently-buffered compressed
+input into one `output` bytearray, so the base buffers it whole. But so do the other
+feed-based decoders — re-measured, each decoding a 50 MB all-`'A'` payload with `read(1)`
+(asking for one byte):
 
-**Measured** (`repro.py` F3 section, an all-`'A'` run that real `compress` also emits):
+| codec (via `DecompressorStream`) | compressed input | buffer after `read(1)` |
+| --- | --- | --- |
+| brotli | **80 B** | 50 MB |
+| xz / lzip / lzma-alone / raw-LZMA | 7.4 KB | 50 MB |
+| deflate / zlib (stdlib path) | 48.6 KB | 50 MB |
+| unix-compress (LZW) | 9.4 KB | 20 MB |
 
-```
-input .Z size: 9,450 bytes
-read(1) -> b'A'; internal buffer now 19,999,999 bytes    # one byte asked for, 20 MB resident
-```
+(The stdlib *file-object* codecs — gzip, bz2, lz4, zstd — are **not** affected: they read
+incrementally, `read(1)` peaks ≤ 0.1 MB. `LZMAFile` peaks ~8 MB, already far below the
+`DecompressorStream` path.)
 
-A ~9 KB attacker file forces ~20 MB of resident buffer on the **first byte read**, and the
-ratio scales with the payload length (a 50 KB `.Z` reaches hundreds of MB; PR #121 measured
-peak ~1.4 GB). The output is a legitimate all-`'A'` run (verified roundtrip, not an encoder
+**Why LZW is still the headline of this theme file.** It is in the **zero-dep core** with
+no `[extra]` gate to hide behind (VISION #2 at full strength), and its amplification is
+**unbounded and grows with stream position** (later codes reference ever-longer dictionary
+entries) — deflate has a ~1032:1 per-chunk cap; brotli/LZMA are higher but the codecs are
+optional deps. A ~9 KB `.Z` forces ~20 MB of resident buffer on the **first byte read**,
+scaling with payload length (a 50 KB `.Z` reaches hundreds of MB; PR #121 measured peak
+~1.4 GB). The output is a legitimate all-`'A'` run (verified roundtrip, not an encoder
 artifact).
+
+The fix belongs in the base (an output budget on `Decoder.feed` + retained un-consumed
+input); the `max_length`-capable backends (zlib, lzma, bz2, pyppmd) and our own LZW can all
+honor it, brotli/deflate64 are the residual. Per-backend feasibility is worked out in
+`QUESTIONS.md` Q3.
 
 Existing mitigations do not cover this:
 - The `ArchiveyConfig` decompression-ratio guard (`config.py:84`, `max_ratio=1000`,

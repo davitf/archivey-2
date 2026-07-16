@@ -39,32 +39,90 @@ streams and any path with verification off.
   `1f 8b 08` in compressed data cannot mask a truncation and so a `BytesIO` source is also
   covered.
 
+**Maintainer's proposal (2026-07-16), and it's the cleaner resolution:** when the
+*decompressed* size is known (any central-directory format, plus xz/lzip index and gzip
+ISIZE), a top-level length check catches the silent short read — this is the
+`ArchiveStream`/`_wrap_member_stream` length-verification idea already registered in #113.
+Then **gate AUTO on truncation-detectability**: select the accelerator when we can verify
+completeness via a known decompressed size, else fall back to stdlib (which raises
+natively). This turns F2 into a non-issue for the common case and confines the stdlib
+fallback to exactly the exposed surface (standalone raw deflate/zlib with no declared size).
+
+One subtlety worth pinning down in that design: it must be the **decompressed** size that
+is verified, not the compressed one. rapidgzip reads the whole (truncated) compressed input
+— "did we consume all compressed bytes" is trivially yes — so only "did we produce the
+declared number of decompressed bytes" distinguishes a truncation. `compressed_input_size`
+(the AUTO gate's ≥1 MiB input) does **not** by itself detect truncation; the length check
+needs the expected *output* length. So the gate condition is "a decompressed size we can
+verify against is available," which for raw deflate/zlib single-file streams it is not →
+stdlib. Recommendation: adopt this.
+
 Related: even the truncations rapidgzip *does* surface arrive as
 `RuntimeError("std::exception")` and map to `CorruptionError`, not `TruncatedError`
-(`codecs.py:292`) — should the accelerator translator distinguish these?
+(`codecs.py:292`) — should the accelerator translator distinguish these? (Minor if the
+length check above lands, since it would raise `TruncatedError` itself.)
 
-## Q3 — LZW bomb + `maxbits` (F3): cap and budget?
+## Q3 — the per-read memory bomb (F3a): a base issue, not just LZW; + `maxbits` (F3b)
 
-A ~9 KB `.Z` buffers ~20 MB on a single `read(1)` (unbounded, position-dependent LZW
-amplification, no per-`feed` output budget), worsened by `maxbits` accepted up to 31 (format
-ceiling is 16, dictionary ceiling 2³¹). `stream_members`/forward iteration apply no bomb
-guard.
+**The maintainer is right that this is not LZW-specific** — it is the base
+`_read_decompressed_chunk` reading 64 KB of *compressed* input and buffering the **entire**
+decoded result, so every `DecompressorStream`-based codec balloons on a `read(1)`. Measured
+(all decode a 50 MB all-`'A'` payload, `read(1)` asks for one byte):
 
-- Clamp `maxbits` to 16 (raise `CorruptionError` above — matching `compress`/`ncompress`),
-  **and/or**
-- Give the LZW decoder an output budget (decode at most ~N bytes per `feed`, retaining
-  un-consumed compressed input) so the base's existing 64 KB chunking actually bounds peak
-  memory per read.
+| codec (via `DecompressorStream`) | compressed input | buffer after `read(1)` | native output cap? |
+| --- | --- | --- | --- |
+| brotli   | **80 B** | 50 MB | none (`process()` decodes all) |
+| xz / lzip / lzma-alone / raw-LZMA | 7.4 KB | 50 MB | `LZMADecompressor.decompress(data, max_length)` ✓ |
+| deflate / zlib (stdlib path) | 48.6 KB | 50 MB | `decompressobj.decompress(data, max_length)` + `unconsumed_tail` ✓ |
+| unix-compress (LZW) | 9.4 KB | 20 MB | our own decoder |
+| ppmd | — | (same shape) | `Ppmd*Decoder.decode(data, length)` ✓ (currently called with `-1`) |
+| deflate64 | — | (same shape) | `inflate64.Inflater.inflate(data)` — no obvious limit |
 
-Recommendation: both — the `maxbits` clamp is a one-liner; the output budget is the real
-fix for peak memory and would also make `read(n)` cost roughly proportional to `n`.
+(The stdlib *file-object* codecs — gzip, bz2, lz4, zstd — are **not** affected: they read
+incrementally, so `read(1)` peaks at ≤ 0.1 MB. lzma-**alone** via `LZMAFile` peaks ~8 MB,
+already far below the `DecompressorStream` path.)
 
-## Q4 — `.Z` single-shot truncation (F4): fix the base or the decoder?
+So the fix belongs in the **base**, answering the maintainer's "what about the others?":
+give `Decoder.feed` an output budget and have it retain un-consumed input, decoding at most
+~N bytes per call. Feasibility per backend, from the table:
+
+- **zlib, lzma (xz/lzip/alone/raw), bz2, pyppmd** all expose a `max_length`/`length`
+  bounded-decode plus internal retention of un-consumed input — the base can budget them
+  directly (pyppmd is already `decode(chunk, -1)`; just pass a positive cap).
+- **LZW** (our own): exactly the maintainer's idea — `feed` returns a "was the input
+  exhausted?" flag; when it isn't, the base feeds no new compressed bytes next call and the
+  decoder drains its retained input. This bounds it without touching the kernel's math.
+- **brotli, deflate64** have no native output cap. brotli's `process()` decodes a fed chunk
+  wholesale, so the only lever is feeding smaller compressed increments — which, at brotli's
+  unbounded ratio (80 B → 50 MB above), does not tightly bound peak memory. These two
+  optional-dep codecs would remain the residual; document, or wrap with a coarser guard.
+
+**F3b (`maxbits`)** is the LZW-specific sub-part: clamp to 16 (raise `CorruptionError`
+above — matching `compress`/`ncompress`); a one-liner that also caps the dictionary at 2¹⁶.
+
+Recommendation: the `maxbits` clamp now (cheap, LZW-local); the output-budget is the real
+fix and is broadly applicable — worth its own change, scoped to the `max_length`-capable
+backends first (which covers the whole zero-dep core: deflate/zlib/xz/lzip/lzma), with
+brotli/deflate64 documented as the residual.
+
+## Q4 — `.Z` single-shot truncation (F4): raise directly on `read(-1)`/`readall()`
 
 A truncated `.Z` is deferred via `pending_error` and **not** raised on a single-shot
 `read(-1)`/`readall()` (only on the next empty read), while xz/lzip raise on the first
-`read(-1)`. Fix in the base (`readall`/`read(-1)` check `pending_error` after the final
-chunk) so the contract holds for any future deferred-error decoder, or in unix-compress
-(raise from `flush()` directly like the other seekable decoders, since the leftover-bits
-signal is known at flush time)? Recommendation: fix the base — it is where the contract
-lives.
+`read(-1)`.
+
+**Maintainer's decision (2026-07-16), which I agree with:** the deferred-error contract
+("`read(x)` returns all available bytes and raises on the *next* call, so no data is lost")
+exists for the **chunked** reader, who *will* call again. A `read(-1)`/`readall()` caller
+expects the returned value to be the *complete* stream and will not call again, so a
+truncation must be raised on that first call. This makes `.Z` consistent with xz/lzip
+(which already raise on the first `read(-1)`) at the cost of the partial bytes on that
+specific call — acceptable, because the caller asked for the whole stream and it is
+incomplete; a caller who wants the recoverable prefix reads in a bounded loop, where the
+deferred "return bytes now, raise next" behaviour is preserved.
+
+Fix location: the **base** — after `readall()`'s loop (and the `read(-1)` branch), if the
+decoder has a `pending_error`, raise it instead of returning. That keeps the contract in
+one place and covers any future deferred-error decoder; unix-compress's `flush()` need not
+change. (The chunked `read(n)` path already raises correctly on the subsequent empty read,
+so it is untouched.)

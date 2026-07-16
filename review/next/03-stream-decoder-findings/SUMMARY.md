@@ -46,7 +46,7 @@ backend is used and raises correctly.
 |---|-----|-------|-----------|
 | F1 | **High** | `decompressor_stream.py:251` | Two distinct inputs make `add_seek_points` route colliding same-offset points to `assert False` in `_resolve_same_offset_collision` → raw `AssertionError` (outside the `ArchiveyError` tree; silent wrong-seek under `python -O`). **(a)** a *valid* multi-stream `.xz` read with the everyday seek-to-end-then-read (size probe) pattern — stream-start (`state=None`) collides with a first-block point (`state=block`) [`xz.py:564` vs `:615`]; **(b)** a 72-byte *crafted* `.xz` with ≥2 zero-`uncompressed_size` blocks, which `build_index` alone maps to the same offset with distinct `_XzBlockBounds` objects [`xz.py:158` accepts `uncompressed_size==0`]. XZ is the only decoder that stores non-`None` `state`, so it is the only one that trips this. |
 | F2 | **High** | `codecs.py:953`, `:987`, `:365` | On the #105 hot path, a truncated **deflate/zlib** stream decoded through rapidgzip **silently returns partial/zero bytes with no error**, where stdlib raises `TruncatedError`. deflate/zlib have no truncation backstop; the gzip ISIZE backstop (`_GzipTruncationCheckStream`) is skipped for non-path sources and is also defeated by a chance `1f 8b 08` in the >1 MiB payloads that trip the AUTO gate. (PR #121 additionally observed mid-stream *corruption* swallowed in some configs; that outcome is data-dependent — see accelerators.md.) VISION #3 regression. |
-| F3 | **Medium** | `unix_compress.py:143`, `:51`, `decompressor_stream.py:302` | LZW decodes a whole `feed()` eagerly with no output budget, and the base buffers it entirely, so **a 9.4 KB all-`'A'` `.Z` buffers ~20 MB on a `read(1)` that returns one byte** (amplification grows with stream length — LZW has no fixed ratio cap). Compounded by `maxbits` accepted up to 31 (format ceiling is 16), raising the dictionary ceiling from 2¹⁶ to 2³¹. `stream_members`/forward iteration apply no bomb guard. VISION #2/#4. |
+| F3 | **Medium** | `decompressor_stream.py:302`; `unix_compress.py:51` | **Base-level per-read memory bomb (not LZW-specific).** `_read_decompressed_chunk` reads 64 KB *compressed* and buffers the **entire** decoded result, so any `DecompressorStream` codec balloons on a `read(1)`: brotli **80 B → 50 MB**, xz 7.4 KB → 50 MB, deflate 48 KB → 50 MB, LZW 9.4 KB → 20 MB (all re-verified). LZW (F3a) is the most acute — zero-dep core, no `[extra]` shield, unbounded position-growing ratio — and adds a second bug (F3b): `maxbits` accepted up to 31 (format ceiling 16 → dictionary ceiling 2¹⁶ vs 2³¹). `stream_members`/forward iteration apply no bomb guard. VISION #2/#4. |
 | F4 | **Medium** | `decompressor_stream.py:286`, `:307`; `unix_compress.py:347` | `read(-1)`/`readall()` never consult `pending_error`, so a truncated `.Z` read with the `f.read()` idiom returns partial data and **swallows** the `TruncatedError` that the *same input* raises when read in chunks. Only the vendored LZW decoder uses the deferred-error path, but the root cause is in the base. VISION #3. |
 | F5 | Low-Med (test gap) | `tests/test_seekable_streams.py` | No randomized/property seek test (old review finding #6, still open). Every seek test reads forward-to-EOF before seeking — the one ordering that cannot expose F1a. A seek-math property test would have caught F1. |
 
@@ -60,9 +60,12 @@ Details and reproductions: `seek-index.md` (F1, F5), `accelerators.md` (F2),
   (b) is the more alarming for *hostile input* (a 72-byte crafted file crashes the index
   build with no decode). Same assert, same fix surface — merged into one finding with both
   reproductions.
-- **F3 (LZW bomb) was found only by PR #121.** PR #122 had caught only the `maxbits`
-  sub-part (previously its own low-sev finding); it is folded in here as F3b. Re-verified:
-  9,450-byte input → 19,999,999-byte resident buffer on `read(1)`.
+- **F3 (memory bomb) was found only by PR #121, and maintainer review then broadened it.**
+  PR #122 had caught only the `maxbits` sub-part; PR #121 found the eager-`feed` bomb.
+  Maintainer review (2026-07-16) correctly pointed out it is **not LZW-specific** — it is
+  the base's `_read_decompressed_chunk`, so brotli/xz/deflate/ppmd/deflate64 all balloon
+  the same way (re-verified: brotli 80 B → 50 MB). F3 is now scoped as a base-level issue
+  with LZW as the sharpest instance; see the fix-feasibility table in `QUESTIONS.md` Q3.
 - **F2 corruption angle.** PR #121 measured mid-stream *corruption* (not just truncation)
   swallowed by rapidgzip while stdlib raised. In this session the **truncation** swallow
   reproduced cleanly and repeatably (both reviews); a quick attempt to reproduce the

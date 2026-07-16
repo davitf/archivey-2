@@ -103,7 +103,9 @@ def finding1b_xz_collision_crafted_zero_blocks() -> None:
 
 
 def finding3_lzw_memory_bomb() -> None:
-    _hr("F3a (MED): LZW eager feed -> ~9 KB .Z buffers ~20 MB on read(1)")
+    _hr("F3a (MED): eager feed -> tiny input buffers huge output on read(1) (all feed codecs)")
+    import zlib
+
     try:
         import ncompress
     except ImportError:
@@ -120,6 +122,33 @@ def finding3_lzw_memory_bomb() -> None:
         f"internal buffer now {len(s._buffer):,} bytes (unbounded per-read amplification)"
     )
     s.close()
+
+    # Scope correction (maintainer review): this is a BASE issue, not LZW-specific.
+    from archivey.internal.streams.decompress import ZlibDecompressorStream
+    from archivey.internal.streams.xz import XzDecompressorStream
+
+    big = b"A" * 50_000_000
+    co = zlib.compressobj(9, zlib.DEFLATED, -15)
+    deflate = co.compress(big) + co.flush()
+    variants = [("deflate", ZlibDecompressorStream(io.BytesIO(deflate), wbits=-15)),
+                ("xz", XzDecompressorStream(io.BytesIO(lzma.compress(big, format=lzma.FORMAT_XZ)),
+                                            seekable=False))]
+    try:
+        import brotli
+
+        variants.insert(0, ("brotli", _BrotliStream(brotli.compress(big))))
+    except ImportError:
+        pass
+    for name, st in variants:
+        st.read(1)
+        print(f"  same bomb via {name:8}: buffer after read(1) = {len(st._buffer):,} bytes")
+        st.close()
+
+
+def _BrotliStream(data: bytes):  # noqa: N802 - factory-style helper
+    from archivey.internal.streams.decompress import BrotliDecompressorStream
+
+    return BrotliDecompressorStream(io.BytesIO(data))
 
 
 def finding2_accelerator_truncation() -> None:
