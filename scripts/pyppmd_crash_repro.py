@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Minimal ``pyppmd`` native-abort repro (no archivey / no py7zr).
+
+For upstream bug reports and version bisects. Only needs ``pyppmd`` (+ stdlib).
+
+Background
+----------
+``pyppmd`` 1.3.1 intermittently aborts with heap corruption / ``SIGABRT`` /
+``SIGSEGV`` on *valid* PPMd7 streams. archivey hit this via 7z solid PPMd; the
+hottest pure-``pyppmd`` trigger found so far is:
+
+  1. Sized decode to completion (``eof=True``).
+  2. Call ``decode(b"\\0", -1)`` anyway (the PyPI "extra input byte" path,
+     but after the stream is already finished).
+
+``decode(..., -1)`` overshoot alone also crashes at a lower rate. Sized-only
+decode (control) has been clean in local soaks.
+
+Examples::
+
+    python scripts/pyppmd_crash_repro.py
+    python scripts/pyppmd_crash_repro.py 50 --mode extra-null
+    python scripts/pyppmd_crash_repro.py 40 --mode overshoot
+    python scripts/pyppmd_crash_repro.py 40 --mode warmup-overshoot
+    python scripts/pyppmd_crash_repro.py 30 --mode sized-safe   # control
+
+    pip install 'pyppmd==1.2.0'   # compare older wheels
+    pip install 'pyppmd==1.3.1'
+
+Exit code is non-zero if any child crashed or failed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import platform
+import subprocess
+import sys
+import tempfile
+import textwrap
+from pathlib import Path
+
+_MODES: dict[str, str] = {
+    # Hottest pure-pyppmd abort trigger observed on 1.3.1 (~half of children).
+    "extra-null": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM = 6, 1 << 20
+        data = b"alpha\\n" * 100
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        for _ in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed, len(data))
+            assert out == data
+            # Stream is already finished (eof=True, needs_input=False), but the
+            # documented "extra NUL" API is easy to call unconditionally.
+            # On pyppmd 1.3.1 this often returns thousands of garbage bytes and
+            # intermittently aborts the process (malloc / SIGABRT / SIGSEGV).
+            more = dec.decode(b"\\0", -1)
+            _ = more
+        print("ok", pyppmd.__version__, "cycles", cycles)
+        """
+    ),
+    # Unbounded PPMd7 decode (no end mark) — lower crash rate, still pure pyppmd.
+    "overshoot": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM = 6, 1 << 20
+        data = (b"alpha\\n" * 100) + (bytes(range(64)) * 16)
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        for _ in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed, -1)
+            _ = out
+        print("ok", pyppmd.__version__, "out_len", len(out), "want", len(data))
+        """
+    ),
+    # Stdlib zlib/bz2/lzma warmup then unbounded PPMd7 (no archivey).
+    "warmup-overshoot": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import bz2
+        import lzma
+        import zlib
+
+        import pyppmd
+
+        warm = b"alpha\\n" * 200 + bytes(range(256)) * 8
+        for _ in range(5):
+            zlib.decompress(zlib.compress(warm))
+            bz2.decompress(bz2.compress(warm))
+            lzma.decompress(lzma.compress(warm))
+
+        ORDER, MEM = 6, 1 << 20
+        data = (b"alpha\\n" * 100) + (bytes(range(64)) * 16)
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "3"))
+        for _ in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed, -1)
+            _ = out
+        print("ok", pyppmd.__version__, "out_len", len(out))
+        """
+    ),
+    # Control: sized decode only — should stay clean.
+    "sized-safe": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM = 6, 1 << 20
+        data = (b"alpha\\n" * 100) + (bytes(range(64)) * 16)
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        for _ in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed, len(data))
+            assert out == data
+        print("ok", pyppmd.__version__, "sized", len(data))
+        """
+    ),
+}
+
+
+def _format_rc(returncode: int) -> str:
+    unsigned = returncode & 0xFFFFFFFF
+    ntstatus = {
+        0xC0000005: "STATUS_ACCESS_VIOLATION",
+        0xC0000374: "STATUS_HEAP_CORRUPTION",
+        0xC0000409: "STATUS_STACK_BUFFER_OVERRUN",
+    }
+    if returncode < 0 or returncode > 255:
+        name = ntstatus.get(unsigned)
+        if name is not None:
+            return f"0x{unsigned:08X} ({name}); signed={returncode}"
+        if -64 < returncode < 0:
+            return f"{returncode} (likely signal {-returncode})"
+        return f"0x{unsigned:08X}; signed={returncode}"
+    return str(returncode)
+
+
+def _is_crash(returncode: int) -> bool:
+    unsigned = returncode & 0xFFFFFFFF
+    return (
+        returncode < 0
+        or returncode > 255
+        or unsigned
+        in {
+            0xC0000005,
+            0xC0000374,
+            0xC0000409,
+        }
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "iterations",
+        nargs="?",
+        type=int,
+        default=int(os.environ.get("PPMD_REPRO_ITERS", "30")),
+        help="Fresh subprocesses to run (default: 30)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=sorted(_MODES),
+        default="extra-null",
+        help="Repro scenario (default: extra-null, hottest pure-pyppmd abort)",
+    )
+    parser.add_argument(
+        "--cycles",
+        type=int,
+        default=5,
+        help="Encode/decode cycles inside each child (default: 5)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=60.0,
+        help="Per-child timeout in seconds (default: 60)",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        import pyppmd
+    except ImportError:
+        print("pyppmd is not installed (pip install pyppmd)", file=sys.stderr)
+        return 2
+
+    child_src = "import os\n" + _MODES[args.mode]
+    print(
+        f"pyppmd crash repro: mode={args.mode!r} iters={args.iterations} "
+        f"cycles/child={args.cycles} pyppmd={pyppmd.__version__} "
+        f"python={sys.version.split()[0]} platform={platform.platform()!r}"
+    )
+
+    crashes = 0
+    failures = 0
+    passes = 0
+    env = os.environ.copy()
+    env["PPMD_REPRO_CYCLES"] = str(args.cycles)
+
+    with tempfile.TemporaryDirectory(prefix="pyppmd-crash-repro-") as tmp:
+        root = Path(tmp)
+        for i in range(1, args.iterations + 1):
+            driver = root / f"child_{i:04d}.py"
+            driver.write_text(child_src, encoding="utf-8")
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-u", str(driver)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                    timeout=args.timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                failures += 1
+                print(f"  [{i}/{args.iterations}] TIMEOUT")
+                continue
+            if proc.returncode == 0:
+                passes += 1
+                print(f"  [{i}/{args.iterations}] ok")
+                continue
+            if _is_crash(proc.returncode):
+                crashes += 1
+                kind = "CRASH"
+            else:
+                failures += 1
+                kind = "FAIL"
+            print(f"  [{i}/{args.iterations}] {kind} rc={_format_rc(proc.returncode)}")
+            if proc.stderr.strip():
+                tail = "\n".join(proc.stderr.strip().splitlines()[-6:])
+                print(textwrap.indent(tail, "    "))
+
+    print()
+    print(
+        f"summary: mode={args.mode} pyppmd={pyppmd.__version__} "
+        f"passes={passes}/{args.iterations} crashes={crashes} failures={failures}"
+    )
+    if crashes:
+        print(
+            "Native abort reproduced. Useful for a pyppmd issue: include this "
+            "script, mode, version, OS/Python, and the crash rate above."
+        )
+    return 1 if crashes or failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
