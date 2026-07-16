@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Repo pre-commit hook: auto-fix + format staged Python the same way CI checks.
+# Install with: ./scripts/install-git-hooks.sh
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+files=()
+while IFS= read -r -d '' f; do
+  case "$f" in
+    src/* | tests/* | scripts/* | benchmarks/*)
+      case "$f" in
+        *.py) files+=("$f") ;;
+      esac
+      ;;
+  esac
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+if [ "${#files[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "pre-commit: uv not found on PATH; cannot run ruff." >&2
+  exit 1
+fi
+
+uv run --no-sync ruff check --fix -- "${files[@]}"
+uv run --no-sync ruff format -- "${files[@]}"
+git add -- "${files[@]}"
