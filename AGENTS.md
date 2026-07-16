@@ -29,15 +29,15 @@ in place. Run tools with `--no-sync` to avoid a redundant re-resolve, e.g.:
 CI fails on unformatted Python (`ruff format --check` over `src/ tests/ scripts/
 benchmarks/`). **Do not commit without formatting.**
 
-1. **Once per clone / session start**, install the git hook so format+lint-fix runs
-   automatically on every commit:
+1. **Cursor Cloud** installs the git hook via `.cursor/install.sh` on every boot.
+   On a fresh local clone (or if the hook is missing), run:
 
    ```bash
    ./scripts/install-git-hooks.sh
    ```
 
-   (Cursor Cloud remaps `core.hooksPath`; this script installs into the chained
-   original hooks dir so it still runs. Prefer it over bare `pre-commit install`.)
+   (Cursor remaps `core.hooksPath`; this script installs into the chained original
+   hooks dir so it still runs. Prefer it over bare `pre-commit install`.)
 
 2. **Before every commit**, if the hook is not installed (or you used
    `--no-verify`), run formatting yourself:
@@ -52,10 +52,10 @@ benchmarks/`). **Do not commit without formatting.**
 
 Non-obvious gotchas:
 
-- The startup update script also installs the system `unrar` binary and the `openspec`
-  CLI (in addition to `uv sync`), so both are present without manual steps. Prefer
-  adding `./scripts/install-git-hooks.sh` to that update script so every cloud
-  session gets the format-on-commit hook without a manual step.
+- The startup update script is committed at `.cursor/install.sh` (wired via
+  `.cursor/environment.json`). It installs `unrar`, the `openspec` CLI, runs
+  `uv sync --group dev --extra all`, and `./scripts/install-git-hooks.sh`, so the
+  format-on-commit hook is present without a manual step.
 - **`unrar`** (system binary, from the `multiverse` apt component) backs RAR *data*
   tests; without it they skip cleanly rather than fail.
 - **`7z`** (system binary, from `p7zip-full`) is required by tests that build encrypted
