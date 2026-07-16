@@ -31,15 +31,29 @@ class ZlibDecoder(BaseDecoder):
         del point, inner
         return ZlibDecoder(self._wbits)
 
-    def feed(self, chunk: bytes) -> DecodeOut:
-        return DecodeOut(self._decomp.decompress(chunk))
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        # unconsumed_tail holds input not yet consumed under a prior max_length cap;
+        # prepend it exactly once (mirrors gzip._GzipReader).
+        data = self._decomp.unconsumed_tail + chunk
+        if not data:
+            return DecodeOut(b"")
+        if max_length < 0:
+            return DecodeOut(self._decomp.decompress(data))
+        return DecodeOut(self._decomp.decompress(data, max_length))
 
     def flush(self) -> DecodeOut:
+        if self._decomp.unconsumed_tail:
+            out = self._decomp.decompress(self._decomp.unconsumed_tail)
+            return DecodeOut(out + self._decomp.flush())
         return DecodeOut(self._decomp.flush())
 
     @property
     def finished(self) -> bool:
         return self._decomp.eof
+
+    @property
+    def needs_input(self) -> bool:
+        return not self._decomp.unconsumed_tail
 
 
 class BrotliDecoder(BaseDecoder):
@@ -48,19 +62,29 @@ class BrotliDecoder(BaseDecoder):
     The ``brotli`` import is local because it's an optional dependency with no type stubs;
     the codec layer's ``_open_brotli`` gates on its presence before constructing this, so
     the import here always succeeds.
+
+    Brotli's ``process()`` has no output cap — a tiny compressed feed can still expand
+    unboundedly. The stream layer's smaller compressed reads limit how much we *feed*
+    per call, but peak memory for pathological brotli remains a residual.
     """
 
     def __init__(self) -> None:
         import brotli
 
         self._decomp: Any = brotli.Decompressor()
+        self._pending = b""
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> BrotliDecoder:
         del point, inner
         return BrotliDecoder()
 
-    def feed(self, chunk: bytes) -> DecodeOut:
-        return DecodeOut(self._decomp.process(chunk))
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        del max_length  # brotli cannot honor an output budget
+        data = self._pending + chunk
+        self._pending = b""
+        if not data:
+            return DecodeOut(b"")
+        return DecodeOut(self._decomp.process(data))
 
     def flush(self) -> DecodeOut:
         # Brotli decodes eagerly; there is nothing buffered to flush at EOF.
@@ -96,6 +120,7 @@ class PpmdDecoder(BaseDecoder):
             self._decomp: Any = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
         else:
             self._decomp = pyppmd.Ppmd7Decoder(order, mem_size)
+        self._pending = b""
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> PpmdDecoder:
         del point, inner
@@ -106,8 +131,19 @@ class PpmdDecoder(BaseDecoder):
             restore_method=self._restore_method,
         )
 
-    def feed(self, chunk: bytes) -> DecodeOut:
-        return DecodeOut(self._decomp.decode(chunk, -1))
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        data = self._pending + chunk
+        self._pending = b""
+        if not data and max_length >= 0:
+            # pyppmd retains unconsumed input internally when length-limited.
+            if getattr(self._decomp, "needs_input", True):
+                return DecodeOut(b"")
+            length = max_length
+            return DecodeOut(self._decomp.decode(b"", length))
+        if not data:
+            return DecodeOut(b"")
+        length = -1 if max_length < 0 else max_length
+        return DecodeOut(self._decomp.decode(data, length))
 
     def flush(self) -> DecodeOut:
         # 7z/ZIP PPMd streams sometimes need a trailing NUL to finish when the decoder
@@ -119,6 +155,12 @@ class PpmdDecoder(BaseDecoder):
     @property
     def finished(self) -> bool:
         return bool(self._decomp.eof)
+
+    @property
+    def needs_input(self) -> bool:
+        if self._pending:
+            return False
+        return bool(getattr(self._decomp, "needs_input", True))
 
 
 class BcjDecoder(BaseDecoder):
@@ -132,6 +174,7 @@ class BcjDecoder(BaseDecoder):
         self._produced = 0
         decoder_cls = getattr(bcj, decoder_attr)
         self._decomp: Any = decoder_cls(unpack_size)
+        self._pending = b""
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> BcjDecoder:
         del point, inner
@@ -139,19 +182,34 @@ class BcjDecoder(BaseDecoder):
             decoder_attr=self._decoder_attr, unpack_size=self._unpack_size
         )
 
-    def feed(self, chunk: bytes) -> DecodeOut:
-        out = self._decomp.decode(chunk)
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        data = self._pending + chunk
+        self._pending = b""
+        if not data:
+            return DecodeOut(b"")
+        if max_length >= 0 and len(data) > max_length:
+            # BCJ is a filter (near 1:1); feed only what the caller budget allows and
+            # retain the rest — bounds peak buffer without a native max_length API.
+            self._pending = data[max_length:]
+            data = data[:max_length]
+        out = self._decomp.decode(data)
         self._produced += len(out)
         return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        out = self._decomp.decode(b"")
-        self._produced += len(out)
-        return DecodeOut(out)
+        out = self._decomp.decode(self._pending)
+        self._pending = b""
+        out2 = self._decomp.decode(b"")
+        self._produced += len(out) + len(out2)
+        return DecodeOut(out + out2)
 
     @property
     def finished(self) -> bool:
         return self._produced >= self._unpack_size
+
+    @property
+    def needs_input(self) -> bool:
+        return not self._pending
 
 
 class Deflate64Decoder(BaseDecoder):
@@ -161,13 +219,19 @@ class Deflate64Decoder(BaseDecoder):
         import inflate64
 
         self._decomp: Any = inflate64.Inflater()
+        self._pending = b""
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Deflate64Decoder:
         del point, inner
         return Deflate64Decoder()
 
-    def feed(self, chunk: bytes) -> DecodeOut:
-        return DecodeOut(self._decomp.inflate(chunk))
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        del max_length  # inflate64 has no output cap
+        data = self._pending + chunk
+        self._pending = b""
+        if not data:
+            return DecodeOut(b"")
+        return DecodeOut(self._decomp.inflate(data))
 
     def flush(self) -> DecodeOut:
         # Flush remaining state with an empty feed (mirrors py7zr's Deflate64Decompressor).

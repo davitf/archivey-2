@@ -128,9 +128,11 @@ class _LzipState:
         self._finished = False
         self._members_seen = 0
 
-    def feed(self, data: bytes) -> tuple[bytes, list[tuple[int, int]]]:
+    def feed(
+        self, data: bytes, max_length: int = -1
+    ) -> tuple[bytes, list[tuple[int, int]]]:
         self._buf.extend(data)
-        return self._process()
+        return self._process(max_length=max_length)
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         if self._state == self._NEED_HEADER:
@@ -145,10 +147,20 @@ class _LzipState:
     def is_finished(self) -> bool:
         return self._finished
 
-    def _process(self) -> tuple[bytes, list[tuple[int, int]]]:
+    @property
+    def needs_input(self) -> bool:
+        if self._finished:
+            return True
+        if self._dec is not None and not self._dec.needs_input:
+            return False
+        return not self._buf
+
+    def _process(self, max_length: int = -1) -> tuple[bytes, list[tuple[int, int]]]:
         output = bytearray()
         new_members: list[tuple[int, int]] = []
         while True:
+            if max_length >= 0 and len(output) >= max_length:
+                break
             if self._state == self._NEED_HEADER:
                 if len(self._buf) < _HEADER_SIZE:
                     break
@@ -160,13 +172,14 @@ class _LzipState:
                 self._state = self._IN_MEMBER
 
             elif self._state == self._IN_MEMBER:
-                if not self._buf:
+                assert self._dec is not None
+                if not self._buf and self._dec.needs_input:
                     break
                 chunk = bytes(self._buf)
                 self._buf.clear()
                 try:
-                    assert self._dec is not None
-                    plain = self._dec.decompress(chunk)
+                    remaining = max_length - len(output) if max_length >= 0 else -1
+                    plain = self._dec.decompress(chunk, remaining)
                 except lzma.LZMAError as e:
                     raise CorruptionError(f"Error reading Lzip archive: {e}") from e
                 if plain:
@@ -177,6 +190,10 @@ class _LzipState:
                     self._buf[0:0] = self._dec.unused_data
                     self._dec = None
                     self._state = self._NEED_TRAILER
+                elif not self._dec.needs_input:
+                    continue
+                else:
+                    break
 
             elif self._state == self._NEED_TRAILER:
                 if len(self._buf) < _TRAILER_SIZE:
@@ -256,8 +273,8 @@ class LzipDecoder(BaseDecoder):
             collector=self._collector,
         )
 
-    def feed(self, chunk: bytes) -> DecodeOut:
-        data, units = self._state.feed(chunk)
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        data, units = self._state.feed(chunk, max_length=max_length)
         return DecodeOut(data, self._points_for_units(units))
 
     def flush(self) -> DecodeOut:
@@ -267,6 +284,10 @@ class LzipDecoder(BaseDecoder):
     @property
     def finished(self) -> bool:
         return self._state.is_finished()
+
+    @property
+    def needs_input(self) -> bool:
+        return self._state.needs_input
 
     def _points_for_units(self, units: list[tuple[int, int]]) -> list[SeekPoint]:
         points: list[SeekPoint] = []

@@ -311,13 +311,82 @@ def test_unix_compress_non_seekable_source_streams() -> None:
 
 @requires("ncompress")
 def test_unix_compress_truncated_raises_on_next_read() -> None:
+    """Chunked reads: deferred TruncatedError surfaces on the empty follow-up read."""
     compressed = make_unix_compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
-        data = stream.read()
-        assert len(data) < len(CONTENT)
+        # Bounded chunked idiom: return available bytes, raise on the next empty read.
+        chunk = stream.read(256)
+        assert chunk  # got a prefix
+        buf = bytearray(chunk)
+        with pytest.raises(TruncatedError, match="leftover bits"):
+            while True:
+                c = stream.read(256)
+                if not c:
+                    break
+                buf.extend(c)
+
+
+@requires("ncompress")
+def test_unix_compress_truncated_readall_raises() -> None:
+    """Single-shot read()/readall() must raise TruncatedError (not swallow it)."""
+    compressed = make_unix_compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
         with pytest.raises(TruncatedError, match="leftover bits"):
             stream.read()
+
+
+@requires("ncompress")
+def test_unix_compress_maxbits_above_16_rejected() -> None:
+    """Format ceiling is 16; 17–31 must raise CorruptionError (not grow the dict)."""
+    for maxbits in (17, 24, 31):
+        header = bytes([0x1F, 0x9D, 0x80 | maxbits])
+        with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream:
+            with pytest.raises(CorruptionError, match="ceiling of 16"):
+                stream.read()
+
+
+@requires("ncompress")
+def test_unix_compress_maxbits_16_accepted() -> None:
+    compressed = make_unix_compress(CONTENT)
+    # ncompress emits a legal maxbits ≤ 16; a full decode must succeed.
+    assert (compressed[2] & 0x1F) <= 16
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
+        assert stream.read() == CONTENT
+
+
+def test_decompressor_read_one_bounds_internal_buffer() -> None:
+    """Bounded read(1) must not buffer megabytes of highly compressible output (F3a)."""
+    import lzma
+
+    from archivey.internal.streams.decompress import ZlibDecompressorStream
+    from archivey.internal.streams.xz import XzDecompressorStream
+
+    payload = b"A" * 2_000_000
+    # deflate
+    co = zlib.compressobj(wbits=-15)
+    deflate = co.compress(payload) + co.flush()
+    with ZlibDecompressorStream(io.BytesIO(deflate)) as stream:
+        assert stream.read(1) == b"A"
+        assert len(stream._buffer) < 64_000
+        assert stream.read(1000) == b"A" * 1000
+
+    # xz
+    xz = lzma.compress(payload, format=lzma.FORMAT_XZ)
+    with XzDecompressorStream(io.BytesIO(xz)) as stream:
+        assert stream.read(1) == b"A"
+        assert len(stream._buffer) < 64_000
+
+
+@requires("ncompress")
+def test_unix_compress_read_one_bounds_internal_buffer() -> None:
+    payload = b"A" * 2_000_000
+    compressed = make_unix_compress(payload)
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
+        assert stream.read(1) == b"A"
+        # DecompressorStream buffer after a budgeted feed.
+        assert len(getattr(stream, "_inner")._buffer) < 64_000
 
 
 @requires("ncompress")
@@ -488,6 +557,25 @@ def test_verify_expected_size_overlong_stops_at_declared_size() -> None:
     assert len(out) == declared
     # And it stopped reading the inner near the boundary (did not drain all of it).
     assert inner.tell() <= declared + 1
+
+
+def test_verify_hashed_overlong_with_matching_crc_still_capped() -> None:
+    """F6: a CRC matching the bloated payload must not defeat the declared-size cap."""
+    declared = 10
+    bloated = b"A" * 200
+    stream = VerifyingStream(
+        io.BytesIO(bloated),
+        {"crc32": _crc32(bloated)},
+        expected_size=declared,
+    )
+    out = bytearray()
+    with pytest.raises(CorruptionError, match="exceeds"):
+        while True:
+            chunk = stream.read(64)
+            if not chunk:
+                break
+            out.extend(chunk)
+    assert len(out) == declared
 
 
 def test_verify_expected_size_short_with_hash_is_digest_mismatch() -> None:

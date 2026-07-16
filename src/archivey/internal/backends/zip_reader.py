@@ -18,6 +18,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, NoReturn, cast
@@ -785,7 +786,12 @@ class ZipReader(BaseArchiveReader):
             return open_codec_stream(
                 codec,
                 body,
-                config=self._stream_config,
+                config=replace(
+                    self._stream_config,
+                    expected_decompressed_size=(
+                        member.size if member is not None else info.file_size
+                    ),
+                ),
                 params=params,
                 seekable=self._stream_config.seekable,
                 collector=self._diagnostics_collector,
@@ -801,15 +807,16 @@ class ZipReader(BaseArchiveReader):
             self._reraise_member_error(exc, member_name)
 
         hashes = member.hashes if member is not None else {}
-        if hashes:
+        size = member.size if member is not None else info.file_size
+        if hashes or size is not None:
             decoded = VerifyingStream(
                 decoded,
                 hashes,
+                expected_size=size,
                 collector=self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
             )
-        size = member.size if member is not None else info.file_size
         return self._wrap_member_stream(decoded, member_name, size=size)
 
     def _open_zip_entry(
@@ -995,7 +1002,12 @@ class ZipReader(BaseArchiveReader):
             decoded: BinaryIO = open_codec_stream(
                 codec,
                 raw,
-                config=self._stream_config,
+                config=replace(
+                    self._stream_config,
+                    expected_decompressed_size=(
+                        member.size if member is not None else info.file_size
+                    ),
+                ),
                 params=params,
                 seekable=self._stream_config.seekable,
                 collector=self._diagnostics_collector,
@@ -1005,16 +1017,17 @@ class ZipReader(BaseArchiveReader):
         except _ZIP_MEMBER_READ_ERRORS as exc:
             self._reraise_member_error(exc, member_name)
 
-        hashes = member.hashes if member is not None else None
-        if hashes:
+        hashes = member.hashes if member is not None else {}
+        size = member.size if member is not None else info.file_size
+        if hashes or size is not None:
             decoded = VerifyingStream(
                 decoded,
                 hashes,
+                expected_size=size,
                 collector=self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
             )
-        size = member.size if member is not None else info.file_size
         return self._wrap_member_stream(decoded, member_name, size=size)
 
     def _open_zipfile_member(

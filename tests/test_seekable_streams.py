@@ -71,6 +71,68 @@ def test_xz_try_get_size_uses_index_not_full_decode() -> None:
     stream.close()
 
 
+def test_xz_size_then_read_multistream_no_collision() -> None:
+    """SEEK_END / try_get_size before a forward read must not assert (F1a).
+
+    build_index emits block-bounds points; a later forward pass must not collide a
+    state=None stream-start placeholder onto the same decompressed offset.
+    """
+    parts = [b"A" * 5000, b"B" * 5000]
+    compressed = make_multi_stream_xz(parts)
+    plaintext = b"".join(parts)
+    with XzDecompressorStream(io.BytesIO(compressed), seekable=True) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(plaintext)
+        stream.seek(0)
+        assert stream.read() == plaintext
+    with XzDecompressorStream(io.BytesIO(compressed), seekable=True) as stream:
+        assert stream.try_get_size() == len(plaintext)
+        stream.seek(0)
+        assert stream.read() == plaintext
+
+
+def test_xz_zero_uncompressed_size_blocks_do_not_crash_index() -> None:
+    """Crafted index with zero-size blocks must not raise AssertionError (F1b)."""
+    import struct
+    import zlib
+
+    from archivey.exceptions import ArchiveyError
+    from archivey.internal.streams.xz import (
+        _XZ_FOOTER_MAGIC,
+        _XZ_STREAM_MAGIC,
+        _encode_mbi,
+        _round_up_4,
+    )
+
+    check = 0x00
+    flags = bytes([0x00, check])
+    header = (
+        _XZ_STREAM_MAGIC + flags + struct.pack("<I", zlib.crc32(flags) & 0xFFFFFFFF)
+    )
+    records = [(10, 100), (10, 0), (10, 0)]
+    body = b"\x00" + _encode_mbi(len(records))
+    for unpadded, uncomp in records:
+        body += _encode_mbi(unpadded) + _encode_mbi(uncomp)
+    body += b"\x00" * (_round_up_4(len(body)) - len(body))
+    index = body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
+    backward_raw = (len(index) // 4) - 1
+    fbody = struct.pack("<I", backward_raw) + bytes([0x00, check])
+    footer = (
+        struct.pack("<I", zlib.crc32(fbody) & 0xFFFFFFFF) + fbody + _XZ_FOOTER_MAGIC
+    )
+    block_payload = b"\x00" * sum(_round_up_4(u) for u, _ in records)
+    crafted = header + block_payload + index + footer
+
+    with XzDecompressorStream(io.BytesIO(crafted), seekable=True) as stream:
+        # Size discovery / index build must stay inside ArchiveyError (or succeed).
+        try:
+            size = stream.seek(0, io.SEEK_END)
+            assert size == 100
+        except ArchiveyError:
+            pass
+        except AssertionError:
+            pytest.fail("zero-size XZ blocks must not raise AssertionError")
+
+
 def test_xz_backward_seek_uses_block_index() -> None:
     """A backward seek decompresses only from a nearby block, not the whole stream."""
     compressed = make_multi_stream_xz([CONTENT, CONTENT, CONTENT])
@@ -345,3 +407,72 @@ def test_accelerator_mode_auto_resolution() -> None:
     assert AcceleratorMode.ON.enabled_for(
         seekable=True, available=True, input_size=1, min_size=1024
     )
+
+
+# --- F5: randomized seek interleaving --------------------------------------------------
+
+hypothesis = pytest.importorskip("hypothesis")
+from hypothesis import given  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
+
+
+@given(
+    parts=st.lists(
+        st.binary(min_size=16, max_size=400),
+        min_size=1,
+        max_size=4,
+    ),
+    ops=st.lists(
+        st.sampled_from(
+            ["size", "seek_end", "seek0", "read_all", "seek_mid", "read_chunk"]
+        ),
+        min_size=1,
+        max_size=12,
+    ),
+)
+def test_xz_seek_interleaving_matches_plaintext(
+    parts: list[bytes], ops: list[str]
+) -> None:
+    """Random size-probe / seek / read order must match plaintext; no raw asserts (F5).
+
+    Mid-stream seeks that need block resume require a complete index (SEEK_END /
+    try_get_size / full read). Seeking into a partially-discovered multi-stream
+    file with only progressive points is a separate gap; this property covers the
+    F1a size-then-read ordering and post-index random access.
+    """
+    plaintext = b"".join(parts)
+    compressed = make_multi_stream_xz(parts)
+    index_ready = False
+    with XzDecompressorStream(io.BytesIO(compressed), seekable=True) as stream:
+        for op in ops:
+            if op == "size":
+                size = stream.try_get_size()
+                assert size is None or size == len(plaintext)
+                if size is not None:
+                    index_ready = True
+            elif op == "seek_end":
+                assert stream.seek(0, io.SEEK_END) == len(plaintext)
+                index_ready = True
+            elif op == "seek0":
+                assert stream.seek(0) == 0
+            elif op == "read_all":
+                stream.seek(0)
+                assert stream.read() == plaintext
+                index_ready = True
+            elif op == "seek_mid":
+                if not index_ready:
+                    assert stream.try_get_size() == len(plaintext)
+                    index_ready = True
+                mid = len(plaintext) // 2
+                assert stream.seek(mid) == mid
+                n = min(32, len(plaintext) - mid)
+                assert stream.read(n) == plaintext[mid : mid + n]
+            elif op == "read_chunk":
+                pos = stream.tell()
+                if pos >= len(plaintext):
+                    stream.seek(0)
+                    pos = 0
+                n = min(64, len(plaintext) - pos)
+                assert stream.read(n) == plaintext[pos : pos + n]
+                if stream.tell() >= len(plaintext):
+                    index_ready = True
