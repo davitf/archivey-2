@@ -165,7 +165,7 @@ def _windows_isolated_codec_roundtrip(
 
     Isolation pinned the flake to the ``ppmd`` label (valid solid PPMd / ``pyppmd``); that
     param is now skipped on ``win32`` in the required matrix and stress-tested by
-    ``scripts/windows_ppmd_stress.py`` / the non-blocking ``Windows PPMd stress``
+    ``scripts/ppmd_native_stress.py`` / the non-blocking ``PPMd native stress``
     workflow — see ``docs/internal/known-issues.md``. Other codec labels still use this
     harness on Windows.
 
@@ -347,7 +347,7 @@ def _windows_isolated_codec_roundtrip(
         pytest.param("brotli", ("BROTLI",), marks=requires("brotli"), id="brotli"),
         # Windows: skipped here — intermittent STATUS_HEAP_CORRUPTION in pyppmd on a
         # *valid* solid PPMd stream (not adversarial input). Investigated by the
-        # non-blocking ``Windows PPMd stress`` workflow / scripts/windows_ppmd_stress.py;
+        # non-blocking ``PPMd native stress`` workflow / scripts/ppmd_native_stress.py;
         # see docs/internal/known-issues.md. Still runs on Linux/macOS.
         pytest.param(
             "ppmd",
@@ -358,7 +358,7 @@ def _windows_isolated_codec_roundtrip(
                     sys.platform == "win32",
                     reason=(
                         "Windows pyppmd STATUS_HEAP_CORRUPTION flake on valid solid "
-                        "PPMd; covered by Windows PPMd stress CI (non-blocking) — "
+                        "PPMd; covered by PPMd native stress CI (non-blocking) — "
                         "see docs/internal/known-issues.md"
                     ),
                 ),

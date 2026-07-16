@@ -1,34 +1,30 @@
 #!/usr/bin/env python3
-"""Stress-test native 7z PPMd roundtrips (Windows heap-corruption investigation).
+"""Stress-test PPMd native decode surfaces (Windows + Linux investigation).
 
-Background: on ``windows-latest`` the regular
-``test_py7zr_codec_fixtures_roundtrip[ppmd]`` has intermittently aborted with
-``STATUS_HEAP_CORRUPTION`` (``0xC0000374``) inside ``pyppmd`` while reading a
-*valid* solid PPMd folder. Isolation pinned the codec; a first stress run on
-Windows/py3.11 reproduced ~2/50 crashes even in fresh subprocesses (sometimes on
-the *first* member read). See ``docs/internal/known-issues.md``.
+Background
+----------
+On Windows, ``test_py7zr_codec_fixtures_roundtrip[ppmd]`` intermittently aborts with
+``STATUS_HEAP_CORRUPTION`` (``0xC0000374``) inside ``pyppmd`` on a *valid* solid PPMd
+stream. Fresh PPMd-only subprocesses are enough to crash (~few percent on py3.11), so
+prior-test contamination is not required.
 
-This script is the dedicated investigation vehicle. It runs several scenario
-families so we can distinguish "PPMd alone is flaky" from "prior native use /
-fixture shape leaves the process in a bad state":
+On Linux, a related but distinct flake shows up when other 7z codecs are exercised in
+the same process before PPMd (``warmup_codecs``): SIGSEGV / ``malloc(): invalid size``
+at roughly ~1/3 of child runs. Raw ``pyppmd`` encode/decode alone has not reproduced
+that Linux abort here.
 
-- ``fresh`` — one PPMd roundtrip per subprocess (baseline; matches CI isolation)
-- ``same_process`` — many PPMd roundtrips in one process (reuse / teardown hypothesis)
-- ``warmup_codecs`` — decode LZMA2/Deflate/Bzip2 first, then PPMd (cross-codec
-  contamination hypothesis)
-- ``varied`` — different member counts / sizes / payloads / read orders
+See ``docs/internal/known-issues.md``.
 
-Usage::
+This script is the dedicated investigation vehicle. Default scenarios favour the
+**minimal surface** (raw ``pyppmd`` / archivey codec streams, no 7z container), then
+the original 7z baseline, then secondary contamination axes::
 
-    uv run --extra all python scripts/windows_ppmd_stress.py
-    uv run --extra all python scripts/windows_ppmd_stress.py 80
-    ARCHIVEY_PPMD_STRESS_ITERS=50 uv run --extra all python scripts/windows_ppmd_stress.py
+    uv run --extra all python scripts/ppmd_native_stress.py
+    uv run --extra all python scripts/ppmd_native_stress.py 40
+    uv run --extra all python scripts/ppmd_native_stress.py --scenarios raw_pyppmd7 warmup_codecs
 
-Exit code is non-zero if any child crashed or failed — useful as a red
-(non-required) check on the ``Windows PPMd stress`` workflow.
-
-Console output is ASCII-only: Windows runners often use cp1252 for stdout, and a
-Unicode arrow previously aborted the summary print after a successful stress run.
+Exit code is non-zero if any child crashed or failed. Console I/O is ASCII-safe for
+Windows cp1252 runners.
 """
 
 from __future__ import annotations
@@ -44,7 +40,6 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# NTSTATUS values Windows has surfaced for native aborts in this suite.
 _WINDOWS_NTSTATUS: dict[int, str] = {
     0xC0000005: "STATUS_ACCESS_VIOLATION",
     0xC0000374: "STATUS_HEAP_CORRUPTION",
@@ -54,17 +49,24 @@ _WINDOWS_NTSTATUS: dict[int, str] = {
     0x80000003: "STATUS_BREAKPOINT",
 }
 
-# Scenario labels included in a default CI stress run.
+# Minimal surface first; 7z baseline; secondary contamination / reuse axes last.
 _DEFAULT_SCENARIOS: tuple[str, ...] = (
+    "raw_pyppmd7",
+    "raw_pyppmd8",
+    "raw_archivey_ppmd7",
+    "raw_archivey_ppmd8",
     "fresh_baseline",
-    "fresh_varied",
-    "same_process",
     "warmup_codecs",
+)
+
+_ALL_SCENARIOS: tuple[str, ...] = (
+    *_DEFAULT_SCENARIOS,
+    "same_process",
+    "fresh_varied",
 )
 
 
 def _safe_print(msg: str, *, file=None) -> None:
-    """Print without raising on Windows cp1252 consoles."""
     stream = file or sys.stdout
     encoding = getattr(stream, "encoding", None) or "utf-8"
     try:
@@ -86,9 +88,9 @@ def _format_rc(returncode: int) -> str:
     return str(returncode)
 
 
-def _child_preamble(work: Path) -> str:
+def _phase_helpers() -> str:
     return textwrap.dedent(
-        f"""\
+        """\
         from __future__ import annotations
         import faulthandler
         import os
@@ -96,7 +98,7 @@ def _child_preamble(work: Path) -> str:
         from pathlib import Path
 
         faulthandler.enable(all_threads=True, file=sys.stderr)
-        work = Path({str(work)!r})
+        work = Path(os.environ["ARCHIVEY_PPMD_STRESS_WORK"])
         phase_path = work / "phase.txt"
 
         def _phase(msg: str) -> None:
@@ -105,36 +107,7 @@ def _child_preamble(work: Path) -> str:
                 fh.write(line)
                 fh.flush()
                 os.fsync(fh.fileno())
-            print(f"[phase] {{msg}}", flush=True)
-
-        def _roundtrip(archive_path, files, *, read_order="sorted"):
-            from archivey import open_archive
-            with open_archive(archive_path) as archive:
-                members = {{m.name: m for m in archive.members() if m.is_file}}
-                assert set(members) == set(files)
-                if read_order == "sorted":
-                    names = sorted(files)
-                elif read_order == "reverse":
-                    names = sorted(files, reverse=True)
-                elif read_order == "stream":
-                    streamed = {{
-                        m.name: s.read()
-                        for m, s in archive.stream_members()
-                        if m.is_file and s is not None
-                    }}
-                    assert streamed == files
-                    return
-                else:
-                    raise ValueError(read_order)
-                for name in names:
-                    _phase(f"read_member:{{name}}:start")
-                    data = archive.read(members[name])
-                    _phase(f"read_member:{{name}}:done len={{len(data)}}")
-                    assert data == files[name]
-
-        def _build(archive_path, files):
-            from tests.test_sevenzip_reader import _filters, _write_py7zr_archive
-            _write_py7zr_archive(archive_path, files, filters=_filters("PPMD"))
+            print(f"[phase] {msg}", flush=True)
 
         _phase("start")
         """
@@ -142,7 +115,6 @@ def _child_preamble(work: Path) -> str:
 
 
 def _payload_sets() -> list[tuple[str, dict[str, bytes], str]]:
-    """Named (label, files, read_order) fixtures — all valid, non-adversarial."""
     baseline = {
         "alpha.txt": b"alpha\n" * 100,
         "nested/beta.bin": bytes(range(64)) * 16,
@@ -158,7 +130,6 @@ def _payload_sets() -> list[tuple[str, dict[str, bytes], str]]:
         "mid.bin": bytes(range(256)) * 64,
         "tail.txt": b"z" * 503,
     }
-    # Highly repetitive (easy for PPMd) vs denser binary.
     repetitive = {"r.txt": b"AAAA" * 500, "s.bin": b"\x00\x01" * 800}
     return [
         ("baseline_sorted", baseline, "sorted"),
@@ -173,45 +144,180 @@ def _payload_sets() -> list[tuple[str, dict[str, bytes], str]]:
     ]
 
 
-def _write_driver(
-    path: Path, work: Path, scenario: str, *, rounds: int, seed: int
-) -> None:
-    """Write a child driver for one stress scenario."""
-    payloads = _payload_sets()
-    # Embed payloads as repr so the child needs no shared module state beyond tests helpers.
-    payloads_repr = repr([(label, files, order) for label, files, order in payloads])
-    body = _child_preamble(work)
+def _sevenzip_helpers() -> str:
+    return textwrap.dedent(
+        """\
+        def _roundtrip_7z(archive_path, files, *, read_order="sorted"):
+            from archivey import open_archive
+            with open_archive(archive_path) as archive:
+                members = {m.name: m for m in archive.members() if m.is_file}
+                assert set(members) == set(files)
+                if read_order == "sorted":
+                    names = sorted(files)
+                elif read_order == "reverse":
+                    names = sorted(files, reverse=True)
+                elif read_order == "stream":
+                    streamed = {
+                        m.name: s.read()
+                        for m, s in archive.stream_members()
+                        if m.is_file and s is not None
+                    }
+                    assert streamed == files
+                    return
+                else:
+                    raise ValueError(read_order)
+                for name in names:
+                    _phase(f"read_member:{name}:start")
+                    data = archive.read(members[name])
+                    _phase(f"read_member:{name}:done len={len(data)}")
+                    assert data == files[name]
 
-    if scenario == "fresh_baseline":
-        # One baseline roundtrip (matches the original CI test shape).
+        def _build_ppmd_7z(archive_path, files):
+            from tests.test_sevenzip_reader import _filters, _write_py7zr_archive
+            _write_py7zr_archive(archive_path, files, filters=_filters("PPMD"))
+        """
+    )
+
+
+def _write_driver(path: Path, scenario: str, *, rounds: int, seed: int) -> None:
+    payloads_repr = repr(
+        [(label, files, order) for label, files, order in _payload_sets()]
+    )
+    body = _phase_helpers()
+
+    if scenario == "raw_pyppmd7":
+        body += textwrap.dedent(
+            f"""\
+            import pyppmd
+            ORDER, MEM = 6, 1 << 20
+            data = b"alpha\\n" * 100
+            _phase("raw_pyppmd7:encode")
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            _phase(f"raw_pyppmd7:decode packed={{len(packed)}}")
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = bytearray(dec.decode(packed, len(data)))
+            while len(out) < len(data):
+                need = len(data) - len(out)
+                chunk = dec.decode(b"\\0" if dec.needs_input else b"", need)
+                if not chunk:
+                    break
+                out.extend(chunk)
+            assert bytes(out) == data
+            _phase("roundtrip-ok")
+            # Optional multi-cycle in the same child (seed selects count).
+            cycles = 1 + ({seed} % 8)
+            _phase(f"raw_pyppmd7:extra-cycles={{cycles}}")
+            for i in range(cycles):
+                enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+                packed = enc.encode(data) + enc.flush()
+                dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+                out = bytearray(dec.decode(packed, len(data)))
+                while len(out) < len(data):
+                    need = len(data) - len(out)
+                    chunk = dec.decode(b"\\0" if dec.needs_input else b"", need)
+                    if not chunk:
+                        break
+                    out.extend(chunk)
+                assert bytes(out) == data
+            _phase("cycles-ok")
+            """
+        )
+    elif scenario == "raw_pyppmd8":
+        body += textwrap.dedent(
+            """\
+            import pyppmd
+            ORDER, MEM = 6, 1 << 20
+            data = b"alpha\\n" * 100
+            _phase("raw_pyppmd8:encode")
+            enc = pyppmd.Ppmd8Encoder(ORDER, MEM, 0)
+            packed = enc.encode(data) + enc.flush(True)
+            _phase(f"raw_pyppmd8:decode packed={{len(packed)}}")
+            dec = pyppmd.Ppmd8Decoder(ORDER, MEM, 0)
+            out = dec.decode(packed, -1)
+            while not dec.eof:
+                more = dec.decode(b"\\0" if dec.needs_input else b"", -1)
+                if not more:
+                    break
+                out += more
+            assert out == data
+            _phase("roundtrip-ok")
+            """
+        )
+    elif scenario == "raw_archivey_ppmd7":
+        body += textwrap.dedent(
+            """\
+            import io
+            import pyppmd
+            from archivey.internal.streams.decompress import PpmdDecompressorStream
+            ORDER, MEM = 6, 1 << 20
+            data = b"alpha\\n" * 100
+            _phase("raw_archivey_ppmd7:encode")
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            _phase("raw_archivey_ppmd7:decode-sized")
+            # PPMd7 has no end mark; bound the read to the known uncompressed size
+            # (same as 7z SlicingStream does for a member).
+            with PpmdDecompressorStream(
+                io.BytesIO(packed), order=ORDER, mem_size=MEM, variant=7
+            ) as stream:
+                got = stream.read(len(data))
+            assert got == data
+            _phase("roundtrip-ok")
+            """
+        )
+    elif scenario == "raw_archivey_ppmd8":
+        body += textwrap.dedent(
+            """\
+            import io
+            import pyppmd
+            from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
+            ORDER, MEM = 6, 1 << 20
+            data = b"alpha\\n" * 100
+            _phase("raw_archivey_ppmd8:encode")
+            enc = pyppmd.Ppmd8Encoder(ORDER, MEM, 0)
+            packed = enc.encode(data) + enc.flush(True)
+            _phase("raw_archivey_ppmd8:open_codec_stream")
+            with open_codec_stream(
+                Codec.PPMD,
+                io.BytesIO(packed),
+                params=CodecParams(ppmd_order=ORDER, ppmd_mem_size=MEM),
+            ) as stream:
+                got = stream.read()
+            assert got == data
+            _phase("roundtrip-ok")
+            """
+        )
+    elif scenario == "fresh_baseline":
+        body += _sevenzip_helpers()
         body += textwrap.dedent(
             """\
             from tests.test_sevenzip_reader import _FILES
             archive_path = work / "ppmd.7z"
             _phase("building-archive label=baseline_sorted")
-            _build(archive_path, _FILES)
+            _build_ppmd_7z(archive_path, _FILES)
             _phase(f"archive-built size={archive_path.stat().st_size}")
             _phase("open_archive")
-            _roundtrip(archive_path, _FILES, read_order="sorted")
+            _roundtrip_7z(archive_path, _FILES, read_order="sorted")
             _phase("roundtrip-ok")
             """
         )
     elif scenario == "fresh_varied":
+        body += _sevenzip_helpers()
         body += textwrap.dedent(
             f"""\
             payloads = {payloads_repr}
             label, files, order = payloads[{seed} % len(payloads)]
             archive_path = work / f"{{label}}.7z"
             _phase(f"building-archive label={{label}} order={{order}}")
-            _build(archive_path, files)
+            _build_ppmd_7z(archive_path, files)
             _phase(f"archive-built size={{archive_path.stat().st_size}}")
-            _phase("open_archive")
-            _roundtrip(archive_path, files, read_order=order)
+            _roundtrip_7z(archive_path, files, read_order=order)
             _phase("roundtrip-ok")
             """
         )
     elif scenario == "same_process":
-        # Many builds/reads in one process — tests teardown / reuse corruption.
+        body += _sevenzip_helpers()
         body += textwrap.dedent(
             f"""\
             payloads = {payloads_repr}
@@ -220,15 +326,16 @@ def _write_driver(
                 label, files, order = payloads[(i + {seed}) % len(payloads)]
                 archive_path = work / f"same-{{i:04d}}-{{label}}.7z"
                 _phase(f"round={{i}}:building label={{label}} order={{order}}")
-                _build(archive_path, files)
+                _build_ppmd_7z(archive_path, files)
                 _phase(f"round={{i}}:reading")
-                _roundtrip(archive_path, files, read_order=order)
+                _roundtrip_7z(archive_path, files, read_order=order)
                 _phase(f"round={{i}}:ok")
             _phase("roundtrip-ok")
             """
         )
     elif scenario == "warmup_codecs":
-        # Exercise other native 7z codecs in-process, then PPMd — contamination hypothesis.
+        # Linux: highly flaky (~1/3 SIGSEGV / malloc abort) after other codecs then PPMd.
+        body += _sevenzip_helpers()
         body += textwrap.dedent(
             f"""\
             from tests.test_sevenzip_reader import _FILES, _filters, _write_py7zr_archive
@@ -250,8 +357,8 @@ def _write_driver(
             label, files, order = payloads[{seed} % len(payloads)]
             archive_path = work / f"after-warmup-{{label}}.7z"
             _phase(f"ppmd-after-warmup label={{label}} order={{order}}")
-            _build(archive_path, files)
-            _roundtrip(archive_path, files, read_order=order)
+            _build_ppmd_7z(archive_path, files)
+            _roundtrip_7z(archive_path, files, read_order=order)
             _phase("roundtrip-ok")
             """
         )
@@ -269,11 +376,10 @@ def _one_iteration(
     seed: int,
     timeout: float,
 ) -> tuple[int, str, str, str]:
-    """Run one isolated child. Returns (rc, phase_text, stdout, stderr)."""
     iter_dir.mkdir(parents=True, exist_ok=True)
     phase_path = iter_dir / "phase.txt"
     driver = iter_dir / "_driver.py"
-    _write_driver(driver, iter_dir, scenario, rounds=rounds, seed=seed)
+    _write_driver(driver, scenario, rounds=rounds, seed=seed)
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
         [
@@ -283,8 +389,8 @@ def _one_iteration(
             env.get("PYTHONPATH", ""),
         ]
     )
+    env["ARCHIVEY_PPMD_STRESS_WORK"] = str(iter_dir)
     env.setdefault("PYTHONFAULTHANDLER", "1")
-    # Force UTF-8 for child stdio so phase prints never trip cp1252 either.
     env.setdefault("PYTHONIOENCODING", "utf-8")
     proc = subprocess.run(
         [sys.executable, "-u", str(driver)],
@@ -309,18 +415,15 @@ def main(argv: list[str] | None = None) -> int:
         "iterations",
         nargs="?",
         type=int,
-        default=int(os.environ.get("ARCHIVEY_PPMD_STRESS_ITERS", "40")),
-        help=(
-            "Iterations per scenario (default: env ARCHIVEY_PPMD_STRESS_ITERS or 40). "
-            "For same_process, each iteration is one child that itself does --same-rounds."
-        ),
+        default=int(os.environ.get("ARCHIVEY_PPMD_STRESS_ITERS", "20")),
+        help="Child iterations per scenario (default: env ARCHIVEY_PPMD_STRESS_ITERS or 20)",
     )
     parser.add_argument(
         "--scenarios",
         nargs="+",
         default=list(_DEFAULT_SCENARIOS),
-        choices=list(_DEFAULT_SCENARIOS),
-        help="Scenario families to run (default: all)",
+        choices=list(_ALL_SCENARIOS),
+        help="Scenario families to run (default: minimal + baseline + warmup)",
     )
     parser.add_argument(
         "--same-rounds",
@@ -338,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
         "--summary",
         type=Path,
         default=None,
-        help="Optional path to write a Markdown summary (for GITHUB_STEP_SUMMARY)",
+        help="Optional path to write a Markdown summary",
     )
     args = parser.parse_args(argv)
 
@@ -350,21 +453,29 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    try:
-        import py7zr  # noqa: F401
-    except ImportError:
-        _safe_print("py7zr not installed; cannot build PPMd fixtures.", file=sys.stderr)
-        return 2
 
-    scenarios = list(dict.fromkeys(args.scenarios))  # preserve order, dedupe
+    scenarios = list(dict.fromkeys(args.scenarios))
+    needs_py7zr = any(
+        s in {"fresh_baseline", "fresh_varied", "same_process", "warmup_codecs"}
+        for s in scenarios
+    )
+    if needs_py7zr:
+        try:
+            import py7zr  # noqa: F401
+        except ImportError:
+            _safe_print(
+                "py7zr not installed; needed for 7z scenarios.",
+                file=sys.stderr,
+            )
+            return 2
+
     _safe_print(
-        f"Windows PPMd stress: scenarios={scenarios!r} "
+        f"PPMd native stress: scenarios={scenarios!r} "
         f"iters_per_scenario={args.iterations} same_rounds={args.same_rounds} "
         f"platform={platform.platform()!r} python={sys.version.split()[0]} "
         f"executable={sys.executable!r}"
     )
 
-    # (scenario, iter, rc, last_phase)
     crashes: list[tuple[str, int, int, str]] = []
     failures: list[tuple[str, int, int, str]] = []
     passes_by_scenario: dict[str, int] = dict.fromkeys(scenarios, 0)
@@ -410,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
                     _safe_print(f"    stderr tail:\n{textwrap.indent(tail, '    ')}")
 
     lines = [
-        "# Windows PPMd stress results",
+        "# PPMd native stress results",
         "",
         f"- platform: `{platform.platform()}`",
         f"- python: `{sys.version.split()[0]}`",
@@ -444,16 +555,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         lines.append("")
     lines.append(
-        "Known issue: valid solid PPMd 7z (py7zr-built) -> intermittent "
-        "`STATUS_HEAP_CORRUPTION` in `pyppmd` on Windows. Crashes have been seen on "
-        "the first member read and on second-member `skip_forward`, including in "
-        "fresh subprocesses (so prior-test contamination is not required, though "
-        "`same_process` / `warmup_codecs` still probe that axis). "
-        "See `docs/internal/known-issues.md`."
+        "Known issue: valid PPMd streams can abort inside `pyppmd` (Windows "
+        "`STATUS_HEAP_CORRUPTION`; Linux SIGSEGV / malloc abort especially after "
+        "other-codec warmup). Prefer `raw_*` scenarios to isolate the minimal "
+        "surface. See `docs/internal/known-issues.md`."
     )
     summary = "\n".join(lines) + "\n"
 
-    # Write files first so a console encode issue cannot lose the report.
     if args.summary is not None:
         args.summary.write_text(summary, encoding="utf-8")
     gh_summary = os.environ.get("GITHUB_STEP_SUMMARY")
