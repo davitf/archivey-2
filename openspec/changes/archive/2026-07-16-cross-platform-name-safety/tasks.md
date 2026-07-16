@@ -3,8 +3,9 @@
 - [x] 1.1 Reject vs reversible-escape for unrepresentable names → **sanitize** (percent-escape
       non-UTF-8 bytes as `%XX`, escape literal `%` as `%25`, non-decodable bytes only,
       deterministic on every OS, collision-tracked); recorded in design.md + ADR 0013
-- [x] 1.2 `STANDARD`-level cut for trailing dot/space → **allow** (reject reserved + `:`
-      only; STRICT covers the crafted `foo.`/`foo` merge); recorded in design.md + ADR 0013
+- [x] 1.2 Trailing dot/space handling → **STRICT strips** to the portable spelling (revised
+      2026-07: reject halted a legitimate macOS `stuff_etc.` folder); STANDARD/TRUSTED keep
+      it faithful; reserved names + `:` still reject. Recorded in design.md + ADR 0013
 
 ## 2. O2 — collision determinism
 
@@ -19,9 +20,9 @@
 
 ## 3. O3/O4 — portable-name enforcement
 
-- [x] 3.1 Reserved-name / trailing-dot-space / `:` checks keyed on `ExtractionPolicy`
-      (STRICT rejects all on every platform; STANDARD rejects reserved + `:`, allows
-      trailing dot/space; TRUSTED defers)
+- [x] 3.1 Reserved-name / `:` checks reject under STRICT+STANDARD (unsafe: device capture /
+      NTFS ADS); trailing dot/space is **stripped** to the portable spelling under STRICT
+      (all-dots segment still rejected), kept faithful under STANDARD/TRUSTED
 - [x] 3.2 Typed `UnportableNameError` (a `FilterRejectionError`) for a rejected name;
       integrates with `OnError` (records `REJECTED`)
 
@@ -35,7 +36,8 @@
 
 - [x] 5.1 Add `requested_path: Path | None = None` to `ExtractionResult` (appended, frozen,
       backward-compatible); document `requested_path != path` as the rename signal
-- [x] 5.2 Add the `EXTRACTION_NAME_COLLISION` diagnostic code + `NameCollisionContext`
+- [x] 5.2 Add the `EXTRACTION_NAME_COLLISION` diagnostic code + `NameCollisionContext`, and
+      the `EXTRACTION_NAME_SANITIZED` code + `NameSanitizedContext` (name-rewrite reporting)
 
 ## 6. Tests + verify
 

@@ -25,13 +25,17 @@ not treated as a suffix); a multi-suffix name (`archive.tar.gz`) → `archive.ta
 (single final suffix); a directory appends to the whole segment. `N` SHALL increment to the
 first name free **both on disk and in the collision map**, in member-processing order.
 
-**Portable-name enforcement (O3/O4).** Under `STRICT`, Windows-reserved device names
-(`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`; case-insensitive, with or
-without extension), a trailing dot or space in any path segment, and `:` within a segment
-SHALL be rejected on **every** platform. `TRUSTED` SHALL defer to the local OS. `STANDARD`
-SHALL reject the unambiguously-dangerous set (reserved names, `:`) and SHALL allow trailing
-dot/space (a rare, Windows-only mangle whose crafted-merge variant is still caught by
-`STRICT`).
+**Portable-name enforcement (O3/O4).** Windows-reserved device names (`CON`, `PRN`, `AUX`,
+`NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`; case-insensitive, with or without extension) and `:`
+within a segment are **unsafe** (device capture / NTFS alternate data stream) and SHALL be
+rejected under `STRICT` and `STANDARD` on **every** platform. A trailing dot or space is a
+legitimate macOS/Linux name that Win32 merely trims; rejecting it would halt a legitimate
+archive, so under `STRICT` each path segment's trailing dot/space SHALL be **stripped** to
+its portable spelling (`stuff_etc.` → `stuff_etc`) deterministically on every platform,
+collision-tracked as above, and surfaced as an `EXTRACTION_NAME_SANITIZED` diagnostic; a
+segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and SHALL be
+rejected. `STANDARD` and `TRUSTED` SHALL keep the trailing dot/space faithful (written if
+the OS allows).
 
 **Portable-name representability (O7).** Under `STRICT` and `STANDARD`, a name carrying
 bytes that cannot be represented portably on the destination filesystem SHALL be normalized
@@ -58,7 +62,8 @@ the frozen dataclass (backward-compatible).
 | `README` and `readme` in one archive | Second is a collision event on all platforms; `OverwritePolicy` applied; `requested_path` + collision diagnostic recorded | Local OS behavior (both extract on a case-sensitive FS) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
 | Member named `NUL` / `COM1` | Rejected on all platforms (typed error) | Written if the OS allows |
-| Trailing dot/space (`foo.`, `foo `) | `STRICT` rejects on all platforms; `STANDARD` allows | Written if the OS allows |
+| Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), diagnostic; `STANDARD` keeps faithful | Written if the OS allows |
+| Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
 | Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt` deterministically on every platform; collision-tracked | Faithful bytes attempted; OS decides |
 | `REPLACE` with a casefold collision | Handled per policy, not a silent merge; `EXTRACTION_NAME_COLLISION` diagnostic emitted | Local OS behavior |

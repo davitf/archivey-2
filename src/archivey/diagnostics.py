@@ -59,6 +59,7 @@ class DiagnosticCode(str, Enum):
     EXTRACTION_MEMBER_REJECTED = "extraction_member_rejected"
     EXTRACTION_MEMBER_FAILED = "extraction_member_failed"
     EXTRACTION_NAME_COLLISION = "extraction_name_collision"
+    EXTRACTION_NAME_SANITIZED = "extraction_name_sanitized"
 
 
 class DiagnosticSeverity(str, Enum):
@@ -208,6 +209,20 @@ class NameCollisionContext(_JsonSafeContext):
     resolution: Literal["renamed", "replaced", "skipped", "errored"] = "errored"
 
 
+@dataclass(frozen=True)
+class NameSanitizedContext(_JsonSafeContext):
+    """A member whose name was rewritten to a portable spelling under STRICT/STANDARD — a
+    trailing dot/space stripped (O3) or a non-representable byte percent-escaped (O7). The
+    member still extracts; ``portable_name`` is what landed on disk."""
+
+    kind: Literal["name_sanitized"] = "name_sanitized"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    presented_name: str = ""
+    portable_name: str = ""
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -221,6 +236,7 @@ DiagnosticContext = (
     | StreamRewindContext
     | ExtractionOutcomeContext
     | NameCollisionContext
+    | NameSanitizedContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -239,6 +255,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.EXTRACTION_MEMBER_REJECTED: "extraction_outcome",
         DiagnosticCode.EXTRACTION_MEMBER_FAILED: "extraction_outcome",
         DiagnosticCode.EXTRACTION_NAME_COLLISION: "name_collision",
+        DiagnosticCode.EXTRACTION_NAME_SANITIZED: "name_sanitized",
     }
 )
 
@@ -393,6 +410,7 @@ __all__ = [
     "FormatConflictContext",
     "MemberTimestampContext",
     "NameCollisionContext",
+    "NameSanitizedContext",
     "NameEncodingContext",
     "NameNormalizationContext",
     "OnDiagnostic",
