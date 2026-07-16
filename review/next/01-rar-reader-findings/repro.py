@@ -1,13 +1,15 @@
-"""Reproducers for the native-RAR-reader deep review (brief 01).
+"""Reproducers / fix-verification for the native-RAR-reader deep review (brief 01).
 
 Run from the repo root:
 
     uv run --no-sync python review/next/01-rar-reader-findings/repro.py
 
-Each check reports what it saw. F1/F2 need no external binary. F3 shows the argv
-archivey builds; if RARLAB ``unrar`` is installed it also demonstrates, at the
-``unrar`` CLI level, that a switch/``@``-listfile member name is mis-parsed and
-that ``--`` fixes switches but not ``@`` (the behaviour a fix must account for).
+The F1/F3 fixes have LANDED, so this now reads as a verification: F1 shows a wrong
+header password surfacing as EncryptionError (and candidate iteration succeeding),
+F2 shows the header-size vint pre-read is bounded, and F3 shows the member name is
+passed via a ``-n./`` include mask instead of positionally. F3b still shows the raw
+``unrar`` CLI behaviour that motivated the ``-n./`` choice (switch/``@`` mis-parse;
+``--`` fixes switches but not ``@``).
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ def f1_wrong_password_contract() -> None:
 
 
 def f2_header_size_vint_dos() -> None:
-    print("\n[F2] RAR5 header-size vint pre-read is O(n^2) (no length cap):")
+    print("\n[F2] RAR5 header-size vint pre-read (now length-capped; was O(n^2)):")
     prev = None
     for n in (20_000, 40_000, 80_000):
         payload = RAR5_ID + b"\x00\x00\x00\x00" + b"\x80" * n
@@ -63,11 +65,11 @@ def f2_header_size_vint_dos() -> None:
         ratio = f" (x{dt / prev:.1f} for 2x input)" if prev else ""
         print(f"  n={n:>7} 0x80 bytes -> {dt:.3f}s{ratio}")
         prev = dt
-    print("  ~quadratic; a few-MB all-0x80 input extrapolates to tens of seconds CPU.")
+    print("  bounded now: the vint cap rejects after a few bytes (was ~quadratic).")
 
 
 def f3_unrar_argv_injection() -> None:
-    print("\n[F3] Hostile member names reach unrar argv unescaped (no `--` guard):")
+    print("\n[F3] Hostile member names now go through a `-n./` include mask (fixed):")
     import archivey.internal.backends.rar_unrar as ru
 
     captured: dict[str, list[str]] = {}

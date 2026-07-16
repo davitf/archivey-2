@@ -812,6 +812,11 @@ def _parse_rar3(
 
     while True:
         header_fd: _Readable = source
+        # RAR3 has no header password verifier: on a wrong password the decrypted block
+        # header is garbage that fails the size/CRC checks below, indistinguishable from
+        # corruption. When this block is encrypted, surface such failures as
+        # EncryptionError so password candidates keep iterating (see _read_rar5_block).
+        block_encrypted = has_header_encryption
         if has_header_encryption:
             if password is None:
                 raise EncryptionError(
@@ -826,23 +831,30 @@ def _parse_rar3(
             except Exception as exc:
                 raise EncryptionError(f"Failed to decrypt RAR3 headers: {exc}") from exc
 
-        header_offset = header_fd.tell()
-        buf = header_fd.read(_S_BLK_HDR.size)
-        if not buf:
-            break
-        if len(buf) < _S_BLK_HDR.size:
-            raise CorruptionError("Unexpected EOF while reading RAR3 block header")
+        try:
+            header_offset = header_fd.tell()
+            buf = header_fd.read(_S_BLK_HDR.size)
+            if not buf:
+                break
+            if len(buf) < _S_BLK_HDR.size:
+                raise CorruptionError("Unexpected EOF while reading RAR3 block header")
 
-        header_crc, block_type, flags, header_size = _S_BLK_HDR.unpack_from(buf)
-        if header_size < _S_BLK_HDR.size:
-            raise CorruptionError(f"Invalid RAR3 header size: {header_size}")
-        if header_size > _S_BLK_HDR.size:
-            rest = header_fd.read(header_size - _S_BLK_HDR.size)
-            if len(rest) != header_size - _S_BLK_HDR.size:
-                raise CorruptionError("Unexpected EOF while reading RAR3 header body")
-            hdata = buf + rest
-        else:
-            hdata = buf
+            header_crc, block_type, flags, header_size = _S_BLK_HDR.unpack_from(buf)
+            if header_size < _S_BLK_HDR.size:
+                raise CorruptionError(f"Invalid RAR3 header size: {header_size}")
+            if header_size > _S_BLK_HDR.size:
+                rest = header_fd.read(header_size - _S_BLK_HDR.size)
+                if len(rest) != header_size - _S_BLK_HDR.size:
+                    raise CorruptionError("Unexpected EOF while reading RAR3 header body")
+                hdata = buf + rest
+            else:
+                hdata = buf
+        except (CorruptionError, TruncatedError) as exc:
+            if block_encrypted:
+                raise EncryptionError(
+                    "Failed to decrypt RAR3 headers (wrong password?)"
+                ) from exc
+            raise
         # HeaderDecryptStream.tell() reports the underlying ciphertext position
         # (including AES block padding), which is the correct data_offset.
         data_offset = header_fd.tell()
@@ -876,6 +888,10 @@ def _parse_rar3(
                 pass
             calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
             if header_crc != calc:
+                if block_encrypted:
+                    raise EncryptionError(
+                        "Failed to decrypt RAR3 headers (wrong password?)"
+                    )
                 raise CorruptionError(
                     f"RAR3 MAIN header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
                 )
@@ -885,6 +901,10 @@ def _parse_rar3(
         if block_type == _RAR3_ENDARC:
             calc = _crc32(hdata[2:header_size]) & 0xFFFF
             if header_crc != calc:
+                if block_encrypted:
+                    raise EncryptionError(
+                        "Failed to decrypt RAR3 headers (wrong password?)"
+                    )
                 raise CorruptionError("RAR3 ENDARC header CRC mismatch")
             needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
             break
@@ -904,6 +924,10 @@ def _parse_rar3(
             )
             calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
             if header_crc != calc:
+                if block_encrypted:
+                    raise EncryptionError(
+                        "Failed to decrypt RAR3 headers (wrong password?)"
+                    )
                 raise CorruptionError(
                     f"RAR3 FILE header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
                 )
@@ -1175,6 +1199,11 @@ def _parse_rar5(
     comment: str | None = None
     members: list[RarMemberInfo] = []
     hdr_enc: _Rar5HdrEnc | None = None
+    # Whether a check value positively confirmed the header password. When False and
+    # headers are encrypted, a wrong password and genuine corruption are
+    # indistinguishable (no verifier), so a decrypted-header structural failure is
+    # reported as EncryptionError rather than CorruptionError (see _check_rar5_password).
+    password_verified = False
     needs_next_volume = False
 
     while True:
@@ -1194,7 +1223,19 @@ def _parse_rar5(
             except Exception as exc:
                 raise EncryptionError(f"Failed to decrypt RAR5 headers: {exc}") from exc
 
-        parsed = _read_rar5_block(header_fd)
+        # A wrong password produces a garbage decrypted header that fails the block CRC
+        # (or advertises an absurd size). Without a check value to prove the key, that is
+        # indistinguishable from corruption, so surface it as EncryptionError so password
+        # candidates keep iterating. A verified key means a failure here is real corruption.
+        if hdr_enc is not None and not password_verified:
+            try:
+                parsed = _read_rar5_block(header_fd)
+            except (CorruptionError, TruncatedError) as exc:
+                raise EncryptionError(
+                    "Failed to decrypt RAR5 headers (wrong password?)"
+                ) from exc
+        else:
+            parsed = _read_rar5_block(header_fd)
         if parsed is None:
             break
         (
@@ -1247,7 +1288,9 @@ def _parse_rar5(
                     f"Unsupported RAR5 header encryption cipher: {algo}"
                 )
             if check_value is not None and password is not None:
-                _check_rar5_password(check_value, kdf_count, salt, password)
+                password_verified = _check_rar5_password(
+                    check_value, kdf_count, salt, password
+                )
             hdr_enc = _Rar5HdrEnc(
                 algo=algo,
                 flags=enc_flags,
@@ -1332,16 +1375,25 @@ def _read_rar5_block(
     """
     header_offset = fd.tell()
     preload = 4 + 1
-    start_bytes = fd.read(preload)
-    if not start_bytes:
+    head = bytearray(fd.read(preload))
+    if not head:
         return None
-    if len(start_bytes) < preload:
+    if len(head) < preload:
         raise CorruptionError("Unexpected EOF while reading RAR5 header")
-    while start_bytes[-1] & 0x80:
+    # The header-size vint starts at byte 4 (after the 4-byte CRC). A vint is at most
+    # 10 bytes; cap the continuation so a crafted run of 0x80 bytes cannot drive an
+    # unbounded, O(n^2) byte-at-a-time read of the source before ``_load_vint``'s own
+    # 11-byte guard (which only runs *after* this loop) would reject it.
+    while head[-1] & 0x80:
+        if len(head) - 4 >= 10:
+            raise CorruptionError(
+                "Invalid RAR5 header size (variable-length integer too long)"
+            )
         b = fd.read(1)
         if not b:
             raise CorruptionError("Unexpected EOF while reading RAR5 header size")
-        start_bytes += b
+        head += b
+    start_bytes = bytes(head)
     header_crc, pos = _load_le32(start_bytes, 0)
     hdrlen, pos = _load_vint(start_bytes, pos)
     if hdrlen > _RAR5_MAX_HEADER:
@@ -1389,15 +1441,23 @@ def _rar5_decrypt_header(
 
 def _check_rar5_password(
     check_value: bytes, kdf_count_shift: int, salt: bytes, password: str | bytes
-) -> None:
+) -> bool:
+    """Verify the RAR5 header password against the check value.
+
+    Returns ``True`` when the check value positively confirms the password (so a later
+    header failure is genuine corruption, not a wrong password); ``False`` when the
+    check value is unusable/absent (no verifier — a later failure is indistinguishable
+    from a wrong password). Raises :class:`EncryptionError` when the password is
+    provably wrong.
+    """
     if len(check_value) != 12:
-        return
+        return False
     if kdf_count_shift > _RAR_MAX_KDF_SHIFT:
         raise CorruptionError(f"RAR5 kdf_count too large: {kdf_count_shift}")
     hdr_check = check_value[:8]
     hdr_sum = check_value[8:]
     if hashlib.sha256(hdr_check).digest()[:4] != hdr_sum:
-        return
+        return False
     kdf_count = (1 << kdf_count_shift) + 32
     pwd_hash = _rar5_s2k(password, salt, kdf_count)
     pwd_check = bytearray(8)
@@ -1405,6 +1465,7 @@ def _check_rar5_password(
         pwd_check[i & 7] ^= v
     if bytes(pwd_check) != hdr_check:
         raise EncryptionError("Wrong password for RAR5 header encryption")
+    return True
 
 
 def _parse_rar5_file_block(

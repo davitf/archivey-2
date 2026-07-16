@@ -45,6 +45,29 @@ reproduced (F1/F2 in-process, F3 against RARLAB `unrar` 7.00):
    exit-code map (only `unrar` code 11 is translated), a mis-parsed member can yield a
    silent short/empty stream instead of an honest error.
 
+## Implementation status (2026-07-16)
+
+F1–F4 and the Q3 length check are **implemented on this branch with tests**, green in
+all three dependency configs (`[all]` 1580 passed, `[all-lowest]` 1579, `[core-only]`
+1328), `ruff` / `ty` / `pyrefly` clean:
+
+- **F1** — `rar_parser.py` now maps a wrong header password to `EncryptionError` wherever
+  no verifier exists (RAR3 always; RAR5 without a check value), keeping `CorruptionError`
+  for a verified-key failure. Candidate iteration works again.
+- **F2** — the RAR5 header-size vint pre-read is length-capped (no more O(n²)).
+- **F3** — a named `unrar` open passes the member as a `-n./<name>` include mask (never
+  positional), with `-ver` added for history rows; a name containing `*`/`?` is refused
+  with `UnsupportedFeatureError` (no `unrar` escape exists). Hostile `-inul` / `@atfile`
+  members now read their own bytes.
+- **F4 + Q3** — `unrar` exit codes 2/3/10 map to typed errors (as a fallback when archivey
+  has no hash to verify — a hashed member's CRC is authoritative, avoiding legacy-format
+  false positives); a new `LengthVerifyingStream` enforces exact member length on the
+  hash-less forward-only path (truncation → `TruncatedError`).
+- **F5 / F6** deferred (F5 needs a >4 GiB fixture; F6 is a low-severity fidelity nit).
+
+See `QUESTIONS.md` for the two design calls that shaped F3/Q3 (reject `*`/`?`; length
+check as a hash-less-only backstop, not a global `SlicingStream` change).
+
 ## Top findings
 
 | # | Sev | Finding | Where | Repro |

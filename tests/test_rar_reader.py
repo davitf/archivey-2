@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import struct
+import time
 import zlib
 from pathlib import Path
 
@@ -583,31 +584,60 @@ _HOSTILE_ARGV_CONTENTS = {
 
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", ["hostile_argv__.rar", "hostile_argv__rar4.rar"])
-def test_hostile_member_name_never_leaks_other_members(name: str) -> None:
+def test_hostile_member_name_reads_its_own_bytes(name: str) -> None:
     """F3 (review/next/01-rar-reader-findings/unrar-boundary.md): a member whose
     stored name is a bare ``unrar`` switch (``-inul``) or an ``@listfile`` argument
-    (``@atfile``) reaches the ``unrar`` argv unescaped, so ``unrar`` mis-parses it
-    and emits the wrong data.
+    (``@atfile``) must be addressed to exactly that member.
 
-    The load-bearing safety invariant: reading such a member MUST NOT silently
-    return some *other* member's bytes. Today the per-member CRC check turns the
-    mis-parse into a ``CorruptionError``; a correct fix (a ``--`` end-of-switches
-    guard) would instead return the member's own bytes. Either outcome satisfies
-    this test — only silently returning the wrong bytes fails it.
+    Fixed by passing the member via a ``-n./`` include mask instead of positionally,
+    so ``unrar`` cannot parse the name as a switch or a local-file read. Each hostile
+    member now returns its own bytes, and never another member's.
     """
     with open_archive(_fixture(name)) as archive:
         members = {m.name: m for m in archive.members() if m.is_file}
         assert {"canary.txt", "-inul", "@atfile"} <= set(members)
-        # Control member with a normal name reads correctly through unrar.
-        assert archive.read(members["canary.txt"]) == _HOSTILE_ARGV_CONTENTS["canary.txt"]
-        for hostile in ("-inul", "@atfile"):
-            try:
-                data = archive.read(members[hostile])
-            except ArchiveyError:
-                # Acceptable: the mis-parse is caught (today via CRC verification).
-                continue
-            # If the read succeeds it must be THIS member's own bytes.
-            assert data == _HOSTILE_ARGV_CONTENTS[hostile], (
-                f"reading {hostile!r} returned bytes that are not its own — "
-                "unrar argv injection leaked another member (F3)"
+        for member_name, expected in _HOSTILE_ARGV_CONTENTS.items():
+            assert archive.read(members[member_name]) == expected, (
+                f"reading {member_name!r} did not return its own bytes (F3 argv injection)"
             )
+
+
+def test_rar5_header_size_vint_is_bounded() -> None:
+    """F2: the RAR5 header-size vint pre-read is length-capped, so a crafted run of
+    continuation bytes cannot drive an unbounded, O(n^2) read of the source."""
+    payload = RAR5_ID + b"\x00\x00\x00\x00" + b"\x80" * 2_000_000
+    start = time.perf_counter()
+    with pytest.raises(ArchiveyError):
+        parse_rar_archive(io.BytesIO(payload))
+    # Bounded work: the cap rejects after a handful of bytes rather than reading 2 MB.
+    assert time.perf_counter() - start < 1.0
+
+
+def test_unrar_member_include_switch_rejects_wildcards() -> None:
+    """A member name containing an unrar wildcard (``*``/``?``) cannot be addressed to
+    one member (no escape exists), so the unrar path refuses it with a typed error;
+    other names become a ``-n./`` include mask that neutralizes ``-``/``@`` prefixes."""
+    from archivey.exceptions import UnsupportedFeatureError
+    from archivey.internal.backends.rar_unrar import _member_include_switch
+
+    assert _member_include_switch("-inul") == "-n./-inul"
+    assert _member_include_switch("@atfile") == "-n./@atfile"
+    assert _member_include_switch("dir/normal.txt") == "-n./dir/normal.txt"
+    for bad in ("weird*.txt", "a?b.txt"):
+        with pytest.raises(UnsupportedFeatureError):
+            _member_include_switch(bad)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"])
+def test_header_encryption_wrong_password_is_encryption_error(name: str) -> None:
+    """F1: a wrong header password surfaces as ``EncryptionError`` (not
+    ``CorruptionError``) even without a check value (always RAR3, checkval-less RAR5),
+    so password-candidate iteration keeps trying instead of aborting."""
+    path = _fixture(name)
+    with pytest.raises(EncryptionError):
+        with open_archive(path, password="DEFINITELY_WRONG") as archive:
+            archive.members()
+    # A candidate list whose first entry is wrong must fall through to the correct one.
+    with open_archive(path, password=["DEFINITELY_WRONG", "header_password"]) as archive:
+        assert len(archive.members()) > 0

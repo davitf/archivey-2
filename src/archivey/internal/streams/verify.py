@@ -32,21 +32,102 @@ over the decompressed bytes.
 from __future__ import annotations
 
 import hashlib
+import io
 import zlib
 from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
 )
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
+from archivey.internal.streams.streamtools import (
+    DelegatingStream,
+    ReadOnlyIOStream,
+    is_seekable,
+)
 
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
+
+
+class LengthVerifyingStream(DelegatingStream):
+    """Enforce that a *sequential* stream delivers exactly ``expected_size`` bytes.
+
+    For a forward-only member stream whose length is known from archive metadata (e.g. a
+    RARLAB ``unrar`` pipe or a solid-block slice), this turns a silently short or over-long
+    external decode into an honest error: it raises :class:`TruncatedError` if the
+    underlying ends before ``expected_size`` and :class:`CorruptionError` if it yields more.
+
+    Like :class:`VerifyingStream` it is meant for the sequential read path and only checks
+    what is actually read; a seek off the sequential frontier disables the check for the
+    rest of the stream's life (the remaining length is then indeterminate). It owns its
+    inner stream (closing it on close, matching the ``own_source`` slices it replaces).
+    """
+
+    def __init__(self, inner: BinaryIO, expected_size: int) -> None:
+        # readinto must route through read() so the length bookkeeping always runs.
+        super().__init__(inner, readinto_passthrough=False)
+        self._expected = expected_size
+        self._pos = 0
+        self._enabled = True
+        self._saw_eof = False
+        self._overflow_checked = False
+
+    def read(self, n: int = -1, /) -> bytes:
+        if not self._enabled:
+            return self._inner.read(n)
+        remaining = self._expected - self._pos
+        if remaining <= 0:
+            # Declared size delivered; confirm the underlying has no trailing bytes.
+            self._check_no_overflow()
+            return b""
+        want = remaining if n < 0 else min(n, remaining)
+        data = self._inner.read(want)
+        if not data:
+            # Underlying ended before the declared size. Don't raise here: the inner
+            # close may carry a more specific cause (e.g. wrong password / exit code),
+            # so the short-length verdict is applied at close, after inner is closed.
+            self._saw_eof = True
+            return b""
+        self._pos += len(data)
+        return data
+
+    def _check_no_overflow(self) -> None:
+        if self._overflow_checked:
+            return
+        self._overflow_checked = True
+        if self._inner.read(1):
+            raise CorruptionError(
+                f"Member data exceeded its declared size of {self._expected} bytes"
+            )
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        # A seek makes the running length count meaningless; stop enforcing.
+        self._enabled = False
+        return self._inner.seek(offset, whence)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        # Only a full sequential read that hit EOF short of the declared size is a
+        # truncation; a deliberate partial read then close is not. Close the inner first
+        # so its own error (wrong password, unrar exit code) takes precedence, then apply
+        # the short-length verdict.
+        truncated = (
+            self._enabled and self._saw_eof and self._pos < self._expected
+        )
+        try:
+            self._inner.close()
+        finally:
+            io.RawIOBase.close(self)
+        if truncated:
+            raise TruncatedError(
+                f"Member data ended after {self._pos} of {self._expected} expected bytes"
+            )
 
 
 class _IncrementalHasher(Protocol):
