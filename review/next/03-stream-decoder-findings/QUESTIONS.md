@@ -25,73 +25,72 @@ the assert become a resolved-merge + diagnostic rather than a hard invariant?
 
 ## Q2 — accelerator damaged-input (F2): backstop deflate/zlib, or document the gap?
 
-With `[seekable]` (rapidgzip) installed, a truncated standalone deflate/zlib/gzip stream is
-silently returned as partial/zero data, where the stdlib backend raises `TruncatedError`
-(VISION #3). In-archive ZIP members are still covered by downstream CRC/size verification
-(but that turns truncation into an all-or-nothing error and loses the recoverable prefix
-VISION #3 promises); the fully-exposed surface is standalone `RAW_STREAM` single-file
-streams and any path with verification off.
+With `[seekable]` (rapidgzip) installed, a truncated **hash-less** accelerated
+deflate/zlib/gzip stream is silently returned as partial/zero data, where the stdlib
+backend raises `TruncatedError` (VISION #3).
 
-- Accept and **document** the gap (lean on downstream CRC for the in-archive case), **or**
-- Give the deflate/zlib accelerator path a completeness check (rapidgzip's own end-of-stream
-  state, or a stdlib tail re-check: a stream that returns 0 bytes for non-empty input, or
-  stops before EOS, should raise), and harden the gzip ISIZE backstop so a chance
-  `1f 8b 08` in compressed data cannot mask a truncation and so a `BytesIO` source is also
-  covered.
+**First, the exposure is narrower than a first read of F2 suggests — CRC-bearing members
+are already covered.** `VerifyingStream` computes the container digest over the bytes read
+and raises `CorruptionError` at clean EOF on a mismatch; a truncated accelerator read
+delivers short bytes → wrong CRC → raise (verified: a `VerifyingStream` over a 6000-of-10000
+byte inner raises `CorruptionError`). So **ZIP deflate/zlib members** (central-directory
+CRC32, always present → `VerifyingStream` applied at `zip_reader.py:804`) and **single-member
+gzip on a path** (trailer CRC surfaced by `GzipCodec.extract_metadata`) already turn the
+accelerator's silent short read into an honest error — *and* keep the recoverable prefix,
+since `VerifyingStream` delivers every chunk and raises only on the terminal empty read. The
+genuinely silent surface is **hash-less** accelerated streams: standalone `RAW_STREAM` raw
+deflate/zlib, and gzip where no trailer CRC is surfaced. That is exactly the niche the
+`LengthVerifyingStream` below targets.
 
-**Maintainer's proposal (2026-07-16), and it's the cleaner resolution:** when the
-*decompressed* size is known (any central-directory format, plus xz/lzip index and gzip
-ISIZE), a top-level length check catches the silent short read — this is the
-`ArchiveStream`/`_wrap_member_stream` length-verification idea already registered in #113.
-Then **gate AUTO on truncation-detectability**: select the accelerator when we can verify
-completeness via a known decompressed size, else fall back to stdlib (which raises
-natively). This turns F2 into a non-issue for the common case and confines the stdlib
-fallback to exactly the exposed surface (standalone raw deflate/zlib with no declared size).
+**Correction to my previous note in this file: #113 did *not* fold the check into
+`ArchiveStream`.** During implementation (`1ee721a`) they reversed that plan and shipped a
+contained **`LengthVerifyingStream`** (`internal/streams/verify.py`) on the RAR
+forward-only path, wrapping only hash-less members. The implementer's stated reasons:
 
-**This is the same check #113 already decided to build, and it subsumes F2.** #113's
-maintainer resolution (its `QUESTIONS.md`, Q4/F4 thread) settled *where* the length
-backstop lives, and the reasoning transfers directly here:
+> the shared-SlicingStream/seek/partial-read interactions plus the ordering-vs-`VerifyingStream`
+> masking made a contained `LengthVerifyingStream` on the RAR forward-only path the
+> right-sized, low-blast-radius choice. It only wraps hash-less members (where
+> `VerifyingStream` isn't the authority), which also fixed a real ordering bug where
+> truncation was masking the correct `CorruptionError`/`EncryptionError`.
 
-- It is **folded into `ArchiveStream`, not a separate wrapper and not `VerifyingStream`.**
-  `VerifyingStream` is applied only when `member.hashes` is non-empty
-  (`zip_reader.py:804` `if hashes:`; `rar_reader.py:509`), so a CRC-less member — exactly
-  the truncation-exposed case — never gets wrapped by it. `ArchiveStream` runs for *every*
-  member and already carries `size` (`_wrap_member_stream(…, size=member.size)` →
-  `base_reader.py:599-607`), so one check there is universal and format-agnostic. (Today
-  `ArchiveStream._size` is used only by the `.size` property — `read()` does not enforce
-  it — so this is net-new enforcement, not a change to existing behavior.)
-- It enforces **only on forward-to-EOF consumption** (mirroring `VerifyingStream`): a
-  partial read or a seekable random-access read that never touches the tail must not trip.
+Concretely (`rar_reader.py:_wrap_payload_stream`): `LengthVerifyingStream(inner, size)` is
+applied when `member.size is not None and not member.hashes and not is_seekable(inner)`,
+composed as a **peer of** `VerifyingStream` (hashed → `VerifyingStream` is authoritative;
+hash-less → `LengthVerifyingStream`), and its short-length verdict is deferred to `close()`
+**after** the inner closes, so a more specific inner error (wrong password / `unrar` exit
+code) wins — that was the masking bug. A global `ArchiveStream` check would have had to get
+that ordering right for every backend and would have interacted with the shared-source
+`SlicingStream`/seek paths — hence the smaller-blast-radius contained wrapper.
 
-So the same `ArchiveStream` length check catches #113's RAR short-read *and* our F2
-accelerator short-read with one mechanism — the accelerator sits **inside**
-`ArchiveStream` (the reader wraps the codec/accelerator stream via `_wrap_member_stream`),
-so an `ArchiveStream` that verifies "delivered decompressed bytes == `member.size` at EOF"
-catches rapidgzip's silent short output for free wherever `member.size` is known (ZIP
-central directory, xz/lzip index). **We should therefore NOT build a separate deflate/zlib
-accelerator backstop; align F2 with #113's `ArchiveStream` check**, and gate AUTO to stdlib
-only when no verifiable decompressed size exists.
+**So the resolution for F2 is: reuse `LengthVerifyingStream`, don't reopen the
+`ArchiveStream` idea** (#113 tried it and backed off for concrete reasons). The reusable
+primitive now exists and is format-agnostic (`BinaryIO` + `expected_size`). Apply it to the
+hash-less accelerated codec streams, matching #113's compose-as-a-peer-of-`VerifyingStream`
+pattern and its defer-verdict-to-`close()` ordering. Open design points, specific to us:
 
-Two nuances specific to the accelerator path (do **not** copy #113's RAR notes blindly):
+1. **The accelerator path is *seekable*** (rapidgzip is chosen precisely because AUTO
+   requires declared seek demand), but `LengthVerifyingStream` is gated to
+   `not is_seekable(inner)` on the RAR path. To reuse it here we'd wrap a seekable stream
+   and lean on its self-disable-on-seek (it clears `_enabled` on the first `seek`), a mode
+   #113 didn't exercise — decide whether to verify forward reads of seekable accelerated
+   members (wrap + self-disable, same semantics as `VerifyingStream`) or keep the
+   `not is_seekable` gate (which would exclude the accelerator entirely).
+2. **Hash-less *and* size-known is a small set.** The remaining silent case is standalone
+   raw deflate/zlib, which usually has **no** declared decompressed size either — so
+   `LengthVerifyingStream` can't fire and the real backstop there is still **AUTO-gating to
+   stdlib** when no verifiable size exists. gzip single-file without a surfaced trailer CRC
+   is the other slice. So: `LengthVerifyingStream` where size is known; AUTO→stdlib
+   otherwise.
+3. **Keep the compressed-input clamp.** rapidgzip over-reads past EOS hunting a concatenated
+   member (`DeflateCodec.open` comment, `codecs.py:950-952`), so the compressed
+   `SlicingStream` bound must stay — unlike #113's RAR note that drops the pre-clamp to
+   detect "too long." Our exposure is "too short," which `LengthVerifyingStream` catches
+   without touching the input clamp.
 
-1. **Keep the compressed-input clamp.** #113 note 1 says drop the pre-clamp `SlicingStream`
-   so `ArchiveStream` can see "too long." That is RAR-specific. On the accelerator path the
-   compressed `SlicingStream` bound must **stay** — rapidgzip over-reads past EOS hunting a
-   concatenated member (`DeflateCodec.open` comment, `codecs.py:950-952`). Our exposure is
-   "too short" (truncation), which the **decompressed**-length check catches without
-   touching the input clamp. (As before: it must be the *decompressed* size — rapidgzip
-   consumes the whole truncated compressed input, so "consumed all compressed bytes" is
-   trivially true; `compressed_input_size`, the AUTO gate's ≥1 MiB input, does not detect
-   truncation.)
-2. **Residual once #113 lands.** The check needs a known `member.size`. ZIP deflate/zlib and
-   xz/lzip have it → covered. But gzip single-file may not (`GzipCodec.extract_metadata`
-   sets mtime/FNAME/crc32, *not* `size`; the ISIZE trailer is exactly what the existing
-   `_GzipTruncationCheckStream` reads), and standalone raw deflate/zlib never has it. Those
-   stay the residual → AUTO-gate to stdlib. The upside: the defeatable
-   `_GzipTruncationCheckStream` (gzip-only, path-only, beaten by a chance `1f 8b 08`) can be
-   **retired wherever `member.size` is known** in favor of the robust universal check, and
-   kept only for the sizeless gzip case (or dropped in favour of the stdlib fallback there
-   too).
+The defeatable `_GzipTruncationCheckStream` (gzip-only, path-only, beaten by a chance
+`1f 8b 08`) is then largely redundant: CRC-bearing gzip is covered by `VerifyingStream`,
+hash-less size-known by `LengthVerifyingStream`, and the rest by AUTO→stdlib — so it can be
+retired or kept only as a last-ditch gzip-specific guard.
 
 Related: even the truncations rapidgzip *does* surface arrive as
 `RuntimeError("std::exception")` and map to `CorruptionError`, not `TruncatedError`

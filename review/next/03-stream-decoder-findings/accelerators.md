@@ -88,27 +88,30 @@ reviews).
 
 - **Reproduces only with `[seekable]` (rapidgzip) installed** and AUTO/ON selecting it
   (seekable + size ≥ 1 MiB). `[core-only]` uses the stdlib backend and is safe.
-- A **ZIP** deflate member has a CRC32 + uncompressed size in the central directory,
-  verified downstream by `verify.py`'s `VerifyingStream`, so an in-archive truncation is
-  still caught there. The exposed surface is **standalone** `RAW_STREAM` deflate/zlib/gzip
-  single-file streams (and any consumer reading a member stream without the verifying
-  wrapper), where there is no independent length/CRC to check against.
+- A **ZIP** deflate member has a CRC32 in the central directory, verified downstream by
+  `verify.py`'s `VerifyingStream` (applied whenever `member.hashes` is non-empty), so an
+  in-archive truncation is caught there as `CorruptionError` — *with* the recoverable prefix
+  preserved, since `VerifyingStream` delivers every chunk and raises only on the terminal
+  empty read (verified). Same for single-member gzip on a path (trailer CRC via
+  `GzipCodec.extract_metadata`). The genuinely **silent** surface is therefore **hash-less**
+  accelerated streams: standalone `RAW_STREAM` raw deflate/zlib, and gzip with no surfaced
+  trailer CRC.
 
-### Fix direction (maintainer decision — see QUESTIONS Q2)
+### Fix direction (see QUESTIONS Q2)
 
-The leading resolution is **not** a new accelerator-specific backstop: it is the
-universal `ArchiveStream` length check that #113 already decided to build (verify
-delivered decompressed bytes == `member.size` at forward-to-EOF, else `TruncatedError`).
-The accelerator sits *inside* `ArchiveStream` (the reader wraps the codec stream via
-`_wrap_member_stream(…, size=member.size)`), so that one check catches rapidgzip's silent
-short read wherever `member.size` is known — ZIP deflate/zlib members (central-directory
-size) and xz/lzip (index), i.e. the bulk of the #105 exposure. AUTO then falls back to
-stdlib only when no verifiable decompressed size exists (standalone raw deflate/zlib, and
-gzip single-file where `member.size` is unset). Two caveats vs #113's RAR notes: keep the
-compressed-input `SlicingStream` clamp (rapidgzip over-reads past EOS, `codecs.py:950`),
-and the defeatable `_GzipTruncationCheckStream` can be **retired** wherever `member.size`
-is known in favour of the universal check. Full reasoning + the VerifyingStream-vs-
-ArchiveStream decision is in `QUESTIONS.md` Q2.
+Reuse #113's **`LengthVerifyingStream`** (`verify.py`), *not* a new class and *not* a
+universal `ArchiveStream` check. #113 initially planned the `ArchiveStream` route but
+reversed during implementation (`1ee721a`) to a contained `LengthVerifyingStream` on the
+forward-only, hash-less, size-known path — for concrete reasons (shared-`SlicingStream`/
+seek/partial-read blast radius, and an ordering bug where the length verdict masked the
+inner's `CorruptionError`/`EncryptionError`; it now defers the verdict to `close()` after
+the inner closes). For F2: apply `LengthVerifyingStream` to hash-less accelerated codec
+streams where `member.size` is known, and AUTO-gate to stdlib where it isn't (standalone
+raw deflate/zlib usually has no declared size). Two accelerator-specific points: the
+accelerator stream is *seekable* (so we'd use `LengthVerifyingStream`'s self-disable-on-seek,
+a mode #113 gated out with `not is_seekable`), and keep the compressed-input `SlicingStream`
+clamp (rapidgzip over-reads past EOS, `codecs.py:950`). The defeatable
+`_GzipTruncationCheckStream` becomes largely redundant. Full reasoning in `QUESTIONS.md` Q2.
 
 ## Other Hunt-C items (checked, not findings)
 
