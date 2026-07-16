@@ -30,15 +30,17 @@ user docs in the same change when relevant.
 
 ### P1. Default `strict_archive_eof` to True (at least for random-access)
 
+- **Status:** parked in OpenSpec change
+  [`decide-strict-archive-eof-default`](../../openspec/changes/decide-strict-archive-eof-default/)
+  (options A–E + provisional Option D). Do not flip the default ad hoc.
 - **Today:** `ArchiveyConfig.strict_archive_eof=False` → mid-archive TAR corruption
   that stdlib treats as clean EOF surfaces only as `ARCHIVE_EOF_MARKER_MISSING`
   (WARNING). Inventory/dedupe sweeps can get a silently shortened listing.
-- **Why fixable:** Seekable sources can verify the trailer cheaply. The lenient
-  default mainly serves pipes / forward-only where a hard fail mid-pass is harsher.
-- **Direction (from review W1):** consider `True` for random-access opens; keep
-  lenient (or explicit opt-out) for `streaming=True`. Spec + `docs/formats.md` must
-  move with the default.
-- **Refs:** `review/deep-unknown-unknowns.md` W1; `config.py`; `format-tar`.
+- **Why not trivial:** Phase 5 defaulted False for trailer-less / `cat`-joined tars
+  (GNU-tar-like); a raise at end-of-pass is awkward after successful extract. Same
+  knob cannot yet distinguish missing trailer vs corrupt-shortened listing.
+- **Refs:** change `design.md`; `review/deep-unknown-unknowns.md` W1; `config.py`;
+  `format-tar`.
 
 ### P2. Multi-volume / split ZIP (`.z01`…`.zip`)
 
@@ -162,7 +164,8 @@ help; they do not disappear.
 
 1. **Docs sweep (cheap):** threat-model O2/O7 status; `formats.md` RAR `-ver`;
    duplicate-name / hardlink notes in usage or Gotchas; `format-7z` vs F2 diagnostic.
-2. **Policy decision (P1):** default `strict_archive_eof` for random-access — small
-   code change, real honesty win for the inventory use case.
-3. **User Gotchas + Why pages:** write from the **Irreducible** bucket + the
-   hardenings narrative; link Product items as “not yet” only when still open.
+2. **`strict_archive_eof` (P1):** locked only via
+   `openspec/changes/decide-strict-archive-eof-default/` — do not flip ad hoc.
+3. **User Gotchas + Why pages:** write from the **Irreducible** bucket + post-v1
+   “may improve later” items + the hardenings narrative; link Product items as
+   “not yet” only when still open.
