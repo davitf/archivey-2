@@ -155,22 +155,85 @@ longer load-bearing and the wrapper could be simplified.
 - `scripts/macos_accelerator_debug.py` — characterises the finalization behaviour (Bug 1) across
   raw vs. guarded × cleanup strategies, each in its own subprocess.
 
-## Windows intermittent heap corruption in 7z codec roundtrips (mitigated)
+## Windows intermittent heap corruption in 7z PPMd roundtrips (mitigated + stress CI)
 
-**Status: mitigated in tests; root cause not pinned.** On `windows-latest` / Python 3.14 the
-full suite has occasionally aborted mid
+**Status: codec pinned to PPMd/`pyppmd`; root cause not fixed.** On `windows-latest` the
+suite has intermittently aborted during
 `tests/test_sevenzip_reader.py::test_py7zr_codec_fixtures_roundtrip` with
-`Windows fatal exception: code 0xc0000374` (`STATUS_HEAP_CORRUPTION`). The same matrix is green
-on Windows/py3.11 and on Linux/macOS; re-runs of identical commits often pass. The crash stack
-points at `_assert_roundtrip` / native codec reads (py7zr-built fixtures: LZMA2, BCJ, PPMd,
-brotli, …), but heap corruption is typically detected *after* the guilty native call, so the
-exact codec/library is not reliably identified from one failure.
+`Windows fatal exception: code 0xc0000374` (`STATUS_HEAP_CORRUPTION`). Linux and macOS stay
+green; re-runs of identical commits often pass. Early reports noted Windows/py3.14; a later
+isolated failure on PR CI pinned the same abort on **Windows/py3.11** as well
+(`pyppmd==1.3.1` win_amd64). Windows/py3.14 can still pass on the same commit that fails
+py3.11, so the flake is not tied to a single matrix Python.
 
-**Mitigation:** on `win32`, each codec parametrization of that test runs in its own subprocess
-with faulthandler enabled and flushed phase breadcrumbs (`phase.txt`: build → open → list →
-per-member read). A native abort then fails only that label; the pytest failure message includes
-NTSTATUS (named when known), last phase, native-lib versions/paths, and child stdout/stderr —
-so the next occurrence should name the codec and the step that died. Not a product-runtime
-change. If a specific codec starts failing consistently under isolation, treat that as a
-reproducible lead against the corresponding native wheel (`pyppmd` / `brotli` / `pybcj` / …).
+### What was pinned (isolation harness)
+
+On `win32`, each codec parametrization of that test already ran in its own subprocess
+(faulthandler + flushed `phase.txt` breadcrumbs: build → open → list → per-member read) so a
+native abort fails only that label instead of killing the whole pytest process (#80). A
+subsequent failure produced a clear lead:
+
+| Field | Value |
+|-------|--------|
+| Label / filters | `ppmd` / `("PPMD",)` |
+| Exit | `0xC0000374` (`STATUS_HEAP_CORRUPTION`) |
+| Library | `pyppmd` 1.3.1 (`…\site-packages\pyppmd\…`) |
+| Last phase | `read_member:nested/beta.bin:start` (after `alpha.txt` read OK, `len=600`) |
+| Stack | `sevenzip_reader._open_member` → `skip_forward` → `DecompressorStream.read` → PPMd decode |
+
+### Valid stream, not adversarial input
+
+The crashing input is a **happy-path** fixture, not fuzz/mutation/corrupt data:
+
+- Built by **py7zr** with `FILTER_PPMD` from two small plain members
+  (`b"alpha\n" * 100` and `bytes(range(64)) * 16`).
+- Archive lists cleanly (2 file members); first member decompresses to the expected bytes.
+- Crash is during solid random-access open of the **second** member: a fresh folder decode
+  stream + `skip_forward` over the first member's prefix through `pyppmd.Ppmd7Decoder`.
+
+Heap corruption is often detected *after* the guilty native call, so the first decode may
+still be the corruptor even when the abort surfaces on the second open. Either way, this is
+a native-extension / Windows heap issue on a writer-produced valid solid PPMd folder, not a
+hostile-input parser bug in archivey.
+
+### Mitigation in the required CI matrix
+
+- **Skip** the `ppmd` parametrization of `test_py7zr_codec_fixtures_roundtrip` on `win32` so
+  the flake cannot fail the required Windows jobs. The param still runs on Linux/macOS.
+- Other codec labels on Windows keep the per-label subprocess isolation (in case a different
+  native wheel misbehaves later).
+- Not a product-runtime change: archivey still uses `pyppmd` for PPMd on Windows; only the
+  flaky matrix assertion is moved.
+
+### Non-blocking stress check (investigation vehicle)
+
+A dedicated workflow, **Windows PPMd stress** (`.github/workflows/windows-ppmd-stress.yml`),
+runs on every PR and on pushes to main:
+
+- `windows-latest` × Python **3.11 and 3.14**
+- `scripts/windows_ppmd_stress.py` — many isolated solid PPMd roundtrips (same read order as
+  the regular test); prints pass/crash counts, last phase, named NTSTATUS; writes a step
+  summary + artifact
+- Exit non-zero when any iteration crashes so the check is visibly red when the flake
+  reproduces
+
+**Do not add this workflow as a required status check** — it is meant to keep signal without
+blocking merge. Local repro:
+
+```bash
+uv sync --group dev --extra all
+uv run --no-sync python scripts/windows_ppmd_stress.py          # default 40 iters
+uv run --no-sync python scripts/windows_ppmd_stress.py 80       # more iters
+ARCHIVEY_PPMD_STRESS_ITERS=50 uv run --no-sync python scripts/windows_ppmd_stress.py
+```
+
+### Next leads
+
+- Treat consistent crashes under the stress job as an upstream/`pyppmd` win_amd64 lead
+  (historical Windows heap/AV issues exist in that project’s changelog; current tip is
+  still flaky here).
+- Possible archivey-side experiments if investigating further: decoder lifecycle/close
+  between member opens, smaller decode chunk sizes during `skip_forward`, comparing
+  `stream_members()` (one decode) vs repeated `read()` (re-decode + skip). None of these
+  are confirmed fixes.
 

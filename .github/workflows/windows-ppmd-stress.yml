@@ -1,0 +1,74 @@
+name: Windows PPMd stress
+
+# Investigation vehicle for the intermittent Windows ``pyppmd`` STATUS_HEAP_CORRUPTION
+# flake on valid solid PPMd 7z roundtrips (see docs/internal/known-issues.md).
+#
+# Runs on every PR and on pushes to main so we keep signal, but lives in its *own*
+# workflow on purpose: do **not** add this check as a required status check — a red
+# run here must not block merge. The main CI Windows matrix skips the PPMd codec
+# param so that flake cannot fail the required suite.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Isolated PPMd roundtrip iterations"
+        required: false
+        default: "80"
+
+concurrency:
+  group: windows-ppmd-stress-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ppmd-stress:
+    name: windows / py${{ matrix.python-version }} / PPMd stress
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both versions have been in the flake story (docs originally noted 3.14;
+        # PR #113 CI pinned a crash on 3.11). Stress both.
+        python-version: ["3.11", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      ARCHIVEY_PPMD_STRESS_ITERS: ${{ github.event.inputs.iterations || '50' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync (dev + all extras)
+        run: uv sync --python ${{ matrix.python-version }} --group dev --extra all
+
+      - name: Assert synced venv Python matches matrix
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync python -c
+          "import sys; exp=tuple(map(int, '${{ matrix.python-version }}'.split('.')));
+          got=sys.version_info[:2]; assert got==exp, (got, exp); print(sys.version)"
+
+      - name: Stress PPMd solid roundtrips
+        # Non-zero exit when any iteration crashes — intentional for visibility.
+        # This workflow must stay non-required so a red run does not block merge.
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          python scripts/windows_ppmd_stress.py
+          --summary ppmd-stress-summary-py${{ matrix.python-version }}.md
+
+      - name: Upload stress summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ppmd-stress-py${{ matrix.python-version }}
+          path: ppmd-stress-summary-py${{ matrix.python-version }}.md
+          if-no-files-found: ignore
