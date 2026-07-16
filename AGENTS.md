@@ -53,7 +53,8 @@ benchmarks/`). **Do not commit without formatting.**
 Non-obvious gotchas:
 
 - The startup update script is committed at `.cursor/install.sh` (wired via
-  `.cursor/environment.json`). It installs `unrar`, the `openspec` CLI, runs
+  `.cursor/environment.json`). It bootstraps `uv` if missing (JIT Cloud images may
+  not ship it), installs `unrar`, the `openspec` CLI, runs
   `uv sync --group dev --extra all`, and `./scripts/install-git-hooks.sh`, so the
   format-on-commit hook is present without a manual step.
 - **`unrar`** (system binary, from the `multiverse` apt component) backs RAR *data*
