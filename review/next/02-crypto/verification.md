@@ -106,11 +106,17 @@ the stored tweaked value. Two-step plan:
 2. **Full fix (restore verification when the password is known):** verify by forward-transform
    — compute the real CRC32/BLAKE2sp over the decrypted data, apply `ConvertHashToMAC` with the
    HashKey `= PBKDF2-HMAC-SHA256(pw_utf8, salt, (1<<kdf_count)+16)`, and compare to the stored
-   tweaked value. CRC32 transform is `XOR of the eight uint32 words of
-   HMAC-SHA256(HashKey, crc_le32)`; BLAKE2sp is (per UnRAR, pending source confirmation in
-   `7z-source-questions.md`) `HMAC-SHA256(HashKey, blake2sp32)`. Needs the confirmed password /
-   HashKey threaded into the RAR verification stage; leave `member.hashes` empty when no
-   correct password is known at open time.
+   tweaked value. **Both transforms now confirmed against UnRAR `crypt5.cpp:193-211`:** CRC32 =
+   XOR-fold of `HMAC-SHA256(HashKey, crc.to_bytes(4,"little"))` into 4 bytes; BLAKE2sp =
+   `HMAC-SHA256(HashKey, blake2sp_digest[32])` overwriting the 32-byte digest. Needs the
+   confirmed password / HashKey threaded into the RAR verification stage; leave `member.hashes`
+   empty when no correct password is known at open time.
+
+**Gate (source-confirmed):** the tweak applies **iff** the per-file `FHEXTRA_CRYPT_HASHMAC`
+(0x02) flag is set (`arcread.cpp:1080`, `extract.cpp:934`) — exactly the flag `_crc_is_tweaked`
+already reads. Encrypted-header (`-hp`) archives do **not** auto-skip the tweak in the reader;
+unrar keys only off 0x02 (untweaked checksums under `-hp` are a writer choice to omit the
+flag). So no header-encryption special-case is needed.
 
 ---
 
@@ -172,7 +178,12 @@ _verify_decoded_folder(folder, garbage, member_digests=[(16, None)])
 ### Fix (resolved with maintainer — see QUESTIONS Q2) — best-effort, not fail-closed
 
 Maintainer call: do **not** hard-error (error detection is best-effort, and the data might be
-correct). This matches 7-Zip, which also cannot detect a wrong password when no CRC is present.
+correct). This matches 7-Zip, which also cannot detect a wrong password when no CRC is present
+— **source-confirmed:** 7zAES has no password check of its own; the only gate is the
+extraction CRC and only when `fi.CrcDefined` (`7zExtract.cpp:95,128`), so a CRC-less store
+member returns garbage as `kOK` (`7zExtract.cpp:397-411` maps a codec failure to `kDataError`,
+but a copy coder never fails). "Matching 7-Zip on CRC-less streams means accepting when decode
+succeeds, not inventing a password check 7-Zip doesn't have."
 Note ZIP is **not** exposed the same way — WinZip AE-2 authenticates with a mandatory HMAC and
 ZipCrypto STORED is disambiguated by the central-directory CRC — so 7z is the only format here
 where an encrypted member can carry zero integrity anchor. Recommendation: keep the

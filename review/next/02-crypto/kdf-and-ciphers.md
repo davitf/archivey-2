@@ -95,16 +95,20 @@ a sane maximum — 24 mirrors RAR5 and is far above any real archive — raising
 `UnsupportedFeatureError`/`CorruptionError` above it. `py7zr` shares the missing cap, so this
 is not an oracle divergence; it is a hardening gap the brief's threat model asks for.
 
-**On the maintainer's follow-up (Q3 — "what cap does 7-Zip use, is it user-selectable, max?"):**
-7-Zip *encodes* with `NumCyclesPower = 19` (2¹⁹ rounds, ~sub-ms) and does not expose the value
-in its GUI/CLI, so real archives are effectively fixed at 19. The **format** stores it in the
-low 6 bits of the AES property byte, so a hostile file can carry 0–0x3F regardless. Whether the
-7-Zip *decoder* caps it (or loops `1 << value` unbounded, i.e. 7-Zip is itself DoS-able) is the
-open source question — see `7z-source-questions.md` §A. Independent of that, v2 should apply its
-own cap; recommend `NumCyclesPower > 24 → UnsupportedFeatureError`, mirroring the RAR5 cap v2
-already enforces. Also open for the source agent: is py7zr's `0x3F` "no-hash" shortcut actually
-spec-correct vs the 7-Zip reference (which may intend `0x3F` as `2^63`)? — crafted-only, since
-no creator emits `0x3F`.
+**Q3 resolved (7-Zip source, `7zAes.cpp`):** 7-Zip's decoder **does** clamp — at property-parse
+time, not in the hash loop. `SetDecoderProperties2` accepts `NumCyclesPower <= 24`
+(`k_NumCyclesPower_Supported_MAX = 24`, line 27) **or** `== 0x3F`, otherwise returns `E_NOTIMPL`
+(lines 260-279); values 25–62 never reach the hash loop, so official 7-Zip never attempts 2⁶³
+rounds. **v2 is currently *more permissive* than the reference** — it accepts 25–62 and drives
+`derive_sevenzip_aes_key` into the DoS. The `0x3F` "no-hash" sentinel is **real** in official
+7-Zip (`Key = salt‖password` zero-padded to 32, no SHA-256; lines 41-50), so archivey/py7zr do
+**not** diverge on it, and the counter layout (8-byte LE round index appended to `salt‖password`,
+lines 56-67) matches archivey's `(s+i).to_bytes(8,"little")`. Encoder default is 19, hardcoded,
+never user-settable (line 232).
+
+**Fix:** match 7-Zip exactly — accept `cycles <= 24` **or** `cycles == 0x3F`, reject 25–62 with
+`UnsupportedFeatureError`. This is not a "defensive cap we invented"; it is *the same cap the
+reference enforces*, so it rejects nothing a real archive contains and closes the DoS.
 
 ---
 

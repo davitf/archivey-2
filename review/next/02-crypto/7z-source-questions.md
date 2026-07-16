@@ -1,5 +1,10 @@
 # Source-verification checklist (for the 7-Zip / UnRAR source agent)
 
+> **STATUS: ANSWERED (2026-07-16).** All items below were answered from the 7-Zip and UnRAR
+> source; the confirmed answers are summarised in the **"Answers"** section at the bottom and
+> folded into `QUESTIONS.md` (final decisions) and the theme files. Kept here as the audit
+> trail.
+
 Questions this crypto review could not settle from Python oracles alone. Each is phrased so a
 source-reading agent can answer it with a file/line citation. Two codebases:
 
@@ -54,3 +59,46 @@ source-reading agent can answer it with a file/line citation. Two codebases:
    variable — that avoids exposing the password in `argv`/`/proc`? Check `CmdExtract` /
    `GetPassword` / option parsing. (If not, `-p<pwd>` is unavoidable and F4 is a documented
    limitation.)
+
+---
+
+# Answers (source-confirmed, 2026-07-16)
+
+## A — 7z AES key-derivation
+- **A1 (bound?)** Yes, but at *property-parse* time, not in the hash loop. `CalcKey` loops
+  `1 << NumCyclesPower` unbounded, but `SetDecoderProperties2` accepts `NumCyclesPower <= 24`
+  (`7zAes.cpp:27` `k_NumCyclesPower_Supported_MAX = 24`) **or** `== 0x3F`, else `E_NOTIMPL`
+  (`7zAes.cpp:260-279`). Values 25–62 never reach `CalcKey`. → **v2 is currently more permissive
+  than 7-Zip**; match 7-Zip (accept ≤24 or ==0x3F).
+- **A2 (0x3F sentinel?)** Yes, official 7-Zip has it: `Key = salt‖password` zero-padded to 32,
+  no SHA-256 (`7zAes.cpp:41-50`). archivey/py7zr match — no divergence.
+- **A3 (encoder default/max)** Hardcoded 19; the `0x3F` line is commented out; `CEncoder` has no
+  `ICompressSetCoderProperties`, so no UI/CLI can change it (`7zAes.cpp:232`). Always writes 19.
+- **A4 (counter layout)** 8-byte little-endian round index appended to `salt‖password`; per round
+  `SetUi32` writes the low 32 bits LE, high 4 bytes stay 0 (`7zAes.cpp:56-67`). Matches
+  archivey's `(s+i).to_bytes(8,"little")`.
+
+## B — 7z wrong-password detection without CRC
+- **B5** 7zAES has **no** password check; AES-CBC just filters. Wrong-password detection is the
+  extraction CRC gate, and only when CRC is defined (`7zExtract.cpp:95` `_calcCrc = CheckCrc &&
+  fi.CrcDefined && !fi.IsDir`; `:128` returns `kOK` when `!_calcCrc`). No CRC + compressed → LZMA
+  usually rejects garbage → `kDataError` (`7zExtract.cpp:397-411`); **no CRC + store/copy →
+  silently OK with garbage.** → archivey's best-effort accept matches 7-Zip; do not invent a
+  password check.
+
+## C — RAR5 tweaked-checksum transform
+- **C6** `ConvertHashToMAC` (`crypt5.cpp:193-211`): CRC32 → XOR-fold of `HMAC-SHA256(HashKey,
+  RawPut4(crc))` (LE, matches archivey-dev); BLAKE2sp → `HMAC-SHA256(HashKey, digest[32])`
+  overwriting the 32 bytes (matches this review's reading; DEV never implemented it).
+- **C7** HashKey = PBKDF2-HMAC-SHA256 at `(1<<Lg2Cnt)+16`; AES key at `1<<Lg2Cnt`, PswCheck at
+  `+32` — one chain, three cutpoints (`crypt5.cpp:104,161`). PswCheck folded to 8 bytes by XOR.
+- **C8** Tweak applies iff the per-file `FHEXTRA_CRYPT_HASHMAC` (0x02) flag is set
+  (`headers5.hpp:103`, `arcread.cpp:1080`, `extract.cpp:934`). Encrypted-header (`-hp`) archives
+  do **not** auto-skip in the reader — unrar keys only off 0x02. v2's `_crc_is_tweaked` already
+  reads exactly this flag.
+
+## D — unrar password channel
+- **D9** No env var, no `-p@file`. But **bare `-p` reads the password from stdin when stdin is
+  redirected** (`GetPasswordText → getwstr`): `printf '%s\n' "$pw" | unrar x -p archive.rar`.
+  Non-interactive, keeps the secret out of `argv`/`/proc`. v2 uses `unrar p` (data on stdout),
+  so stdin is free → directly usable. → F4 is fixable, not just a documented limitation.
