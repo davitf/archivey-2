@@ -178,23 +178,33 @@ subsequent failure produced a clear lead:
 | Label / filters | `ppmd` / `("PPMD",)` |
 | Exit | `0xC0000374` (`STATUS_HEAP_CORRUPTION`) |
 | Library | `pyppmd` 1.3.1 (`…\site-packages\pyppmd\…`) |
-| Last phase | `read_member:nested/beta.bin:start` (after `alpha.txt` read OK, `len=600`) |
+| Last phase (first pin) | `read_member:nested/beta.bin:start` (after `alpha.txt` read OK, `len=600`) |
 | Stack | `sevenzip_reader._open_member` → `skip_forward` → `DecompressorStream.read` → PPMd decode |
+
+A later dedicated stress run (50 fresh subprocesses, same baseline fixture) on
+**Windows/py3.11** reproduced **2/50** `STATUS_HEAP_CORRUPTION` crashes; both aborted at
+`read_member:alpha.txt:start` (first member), so the abort is not limited to
+second-member `skip_forward`. Same stress on **Windows/py3.14** was 0/50 on that run.
+Crashes occur in **fresh** subprocesses that only build+read PPMd, so prior pytest cases
+are **not required** to trigger the bug — though in-process reuse / other-codec warmup
+remain useful axes to compare (see stress scenarios below).
 
 ### Valid stream, not adversarial input
 
 The crashing input is a **happy-path** fixture, not fuzz/mutation/corrupt data:
 
 - Built by **py7zr** with `FILTER_PPMD` from two small plain members
-  (`b"alpha\n" * 100` and `bytes(range(64)) * 16`).
-- Archive lists cleanly (2 file members); first member decompresses to the expected bytes.
-- Crash is during solid random-access open of the **second** member: a fresh folder decode
-  stream + `skip_forward` over the first member's prefix through `pyppmd.Ppmd7Decoder`.
+  (`b"alpha\n" * 100` and `bytes(range(64)) * 16`), and (in stress) other valid shapes
+  (tiny / single-member / many-small / larger / repetitive).
+- Archive lists cleanly; successful iterations decompress to the expected bytes.
+- Observed abort points include both the **first** member read and solid random-access
+  open of a **later** member (`skip_forward` through `pyppmd.Ppmd7Decoder`).
 
-Heap corruption is often detected *after* the guilty native call, so the first decode may
-still be the corruptor even when the abort surfaces on the second open. Either way, this is
-a native-extension / Windows heap issue on a writer-produced valid solid PPMd folder, not a
-hostile-input parser bug in archivey.
+Heap corruption is often detected *after* the guilty native call, so a previous decode
+(or even encoder teardown from py7zr’s write path in the same child) may be the corruptor
+even when the abort surfaces on a later read. Either way, this is a native-extension /
+Windows heap issue on writer-produced valid solid PPMd data, not a hostile-input parser
+bug in archivey.
 
 ### Mitigation in the required CI matrix
 
@@ -211,27 +221,39 @@ A dedicated workflow, **Windows PPMd stress** (`.github/workflows/windows-ppmd-s
 runs on every PR and on pushes to main:
 
 - `windows-latest` × Python **3.11 and 3.14**
-- `scripts/windows_ppmd_stress.py` — many isolated solid PPMd roundtrips (same read order as
-  the regular test); prints pass/crash counts, last phase, named NTSTATUS; writes a step
-  summary + artifact
-- Exit non-zero when any iteration crashes so the check is visibly red when the flake
+- `scripts/windows_ppmd_stress.py` — several scenario families (see below); prints
+  pass/crash counts per scenario, last phase, named NTSTATUS; writes a step summary +
+  artifact (ASCII-safe console I/O for Windows cp1252 runners)
+- Exit non-zero when any child crashes so the check is visibly red when the flake
   reproduces
+
+Scenario families (each iteration is still a fresh subprocess unless noted):
+
+| Scenario | What it probes |
+|----------|----------------|
+| `fresh_baseline` | Exact CI fixture / sorted `read()` order |
+| `fresh_varied` | Different valid sizes, member counts, payloads, read orders (`sorted` / `reverse` / `stream_members`) |
+| `same_process` | Many PPMd build+read cycles **inside one child** (reuse / teardown) |
+| `warmup_codecs` | LZMA2 → Deflate → Bzip2 roundtrips, **then** PPMd in the same child (cross-codec contamination) |
 
 **Do not add this workflow as a required status check** — it is meant to keep signal without
 blocking merge. Local repro:
 
 ```bash
 uv sync --group dev --extra all
-uv run --no-sync python scripts/windows_ppmd_stress.py          # default 40 iters
-uv run --no-sync python scripts/windows_ppmd_stress.py 80       # more iters
+uv run --no-sync python scripts/windows_ppmd_stress.py          # default iters x all scenarios
+uv run --no-sync python scripts/windows_ppmd_stress.py 80
+uv run --no-sync python scripts/windows_ppmd_stress.py --scenarios fresh_baseline same_process
 ARCHIVEY_PPMD_STRESS_ITERS=50 uv run --no-sync python scripts/windows_ppmd_stress.py
 ```
 
 ### Next leads
 
-- Treat consistent crashes under the stress job as an upstream/`pyppmd` win_amd64 lead
-  (historical Windows heap/AV issues exist in that project’s changelog; current tip is
-  still flaky here).
+- Stress already shows crashes in fresh PPMd-only children → strong upstream/`pyppmd`
+  win_amd64 lead (historical Windows heap/AV issues exist in that project’s changelog).
+- Compare crash rates across the four scenarios: if `warmup_codecs` / `same_process` are
+  much hotter than `fresh_*`, look at process-wide native state; if all are similar, treat
+  it as inherent to `pyppmd` decode/construct on Windows.
 - Possible archivey-side experiments if investigating further: decoder lifecycle/close
   between member opens, smaller decode chunk sizes during `skip_forward`, comparing
   `stream_members()` (one decode) vs repeated `read()` (re-decode + skip). None of these

@@ -14,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       iterations:
-        description: "Isolated PPMd roundtrip iterations"
+        description: "Isolated child iterations per scenario"
         required: false
-        default: "80"
+        default: "20"
 
 concurrency:
   group: windows-ppmd-stress-${{ github.event.pull_request.number || github.ref }}
@@ -35,7 +35,10 @@ jobs:
         python-version: ["3.11", "3.14"]
     env:
       UV_PYTHON: ${{ matrix.python-version }}
-      ARCHIVEY_PPMD_STRESS_ITERS: ${{ github.event.inputs.iterations || '50' }}
+      # Per-scenario child count. Four scenarios run each time (fresh_baseline,
+      # fresh_varied, same_process, warmup_codecs); 20 keeps the job short while
+      # still reproducing the ~few-percent heap flake seen on py3.11.
+      ARCHIVEY_PPMD_STRESS_ITERS: ${{ github.event.inputs.iterations || '20' }}
     steps:
       - uses: actions/checkout@v4
 
