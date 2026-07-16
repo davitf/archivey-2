@@ -229,6 +229,24 @@ def test_list_missing_archive(tmp_path: Path) -> None:
     assert main(["list", str(tmp_path / "missing.zip")]) == EXIT_FAIL
 
 
+def test_cli_list_unencrypted_format_without_password(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Regression: the CLI used to always pass a PasswordProvider (TTY getpass
+    # fallback). Formats with SUPPORTS_PASSWORD=False (TAR, ISO, …) rejected that as
+    # "does not support passwords" even when the user never passed --password.
+    import tarfile
+
+    src = tmp_path / "plain.tar"
+    with tarfile.open(src, "w") as t:
+        info = tarfile.TarInfo("hello.txt")
+        info.size = 5
+        t.addfile(info, io.BytesIO(b"hello"))
+
+    assert main([str(src)]) == EXIT_OK
+    assert "hello.txt" in capsys.readouterr().out
+
+
 def test_c_is_not_integrity_alias(sample_zip: Path) -> None:
     # Integrity check is `test`/`t`; letter `c` is reserved for future `create`.
     from archivey.cli.main import _VERBS

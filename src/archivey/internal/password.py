@@ -90,6 +90,16 @@ class _PasswordCandidates:
                 self._known_good or self._candidates or self._provider is not None
             )
 
+    def has_static_candidates(self) -> bool:
+        """True when the caller supplied concrete password bytes (not merely a provider).
+
+        Used by ``open_archive`` to reject passwords on formats with no encryption.
+        A bare :data:`~archivey.config.PasswordProvider` is not "supplying a password"
+        until a backend asks for one — formats that never ask must not fail open.
+        """
+        with self._state_lock:
+            return bool(self._known_good or self._candidates)
+
     def is_ambiguous(self) -> bool:
         """Whether a weak password check needs confirmation before accepting a result.
 
