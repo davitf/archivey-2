@@ -127,7 +127,7 @@ requires-dist = [
     { name = "archivey", extras = ["recommended-lite", "seekable"], marker = "extra == 'recommended'" },
     { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == '7z'", specifier = ">=1.0.0" },
     { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == 'zstd'", specifier = ">=1.0.0" },
-    { name = "brotli", marker = "extra == '7z'", specifier = ">=1.1.0" },
+    { name = "brotli", marker = "extra == '7z'", specifier = ">=1.2.0" },
     { name = "cryptography", marker = "extra == '7z'", specifier = ">=45.0.0" },
     { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=45.0.0" },
     { name = "cryptography", marker = "extra == 'rar'", specifier = ">=45.0.0" },
@@ -146,7 +146,7 @@ provides-extras = ["7z", "rar", "crypto", "7z-write", "iso", "zstd", "lz4", "cli
 [package.metadata.requires-dev]
 dev = [
     { name = "backports-zstd", marker = "python_full_version < '3.14'", specifier = ">=1.0.0" },
-    { name = "brotli", specifier = ">=1.1.0" },
+    { name = "brotli", specifier = ">=1.2.0" },
     { name = "coverage", extras = ["toml"], specifier = ">=7.6.0" },
     { name = "cryptography", specifier = ">=45.0.0" },
     { name = "fsspec", specifier = ">=2024.0.0" },

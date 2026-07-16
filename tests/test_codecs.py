@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import zlib
+from pathlib import Path
 
 import pytest
 
@@ -33,7 +34,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import StreamFormat
-from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.streams_util import (
     NonSeekableBytesIO,
     compress_lzma2_raw,
@@ -387,6 +388,51 @@ def test_unix_compress_read_one_bounds_internal_buffer() -> None:
         assert stream.read(1) == b"A"
         # DecompressorStream buffer after a budgeted feed.
         assert len(getattr(stream, "_inner")._buffer) < 64_000
+
+
+@requires("brotli")
+def test_brotli_read_one_bounds_internal_buffer() -> None:
+    """Brotli process(output_buffer_limit) must bound read(1) peak buffer (CVE-2025-6176)."""
+    import brotli
+
+    from archivey.internal.streams.decompress import BrotliDecompressorStream
+
+    payload = b"A" * 2_000_000
+    compressed = brotli.compress(payload)
+    with BrotliDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read(1) == b"A"
+        # Block-granular floor is ~32 KiB; still far below a multi-MB bomb.
+        assert len(stream._buffer) < 128_000
+        assert stream.read(1000) == b"A" * 1000
+
+
+@requires("inflate64")
+@requires_binary("7z")
+def test_deflate64_read_one_bounds_internal_buffer(tmp_path: Path) -> None:
+    """Small compressed feeds under max_length must bound Deflate64 read(1) buffers."""
+    import struct
+    import subprocess
+
+    from archivey.internal.streams.decompress import Deflate64DecompressorStream
+
+    payload = b"A" * 500_000
+    src = tmp_path / "a.bin"
+    src.write_bytes(payload)
+    archive = tmp_path / "d.zip"
+    subprocess.check_call(
+        ["7z", "a", "-tzip", "-mm=Deflate64", str(archive), str(src)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    data = archive.read_bytes()
+    hdr = struct.unpack_from("<HHHHHIIIHH", data, 4)
+    method, csize, nlen, elen = hdr[2], hdr[6], hdr[8], hdr[9]
+    assert method == 9
+    comp = data[30 + nlen + elen : 30 + nlen + elen + csize]
+    with Deflate64DecompressorStream(io.BytesIO(comp)) as stream:
+        assert stream.read(1) == b"A"
+        assert len(stream._buffer) < 64_000
+        assert stream.read(1000) == b"A" * 1000
 
 
 @requires("ncompress")

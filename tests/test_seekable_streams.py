@@ -186,6 +186,100 @@ def test_xz_truncated_raises() -> None:
             stream.read()
 
 
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed for a multi-block first stream before a later stream",
+)
+def test_xz_partial_index_mid_seek_includes_later_streams() -> None:
+    """Stateful resume after indexing only an early stream must not silent-EOF later ones.
+
+    Progressive enrichment adds block-bounds for *completed* streams only. Resuming via
+    an ``_XzBlockBounds`` point builds a closed chain from that point plus already-indexed
+    later blocks; without a full from-origin index the chain ends at the first stream and
+    reads past it return empty. Seek must complete the index first.
+    """
+    part1 = b"A" * 30_000
+    part2 = b"B" * 8_000
+    plaintext = part1 + part2
+    compressed = make_multiblock_xz(part1, block_size=8192) + lzma.compress(
+        part2, format=lzma.FORMAT_XZ
+    )
+    with XzDecompressorStream(io.BytesIO(compressed), seekable=True) as stream:
+        assert stream.read(len(part1)) == part1
+        assert not stream._index_built
+        # Block-state points exist for stream 1 only at this moment.
+        assert any(p.state is not None for p in stream._seek_points)
+        mid = len(part1) // 2
+        assert stream.seek(mid) == mid
+        assert stream._index_built
+        # Cross the stream boundary while reading from a mid-stream resume point.
+        n = len(part1) - mid + 200
+        assert stream.read(n) == plaintext[mid : mid + n]
+
+
+def test_xz_index_crc_mismatch_raises_on_backwards_scan() -> None:
+    """Corrupt index CRC must not be trusted as seek offsets."""
+    from archivey.exceptions import CorruptionError
+
+    compressed = bytearray(lzma.compress(CONTENT, format=lzma.FORMAT_XZ))
+    # Flip a byte in the index region (just before the 12-byte footer).
+    compressed[-16] ^= 0xFF
+    with pytest.raises(CorruptionError, match="index CRC32"):
+        _read_xz_index_backwards(io.BytesIO(bytes(compressed)), len(compressed))
+
+
+def test_xz_index_unpadded_overflow_raises() -> None:
+    """Index records whose unpadded sizes extend before offset 0 are rejected."""
+    import struct
+    import zlib
+
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.streams.xz import (
+        _XZ_FOOTER_MAGIC,
+        _XZ_STREAM_MAGIC,
+        _encode_mbi,
+        _round_up_4,
+    )
+
+    check = 0x00
+    flags = bytes([0x00, check])
+    header = (
+        _XZ_STREAM_MAGIC + flags + struct.pack("<I", zlib.crc32(flags) & 0xFFFFFFFF)
+    )
+    # Huge unpadded_size → stream_header_start computes negative.
+    records = [(1 << 30, 100)]
+    body = b"\x00" + _encode_mbi(len(records))
+    for unpadded, uncomp in records:
+        body += _encode_mbi(unpadded) + _encode_mbi(uncomp)
+    body += b"\x00" * (_round_up_4(len(body)) - len(body))
+    index = body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
+    backward_raw = (len(index) // 4) - 1
+    fbody = struct.pack("<I", backward_raw) + bytes([0x00, check])
+    footer = (
+        struct.pack("<I", zlib.crc32(fbody) & 0xFFFFFFFF) + fbody + _XZ_FOOTER_MAGIC
+    )
+    # Minimal fake file: header + tiny pad + index + footer (blocks region empty/wrong).
+    blob = header + b"\x00" * 16 + index + footer
+    with pytest.raises(CorruptionError, match="negative offset|extends before"):
+        _read_xz_index_backwards(io.BytesIO(blob), len(blob))
+
+
+def test_lzip_trailer_member_size_past_start_raises() -> None:
+    """Corrupt member_size that walks before offset 0 must not become seek points."""
+    from archivey.exceptions import CorruptionError
+
+    good = make_lzip_member(b"hello-lzip-payload")
+    bad = bytearray(good)
+    # Trailer: crc32(4) + data_size(8) + member_size(8) at end.
+    # Set member_size larger than the file.
+    import struct
+
+    crc, data_size, _member_size = struct.unpack_from("<IQQ", bad, len(bad) - 20)
+    struct.pack_into("<IQQ", bad, len(bad) - 20, crc, data_size, len(bad) + 100)
+    with pytest.raises(CorruptionError, match="member_size|exceeds"):
+        _read_index_backwards(io.BytesIO(bytes(bad)), len(bad))
+
+
 # --- lzip seeking via the trailer scan -------------------------------------------------
 
 
@@ -435,34 +529,24 @@ def test_xz_seek_interleaving_matches_plaintext(
 ) -> None:
     """Random size-probe / seek / read order must match plaintext; no raw asserts (F5).
 
-    Mid-stream seeks that need block resume require a complete index (SEEK_END /
-    try_get_size / full read). Seeking into a partially-discovered multi-stream
-    file with only progressive points is a separate gap; this property covers the
-    F1a size-then-read ordering and post-index random access.
+    Includes mid-seeks after only a partial forward read: stateful resume must force a
+    complete from-origin index so later streams are not silently truncated.
     """
     plaintext = b"".join(parts)
     compressed = make_multi_stream_xz(parts)
-    index_ready = False
     with XzDecompressorStream(io.BytesIO(compressed), seekable=True) as stream:
         for op in ops:
             if op == "size":
                 size = stream.try_get_size()
                 assert size is None or size == len(plaintext)
-                if size is not None:
-                    index_ready = True
             elif op == "seek_end":
                 assert stream.seek(0, io.SEEK_END) == len(plaintext)
-                index_ready = True
             elif op == "seek0":
                 assert stream.seek(0) == 0
             elif op == "read_all":
                 stream.seek(0)
                 assert stream.read() == plaintext
-                index_ready = True
             elif op == "seek_mid":
-                if not index_ready:
-                    assert stream.try_get_size() == len(plaintext)
-                    index_ready = True
                 mid = len(plaintext) // 2
                 assert stream.seek(mid) == mid
                 n = min(32, len(plaintext) - mid)
@@ -474,5 +558,3 @@ def test_xz_seek_interleaving_matches_plaintext(
                     pos = 0
                 n = min(64, len(plaintext) - pos)
                 assert stream.read(n) == plaintext[pos : pos + n]
-                if stream.tell() >= len(plaintext):
-                    index_ready = True

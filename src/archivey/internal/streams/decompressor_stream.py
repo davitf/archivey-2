@@ -384,9 +384,11 @@ class DecompressorStream(ReadOnlyIOStream):
         if not self._index_enabled or self._index_built or self._index_build_attempted:
             return
         inner_pos = self._inner.tell()
-        new_points, new_size = self._decoder.build_index(
-            self._inner, self._seek_points[-1]
-        )
+        # Always scan from the absolute origin. Using a mid-stream last_known (from
+        # progressive enrichment) as the baseline renumbers later streams' decompressed
+        # offsets incorrectly. A full from-origin scan is cheap (index/trailer only) and
+        # makes block-chain resume safe after a partial forward read.
+        new_points, new_size = self._decoder.build_index(self._inner, SeekPoint(0, 0))
         self._index_build_attempted = True
         if new_points or new_size is not None:
             self._index_built = True
@@ -452,13 +454,13 @@ class DecompressorStream(ReadOnlyIOStream):
             return self._pos
 
         if new_pos < self._pos:
-            self._reset_to_seek_point(self._find_best_seek_point(new_pos))
+            self._reset_to_seek_point(self._prepare_seek_point(new_pos))
         elif new_pos <= self._pos + len(self._buffer):
             del self._buffer[: new_pos - self._pos]
             self._pos = new_pos
             return self._pos
         else:
-            best = self._find_best_seek_point(new_pos)
+            best = self._prepare_seek_point(new_pos)
             if best.decompressed_offset > self._pos:
                 self._reset_to_seek_point(best)
             else:
@@ -479,6 +481,21 @@ class DecompressorStream(ReadOnlyIOStream):
 
         self._pos = new_pos
         return self._pos
+
+    def _prepare_seek_point(self, pos: int) -> SeekPoint:
+        """Best resume point for ``pos``, with a complete index if block-state is used.
+
+        Progressive enrichment only adds points for *completed* streams. Resuming via
+        an ``_XzBlockBounds`` point builds a closed block chain from that point plus
+        already-indexed later blocks; if later streams are not indexed yet the chain
+        finishes early and the stream silently EOFs. Force a full from-origin index
+        before any stateful resume so the chain includes every subsequent block.
+        """
+        best = self._find_best_seek_point(pos)
+        if best.state is not None and not self._index_built:
+            self._ensure_index_built()
+            best = self._find_best_seek_point(pos)
+        return best
 
     def tell(self, /) -> int:
         return self._pos

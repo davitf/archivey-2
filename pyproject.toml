@@ -18,7 +18,8 @@ authors = [
     "pyppmd>=1.1.0",
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
-    "brotli>=1.1.0",
+    # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
+    "brotli>=1.2.0",
     "lz4>=4.4.5",
     "cryptography>=45.0.0",
     # LZMA1+BCJ: liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
@@ -92,7 +93,7 @@ dev = [
     # Stdlib compression.zstd on 3.14+; backports only needed below that.
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
-    "brotli>=1.1.0",
+    "brotli>=1.2.0",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent

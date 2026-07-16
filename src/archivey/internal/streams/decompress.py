@@ -63,9 +63,10 @@ class BrotliDecoder(BaseDecoder):
     the codec layer's ``_open_brotli`` gates on its presence before constructing this, so
     the import here always succeeds.
 
-    Brotli's ``process()`` has no output cap — a tiny compressed feed can still expand
-    unboundedly. The stream layer's smaller compressed reads limit how much we *feed*
-    per call, but peak memory for pathological brotli remains a residual.
+    Brotli ≥1.2.0 exposes ``process(..., output_buffer_limit=)`` and
+    ``can_accept_more_data()`` (CVE-2025-6176 mitigation). The limit is block-granular
+    (observed floor ~32 KiB), not a hard byte cap, but it stops a single ``process``
+    from materializing multi-megabyte bombs on ``read(1)``.
     """
 
     def __init__(self) -> None:
@@ -73,18 +74,45 @@ class BrotliDecoder(BaseDecoder):
 
         self._decomp: Any = brotli.Decompressor()
         self._pending = b""
+        # True while a prior budgeted process may still have output to drain via
+        # process(b"", output_buffer_limit=…).
+        self._drain_budgeted = False
+        self._supports_output_limit = callable(
+            getattr(self._decomp, "can_accept_more_data", None)
+        )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> BrotliDecoder:
         del point, inner
         return BrotliDecoder()
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
-        del max_length  # brotli cannot honor an output budget
         data = self._pending + chunk
         self._pending = b""
-        if not data:
+        if max_length < 0 or not self._supports_output_limit:
+            self._drain_budgeted = False
+            if not data:
+                return DecodeOut(b"")
+            return DecodeOut(self._decomp.process(data))
+
+        can_accept = bool(self._decomp.can_accept_more_data())
+        if not can_accept:
+            # Limit reached on a prior call: only empty process is legal until
+            # can_accept_more_data() flips true again.
+            self._pending = data
+            out = self._decomp.process(b"", output_buffer_limit=max_length)
+        elif data:
+            out = self._decomp.process(data, output_buffer_limit=max_length)
+        elif self._drain_budgeted:
+            out = self._decomp.process(b"", output_buffer_limit=max_length)
+        else:
             return DecodeOut(b"")
-        return DecodeOut(self._decomp.process(data))
+
+        finished = bool(self._decomp.is_finished())
+        # Keep draining while output is flowing or the decoder refuses more input.
+        self._drain_budgeted = (not finished) and (
+            len(out) > 0 or not bool(self._decomp.can_accept_more_data())
+        )
+        return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
         # Brotli decodes eagerly; there is nothing buffered to flush at EOF.
@@ -93,6 +121,16 @@ class BrotliDecoder(BaseDecoder):
     @property
     def finished(self) -> bool:
         return bool(self._decomp.is_finished())
+
+    @property
+    def needs_input(self) -> bool:
+        if self._pending:
+            return False
+        if self._supports_output_limit and not bool(
+            self._decomp.can_accept_more_data()
+        ):
+            return False
+        return not self._drain_budgeted
 
 
 class PpmdDecoder(BaseDecoder):
@@ -213,35 +251,79 @@ class BcjDecoder(BaseDecoder):
 
 
 class Deflate64Decoder(BaseDecoder):
-    """Decode a Deflate64 stream via ``inflate64.Inflater``."""
+    """Decode a Deflate64 stream via ``inflate64.Inflater``.
+
+    ``inflate64`` has no output-size parameter: one ``inflate`` of a small
+    highly-compressible feed can still allocate the full expansion. When the
+    stream passes ``max_length >= 0``, feed compressed input one byte at a time
+    and retain any overshoot in ``_pending_out`` so ``read(n)`` peak buffers stay
+    near the caller's budget (plus at most one inflate slice, typically ≪64 KiB).
+    """
 
     def __init__(self) -> None:
         import inflate64
 
         self._decomp: Any = inflate64.Inflater()
         self._pending = b""
+        self._pending_out = b""
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Deflate64Decoder:
         del point, inner
         return Deflate64Decoder()
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
-        del max_length  # inflate64 has no output cap
         data = self._pending + chunk
         self._pending = b""
-        if not data:
-            return DecodeOut(b"")
-        return DecodeOut(self._decomp.inflate(data))
+        if max_length < 0:
+            if self._pending_out:
+                data = self._pending_out + (self._decomp.inflate(data) if data else b"")
+                self._pending_out = b""
+                return DecodeOut(data)
+            if not data:
+                return DecodeOut(b"")
+            return DecodeOut(self._decomp.inflate(data))
+
+        out = bytearray()
+        if self._pending_out:
+            take = min(len(self._pending_out), max_length)
+            out += self._pending_out[:take]
+            self._pending_out = self._pending_out[take:]
+            if len(out) >= max_length:
+                self._pending = data
+                return DecodeOut(bytes(out))
+
+        # Byte-at-a-time under budget: bounds peak expansion inside inflate64.
+        while data and len(out) < max_length:
+            produced = self._decomp.inflate(data[:1])
+            data = data[1:]
+            room = max_length - len(out)
+            if len(produced) > room:
+                out += produced[:room]
+                self._pending_out = produced[room:]
+                break
+            out += produced
+        self._pending = data
+        return DecodeOut(bytes(out))
 
     def flush(self) -> DecodeOut:
         # Flush remaining state with an empty feed (mirrors py7zr's Deflate64Decompressor).
+        if self._pending_out:
+            out = self._pending_out
+            self._pending_out = b""
+            if not self._decomp.eof:
+                out += self._decomp.inflate(b"")
+            return DecodeOut(out)
         if self._decomp.eof:
             return DecodeOut(b"")
         return DecodeOut(self._decomp.inflate(b""))
 
     @property
     def finished(self) -> bool:
-        return bool(self._decomp.eof)
+        return bool(self._decomp.eof) and not self._pending_out
+
+    @property
+    def needs_input(self) -> bool:
+        return not self._pending and not self._pending_out
 
 
 def ZlibDecompressorStream(
