@@ -18,11 +18,26 @@ Two distinct pure-``pyppmd`` abort families (fresh subprocesses, ~5 cycles each)
    alone is not enough** — unbounded ``max_length=-1`` is itself crashy.
 
 Controls that stayed at 0 crashes in 100-child soaks: sized-only decode;
-pre-EOF ``decode(packed + b"\\0", size)``; skip after-eof when ``dec.eof``.
+pre-EOF ``decode(packed + b"\\0", size)``; skip after-eof when ``dec.eof``;
+underfed sized decode then dealloc (``--mode underfed-sized``); bounded decode
+of garbage after eof (``--mode hostile-tail``).
 
 Leftover-state check: after a *surviving* after-eof call, subsequent *fresh*
 sized-only decoders were clean (0/80) — not a simple “poison the next decoder”
 bug for the happy path.
+
+Root cause (pinpointed from the 1.2.0 → 1.3.1 sdist diff)
+---------------------------------------------------------
+The regression landed in pyppmd 1.3.0's ``ThreadDecoder.c`` rewrite (upstream
+PR miurahr/pyppmd#126). ``Ppmd7Decoder.decode`` runs the symbol loop on a
+worker thread; 1.3.0 removed the loop's input-empty stop condition, so with
+``max_length=-1`` (an ``INT_MAX`` symbol budget in ``_ppmdmodule.c``) the
+worker decodes past the true end of a PPMd7 stream (which has no end mark),
+walking the native model on a desynchronized range coder — heap corruption.
+The same release added an after-eof guard to the *cffi* backend only; the C
+extension has none, so ``decode(b"\\0", -1)`` after eof restarts the runaway
+worker on finished state (hottest trigger). Full write-up + suggested fixes:
+``docs/internal/pyppmd-upstream-report.md``.
 
 Examples::
 
@@ -33,6 +48,8 @@ Examples::
     python scripts/pyppmd_crash_repro.py 30 --mode sized-safe
     python scripts/pyppmd_crash_repro.py 30 --mode pre-eof-null
     python scripts/pyppmd_crash_repro.py 30 --mode skip-after-eof
+    python scripts/pyppmd_crash_repro.py 30 --mode underfed-sized
+    python scripts/pyppmd_crash_repro.py 30 --mode hostile-tail
 
     pip install 'pyppmd==1.2.0'
     pip install 'pyppmd==1.3.1'
@@ -176,6 +193,57 @@ _MODES: dict[str, str] = {
             out = dec.decode(packed + b"\\0", len(data))
             assert out == data
         print("ok", pyppmd.__version__, "pre-eof-null")
+        """
+    ),
+    # Control: sized decode with only half the input, then dealloc — the worker
+    # thread is blocked mid-valid-stream awaiting input when Ppmd7T_Free runs.
+    # Models truncated input / early close under archivey's bounded-decode scheme.
+    "underfed-sized": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM = 6, 1 << 20
+        data = (b"alpha\\n" * 2000) + (bytes(range(64)) * 256)
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        for _ in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed[: len(packed) // 2], len(data))
+            assert len(out) < len(data)
+            del dec  # teardown with the decode worker blocked awaiting input
+        print("ok", pyppmd.__version__, "underfed-sized")
+        """
+    ),
+    # Control: bounded decode of garbage bytes after genuine eof — models a
+    # hostile container header that inflates unpack_size past the true payload.
+    "hostile-tail": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM = 6, 1 << 20
+        data = b"alpha\\n" * 100
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        for i in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed, len(data))
+            assert out == data
+            tail = bytes((i * 37 + j) % 256 for j in range(64))
+            extra = dec.decode(tail, 4096)  # bounded — unbounded here crashes
+            _ = extra
+        print("ok", pyppmd.__version__, "hostile-tail")
         """
     ),
     # Control: would-be after-eof path, but skipped because eof is set.

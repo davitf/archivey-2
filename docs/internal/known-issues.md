@@ -157,9 +157,24 @@ longer load-bearing and the wrapper could be simplified.
 
 ## Intermittent `pyppmd` native aborts on valid PPMd streams (mitigated + stress CI)
 
-**Status: pinned to PPMd/`pyppmd`; root cause not fixed; Linux and Windows both affected
-(different trigger shapes).** Not adversarial input — happy-path encode/decode of valid
-PPMd data.
+**Status: root cause pinpointed to the pyppmd 1.3.0 `ThreadDecoder.c` rewrite (upstream
+PR miurahr/pyppmd#126); mitigated in archivey by bounding every decode; not yet fixed
+upstream (no issue filed there as of 2026-07-16 — ready-to-file draft in
+`docs/internal/pyppmd-upstream-report.md`). Linux and Windows both affected (different
+trigger shapes).** Not adversarial input — happy-path encode/decode of valid PPMd data.
+
+### Root cause (pinpointed from the 1.2.0 → 1.3.1 sdist diff)
+
+pyppmd runs `Ppmd7Decoder.decode` on a native worker thread. The 1.3.0 rewrite removed
+the worker loop's input-empty stop condition, and `_ppmdmodule.c` translates
+`max_length=-1` into an `INT_MAX` symbol budget — so on PPMd7 (no end mark) the worker
+decodes **past the true end of the stream**, walking the vendored 7-Zip model on a
+desynchronized range coder until the heap corrupts. The after-eof guard 1.3.0 added went
+to the cffi backend only; the C extension has none, so `decode(b"\0", -1)` after eof
+restarts the runaway worker on finished state (the hottest trigger). Sized decodes stop
+exactly at the payload boundary, which is why they never crash — and why py7zr (which
+always passes `max_length`) never sees this. Full analysis, crash-rate tables, and
+suggested upstream fixes: `docs/internal/pyppmd-upstream-report.md`.
 
 ### Windows: `STATUS_HEAP_CORRUPTION` on fresh PPMd children
 
@@ -224,15 +239,23 @@ To check whether the native abort is recent, the same stress was run across publ
 threaded-decoder buffer/EOF changes (`ThreadDecoder.c`, #126).
 
 **Conclusion:** the Linux native abort reproduces on **1.3.1** and not on **1.1.1/1.2.0**
-under the same unbounded decode path. Older versions instead tend to return wrong bytes
-(CRC fail) on solid multi-member reads rather than aborting. This is a strong “recent
-regression in pyppmd 1.3.x” lead — not proof of the exact upstream commit, and Windows
-heap corruption was not re-tested in this matrix.
+under the same unbounded decode path — the regression is the 1.3.0 `ThreadDecoder.c`
+rewrite (see “Root cause” above). Older versions instead return wrong bytes (CRC fail)
+on solid multi-member reads rather than aborting: their worker stopped at input-empty,
+which prevented the runaway but also cut symbols short at chunk boundaries.
 
 With the current `unpack_size`/`max_length` bound (see below), the same Linux
 `warmup_codecs` soak was **0/80** crashes on 1.3.1 — so bounding decode is an effective
-mitigation even on the crashy wheel. Note `py7zr` 1.1.x declares `pyppmd>=1.3.1`, so
-pinning an older `pyppmd` is not a practical dependency escape while keeping that oracle.
+mitigation even on the crashy wheel.
+
+**Version floor decision:** the `[7z]` extra now requires **`pyppmd>=1.3.1`**. Pinning
+older is worse on every axis: 1.1.x/1.2.0 silently return *wrong bytes* on chunked
+bounded decodes (quiet data corruption beats a crash only if you never notice it),
+`py7zr` ≥1.1 hard-requires `pyppmd>=1.3.1` (dependency conflict with the `[7z-write]`
+extra and the test oracle), and 1.3.1 is the first line with CPython 3.14 wheels. With
+the floor raised, the 1.1.x premature-eof recovery pumps were removed from
+`PpmdDecoder.flush` — it now injects at most the one documented extra NUL and reports
+anything still missing as truncation.
 
 Repro (non-blocking stress entry points):
 
@@ -246,9 +269,10 @@ depends only on ``pyppmd`` (+ stdlib). Two crash families on 1.3.1:
 
 | mode | what | ~crash rate (5 cycles/child) |
 |------|------|------------------------------|
-| `extra-null` | sized to eof, then `decode(b"\\0", -1)` | ~40% |
-| `overshoot` | `decode(packed, -1)` only | ~15–25% |
+| `extra-null` | sized to eof, then `decode(b"\\0", -1)` | ~40% (up to 30/30 seen) |
+| `overshoot` | `decode(packed, -1)` only | ~15–25% (19/30 seen) |
 | `sized-safe` / `pre-eof-null` / `skip-after-eof` | controls | 0% |
+| `underfed-sized` / `hostile-tail` | adversarial-shape controls (truncation, garbage tail) | 0% |
 
 ```bash
 pip install 'pyppmd==1.3.1'
@@ -257,13 +281,19 @@ python scripts/pyppmd_crash_repro.py 30 --mode overshoot
 python scripts/pyppmd_crash_repro.py 30 --mode sized-safe
 ```
 
-**Archivey mitigation:** on the 7z/ZIP paths we can avoid both crash families by being
+**Archivey mitigation:** on the 7z/ZIP paths we avoid both crash families by being
 careful — (1) always pass folder/member ``unpack_size`` as ``max_length`` (no PPMd7
 ``-1`` overshoot); (2) never call native ``decode`` with ``max_length=-1`` after eof;
-(3) when ``unpack_size`` is known and output is still short, allow *bounded* empty/NUL
-pumps (needed for pyppmd 1.1.x premature eof). Raw ``PpmdDecompressorStream`` without
-``unpack_size`` remains best-effort. The required-suite Windows PPMd roundtrip skip was
-removed under this contract; the non-blocking stress job still watches for regressions.
+(3) at compressed EOF, ``flush`` injects at most **one** documented extra NUL (bounded
+by remaining size) and reports anything still missing as ``TruncatedError`` — fabricated
+input is never pumped in a loop, so truncated/hostile data cannot be silently completed
+with garbage. Raw ``PpmdDecompressorStream`` without ``unpack_size`` remains best-effort.
+The required-suite Windows PPMd roundtrip skip was removed under this contract; the
+non-blocking stress job still watches for regressions. Adversarial shapes a damaged or
+hostile archive can force (truncation, early close mid-member, inflated declared size
+with a garbage tail) are pinned as deterministic tests in
+``tests/test_ppmd_raw_streams.py`` and as subprocess soak modes in
+``scripts/pyppmd_crash_repro.py`` — all 0-crash on 1.3.1 with bounding in place.
 
 ### Mitigation in the required CI matrix
 
@@ -304,12 +334,15 @@ uv run --no-sync python scripts/ppmd_native_stress.py --scenarios raw_pyppmd7 ra
 ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress.py --scenarios warmup_codecs
 ```
 
-### Next leads
+### Next steps
 
-- Prefer `raw_*` crash-rate deltas to decide whether the Windows abort is inherent to
-  `pyppmd` vs archivey’s stream wrapper vs the 7z path.
-- On Linux, compare `warmup_codecs` vs `fresh_baseline` vs `raw_*` (so far only warmup is
-  hot) — if another agent’s Linux native crashes match warmup/SIGSEGV, fold them here;
-  if they are raw-`pyppmd`-only, escalate as a broader upstream lead.
-- Possible archivey-side experiments (unconfirmed): decoder lifecycle/close, smaller
-  `skip_forward` chunks, `stream_members()` vs repeated `read()`.
+- **File the upstream issue** — the ready-to-file draft (root cause, repro, crash-rate
+  tables, suggested fixes) is `docs/internal/pyppmd-upstream-report.md`; the repro
+  script is self-contained (`pyppmd` + stdlib). No matching issue existed upstream as
+  of 2026-07-16.
+- When a fixed pyppmd ships, run the verification checklist at the end of that report;
+  the unbounded-decode guards in `PpmdDecoder` stay regardless (older wheels remain on
+  PyPI, and bounding is correct behavior anyway).
+- The earlier open questions (is it archivey's wrapper? the 7z path? warmup-only?) are
+  resolved: it is pure `pyppmd` (crash reproduces with no archivey imports), warmup only
+  shifts allocator layout, and sized decodes are structurally safe.
