@@ -169,6 +169,44 @@ def test_f1_convert_hash_to_mac_crc_and_blake2sp_roundtrip() -> None:
         bad.close()
 
 
+@pytest.mark.parametrize(
+    ("fixture", "member_name", "plaintext", "kind"),
+    [
+        ("encryption__.rar", "secret.txt", b"This is secret", "crc32"),
+        ("encryption__.rar", "also_secret.txt", b"This is also secret", "crc32"),
+        ("encryption_blake2sp.rar", "store.txt", b"stored payload", "blake2sp"),
+    ],
+)
+def test_f1_convert_hash_to_mac_matches_fixture_stored_digest(
+    fixture: str, member_name: str, plaintext: bytes, kind: str
+) -> None:
+    """Bit-exact ConvertHashToMAC vs vendored fixtures — no ``unrar`` required.
+
+    Parses metadata with the native RAR parser, recomputes the plaintext digest, applies
+    the forward transform with the fixture password/salt/kdf, and compares to the stored
+    (already tweaked) value. Catches transform drift on CI legs that skip the e2e reads.
+    """
+    path = _rar_fixture(fixture)
+    with path.open("rb") as handle:
+        info = next(
+            m for m in parse_rar_archive(handle).members if m.filename == member_name
+        )
+    assert info.file_encryption is not None
+    assert _crc_is_tweaked(info)
+    enc = info.file_encryption
+    hash_key = rar5_hash_key("password", enc.salt, enc.kdf_count)
+
+    if kind == "crc32":
+        assert info.crc32 is not None
+        real_crc = zlib.crc32(plaintext) & 0xFFFFFFFF
+        assert convert_crc_to_mac(real_crc, hash_key) == info.crc32
+    else:
+        assert info.blake2sp_hash is not None
+        hasher = Blake2sp()
+        hasher.update(plaintext)
+        assert convert_blake2sp_to_mac(hasher.digest(), hash_key) == info.blake2sp_hash
+
+
 @requires_binary("unrar")
 def test_f1_encryption_fixture_stashes_tweaked_crc_and_reads() -> None:
     path = _rar_fixture("encryption__.rar")

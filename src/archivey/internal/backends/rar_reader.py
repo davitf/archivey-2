@@ -383,6 +383,10 @@ class RarReader(BaseArchiveReader):
                         "Incomplete RAR multi-volume set: end of archive expects "
                         "another volume"
                     )
+                # Data-only encryption (no header encrypt): parse succeeds without a
+                # password, so this is the unconfirmed first candidate. Safe for unrar
+                # and ConvertHashToMAC — a wrong candidate is rejected by the per-file
+                # PswCheck (0x01, when present) or by unrar exit 11.
                 return archive, self._first_candidate_str()
             except EncryptionError:
                 if not self._passwords.has_passwords():
