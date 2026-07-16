@@ -393,14 +393,45 @@ def test_f4_password_arg_is_bare_or_dash() -> None:
 
 
 @requires_binary("unrar")
-def test_f4_password_not_in_argv_cmdline() -> None:
+def test_f4_password_passed_via_stdin_not_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spy on Popen: argv gets bare ``-p``, password bytes go to stdin (race-free)."""
+    import subprocess
+
+    from archivey.internal.backends import rar_unrar
+
+    captured: dict[str, object] = {}
+    real_popen = subprocess.Popen
+
+    def spy_popen(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["stdin"] = kwargs.get("stdin")
+        proc = real_popen(cmd, *args, **kwargs)
+        if kwargs.get("stdin") is subprocess.PIPE and proc.stdin is not None:
+            # open_unrar_p writes the password after Popen returns; wrap write.
+            real_write = proc.stdin.write
+
+            def noting_write(data: bytes) -> int:
+                captured["stdin_bytes"] = data
+                return real_write(data)
+
+            proc.stdin.write = noting_write  # type: ignore[method-assign]
+        return proc
+
+    monkeypatch.setattr(rar_unrar.subprocess, "Popen", spy_popen)
+
     path = _rar_fixture("encryption__.rar")
     proc, stdout = open_unrar_p(path, password="password", member="secret.txt")
     try:
-        with open(f"/proc/{proc.pid}/cmdline", "rb") as handle:
-            parts = handle.read().split(b"\0")
-        assert b"-p" in parts
-        assert not any(b"password" in part for part in parts)
+        cmd = captured["cmd"]
+        assert isinstance(cmd, list)
+        assert "-p" in cmd
+        assert "-ppassword" not in cmd
+        assert not any(
+            isinstance(part, str) and "password" in part and part != "-p"
+            for part in cmd
+        )
+        assert captured["stdin"] is subprocess.PIPE
+        assert captured.get("stdin_bytes") == b"password\n"
         assert stdout.read() == b"This is secret"
     finally:
         stdout.close()
@@ -416,13 +447,28 @@ def test_f4_stdin_password_wrong_still_fails() -> None:
 
 
 @requires_binary("unrar")
-def test_f4_unencrypted_still_uses_p_dash() -> None:
+def test_f4_unencrypted_still_uses_p_dash(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from archivey.internal.backends import rar_unrar
+
+    captured: dict[str, object] = {}
+    real_popen = subprocess.Popen
+
+    def spy_popen(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["stdin"] = kwargs.get("stdin")
+        return real_popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(rar_unrar.subprocess, "Popen", spy_popen)
+
     path = _rar_fixture("blake2sp.rar")
     proc, stdout = open_unrar_p(path, password=None, member="store.txt")
     try:
-        with open(f"/proc/{proc.pid}/cmdline", "rb") as handle:
-            parts = handle.read().split(b"\0")
-        assert b"-p-" in parts
+        cmd = captured["cmd"]
+        assert isinstance(cmd, list)
+        assert "-p-" in cmd
+        assert captured["stdin"] is subprocess.DEVNULL
         assert stdout.read() == b"stored payload"
     finally:
         stdout.close()
