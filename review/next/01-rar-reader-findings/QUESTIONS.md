@@ -3,10 +3,9 @@
 Three decisions the review can't settle without you. Per `CLAUDE.md` I'm surfacing
 rather than silently resolving them.
 
-> **Status: all three answered by the maintainer (2026-07-15).** Resolutions and the
-> `unrar`-behaviour testing that backs them are recorded under each question. Ready to
-> implement on request — see the "Resolution" blocks for the two remaining judgment
-> calls (Q2 wildcard corner, Q3 strict-length placement).
+> **Status: all three answered by the maintainer (2026-07-15) and implemented on this
+> branch.** Resolutions and the `unrar`-behaviour testing that backs them are recorded
+> under each question.
 
 ## Q1 — Wrong-password header decryption: `EncryptionError` or `CorruptionError`? (F1)
 

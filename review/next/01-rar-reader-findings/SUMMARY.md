@@ -73,10 +73,11 @@ all three dependency configs (`[all]` 1580 passed, `[all-lowest]` 1579, `[core-o
   local end-to-end validation).
 - **F6** — `_merge_split_member` now rejects a split continuation that names a different
   file or follows a non-split member, so a crafted `split_before` flag can't fold an
-  unrelated member's size/CRC into the previous one.
+  unrelated member's size/CRC into the previous one. Covered by a synthetic matrix
+  (mismatched name / missing SPLIT_AFTER / matching merge).
 
 See `QUESTIONS.md` for the two design calls that shaped F3/Q3 (reject `*`/`?`; length
-check as a hash-less-only backstop, not a global `SlicingStream` change).
+check in `VerifyingStream` for every RAR member, not a global `SlicingStream` change).
 
 ## Top findings
 

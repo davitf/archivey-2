@@ -483,17 +483,75 @@ def test_rar3_large_packed_member_skips_full_64bit_size() -> None:
 
 
 def test_rar3_mismatched_split_continuation_is_corruption() -> None:
-    """F6: a SPLIT_BEFORE continuation that names a different file (or follows a
-    non-split member) must not be silently merged into the previous member."""
-    main_hdr, end_hdr = _rar3_main_and_end()
-    first = _rar3_file_block(b"a.txt", flags=0, pack_lo=0, unp_lo=0)
-    # SPLIT_BEFORE continuation naming a different file — not a real continuation.
+    """F6: a SPLIT_BEFORE continuation that names a different file after a non-split
+    member must not be silently merged into the previous member."""
     from archivey.internal.backends.rar_parser import _RAR3_FILE_SPLIT_BEFORE
 
-    forged = _rar3_file_block(b"b.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=0, unp_lo=0)
+    main_hdr, end_hdr = _rar3_main_and_end()
+    first = _rar3_file_block(b"a.txt", flags=0, pack_lo=0, unp_lo=0)
+    forged = _rar3_file_block(
+        b"b.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=0, unp_lo=0
+    )
     blob = RAR_ID + main_hdr + first + forged + end_hdr
     with pytest.raises(CorruptionError):
         parse_rar_archive(io.BytesIO(blob))
+
+
+def test_rar3_same_name_split_before_without_split_after_is_corruption() -> None:
+    """F6: same filename + SPLIT_BEFORE still rejects when the previous part was not
+    marked SPLIT_AFTER (not a genuine volume continuation)."""
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_SPLIT_BEFORE
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    first = _rar3_file_block(b"a.txt", flags=0, pack_lo=0, unp_lo=0)
+    cont = _rar3_file_block(
+        b"a.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=0, unp_lo=0
+    )
+    blob = RAR_ID + main_hdr + first + cont + end_hdr
+    with pytest.raises(CorruptionError):
+        parse_rar_archive(io.BytesIO(blob))
+
+
+def test_rar3_split_after_then_different_name_is_corruption() -> None:
+    """F6: a SPLIT_AFTER part followed by SPLIT_BEFORE with a different name is not a
+    continuation — reject rather than fold the unrelated member's size/CRC in."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR3_FILE_SPLIT_AFTER,
+        _RAR3_FILE_SPLIT_BEFORE,
+    )
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    first = _rar3_file_block(
+        b"a.txt", flags=_RAR3_FILE_SPLIT_AFTER, pack_lo=0, unp_lo=0
+    )
+    forged = _rar3_file_block(
+        b"b.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=0, unp_lo=0
+    )
+    blob = RAR_ID + main_hdr + first + forged + end_hdr
+    with pytest.raises(CorruptionError):
+        parse_rar_archive(io.BytesIO(blob))
+
+
+def test_rar3_matching_split_continuation_merges() -> None:
+    """F6 positive path: same name + previous SPLIT_AFTER collapses into one member."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR3_FILE_SPLIT_AFTER,
+        _RAR3_FILE_SPLIT_BEFORE,
+    )
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    first = _rar3_file_block(
+        b"a.txt", flags=_RAR3_FILE_SPLIT_AFTER, pack_lo=3, unp_lo=3
+    )
+    cont = _rar3_file_block(
+        b"a.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=5, unp_lo=5
+    )
+    # Each FILE header's claimed pack size must be skipped before the next header.
+    blob = RAR_ID + main_hdr + first + b"AAA" + cont + b"BBBBB" + end_hdr
+    archive = parse_rar_archive(io.BytesIO(blob))
+    assert [m.filename for m in archive.members] == ["a.txt"]
+    assert archive.members[0].compress_size == 8
+    assert archive.members[0].spanned_volumes is True
 
 
 def test_rar5_hostile_packed_size_is_corruption() -> None:
@@ -714,7 +772,9 @@ def test_unrar_member_include_switch_rejects_wildcards() -> None:
 
 
 @requires("cryptography")
-@pytest.mark.parametrize("name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"])
+@pytest.mark.parametrize(
+    "name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"]
+)
 def test_header_encryption_wrong_password_is_encryption_error(name: str) -> None:
     """F1: a wrong header password surfaces as ``EncryptionError`` (not
     ``CorruptionError``) even without a check value (always RAR3, checkval-less RAR5),
@@ -724,5 +784,91 @@ def test_header_encryption_wrong_password_is_encryption_error(name: str) -> None
         with open_archive(path, password="DEFINITELY_WRONG") as archive:
             archive.members()
     # A candidate list whose first entry is wrong must fall through to the correct one.
-    with open_archive(path, password=["DEFINITELY_WRONG", "header_password"]) as archive:
+    with open_archive(
+        path, password=["DEFINITELY_WRONG", "header_password"]
+    ) as archive:
         assert len(archive.members()) > 0
+
+
+class _FakeUnrarProc:
+    """Minimal ``Popen`` stand-in for ``_UnrarOwnedStream`` exit-code tests."""
+
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+    def terminate(self) -> None:
+        return None
+
+    def kill(self) -> None:
+        return None
+
+
+def _close_unrar_owned(
+    *,
+    rc: int,
+    named_member: bool = False,
+    has_verifiable_hash: bool = False,
+) -> None:
+    from archivey.internal.backends.rar_reader import _UnrarOwnedStream
+
+    stream = _UnrarOwnedStream(
+        io.BytesIO(b""),
+        _FakeUnrarProc(rc),  # type: ignore[arg-type]
+        named_member=named_member,
+        has_verifiable_hash=has_verifiable_hash,
+    )
+    stream.close()
+
+
+def test_unrar_owned_stream_maps_exit_11_to_encryption_error() -> None:
+    """F4: unrar exit 11 (bad password) always maps, even when a hash is present."""
+    with pytest.raises(EncryptionError):
+        _close_unrar_owned(rc=11, has_verifiable_hash=True)
+
+
+@pytest.mark.parametrize("rc", [2, 3])
+def test_unrar_owned_stream_maps_fatal_crc_when_no_hash(rc: int) -> None:
+    """F4: exits 2/3 map to CorruptionError when archivey has no verifiable hash."""
+    with pytest.raises(CorruptionError, match="fatal or CRC"):
+        _close_unrar_owned(rc=rc, named_member=True, has_verifiable_hash=False)
+
+
+@pytest.mark.parametrize("rc", [2, 3])
+def test_unrar_owned_stream_suppresses_fatal_crc_when_hash_present(rc: int) -> None:
+    """F4: with a verifiable hash, archivey's digest check is authoritative — ignore
+    unrar's sometimes-spurious CRC/fatal codes (legacy RAR 1.5 false positives)."""
+    _close_unrar_owned(rc=rc, named_member=True, has_verifiable_hash=True)
+
+
+def test_unrar_owned_stream_maps_exit_10_for_named_open() -> None:
+    """F4: exit 10 (no files matched) on a named ``-n`` open is CorruptionError."""
+    with pytest.raises(CorruptionError, match="no matching member"):
+        _close_unrar_owned(rc=10, named_member=True, has_verifiable_hash=False)
+
+
+def test_unrar_owned_stream_suppresses_exit_10_when_hash_present() -> None:
+    """F4: exit 10 is also suppressed when archivey verifies the member itself."""
+    _close_unrar_owned(rc=10, named_member=True, has_verifiable_hash=True)
+
+
+def test_unrar_owned_stream_ignores_exit_10_on_solid_all_pipe() -> None:
+    """F4: exit 10 on the solid ALL-pipe is not an error (empty match is expected
+    when no named filter is used)."""
+    _close_unrar_owned(rc=10, named_member=False, has_verifiable_hash=False)
+
+
+def test_unrar_owned_stream_success_and_warning_pass() -> None:
+    """F4: exits 0 (success) and 1 (warning) close cleanly."""
+    _close_unrar_owned(rc=0, named_member=True)
+    _close_unrar_owned(rc=1, named_member=True)
+
+
+def test_unrar_owned_stream_negative_rc_from_terminate_is_not_error() -> None:
+    """F4: a negative return code means we terminated the process (early close)."""
+    _close_unrar_owned(rc=-15, named_member=True, has_verifiable_hash=False)

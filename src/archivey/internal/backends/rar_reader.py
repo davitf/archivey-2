@@ -506,10 +506,10 @@ class RarReader(BaseArchiveReader):
             version_control=version_control,
         )
         self._live_unrar = proc
-        # Each payload member in the pipe is verified individually (CRC/BLAKE2sp via
-        # VerifyingStream when present, length via LengthVerifyingStream), so the
-        # pipe-level unrar exit code is redundant for corruption and is suppressed here
-        # to avoid legacy-format false positives; wrong-password (11) still maps.
+        # Each payload member in the pipe is verified individually (CRC/BLAKE2sp and
+        # declared length via VerifyingStream), so the pipe-level unrar exit code is
+        # redundant for corruption and is suppressed here to avoid legacy-format false
+        # positives; wrong-password (11) still maps.
         owned: BinaryIO = self._track_decompressed(
             _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
         )
@@ -638,8 +638,8 @@ class RarReader(BaseArchiveReader):
         )
         try:
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
-            # LengthVerifyingStream (in _wrap_payload_stream) bounds and checks the pipe
-            # against the member's declared size.
+            # VerifyingStream (in _wrap_payload_stream) bounds and checks the pipe against
+            # the member's declared size (and any CRC32/BLAKE2sp).
             return self._wrap_payload_stream(owned, member, track_output=False)
         except BaseException:
             owned.close()
