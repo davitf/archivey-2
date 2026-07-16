@@ -232,6 +232,29 @@ class _TruncGuineaDecoder(BaseDecoder):
         return self._done
 
 
+def finding6_hashed_member_not_capped() -> None:
+    _hr("F6 (MED): a hashed member decoding OVER its stated size is not capped")
+    import zlib
+
+    from archivey.internal.streams.verify import VerifyingStream
+
+    declared = 10_000
+    bloated = b"A" * 200_000  # member decodes to 20x its declared size
+    crc = zlib.crc32(bloated) & 0xFFFFFFFF  # attacker stores a crc over the bloated content
+    vs = VerifyingStream(io.BytesIO(bloated), {"crc32": crc})
+    total = 0
+    try:
+        while chunk := vs.read(65536):
+            total += len(chunk)
+        print(
+            f"  VerifyingStream delivered {total:,} bytes for a declared-{declared:,} member, "
+            f"NO error -> no size cap; the length cap lives only in LengthVerifyingStream, "
+            f"which is skipped for hashed members"
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  raised {type(e).__name__}")
+
+
 def finding4_readall_swallows_pending_error() -> None:
     _hr("F4 (MED): read(-1)/readall never checks pending_error (truncated .Z)")
 
@@ -303,3 +326,4 @@ if __name__ == "__main__":
     finding3_lzw_memory_bomb()
     finding3b_lzw_maxbits_unbounded()
     finding4_readall_swallows_pending_error()
+    finding6_hashed_member_not_capped()

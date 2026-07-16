@@ -1,7 +1,7 @@
 # Maintainer decisions
 
-Four findings need a product/architecture call rather than a mechanical fix. (Both
-parallel reviews raised the same set; consolidated here.)
+Findings needing a product/architecture call rather than a mechanical fix. (Q1–Q4 were
+raised by both parallel reviews; Q5 surfaced from reviewing #113's size-verification design.)
 
 ## Q1 — seek-point collision (F1): fix the emitter, the merge, or both?
 
@@ -190,3 +190,40 @@ decoder has a `pending_error`, raise it instead of returning. That keeps the con
 one place and covers any future deferred-error decoder; unix-compress's `flush()` need not
 change. (The chunked `read(n)` path already raises correctly on the subsequent empty read,
 so it is untouched.)
+
+## Q5 — over-long/bomb not capped for hashed members (F6): unify size + digest verification?
+
+`LengthVerifyingStream` (#113) is applied only to **hash-less** members
+(`not member.hashes`), on the reasoning that a hashed member's short/corrupt decode is
+already caught by the digest. But that only covers the **short** case. For an **over-long**
+decode (a member that decompresses to more than its stated `member.size`), nothing caps a
+hashed member at the declared size: `VerifyingStream` has no `size`, reads to inner-EOF,
+and raises only a digest mismatch **at EOF** — after the whole over-long output is
+delivered — or **no error at all** if the attacker matched the CRC to the bloated content
+(verified: 200 KB delivered for a declared 10 KB member, clean). The only backstop is the
+extract-time `ExtractionLimits`, which does not run on a raw `open(m).read()` or streaming
+read. So the members *with* integrity metadata are the ones *not* bounded by their declared
+size — the opposite of the intuition.
+
+Recommendation, and it answers "why yet another wrapper?": **fold the size check into
+`VerifyingStream` (or a shared integrity wrapper), gated on `member.hashes` OR
+`member.size is not None`.** One wrapper then:
+- **caps delivered output at `size` and raises on overflow *at the boundary*** (eager — this
+  is the bomb-prevention half; it must NOT read to EOF first),
+- **defers the *short* verdict to `close()`** so a more-specific inner error wins (the
+  ordering bug #113 already fixed in `LengthVerifyingStream`),
+- **verifies digests at EOF** for the exact-size case (unchanged `VerifyingStream` half).
+
+This gives hashed members the size cap (closing F6), covers hash-less-but-size-known members
+(replacing the standalone `LengthVerifyingStream` — a merged wrapper with empty `hashes` +
+a `size` degenerates to exactly it, including the no-`ArchiveMember` RAR solid-slice / unrar
+-pipe uses), and collapses two wrappers into one. The one design subtlety is the split
+timing: over-long raises eagerly at `size+1`, short defers to close, digest checks at EOF.
+
+Interaction with F3: an eager `size` cap also bounds *production* to ≈`size` + one decode
+chunk (the integrity wrapper stops driving the inner once `size` is reached), so it is a
+partial mitigation for the F3 per-read bomb wherever `member.size` is known — but not a
+substitute for the base-level output budget (it does nothing for the one-chunk overshoot,
+or for members with no declared size). And this finding cross-cuts Brief 2 (crypto):
+`VerifyingStream` is the shared decompressed-integrity stage, so decide the unification
+there alongside the crypto verification paths.
