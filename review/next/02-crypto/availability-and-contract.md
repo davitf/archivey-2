@@ -39,6 +39,9 @@ later is used, so the minimum-version leg is safe. (Not run live because it need
 
 ## F4 (Low, hardening) — password reaches `unrar` argv
 
+> **Fixed in #127.** `open_unrar_p` passes bare `-p` and writes `password + "\n"` on the
+> child's stdin (`-p-` when no password). Argv no longer carries the secret.
+
 `rar_unrar.py:53`:
 
 ```python
@@ -63,9 +66,8 @@ v2 spawns `unrar p` with the *data* on stdout, so the child's stdin is free — 
 usable. (The only caveat the source notes is that stdin is shared with `-si`, which v2 does not
 use.)
 
-**Fix:** change `_password_arg` / `open_unrar_p` to append bare `-p` and pass `password + "\n"`
-via `stdin=subprocess.PIPE` (keep `-p-` for the no-password case). Low severity, but now a
-concrete fix rather than an accepted leak — worth doing since v2 controls the child's stdin.
+**Fix (applied in #127):** `open_unrar_p` appends bare `-p` and passes `password + "\n"`
+via `stdin=subprocess.PIPE` (keep `-p-` for the no-password case).
 
 ## Streaming / seek / lifecycle (§C) — no issues found
 
