@@ -255,10 +255,18 @@ class Deflate64Decoder(BaseDecoder):
 
     ``inflate64`` has no output-size parameter: one ``inflate`` of a small
     highly-compressible feed can still allocate the full expansion. When the
-    stream passes ``max_length >= 0``, feed compressed input one byte at a time
-    and retain any overshoot in ``_pending_out`` so ``read(n)`` peak buffers stay
-    near the caller's budget (plus at most one inflate slice, typically ≪64 KiB).
+    stream passes ``max_length >= 0``, feed compressed input in small steps
+    (see ``_BUDGETED_FEED``) and retain any overshoot in ``_pending_out`` so
+    ``read(n)`` peak buffers stay near the caller's budget.
+
+    Feed-size tradeoff on a 100 MiB zeros Deflate64 bomb (per-call max_out /
+    throughput): 1→514 B / ~320 MiB/s; 64→19 KiB / ~700 MiB/s; 256→70 KiB /
+    ~710 MiB/s; 64 KiB→18 MiB / ~460 MiB/s. 64 keeps peaks under a 64 KiB
+    read budget while recovering most of the speed of larger feeds.
     """
+
+    # Compressed bytes per inflate() under a max_length budget. See class docstring.
+    _BUDGETED_FEED = 64
 
     def __init__(self) -> None:
         import inflate64
@@ -292,10 +300,10 @@ class Deflate64Decoder(BaseDecoder):
                 self._pending = data
                 return DecodeOut(bytes(out))
 
-        # Byte-at-a-time under budget: bounds peak expansion inside inflate64.
+        step = self._BUDGETED_FEED
         while data and len(out) < max_length:
-            produced = self._decomp.inflate(data[:1])
-            data = data[1:]
+            produced = self._decomp.inflate(data[:step])
+            data = data[step:]
             room = max_length - len(out)
             if len(produced) > room:
                 out += produced[:room]
