@@ -40,14 +40,20 @@ condensed statements follow.
   filesystems `README`/`readme` are two legitimate files; forcing a collision there is
   lossy, so it is a deliberate `STRICT`/`STANDARD`-only portability constraint, not a
   universal one.)
-- **O3/O4 rejection under STRICT.** Reserved device names (`CON`, `PRN`, `AUX`, `NUL`,
-  `COM1`–`COM9`, `LPT1`–`LPT9`, case-insensitive, with or without extension), trailing dot/
-  space in any path segment, and `:` anywhere in a segment are rejected under `STRICT` on
-  **every** platform. `TRUSTED` defers to the local OS. `STANDARD` = reject the
-  unambiguously-dangerous set (reserved names, `:`), **allow** trailing dot/space (rare,
-  Windows-only mangle, low-risk) — a middle ground consistent with STANDARD's "portable but
-  not paranoid" role, and the attack variant (crafted `foo.`/`foo` merge) is still caught by
-  `STRICT`.
+- **O3/O4 — reject only the unsafe shapes; rewrite the merely-non-portable ones (revised
+  2026-07).** Reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`,
+  case-insensitive, with or without extension) and `:` anywhere in a segment are **unsafe**
+  (device capture / NTFS ADS) and are rejected under `STRICT` and `STANDARD` on **every**
+  platform. A trailing dot/space is **not** unsafe — it is a legitimate macOS/Linux name
+  Win32 merely trims — so the original "reject under STRICT" halts real archives (a macOS
+  `stuff_etc.` folder failed a whole `extract`; under `CONTINUE` it would instead silently
+  drop the folder and every child, since they share the segment). Instead, under `STRICT`
+  each segment's trailing dot/space is **stripped** to its portable spelling (`stuff_etc.` →
+  `stuff_etc`), deterministic on every OS, collision-tracked, and reported via an
+  `EXTRACTION_NAME_SANITIZED` diagnostic — the same rewrite-don't-reject stance as O7. An
+  all-dots/spaces segment (`...`) has no portable spelling and is still rejected. `STANDARD`
+  and `TRUSTED` keep the name faithful. This sharpens STRICT's promise: refusal is reserved
+  for structures that cannot be safely written, never for a merely-awkward name.
 - **O7 — sanitize (not reject).** Under `STRICT` **and `STANDARD`**, a name carrying bytes
   that are not representable portably is **sanitized to a deterministic, reversible portable
   spelling** rather than rejected; `TRUSTED` attempts the faithful bytes and lets the OS

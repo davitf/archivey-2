@@ -1664,24 +1664,56 @@ def test_o4_colon_rejected_strict_and_standard(tmp_path: Path, policy) -> None:
     assert isinstance(report.results[0].error, UnportableNameError)
 
 
-@pytest.mark.parametrize("name", ["foo.", "bar "])
-def test_o3_trailing_dot_space_rejected_strict_allowed_standard(
-    tmp_path: Path, name: str
+@pytest.mark.parametrize("name,portable", [("foo.", "foo"), ("bar ", "bar")])
+def test_o3_trailing_dot_space_stripped_strict_kept_standard(
+    tmp_path: Path, name: str, portable: str
 ) -> None:
     archive = _tar_bytes([("file", name, b"x")])
-    # STRICT rejects the Windows-mangled shape...
+    # STRICT rewrites the Windows-mangled shape to its portable spelling (a legitimate
+    # macOS/Linux name, not an attack), extracts it, and surfaces the rename.
+    strict = extract(
+        io.BytesIO(archive), tmp_path / "strict", policy=ExtractionPolicy.STRICT
+    )
+    assert strict.results[0].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in (tmp_path / "strict").iterdir()) == [portable]
+    assert strict.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_SANITIZED) == 1
+    # STANDARD keeps it faithful (as-is on POSIX).
+    standard = extract(
+        io.BytesIO(archive), tmp_path / "standard", policy=ExtractionPolicy.STANDARD
+    )
+    assert standard.results[0].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
+
+
+def test_o3_trailing_dot_directory_tree_stays_connected(tmp_path: Path) -> None:
+    # The reported real-world case: a macOS folder named 'stuff_etc.' with a file inside.
+    # STRICT must strip the same segment identically in the dir entry and its children, so
+    # the tree stays connected (no orphaned files under a differently-named parent).
+    archive = _tar_bytes(
+        [
+            ("dir", "codex/", None),
+            ("dir", "codex/stuff_etc./", None),
+            ("file", "codex/stuff_etc./owl.jpg", b"img"),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert (dest / "codex" / "stuff_etc" / "owl.jpg").read_bytes() == b"img"
+
+
+def test_o3_all_dots_segment_rejected(tmp_path: Path) -> None:
+    # A segment that is ENTIRELY dots/spaces has no portable spelling (stripping would
+    # collapse the path), so it is still rejected rather than rewritten.
+    archive = _tar_bytes([("file", "a/.../b.txt", b"x")])
     report = extract(
         io.BytesIO(archive),
-        tmp_path / "strict",
+        tmp_path / "out",
         policy=ExtractionPolicy.STRICT,
         on_error=OnError.CONTINUE,
     )
     assert report.results[0].status is ExtractionStatus.REJECTED
-    # ...STANDARD allows it (rare, low-risk, POSIX-valid).
-    report2 = extract(
-        io.BytesIO(archive), tmp_path / "standard", policy=ExtractionPolicy.STANDARD
-    )
-    assert report2.results[0].status is ExtractionStatus.EXTRACTED
+    assert isinstance(report.results[0].error, UnportableNameError)
 
 
 # --- O7: surrogateescape sanitize ------------------------------------------

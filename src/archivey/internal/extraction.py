@@ -37,6 +37,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     ExtractionOutcomeContext,
     NameCollisionContext,
+    NameSanitizedContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -504,9 +505,14 @@ class ExtractionCoordinator:
                 return None
             # A caller filter can rename/relink; re-run the universal check on the result.
             check_universal(transformed, dest_root)
-        # Portable-name policy (O3/O4 reject, O7 sanitize) on the FINAL name — after the
-        # user filter, so a filter rename is checked too, and TRUSTED keeps faithful bytes.
-        return apply_name_policy(transformed, self._policy)
+        # Portable-name policy on the FINAL name — after the user filter, so a filter rename
+        # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
+        # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
+        # portable spelling, surfaced as a diagnostic so the rename is not silent.
+        portable = apply_name_policy(transformed, self._policy)
+        if portable.name != transformed.name:
+            self._emit_name_sanitized(original, transformed.name, portable.name)
+        return portable
 
     # --- per-member write ----------------------------------------------------------
 
@@ -727,6 +733,25 @@ class ExtractionCoordinator:
                 member_id=original._member_id,
                 prior_path=str(prior),
                 resolution=resolution,
+            ),
+            logger=logger,
+        )
+
+    def _emit_name_sanitized(
+        self, original: ArchiveMember, presented: str, portable: str
+    ) -> None:
+        """Emit the diagnostic for a portable-name rewrite (O3 trailing dot/space strip or
+        O7 byte escape), so callers/CLI can report the on-disk name differs from the archive
+        name rather than the rename being silent."""
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.EXTRACTION_NAME_SANITIZED,
+            message=f"Name rewritten for portability: {presented!r} -> {portable!r}",
+            context=NameSanitizedContext(
+                archive_name=self._archive_name,
+                member_name=original.name,
+                member_id=original._member_id,
+                presented_name=presented,
+                portable_name=portable,
             ),
             logger=logger,
         )

@@ -46,11 +46,24 @@ conflicts rather than open space.
    constraint. `STANDARD` is included because a silent-merge footgun is exactly what
    "portable but not paranoid" should still catch.
 
-4. **O3/O4 — STANDARD allows trailing dot/space.** `:` (NTFS ADS injection) and reserved
-   device names (device capture) are unambiguous hazards → rejected even under `STANDARD`.
-   Trailing dot/space is a rare, low-severity, Windows-only mangle, valid on POSIX → `STRICT`
-   rejects (portable-by-default), `STANDARD` tolerates. The crafted `foo.`/`foo` merge is an
-   untrusted-input concern that `STRICT` already covers.
+4. **O3/O4 — reject only what is unsafe; rewrite what is merely non-portable.**
+   `:` (NTFS ADS injection) and reserved device names (device capture) are *unsafe* — a
+   member with such a name can capture a device or write a hidden stream — so they are
+   rejected under `STRICT` and `STANDARD` on every platform. A trailing dot/space is *not*
+   unsafe: it is a legitimate macOS/Linux name (a folder ending in `.`) that Win32 silently
+   trims. Rejecting it — the original decision — halts extraction of an entirely legitimate
+   archive (real-world report: a macOS zip with a `stuff_etc.` folder failed the whole
+   `extract`; under `OnError.CONTINUE` it would instead *silently drop the folder and every
+   file under it*, since they share the segment — worse). **Revised (2026-07):** `STRICT`
+   now **strips** the trailing dot/space to its portable spelling (`stuff_etc.` →
+   `stuff_etc`), deterministically on every OS, collision-tracked via O2, surfaced as an
+   `EXTRACTION_NAME_SANITIZED` diagnostic — the same *rewrite-don't-reject* stance already
+   chosen for O7 (decision 1). A segment that is *entirely* dots/spaces (`...`) has no
+   portable spelling and is still rejected (stripping would collapse the path). `STANDARD`
+   keeps the name faithful (as-is on POSIX); `TRUSTED` unchanged. This makes STRICT's promise
+   precise: **a member either extracts to a byte-identical portable result on every OS, or is
+   refused — and refusal is reserved for structures that cannot be safely written (traversal,
+   symlink escape, special files, reserved names, `:`), never for a merely-awkward name.**
 
 5. **`OverwritePolicy.RENAME` lands here (resolves a doc conflict).** An earlier design draft
    listed a full implementation as a Non-Goal; the proposal, tasks, spec delta, and brief all
@@ -78,7 +91,8 @@ conflicts rather than open space.
 - The O7 percent-escape scheme is a compatibility surface, pinned in the spec before the
   first public release freezes it.
 - Public surface grows by one `ExtractionResult` field (`requested_path`, appended with a
-  default), one diagnostic code, and one `OverwritePolicy` member (`RENAME`).
+  default), two diagnostic codes (`EXTRACTION_NAME_COLLISION`, `EXTRACTION_NAME_SANITIZED`),
+  and one `OverwritePolicy` member (`RENAME`).
 - O2/O3/O4 and O7 share one coordinator collision map; sanitized spellings flow through it,
   and the deferred (orphaned) hardlink second pass consults and updates the same map so it
   cannot bypass collision determinism.

@@ -243,14 +243,39 @@ def _sanitize_portable_name(name: str) -> str:
     return "".join(out)
 
 
+def _strip_trailing_dot_space(name: str) -> str:
+    """O3: strip a trailing dot/space from each path segment — the portable spelling Win32
+    itself produces (``stuff_etc.`` → ``stuff_etc``). Deterministic on every OS, so the
+    result is identical everywhere and the O2 collision map catches any name it now clashes
+    with. A segment that is *entirely* dots/spaces has no portable spelling and is rejected
+    (an all-dots segment like ``...`` cannot round-trip and would collapse a path)."""
+    parts = name.split("/")
+    out: list[str] = []
+    for part in parts:
+        if part == "":  # empty from a leading/trailing/`//` separator: leave structure
+            out.append(part)
+            continue
+        stripped = part.rstrip(". ")
+        if stripped == "":
+            raise UnportableNameError(
+                f"Path segment is entirely dots/spaces: {part!r}", member_name=name
+            )
+        out.append(stripped)
+    return "/".join(out)
+
+
 def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
     """Enforce the portable-name policy on ``member``'s final name.
 
-    Under ``STRICT``/``STANDARD``, rejects the dangerous Windows name shapes (O3/O4) and
-    normalizes non-representable bytes (O7); ``TRUSTED`` returns the member unchanged
-    (faithful bytes, defer to the local OS). Raises :class:`UnportableNameError` (a
-    ``FilterRejectionError``, so the coordinator records ``REJECTED``) on a rejected name;
-    otherwise returns ``member`` or an O7-sanitized ``.replace()`` copy.
+    ``TRUSTED`` returns the member unchanged (faithful bytes, defer to the local OS).
+    ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
+    names and ``:`` (NTFS alternate data stream) — and **rewrite** the merely-non-portable
+    ones: ``STRICT`` strips trailing dots/spaces (O3) and both levels normalize
+    non-representable bytes (O7). Rewriting (not rejecting) a legitimate-but-awkward name
+    keeps extraction working; refusal is reserved for structures that cannot be safely
+    written. Raises :class:`UnportableNameError` (a ``FilterRejectionError``, so the
+    coordinator records ``REJECTED``) on a rejected name; otherwise returns ``member`` or a
+    rewritten ``.replace()`` copy.
     """
     if policy is ExtractionPolicy.TRUSTED:
         return member
@@ -259,9 +284,8 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     for segment in _SEP_SPLIT.split(name):
         if not segment:
             continue
-        # Reserved device names and ':' are unambiguous hazards — rejected under STRICT and
-        # STANDARD on every platform (':' writes an NTFS alternate data stream; a reserved
-        # name is a device capture / silent mangle).
+        # Reserved device names and ':' are unsafe (device capture / NTFS alternate data
+        # stream), not merely awkward — rejected under STRICT and STANDARD on every platform.
         stem = segment.split(".", 1)[0].strip().upper()
         if stem in _RESERVED_NAMES:
             raise UnportableNameError(
@@ -272,17 +296,16 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
                 f"Colon in path segment (NTFS alternate data stream): {segment!r}",
                 member_name=name,
             )
-        # A trailing dot/space is silently stripped by Win32 (a name mismatch / clobber
-        # vector). Rare and low-risk, so STRICT rejects it (portable-by-default) while
-        # STANDARD tolerates it — the crafted-merge variant is still caught by STRICT.
-        if policy is ExtractionPolicy.STRICT and segment != segment.rstrip(". "):
-            raise UnportableNameError(
-                f"Trailing dot or space in path segment: {segment!r}", member_name=name
-            )
 
-    sanitized = _sanitize_portable_name(name)
-    if sanitized != name:
-        return member.replace(name=sanitized)
+    # A trailing dot/space is silently stripped by Win32 — a legitimate macOS/Linux name
+    # (e.g. a folder ending in '.'), not an attack. STRICT rewrites it to the portable
+    # spelling so extraction succeeds and is identical on every OS; STANDARD/TRUSTED keep it
+    # faithful. The O2 collision map catches any clash the rewrite creates.
+    if policy is ExtractionPolicy.STRICT:
+        name = _strip_trailing_dot_space(name)
+    name = _sanitize_portable_name(name)
+    if name != member.name:
+        return member.replace(name=name)
     return member
 
 

@@ -99,11 +99,14 @@ implementation of the `safe-extraction` delta.
 Win32 to `foo` (silent clobber / mismatch between reported and actual path). None of
 this is currently checked; behavior is platform-dependent.
 
-*Direction (decided — `cross-platform-name-safety` / ADR 0013):* `STRICT` rejects
-Windows-reserved and trailing-dot/space names on **every** platform (portability is part of
-no-surprises); `STANDARD` rejects reserved names + `:` but allows trailing dot/space;
-`TRUSTED` allows what the local OS allows. Awaiting implementation of the `safe-extraction`
-delta.
+*Direction (decided — `cross-platform-name-safety` / ADR 0013, revised 2026-07):* reserved
+device names and `:` are *unsafe* (device capture / NTFS ADS) → rejected under `STRICT` and
+`STANDARD` on every platform. A trailing dot/space is a *legitimate* macOS/Linux name Win32
+merely trims, so rejecting it wrongly halts real archives (a macOS `stuff_etc.` folder) or,
+under `CONTINUE`, silently drops the whole subtree → `STRICT` now **strips** it to the
+portable spelling (`stuff_etc.` → `stuff_etc`), deterministic per-OS, collision-tracked, and
+surfaced as an `EXTRACTION_NAME_SANITIZED` diagnostic (an all-dots segment like `...` has no
+portable spelling and is still rejected); `STANDARD`/`TRUSTED` keep it faithful. Implemented.
 
 ### O4. NTFS alternate data streams
 
