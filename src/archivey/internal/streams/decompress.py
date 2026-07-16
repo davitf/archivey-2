@@ -78,13 +78,18 @@ class PpmdDecoder(BaseDecoder):
     is ZIP method 98 / WinZip ZIPX PPMd, which also carries a restore-method parameter.
 
     ``unpack_size`` (when known, e.g. 7z folder unpack size) is passed through as
-    ``max_length`` on every ``decode`` call. PPMd7 has no end mark: ``decode(..., -1)``
-    can overshoot the true payload and stress the native allocator; bounding matches
-    py7zr's ``PpmdDecompressor.decompress(..., max_length)``.
+    ``max_length`` on every ``decode`` call. PPMd7 has no end mark, so the size bound
+    is what tells the native decoder where the payload ends: pyppmd 1.3.x decodes
+    ``decode(..., -1)`` on a worker thread with an effectively unlimited symbol budget,
+    and running that worker past the true end of stream corrupts the heap (Linux
+    ``malloc`` abort/SIGSEGV, Windows ``STATUS_HEAP_CORRUPTION``). Bounding matches
+    py7zr's ``PpmdDecompressor.decompress(..., max_length)``; see
+    ``docs/internal/known-issues.md`` and ``docs/internal/pyppmd-upstream-report.md``.
 
     At compressed EOF, PPMd may still need an extra NUL input byte when the encoder
-    omitted a trailing null (documented by pyppmd). That path feeds one NUL with the
-    remaining ``max_length``, same as py7zr / the pyppmd PyPI sample.
+    omitted a trailing null (documented by pyppmd). ``flush`` feeds exactly one NUL
+    with the remaining ``max_length``, same as py7zr / the pyppmd PyPI sample; if
+    output is still short of ``unpack_size`` after that, the stream is truncated.
     """
 
     def __init__(
@@ -145,39 +150,27 @@ class PpmdDecoder(BaseDecoder):
         return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        # Drain remaining output under unpack_size. pyppmd 1.1.x can set eof early while
-        # still short of the known size; empty/NUL feeds with a *bounded* max_length then
-        # finish the member. Never use max_length=-1 after eof (1.3.1 native abort).
-        parts: list[bytes] = []
-        for _ in range(64):
-            max_length = self._max_length()
-            if max_length == 0:
-                break
-            if max_length < 0:
-                # Unknown size: only the pre-EOF needs_input NUL path.
-                if self._decomp.eof or not getattr(self._decomp, "needs_input", False):
-                    break
-                chunk = self._decomp.decode(b"\0", -1)
-            elif self._decomp.eof:
-                # Known remaining size + premature eof (1.1.x): pump empty/NUL bounded.
-                if getattr(self._decomp, "needs_input", False):
-                    chunk = self._decomp.decode(b"\0", max_length)
-                else:
-                    chunk = self._decomp.decode(b"", max_length)
-            elif getattr(self._decomp, "needs_input", False):
-                chunk = self._decomp.decode(b"\0", max_length)
-            else:
-                break
-            if not chunk:
-                break
-            parts.append(chunk)
-            self._produced += len(chunk)
-        return DecodeOut(b"".join(parts))
+        # A stream whose encoder omitted the trailing byte still reports needs_input
+        # at compressed EOF; the documented recovery (pyppmd docs / py7zr) is exactly
+        # one extra NUL, bounded by the remaining size. Never inject fabricated input
+        # in a loop — on truncated data that decodes garbage through the native model,
+        # which can silently complete a member and (on pyppmd 1.3.x, if unbounded)
+        # corrupt the heap. Anything still missing after the single NUL is truncation,
+        # surfaced via ``finished``.
+        max_length = self._max_length()
+        if max_length == 0:
+            return DecodeOut(b"")
+        if self._decomp.eof or not getattr(self._decomp, "needs_input", False):
+            return DecodeOut(b"")
+        chunk = self._decomp.decode(b"\0", max_length)
+        self._produced += len(chunk)
+        return DecodeOut(chunk)
 
     @property
     def finished(self) -> bool:
-        # Prefer the container size when known. Native eof alone is not enough: pyppmd
-        # 1.1.x can report eof before unpack_size is reached.
+        # Prefer the container size when known: it detects truncation (short output
+        # at compressed EOF) and ends the member exactly at its boundary — PPMd7 has
+        # no end mark, so native eof alone cannot do either.
         if self._unpack_size is not None:
             return self._produced >= self._unpack_size
         return bool(self._decomp.eof)
