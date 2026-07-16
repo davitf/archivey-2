@@ -48,19 +48,55 @@ completeness via a known decompressed size, else fall back to stdlib (which rais
 natively). This turns F2 into a non-issue for the common case and confines the stdlib
 fallback to exactly the exposed surface (standalone raw deflate/zlib with no declared size).
 
-One subtlety worth pinning down in that design: it must be the **decompressed** size that
-is verified, not the compressed one. rapidgzip reads the whole (truncated) compressed input
-— "did we consume all compressed bytes" is trivially yes — so only "did we produce the
-declared number of decompressed bytes" distinguishes a truncation. `compressed_input_size`
-(the AUTO gate's ≥1 MiB input) does **not** by itself detect truncation; the length check
-needs the expected *output* length. So the gate condition is "a decompressed size we can
-verify against is available," which for raw deflate/zlib single-file streams it is not →
-stdlib. Recommendation: adopt this.
+**This is the same check #113 already decided to build, and it subsumes F2.** #113's
+maintainer resolution (its `QUESTIONS.md`, Q4/F4 thread) settled *where* the length
+backstop lives, and the reasoning transfers directly here:
+
+- It is **folded into `ArchiveStream`, not a separate wrapper and not `VerifyingStream`.**
+  `VerifyingStream` is applied only when `member.hashes` is non-empty
+  (`zip_reader.py:804` `if hashes:`; `rar_reader.py:509`), so a CRC-less member — exactly
+  the truncation-exposed case — never gets wrapped by it. `ArchiveStream` runs for *every*
+  member and already carries `size` (`_wrap_member_stream(…, size=member.size)` →
+  `base_reader.py:599-607`), so one check there is universal and format-agnostic. (Today
+  `ArchiveStream._size` is used only by the `.size` property — `read()` does not enforce
+  it — so this is net-new enforcement, not a change to existing behavior.)
+- It enforces **only on forward-to-EOF consumption** (mirroring `VerifyingStream`): a
+  partial read or a seekable random-access read that never touches the tail must not trip.
+
+So the same `ArchiveStream` length check catches #113's RAR short-read *and* our F2
+accelerator short-read with one mechanism — the accelerator sits **inside**
+`ArchiveStream` (the reader wraps the codec/accelerator stream via `_wrap_member_stream`),
+so an `ArchiveStream` that verifies "delivered decompressed bytes == `member.size` at EOF"
+catches rapidgzip's silent short output for free wherever `member.size` is known (ZIP
+central directory, xz/lzip index). **We should therefore NOT build a separate deflate/zlib
+accelerator backstop; align F2 with #113's `ArchiveStream` check**, and gate AUTO to stdlib
+only when no verifiable decompressed size exists.
+
+Two nuances specific to the accelerator path (do **not** copy #113's RAR notes blindly):
+
+1. **Keep the compressed-input clamp.** #113 note 1 says drop the pre-clamp `SlicingStream`
+   so `ArchiveStream` can see "too long." That is RAR-specific. On the accelerator path the
+   compressed `SlicingStream` bound must **stay** — rapidgzip over-reads past EOS hunting a
+   concatenated member (`DeflateCodec.open` comment, `codecs.py:950-952`). Our exposure is
+   "too short" (truncation), which the **decompressed**-length check catches without
+   touching the input clamp. (As before: it must be the *decompressed* size — rapidgzip
+   consumes the whole truncated compressed input, so "consumed all compressed bytes" is
+   trivially true; `compressed_input_size`, the AUTO gate's ≥1 MiB input, does not detect
+   truncation.)
+2. **Residual once #113 lands.** The check needs a known `member.size`. ZIP deflate/zlib and
+   xz/lzip have it → covered. But gzip single-file may not (`GzipCodec.extract_metadata`
+   sets mtime/FNAME/crc32, *not* `size`; the ISIZE trailer is exactly what the existing
+   `_GzipTruncationCheckStream` reads), and standalone raw deflate/zlib never has it. Those
+   stay the residual → AUTO-gate to stdlib. The upside: the defeatable
+   `_GzipTruncationCheckStream` (gzip-only, path-only, beaten by a chance `1f 8b 08`) can be
+   **retired wherever `member.size` is known** in favor of the robust universal check, and
+   kept only for the sizeless gzip case (or dropped in favour of the stdlib fallback there
+   too).
 
 Related: even the truncations rapidgzip *does* surface arrive as
 `RuntimeError("std::exception")` and map to `CorruptionError`, not `TruncatedError`
-(`codecs.py:292`) — should the accelerator translator distinguish these? (Minor if the
-length check above lands, since it would raise `TruncatedError` itself.)
+(`codecs.py:292`) — should the accelerator translator distinguish these? (Minor once the
+`ArchiveStream` length check lands, since it raises `TruncatedError` itself.)
 
 ## Q3 — the per-read memory bomb (F3a): a base issue, not just LZW; + `maxbits` (F3b)
 

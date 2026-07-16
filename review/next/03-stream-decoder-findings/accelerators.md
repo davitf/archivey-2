@@ -96,12 +96,19 @@ reviews).
 
 ### Fix direction (maintainer decision — see QUESTIONS Q2)
 
-Either accept the gap explicitly (documenting that standalone accelerated
-deflate/zlib/gzip does not surface truncation, and relying on downstream CRC for the
-in-archive case), or give the deflate/zlib accelerator path the same class of backstop
-the gzip path has — and harden the gzip one so a random `1f 8b 08` in compressed data
-cannot mask a truncation (e.g. require the candidate second member to actually parse as
-a gzip header at a 4-byte-plausible position, or verify against a known member count).
+The leading resolution is **not** a new accelerator-specific backstop: it is the
+universal `ArchiveStream` length check that #113 already decided to build (verify
+delivered decompressed bytes == `member.size` at forward-to-EOF, else `TruncatedError`).
+The accelerator sits *inside* `ArchiveStream` (the reader wraps the codec stream via
+`_wrap_member_stream(…, size=member.size)`), so that one check catches rapidgzip's silent
+short read wherever `member.size` is known — ZIP deflate/zlib members (central-directory
+size) and xz/lzip (index), i.e. the bulk of the #105 exposure. AUTO then falls back to
+stdlib only when no verifiable decompressed size exists (standalone raw deflate/zlib, and
+gzip single-file where `member.size` is unset). Two caveats vs #113's RAR notes: keep the
+compressed-input `SlicingStream` clamp (rapidgzip over-reads past EOS, `codecs.py:950`),
+and the defeatable `_GzipTruncationCheckStream` can be **retired** wherever `member.size`
+is known in favour of the universal check. Full reasoning + the VerifyingStream-vs-
+ArchiveStream decision is in `QUESTIONS.md` Q2.
 
 ## Other Hunt-C items (checked, not findings)
 
