@@ -157,14 +157,47 @@ longer load-bearing and the wrapper could be simplified.
 
 ## Windows intermittent heap corruption in 7z codec roundtrips (mitigated)
 
-**Status: mitigated in tests; root cause not pinned.** On `windows-latest` / Python 3.14 the
-full suite has occasionally aborted mid
+**Status: mitigated in tests; root cause not pinned. Now also seen on Linux/py3.11.** On
+`windows-latest` / Python 3.14 the full suite has occasionally aborted mid
 `tests/test_sevenzip_reader.py::test_py7zr_codec_fixtures_roundtrip` with
-`Windows fatal exception: code 0xc0000374` (`STATUS_HEAP_CORRUPTION`). The same matrix is green
-on Windows/py3.11 and on Linux/macOS; re-runs of identical commits often pass. The crash stack
-points at `_assert_roundtrip` / native codec reads (py7zr-built fixtures: LZMA2, BCJ, PPMd,
-brotli, …), but heap corruption is typically detected *after* the guilty native call, so the
-exact codec/library is not reliably identified from one failure.
+`Windows fatal exception: code 0xc0000374` (`STATUS_HEAP_CORRUPTION`); re-runs of identical
+commits often pass. The crash stack points at `_assert_roundtrip` / native codec reads
+(py7zr-built fixtures: LZMA2, BCJ, PPMd, brotli, …), but heap corruption is typically detected
+*after* the guilty native call, so the exact codec/library is not reliably identified from one
+failure.
+
+### Also reproduces on Linux / CPython 3.11 (2026-07-16)
+
+Originally believed green off Windows; it is not. On Linux / CPython 3.11 the **same** test
+(`test_py7zr_codec_fixtures_roundtrip` → `_assert_roundtrip`, `tests/test_sevenzip_reader.py:86`)
+segfaults (`SIGSEGV`, pytest exit `139`), with `faulthandler` naming the loaded native
+extensions `backports.zstd._zstd, lz4, _brotli, pyppmd.c._ppmd, rapidgzip, bcj._bcj, …`.
+
+Observations (this environment, `[all]` extras):
+- **Intermittent, not deterministic.** Reproduced ~3 times across ~15 full-suite runs
+  (roughly 1 in 5); many identical re-runs pass.
+- **Needs full-suite native-memory pressure.** It fires ~60–66 % into the run (right after
+  `test_rapidgzip_deflate_zlib.py`, entering `test_sevenzip_reader.py`); running
+  `test_sevenzip_reader.py` (± the seekable/rapidgzip files) *in isolation* did **not**
+  reproduce it in dozens of runs — consistent with heap corruption that only manifests after
+  many prior native allocations.
+- **Coverage raises the hit rate.** Every reproduction was under the default coverage-enabled
+  `uv run pytest`; the faster `--no-cov` runs did not trip it in this window.
+- **Not caused by any archivey product code change** — it is a native-codec crash in the
+  py7zr/`pyppmd`/`brotli`/`pybcj` roundtrip fixtures, unrelated to the pure-Python reader/stream
+  layers; it reproduces on `main` as well as feature branches.
+
+Nearest-thing-to-a-repro recipe (no guaranteed single-run trigger):
+
+```bash
+# Run the full suite with coverage on a loop until it aborts (exit 139 = SIGSEGV).
+for i in $(seq 1 20); do uv run --no-sync pytest -q || break; done
+```
+
+The `win32` subprocess-isolation mitigation below does **not** cover Linux, so a Linux CI
+occurrence still aborts the whole job. If it becomes a recurring CI flake off Windows, extend
+the per-parametrization isolation to Linux too (drop the `sys.platform == "win32"` gate on the
+isolation path).
 
 **Mitigation:** on `win32`, each codec parametrization of that test runs in its own subprocess
 with faulthandler enabled and flushed phase breadcrumbs (`phase.txt`: build → open → list →
