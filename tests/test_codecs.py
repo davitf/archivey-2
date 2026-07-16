@@ -193,6 +193,18 @@ def test_sevenzip_kdf_cache_reuses_derived_keys() -> None:
     assert special == bytes(bytearray(salt + password + bytes(32))[:32])
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("cryptography") is None,
+    reason="cryptography is not installed (core-only leg); the present-path cannot run",
+)
+def test_sevenzip_kdf_rejects_cycles_above_24() -> None:
+    """Match 7-Zip's ``k_NumCyclesPower_Supported_MAX = 24`` (PR #115 F3)."""
+    from archivey.exceptions import UnsupportedFeatureError
+
+    with pytest.raises(UnsupportedFeatureError, match="NumCyclesPower"):
+        crypto.derive_sevenzip_aes_key(b"pw", salt=b"s", cycles=25)
+
+
 # --- exception translation -------------------------------------------------------------
 
 

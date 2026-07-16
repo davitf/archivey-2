@@ -26,6 +26,14 @@ File-version (`-ver`) fixtures:
 | `file_version__rar4.rar` | RAR4 nonsolid `-ma4 -m0 -ver`; same revisions |
 | `file_version_solid__.rar` | RAR5 solid `-s -m3 -ver`; `a.txt` history + `b.txt` |
 
+Encrypted / hash fixtures of note:
+
+| Files | Notes |
+| --- | --- |
+| `encryption__.rar` | RAR5 `-ppassword`; HASHMAC tweaked CRC32 |
+| `encryption_blake2sp.rar` | RAR5 `-m0 -htb -ppassword`; HASHMAC tweaked BLAKE2sp |
+| `blake2sp.rar` | RAR5 `-m0 -htb`; plaintext BLAKE2sp (no encryption) |
+
 ## Legacy (not regenerated)
 
 | File | Provenance |

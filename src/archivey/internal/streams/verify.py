@@ -139,6 +139,7 @@ class VerifyingStream(ReadOnlyIOStream):
         collector: DiagnosticCollector | None = None,
         member: ArchiveMember | None = None,
         archive_name: str | None = None,
+        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
     ) -> None:
         super().__init__()
         self._inner = inner
@@ -146,6 +147,9 @@ class VerifyingStream(ReadOnlyIOStream):
         self._short = False
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
+        self._digest_transforms: dict[str, Callable[[bytes], bytes]] = (
+            dict(digest_transforms) if digest_transforms else {}
+        )
         for algorithm, value in expected.items():
             factory = _make_hasher(algorithm)
             if factory is None:
@@ -178,7 +182,11 @@ class VerifyingStream(ReadOnlyIOStream):
     def _verify_digests(self) -> None:
         """Check every computable digest; raise on the first mismatch."""
         for algorithm, expected in self._expected.items():
-            if self._hashers[algorithm].digest() != expected:
+            computed = self._hashers[algorithm].digest()
+            transform = self._digest_transforms.get(algorithm)
+            if transform is not None:
+                computed = transform(computed)
+            if computed != expected:
                 raise CorruptionError(
                     f"Digest mismatch for {algorithm!r}: stored value does not match the "
                     f"decompressed content."

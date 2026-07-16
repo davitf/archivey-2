@@ -20,11 +20,16 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import BinaryIO, Protocol
 
-from archivey.exceptions import PackageNotInstalledError
+from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
 # The package name surfaced to users (matches the [crypto] extra).
 CRYPTO_PACKAGE = "cryptography"
+
+# 7-Zip's own decoder clamp (7zAes.cpp ``k_NumCyclesPower_Supported_MAX``): accept
+# ``NumCyclesPower <= 24`` or the ``0x3F`` no-hash sentinel; reject 25–62.
+_SEVENZIP_MAX_CYCLES_POWER = 24
+_SEVENZIP_NO_HASH_SENTINEL = 0x3F
 
 
 @dataclass(frozen=True)
@@ -180,12 +185,21 @@ def derive_sevenzip_aes_key(password: bytes, *, salt: bytes, cycles: int) -> byt
     hold a ``str`` should encode first). ``cycles`` is ``NumCyclesPower`` from the AES
     coder properties (``0..0x3f``). The ``0x3f`` special case copies salt+password into
     a 32-byte key without hashing.
+
+    Values ``25..62`` are rejected with :class:`UnsupportedFeatureError`, matching
+    7-Zip's own decoder clamp (``k_NumCyclesPower_Supported_MAX = 24``).
     """
-    if cycles < 0 or cycles > 0x3F:
+    if cycles < 0 or cycles > _SEVENZIP_NO_HASH_SENTINEL:
         raise ValueError(f"NumCyclesPower out of range: {cycles}")
-    if cycles == 0x3F:
+    if cycles == _SEVENZIP_NO_HASH_SENTINEL:
         # The 0x3f sentinel means "no hashing": key = (salt + password), zero-padded to 32.
         return (salt + password + bytes(32))[:32]
+    if cycles > _SEVENZIP_MAX_CYCLES_POWER:
+        raise UnsupportedFeatureError(
+            f"7z NumCyclesPower {cycles} exceeds the supported maximum "
+            f"({_SEVENZIP_MAX_CYCLES_POWER}); values 25–62 are rejected to match 7-Zip "
+            "(and to bound KDF cost)."
+        )
     # Batch rounds to cut hashlib.update call overhead (same approach as py7zr).
     cat_cycle = 6
     if cycles > cat_cycle:
@@ -210,12 +224,20 @@ def derive_sevenzip_aes_key(password: bytes, *, salt: bytes, cycles: int) -> byt
 def parse_sevenzip_aes_properties(properties: bytes) -> tuple[int, bytes, bytes]:
     """Parse 7z AES coder properties → ``(num_cycles_power, salt, iv)``.
 
-    Raises ``ValueError`` when the property blob is malformed.
+    Raises ``ValueError`` when the property blob is malformed, and
+    :class:`UnsupportedFeatureError` when ``NumCyclesPower`` is 25–62 (7-Zip's
+    ``E_NOTIMPL`` clamp).
     """
     if not properties:
         raise ValueError("empty 7z AES properties")
     first = properties[0]
     cycles = first & 0x3F
+    if cycles > _SEVENZIP_MAX_CYCLES_POWER and cycles != _SEVENZIP_NO_HASH_SENTINEL:
+        raise UnsupportedFeatureError(
+            f"7z NumCyclesPower {cycles} exceeds the supported maximum "
+            f"({_SEVENZIP_MAX_CYCLES_POWER}); values 25–62 are rejected to match 7-Zip "
+            "(and to bound KDF cost)."
+        )
     if first & 0xC0 == 0:
         raise ValueError("7z AES properties missing salt/IV flags")
     salt_size = (first >> 7) & 1
