@@ -345,26 +345,11 @@ def _windows_isolated_codec_roundtrip(
         pytest.param("bzip2", ("BZIP2",), id="bzip2"),
         pytest.param("zstd", ("ZSTD",), marks=requires_zstd(), id="zstd"),
         pytest.param("brotli", ("BROTLI",), marks=requires("brotli"), id="brotli"),
-        # Windows: skipped here — intermittent STATUS_HEAP_CORRUPTION in pyppmd on a
-        # *valid* solid PPMd stream (not adversarial input). Investigated by the
-        # non-blocking ``PPMd native stress`` workflow / scripts/ppmd_native_stress.py;
-        # see docs/internal/known-issues.md. Still runs on Linux/macOS.
-        pytest.param(
-            "ppmd",
-            ("PPMD",),
-            marks=[
-                requires("pyppmd"),
-                pytest.mark.skipif(
-                    sys.platform == "win32",
-                    reason=(
-                        "Windows pyppmd STATUS_HEAP_CORRUPTION flake on valid solid "
-                        "PPMd; covered by PPMd native stress CI (non-blocking) — "
-                        "see docs/internal/known-issues.md"
-                    ),
-                ),
-            ],
-            id="ppmd",
-        ),
+        # PPMd: previously skipped on win32 due to intermittent pyppmd STATUS_HEAP_CORRUPTION
+        # on unbounded decode(..., -1). archivey now always passes folder unpack_size as
+        # max_length and never does unbounded after-eof decode; see known-issues.md.
+        # Still covered by the non-blocking PPMd native stress workflow.
+        pytest.param("ppmd", ("PPMD",), marks=requires("pyppmd"), id="ppmd"),
     ],
 )
 def test_py7zr_codec_fixtures_roundtrip(

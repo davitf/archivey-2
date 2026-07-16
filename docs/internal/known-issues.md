@@ -257,25 +257,24 @@ python scripts/pyppmd_crash_repro.py 30 --mode overshoot
 python scripts/pyppmd_crash_repro.py 30 --mode sized-safe
 ```
 
-**Archivey mitigation:** (1) never call native decode after ``eof``; (2) pass
-folder/member ``unpack_size`` as ``max_length`` so PPMd7 cannot overshoot. Avoiding
-after-eof alone is **not** sufficient — unbounded ``-1`` still aborts.
+**Archivey mitigation:** on the 7z/ZIP paths we can avoid both crash families by being
+careful — (1) always pass folder/member ``unpack_size`` as ``max_length`` (no PPMd7
+``-1`` overshoot); (2) never call native ``decode`` with ``max_length=-1`` after eof;
+(3) when ``unpack_size`` is known and output is still short, allow *bounded* empty/NUL
+pumps (needed for pyppmd 1.1.x premature eof). Raw ``PpmdDecompressorStream`` without
+``unpack_size`` remains best-effort. The required-suite Windows PPMd roundtrip skip was
+removed under this contract; the non-blocking stress job still watches for regressions.
+
 ### Mitigation in the required CI matrix
 
-- **Skip** the `ppmd` parametrization of `test_py7zr_codec_fixtures_roundtrip` on `win32`
-  (still runs on Linux/macOS).
+- Required-suite PPMd roundtrip runs on all platforms (including Windows); decode is
+  bounded by folder unpack size.
 - Other Windows codec labels keep per-label subprocess isolation.
 - Default pytest excludes `-m 'not ppmd_native_stress'` so stress tests never fail the
   required suite.
-- Deterministic **raw** PPMd coverage (no 7z) lives in `tests/test_ppmd_raw_streams.py` and
-  stays in the required suite — those paths have been stable in short soaks.
-- **Product hardening (related, not a proven crash fix):** archivey now passes the 7z
-  folder unpack size into PPMd as `max_length` (and ZIP member size for PPMd8), and on
-  flush feeds the pyppmd “extra NUL” only within the remaining length — matching py7zr /
-  the [pyppmd PyPI note](https://pypi.org/project/pyppmd/). Previously `decode(..., -1)`
-  could overshoot the true payload on PPMd7 (no end mark); that is a correctness issue and
-  a plausible native-stress contributor, but the intermittent abort after other-codec
-  warmup is still open.
+- Deterministic **raw** PPMd coverage (no 7z) lives in `tests/test_ppmd_raw_streams.py`
+  (always passes ``unpack_size`` for PPMd7).
+- In-process PPMd7 create/destroy loops remain skipped on Windows (stress job covers that).
 
 ### Non-blocking stress check (investigation vehicle)
 
