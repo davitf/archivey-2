@@ -155,107 +155,107 @@ longer load-bearing and the wrapper could be simplified.
 - `scripts/macos_accelerator_debug.py` — characterises the finalization behaviour (Bug 1) across
   raw vs. guarded × cleanup strategies, each in its own subprocess.
 
-## Windows intermittent heap corruption in 7z PPMd roundtrips (mitigated + stress CI)
+## Intermittent `pyppmd` native aborts on valid PPMd streams (mitigated + stress CI)
 
-**Status: codec pinned to PPMd/`pyppmd`; root cause not fixed.** On `windows-latest` the
-suite has intermittently aborted during
+**Status: pinned to PPMd/`pyppmd`; root cause not fixed; Linux and Windows both affected
+(different trigger shapes).** Not adversarial input — happy-path encode/decode of valid
+PPMd data.
+
+### Windows: `STATUS_HEAP_CORRUPTION` on fresh PPMd children
+
+On `windows-latest` the suite has intermittently aborted during
 `tests/test_sevenzip_reader.py::test_py7zr_codec_fixtures_roundtrip` with
-`Windows fatal exception: code 0xc0000374` (`STATUS_HEAP_CORRUPTION`). Linux and macOS stay
-green; re-runs of identical commits often pass. Early reports noted Windows/py3.14; a later
-isolated failure on PR CI pinned the same abort on **Windows/py3.11** as well
-(`pyppmd==1.3.1` win_amd64). Windows/py3.14 can still pass on the same commit that fails
-py3.11, so the flake is not tied to a single matrix Python.
+`Windows fatal exception: code 0xc0000374` (`STATUS_HEAP_CORRUPTION`). Re-runs of identical
+commits often pass. Early reports noted Windows/py3.14; isolation later pinned the same
+abort on **Windows/py3.11** as well (`pyppmd==1.3.1` win_amd64). Windows/py3.14 can still
+pass on the same commit that fails py3.11.
 
-### What was pinned (isolation harness)
-
-On `win32`, each codec parametrization of that test already ran in its own subprocess
-(faulthandler + flushed `phase.txt` breadcrumbs: build → open → list → per-member read) so a
-native abort fails only that label instead of killing the whole pytest process (#80). A
-subsequent failure produced a clear lead:
+Per-label subprocess isolation (#80) + a dedicated stress run produced:
 
 | Field | Value |
 |-------|--------|
 | Label / filters | `ppmd` / `("PPMD",)` |
 | Exit | `0xC0000374` (`STATUS_HEAP_CORRUPTION`) |
-| Library | `pyppmd` 1.3.1 (`…\site-packages\pyppmd\…`) |
-| Last phase (first pin) | `read_member:nested/beta.bin:start` (after `alpha.txt` read OK, `len=600`) |
-| Stack | `sevenzip_reader._open_member` → `skip_forward` → `DecompressorStream.read` → PPMd decode |
+| Library | `pyppmd` 1.3.1 |
+| First pin phase | `read_member:nested/beta.bin:start` (after `alpha.txt` OK) |
+| Stress pin (50×) | **2/50** on py3.11 at `read_member:alpha.txt:start`; 0/50 on py3.14 that run |
+| Stack | `_open_member` → `skip_forward` / decode → `pyppmd` |
 
-A later dedicated stress run (50 fresh subprocesses, same baseline fixture) on
-**Windows/py3.11** reproduced **2/50** `STATUS_HEAP_CORRUPTION` crashes; both aborted at
-`read_member:alpha.txt:start` (first member), so the abort is not limited to
-second-member `skip_forward`. Same stress on **Windows/py3.14** was 0/50 on that run.
-Crashes occur in **fresh** subprocesses that only build+read PPMd, so prior pytest cases
-are **not required** to trigger the bug — though in-process reuse / other-codec warmup
-remain useful axes to compare (see stress scenarios below).
+**Fresh PPMd-only subprocesses are enough** — prior pytest cases are not required. The
+fixture is a py7zr-built solid PPMd archive from plain members (`b"alpha\n" * 100`,
+`bytes(range(64)) * 16`).
 
-### Valid stream, not adversarial input
+### Linux: SIGSEGV / `malloc(): invalid size` after other-codec warmup
 
-The crashing input is a **happy-path** fixture, not fuzz/mutation/corrupt data:
+Independently, stress on Linux reproduced a **highly flaky** native abort when other 7z
+codecs are exercised in the same process **before** PPMd (`warmup_codecs` scenario):
 
-- Built by **py7zr** with `FILTER_PPMD` from two small plain members
-  (`b"alpha\n" * 100` and `bytes(range(64)) * 16`), and (in stress) other valid shapes
-  (tiny / single-member / many-small / larger / repetitive).
-- Archive lists cleanly; successful iterations decompress to the expected bytes.
-- Observed abort points include both the **first** member read and solid random-access
-  open of a **later** member (`skip_forward` through `pyppmd.Ppmd7Decoder`).
+| Observation | Detail |
+|-------------|--------|
+| Rate | ~**10/30** children (~1/3) in one local soak; also seen on a single first run |
+| Signals | `SIGSEGV` (−11) and `SIGABRT` (−6) with `malloc(): invalid size (unsorted)` |
+| Typical phase | PPMd read after LZMA2/Deflate/Bzip2 warmup (`read_member:…:start` or stream open) |
+| `fresh_baseline` alone | 0/20 crashes in the same soak |
+| Raw `pyppmd` encode/decode alone | 0/40 subprocesses |
+| Raw archivey `PpmdDecompressorStream` alone | clean in short soaks |
 
-Heap corruption is often detected *after* the guilty native call, so a previous decode
-(or even encoder teardown from py7zr’s write path in the same child) may be the corruptor
-even when the abort surfaces on a later read. Either way, this is a native-extension /
-Windows heap issue on writer-produced valid solid PPMd data, not a hostile-input parser
-bug in archivey.
+So Linux looks like a **process-wide native-state / multi-extension** problem (or py7zr +
+other codecs priming a bad heap), while Windows already fails on a **minimal fresh PPMd
+7z child**. They may share an upstream `pyppmd` defect or be distinct; treat the rates per
+scenario as the comparison table.
+
+Repro (non-blocking stress entry points):
+
+```bash
+uv run --no-sync python scripts/ppmd_native_stress.py 30 --scenarios warmup_codecs
+uv run --no-sync pytest -m ppmd_native_stress -k warmup --timeout=600 -o addopts=
+```
 
 ### Mitigation in the required CI matrix
 
-- **Skip** the `ppmd` parametrization of `test_py7zr_codec_fixtures_roundtrip` on `win32` so
-  the flake cannot fail the required Windows jobs. The param still runs on Linux/macOS.
-- Other codec labels on Windows keep the per-label subprocess isolation (in case a different
-  native wheel misbehaves later).
-- Not a product-runtime change: archivey still uses `pyppmd` for PPMd on Windows; only the
-  flaky matrix assertion is moved.
+- **Skip** the `ppmd` parametrization of `test_py7zr_codec_fixtures_roundtrip` on `win32`
+  (still runs on Linux/macOS).
+- Other Windows codec labels keep per-label subprocess isolation.
+- Default pytest excludes `-m 'not ppmd_native_stress'` so stress tests never fail the
+  required suite.
+- Deterministic **raw** PPMd coverage (no 7z) lives in `tests/test_ppmd_raw_streams.py` and
+  stays in the required suite — those paths have been stable in short soaks.
+- Not a product-runtime change: archivey still uses `pyppmd` for PPMd.
 
 ### Non-blocking stress check (investigation vehicle)
 
-A dedicated workflow, **Windows PPMd stress** (`.github/workflows/windows-ppmd-stress.yml`),
-runs on every PR and on pushes to main:
+Workflow **PPMd native stress** (`.github/workflows/ppmd-native-stress.yml`) on every PR /
+main push:
 
-- `windows-latest` × Python **3.11 and 3.14**
-- `scripts/windows_ppmd_stress.py` — several scenario families (see below); prints
-  pass/crash counts per scenario, last phase, named NTSTATUS; writes a step summary +
-  artifact (ASCII-safe console I/O for Windows cp1252 runners)
-- Exit non-zero when any child crashes so the check is visibly red when the flake
-  reproduces
+- `windows-latest` + `ubuntu-latest` × Python **3.11 and 3.14**
+- `scripts/ppmd_native_stress.py` (ASCII-safe console I/O) + `pytest -m ppmd_native_stress`
+- Exit non-zero when any child crashes (visibility only — **do not** make this a required
+  check)
 
-Scenario families (each iteration is still a fresh subprocess unless noted):
+Default scenarios favour the **minimal surface**, then the original 7z baseline, then
+warmup:
 
-| Scenario | What it probes |
-|----------|----------------|
-| `fresh_baseline` | Exact CI fixture / sorted `read()` order |
-| `fresh_varied` | Different valid sizes, member counts, payloads, read orders (`sorted` / `reverse` / `stream_members`) |
-| `same_process` | Many PPMd build+read cycles **inside one child** (reuse / teardown) |
-| `warmup_codecs` | LZMA2 → Deflate → Bzip2 roundtrips, **then** PPMd in the same child (cross-codec contamination) |
-
-**Do not add this workflow as a required status check** — it is meant to keep signal without
-blocking merge. Local repro:
+| Scenario | Surface | Notes |
+|----------|---------|--------|
+| `raw_pyppmd7` / `raw_pyppmd8` | bare `pyppmd` only | No archivey, no 7z |
+| `raw_archivey_ppmd7` / `raw_archivey_ppmd8` | `PpmdDecompressorStream` / `open_codec_stream` | No 7z container |
+| `fresh_baseline` | py7zr PPMd 7z + archivey read | Original CI fixture |
+| `warmup_codecs` | LZMA2→Deflate→Bzip2 then PPMd | Linux ~1/3 abort repro |
+| `same_process` / `fresh_varied` | optional | Reuse / payload-shape axes |
 
 ```bash
 uv sync --group dev --extra all
-uv run --no-sync python scripts/windows_ppmd_stress.py          # default iters x all scenarios
-uv run --no-sync python scripts/windows_ppmd_stress.py 80
-uv run --no-sync python scripts/windows_ppmd_stress.py --scenarios fresh_baseline same_process
-ARCHIVEY_PPMD_STRESS_ITERS=50 uv run --no-sync python scripts/windows_ppmd_stress.py
+uv run --no-sync python scripts/ppmd_native_stress.py
+uv run --no-sync python scripts/ppmd_native_stress.py --scenarios raw_pyppmd7 raw_archivey_ppmd7
+ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress.py --scenarios warmup_codecs
 ```
 
 ### Next leads
 
-- Stress already shows crashes in fresh PPMd-only children → strong upstream/`pyppmd`
-  win_amd64 lead (historical Windows heap/AV issues exist in that project’s changelog).
-- Compare crash rates across the four scenarios: if `warmup_codecs` / `same_process` are
-  much hotter than `fresh_*`, look at process-wide native state; if all are similar, treat
-  it as inherent to `pyppmd` decode/construct on Windows.
-- Possible archivey-side experiments if investigating further: decoder lifecycle/close
-  between member opens, smaller decode chunk sizes during `skip_forward`, comparing
-  `stream_members()` (one decode) vs repeated `read()` (re-decode + skip). None of these
-  are confirmed fixes.
-
+- Prefer `raw_*` crash-rate deltas to decide whether the Windows abort is inherent to
+  `pyppmd` vs archivey’s stream wrapper vs the 7z path.
+- On Linux, compare `warmup_codecs` vs `fresh_baseline` vs `raw_*` (so far only warmup is
+  hot) — if another agent’s Linux native crashes match warmup/SIGSEGV, fold them here;
+  if they are raw-`pyppmd`-only, escalate as a broader upstream lead.
+- Possible archivey-side experiments (unconfirmed): decoder lifecycle/close, smaller
+  `skip_forward` chunks, `stream_members()` vs repeated `read()`.

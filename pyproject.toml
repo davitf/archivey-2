@@ -170,9 +170,10 @@ testpaths = ["tests"]
 # the whole job until the CI hard limit. pytest-timeout picks the platform default method
 # (SIGALRM on POSIX — suite continues; a process-killing thread dump on Windows). 60s is far
 # above any real test here (all run in milliseconds), so only a genuine hang trips it.
-addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60"
+addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
     "concurrent_reader: post-materialization MemberStreams.CONCURRENT seam (also run under free-threaded CI)",
+    "ppmd_native_stress: intermittent pyppmd native-abort stress (non-blocking PPMd native stress workflow only)",
 ]
