@@ -1685,7 +1685,8 @@ def test_o3_trailing_dot_space_stripped_strict_kept_standard(
     )
     assert standard.results[0].status is ExtractionStatus.EXTRACTED
     assert (
-        standard.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_SANITIZED) is None
+        standard.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_SANITIZED)
+        is None
     )
     if os.name != "nt":
         assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
