@@ -227,12 +227,66 @@ def test_standalone_zlib_midcut_raises_with_expected_size_on_accelerator() -> No
         seekable=True,
         expected_decompressed_size=len(payload),
     )
-    with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on) as stream:
+    # Keep close inside the expected-error scope: macOS rapidgzip may raise on read
+    # *and* would previously re-raise from VerifyingStream.close on context exit.
+    stream = open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on)
+    try:
         with pytest.raises((TruncatedError, CorruptionError)):
             data = stream.read()
             stream.close()
-            # If read returned early without error, close must raise short-length.
             assert len(data) < len(payload)
+    finally:
+        if not stream.closed:
+            try:
+                stream.close()
+            except (TruncatedError, CorruptionError):
+                pass
+
+
+def test_verifying_stream_close_after_inner_read_error_is_quiet() -> None:
+    """After a decode error on read, close must not raise a second length fault."""
+    from archivey.internal.streams.verify import VerifyingStream
+
+    class _Boom(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"partial")
+            self._blown = False
+
+        def read(self, n: int = -1) -> bytes:  # noqa: ARG002
+            if self._blown:
+                raise RuntimeError("std::exception")
+            self._blown = True
+            return super().read()
+
+    stream = VerifyingStream(_Boom(), {}, expected_size=100)
+    with pytest.raises(RuntimeError, match="std::exception"):
+        # First read returns "partial"; second (empty follow-up from readall path) —
+        # drive a second read that raises, matching mid-cut accelerator behaviour.
+        assert stream.read(7) == b"partial"
+        stream.read(1)
+    # Close must be quiet: verification was abandoned after the inner error.
+    stream.close()
+
+
+def test_verifying_stream_close_maps_probe_error_to_truncated() -> None:
+    """Silent short-read + probe exception on close → TruncatedError (macOS accel)."""
+    from archivey.internal.streams.verify import VerifyingStream
+
+    class _ShortThenBoom(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"partial")
+            self._eof_reads = 0
+
+        def read(self, n: int = -1) -> bytes:
+            if self.tell() >= 7:
+                self._eof_reads += 1
+                raise RuntimeError("std::exception")
+            return super().read(n)
+
+    stream = VerifyingStream(_ShortThenBoom(), {}, expected_size=100)
+    assert stream.read() == b"partial"
+    with pytest.raises(TruncatedError, match="ended after 7 of 100"):
+        stream.close()
 
 
 def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size() -> (
