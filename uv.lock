@@ -105,6 +105,7 @@ dev = [
     { name = "pytest-timeout" },
     { name = "rarfile" },
     { name = "ruff" },
+    { name = "tqdm" },
     { name = "ty" },
     { name = "urllib3" },
 ]
@@ -163,6 +164,7 @@ dev = [
     { name = "pytest-timeout", specifier = ">=2.3.0" },
     { name = "rarfile", specifier = ">=4.2" },
     { name = "ruff", specifier = ">=0.11.0" },
+    { name = "tqdm", specifier = ">=4.67.0" },
     { name = "ty", specifier = ">=0.0.1a13" },
     { name = "urllib3", specifier = ">=2.0.0" },
 ]

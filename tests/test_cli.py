@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import zipfile
 from pathlib import Path
 
@@ -247,6 +248,81 @@ def test_no_tqdm_progress_still_extracts(
     dest = tmp_path / "out"
     assert main(["extract", str(sample_zip), "-d", str(dest)]) == EXIT_OK
     assert (dest / "a.txt").exists()
+
+
+def test_progress_callback_requires_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    from archivey.cli import progress as progress_mod
+
+    class _NonTTY(io.StringIO):
+        def isatty(self) -> bool:  # noqa: A003 - match TextIO API
+            return False
+
+    monkeypatch.setattr(progress_mod.sys, "__stderr__", _NonTTY())
+    assert (
+        progress_mod.make_progress_callback(hide_progress=False, stream=_NonTTY())
+        is None
+    )
+
+
+def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -> None:
+    from archivey.cli import progress as progress_mod
+    from archivey.internal.extraction_types import ExtractionProgress
+    from archivey.types import ArchiveMember, MemberType
+
+    class _TTY(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    created: list[object] = []
+
+    class _FakeBar:
+        def __init__(self, **kwargs: object) -> None:
+            created.append(kwargs)
+            self.n = 0
+            self.total = kwargs.get("total")
+            self.desc = kwargs.get("desc")
+            self.closed = False
+
+        def set_description(self, desc: str, refresh: bool = True) -> None:
+            self.desc = desc
+
+        def update(self, n: int) -> None:
+            self.n += n
+
+        def refresh(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(progress_mod, "_load_tqdm", lambda: _FakeBar)
+    cb = progress_mod.make_progress_callback(hide_progress=False, stream=_TTY())
+    assert cb is not None
+
+    member = ArchiveMember(type=MemberType.FILE, name="big.bin", size=100)
+    cb(
+        ExtractionProgress(
+            member=member,
+            bytes_written=40,
+            total_bytes_estimated=100,
+            members_done=0,
+            members_total=1,
+            member_bytes_written=40,
+        )
+    )
+    cb(
+        ExtractionProgress(
+            member=member,
+            bytes_written=100,
+            total_bytes_estimated=100,
+            members_done=1,
+            members_total=1,
+            member_bytes_written=100,
+        )
+    )
+    assert len(created) == 1
+    assert created[0]["mininterval"] == 0  # type: ignore[index]
+    assert created[0]["disable"] is False  # type: ignore[index]
 
 
 def test_track_io_reports(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> None:
