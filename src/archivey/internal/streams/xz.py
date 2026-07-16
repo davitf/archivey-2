@@ -383,6 +383,10 @@ class _XzState:
                     self._state = self._NEED_HEADER
                 elif not self._dec.needs_input:
                     # More output available under the budget; loop to drain with b"".
+                    # If a drain produced nothing, stop — avoid spinning on a stuck
+                    # decompressor that reports needs_input=False with empty output.
+                    if not plain and not chunk:
+                        break
                     continue
                 else:
                     break
@@ -493,6 +497,8 @@ class _XzBlockChain:
                     if self._blocks[next_idx].compressed_start != prev_end:
                         break
             elif self._dec is not None and not self._dec.needs_input:
+                if not plain:
+                    break
                 continue
             else:
                 break

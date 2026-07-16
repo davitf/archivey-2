@@ -191,6 +191,8 @@ class _LzipState:
                     self._dec = None
                     self._state = self._NEED_TRAILER
                 elif not self._dec.needs_input:
+                    if not plain and not chunk:
+                        break
                     continue
                 else:
                     break

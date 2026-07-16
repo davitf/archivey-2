@@ -321,7 +321,12 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _read_decompressed_chunk(self, max_length: int = -1) -> bytes:
         if not self._decoder.needs_input:
-            return self._ingest_decode(self._decoder.feed(b"", max_length))
+            drained = self._ingest_decode(self._decoder.feed(b"", max_length))
+            if drained:
+                return drained
+            # Decoder claimed retained input but produced nothing (e.g. a stuck
+            # lzma needs_input=False under a budget). Fall through to reading more
+            # compressed bytes — or EOF — so the caller cannot spin forever.
         chunk = self._inner.read(_COMPRESSED_READ_SIZE)
         if not chunk:
             self._eof = True
