@@ -49,14 +49,22 @@ def _password_arg(password):
 
 The password is an argv element of the `unrar` child, so it is visible to any local user via
 `ps auxww` / `/proc/<pid>/cmdline` for the process lifetime. This matches `rarfile`'s
-behaviour and is largely forced by the `unrar` CLI (which has no env/stdin password channel
-that also works non-interactively), so it is a **documented threat-model limitation**, not a
-code bug — worth a line in `docs/internal/threat-model.md` (local-user confidentiality is out
-of the current trust boundary). No password leaks into exception text, `repr`, or logs on any
-path I read: `_UnrarOwnedStream.close` raises a static
+behaviour. No password leaks into exception text, `repr`, or logs on any path I read:
+`_UnrarOwnedStream.close` raises a static
 `EncryptionError("Incorrect RAR password or encrypted member")`, and the RAR parser's
 `EncryptionError(f"Failed to decrypt RAR3 headers: {exc}")` wraps a decrypt-time exception
 that does not carry the password.
+
+**On the maintainer's follow-up (SUMMARY:35 — "any way of avoiding it, passing via stdin?"):**
+to my knowledge RARLAB `unrar` has **no scriptable non-interactive password channel** other
+than `-p<password>` — no env var, no `--password-file`, and its interactive prompt reads from
+the console/tty rather than a plain piped stdin, so it can't be fed reliably from a subprocess
+pipe. That is why `rarfile`, `patool`, etc. all use `-p<pwd>`. So this is largely unavoidable
+without switching the decoder, and is best treated as a **documented threat-model limitation**
+(local-user confidentiality is outside the current trust boundary) — a line in
+`docs/internal/threat-model.md`. I've added a source-verification item
+(`7z-source-questions.md` §D9) to have the UnRAR-source agent confirm there is genuinely no
+stdin/env/file channel before we close it out as "unavoidable".
 
 ## Streaming / seek / lifecycle (§C) — no issues found
 

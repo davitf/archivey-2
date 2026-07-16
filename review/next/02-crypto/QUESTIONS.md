@@ -1,41 +1,90 @@
-# Maintainer decisions — Brief 2 (crypto)
+# Maintainer decisions — Brief 2 (crypto) — RESOLVED
 
-These are the calls I did not want to make silently (CLAUDE.md: pause and ask on
-spec/behaviour discrepancies rather than resolving them).
+Answers below fold in davitf's PR #115 review (2026-07-15) plus a check of the `archivey-dev`
+reference at `730275b`. Open source-verification items are collected in
+`7z-source-questions.md`.
 
-## Q1 — RAR5 tweaked-checksum BLAKE2sp (F1)
+## Q1 — RAR5 tweaked-checksum BLAKE2sp (F1) — **decided: untweak-and-verify**
 
-When a RAR5 member is encrypted with tweaked checksums (`RAR5_XENC_TWEAKED`), the stored
-BLAKE2sp is key-tweaked and cannot be checked against the plaintext hash without reproducing
-the inverse tweak. Two options:
+davitf: *"DEV had special handling for tweaked rar checksums (maybe only crc32). If we have
+password(s) at open time, could we quickly check which one is correct using the check field,
+then derive the correct checksums from the tweaked ones … if we don't know the password,
+leave the hashes empty (maybe store the tweaked ones in extras)."*
 
-- **(recommended) Skip it**, matching rarfile and matching what `_member_hashes` already does
-  for crc32 — drop blake2sp from `member.hashes` when tweaked, optionally emitting a
-  `DIGEST_UNVERIFIABLE` diagnostic. Minimal, restores correct reads immediately.
-- **Implement the inverse tweak** so archivey actually verifies tweaked BLAKE2sp (and could
-  re-enable the tweaked crc32 too). More faithful to WinRAR, but adds crypto surface and
-  needs a `-htb`-encrypted fixture to test.
+Findings from `archivey-dev/src/archivey/formats/rar_reader.py`:
 
-Either way the current behaviour (raise `CorruptionError` on good data) is wrong. Which
-direction?
+- DEV implements `convert_crc_to_encrypted` = RAR's `ConvertHashToMAC`. The tweak is a
+  **one-way forward transform**, not reversible: `tweaked = f(hash_key, real_hash)`. So you
+  **cannot** "derive the correct checksums from the tweaked ones" — the real CRC/BLAKE2sp is
+  not recoverable from the stored tweaked value. What you *can* do (and what DEV does) is
+  compute the real hash from decrypted data, apply the same forward transform, and compare to
+  the stored tweaked value.
+- Key derivations (all PBKDF2-HMAC-SHA256 over UTF-8 password + 16-byte salt):
+  - AES key: `1 << kdf_count` iterations.
+  - **HashKey** (the tweak/MAC key): `(1 << kdf_count) + 16`.
+  - PswCheck: `(1 << kdf_count) + 32`.
+- CRC32 transform: `d = HMAC-SHA256(HashKey, crc.to_bytes(4,"little"))`; XOR the eight
+  little-endian uint32 words of `d` → 4-byte tweaked CRC.
+- BLAKE2sp transform (per UnRAR `ConvertHashToMAC`, **flagged for source confirmation** in
+  `7z-source-questions.md`): `tweaked32 = HMAC-SHA256(HashKey, real_blake2sp_32)` — the stored
+  32 bytes are an HMAC of the real digest. **DEV implemented the CRC path only; it never
+  untweaked BLAKE2sp** — it just dropped the tweaked crc32 (`crc32 = None`) so it never
+  false-positived. v2 regressed by dropping crc32 but *keeping* the tweaked blake2sp.
 
-## Q2 — 7z folders with no integrity anchor (F2)
+**Plan (matches davitf's proposal):**
+1. **Immediate correctness fix (unblocks reads):** make `_member_hashes` symmetric — drop
+   `blake2sp` when tweaked, exactly as it already drops `crc32`. This alone removes the false
+   `CorruptionError`. Store the tweaked values in `member.extra` (`rar.tweaked_crc32`,
+   `rar.tweaked_blake2sp`) so nothing is lost.
+2. **Full fix (restores verification when the password is known):** thread the confirmed
+   password / HashKey into the RAR verification stage and verify by forward-transform (CRC32
+   and BLAKE2sp). When no correct password is known at open time, leave `member.hashes` empty
+   and keep the tweaked values in `extra`. This is strictly better than DEV (which did CRC
+   only) and needs the BLAKE2sp transform confirmed against UnRAR source.
 
-An encrypted 7z folder with no folder digest and CRC-less members currently confirms *any*
-password and returns garbage. The safe fix is to **fail closed** — refuse to confirm a
-password when there is no checksum to validate against. Does that conflict with any planned
-"recover what you can from a damaged/odd archive" behaviour? My read of VISION #3 is that a
-*wrong-password-not-detected* is strictly worse than a refusal, so fail-closed is right — but
-confirm you want an encrypted-but-checksum-less member to hard-error rather than hand back
-unverified bytes.
+## Q2 — 7z folders with no integrity anchor (F2) — **decided: best-effort, don't hard-error**
 
-## Q3 — 7z KDF cap and the `0x3F` sentinel (F3)
+davitf: *"I'd rather not hard-error if the data might actually be correct … extremely rare
+… how does 7z itself handle it? doesn't zip have this problem as well … error detection is
+best-effort."*
 
-1. **Cap `NumCyclesPower`?** RAR5 caps its KDF shift at 24; 7z is uncapped below the `0x3F`
-   sentinel, so `0x3E` = ~2⁶² rounds. I recommend capping at 24 (raise
-   `UnsupportedFeatureError` above it). Agree on 24, or a different ceiling?
-2. **Is `0x3F` really a "no-hash" sentinel?** archivey follows py7zr (copy `salt+password`,
-   no hashing). If the 7-Zip C++ reference instead treats `0x3F` as `2^63` iterations, both
-   archivey and py7zr are wrong for that one value — but no creator emits `0x3F`, so it is a
-   crafted-only concern. Worth a one-line confirmation against the reference, or explicitly
-   accept "bit-exact with py7zr (our oracle)" as the contract and move on?
+Agreed — retract the "fail closed" recommendation. Rationale:
+
+- **7-Zip itself** relies on the folder/stream CRC to reject a wrong password; with no CRC it
+  cannot detect a wrong password either and returns whatever the cipher produced. Matching
+  that = best-effort. (Included as a source-confirmation item in `7z-source-questions.md`.)
+- **ZIP is not actually exposed** the same way: WinZip AE-2 sets CRC=0 but authenticates with
+  a **mandatory** HMAC (checked on close — verified good), and ZipCrypto STORED members are
+  disambiguated by the central-directory CRC-32. So every ZIP encrypted member still has an
+  integrity anchor (HMAC or CRC). 7z is the only format here where an encrypted member can
+  legitimately carry **zero** anchor (AES+COPY, no digest, CRC-less members).
+- The 1/256 ZipCrypto one-byte-check collision is a *different* best-effort case already
+  handled by the multi-candidate CRC pass; it does not apply when there is no CRC at all.
+
+**Plan:** keep the current accept-and-return behaviour, but emit a diagnostic
+(`DIGEST_UNVERIFIABLE` or a new `DECRYPTION_UNVERIFIED`) when an encrypted folder has no
+integrity anchor, so a caller can tell "decrypted but not verifiable" from "verified". **F2
+downgraded to Low** (best-effort limitation, honest-signal gap — not silent-without-notice).
+
+## Q3 — 7z KDF `NumCyclesPower`: real cap, user-selectable, max (F3)
+
+What I can state now; the rest is in `7z-source-questions.md`:
+
+- **Default:** 7-Zip encodes with `NumCyclesPower = 19` (2¹⁹ = 524 288 SHA-256 rounds,
+  ~sub-millisecond).
+- **User-selectable?** Not exposed in the 7-Zip GUI/CLI; the encoder is effectively fixed at
+  19. The **format** stores it in the low 6 bits of the AES property byte, so a file can
+  legally carry 0–0x3F regardless of what the official encoder emits.
+- **Max / decoder cap:** the 7z format max is `0x3F`. Whether the official 7-Zip *decoder*
+  caps `NumCyclesPower` (or loops `1 << value` unbounded, making 7-Zip itself DoS-able) is the
+  key source question — see `7z-source-questions.md`.
+
+Regardless of what 7-Zip does, v2 should apply its **own defensive cap**. Recommendation:
+reject `NumCyclesPower > 24` (2²⁴ ≈ 16.7 M rounds, ~100 ms upper bound) with
+`UnsupportedFeatureError` — well above any real archive (19) and mirroring the RAR5 KDF cap of
+24 that v2 already enforces (`_RAR_MAX_KDF_SHIFT`). Confirm 24 or pick another ceiling.
+
+## Q4 — questions for the 7-Zip / UnRAR source agent
+
+davitf offered to run an agent over the 7-Zip (and we should add UnRAR) source. The full
+checklist is in **`7z-source-questions.md`**.

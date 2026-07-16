@@ -93,10 +93,18 @@ enforce `_RAR_MAX_KDF_SHIFT = 24` (`rar_parser.py:49,1382,1395`). 7z has no equi
 **Fix:** cap `cycles` in `derive_sevenzip_aes_key` (or in `parse_sevenzip_aes_properties`) at
 a sane maximum — 24 mirrors RAR5 and is far above any real archive — raising
 `UnsupportedFeatureError`/`CorruptionError` above it. `py7zr` shares the missing cap, so this
-is not an oracle divergence; it is a hardening gap the brief's threat model asks for. See
-QUESTIONS Q3 (also: is py7zr's `0x3F` "no-hash" shortcut actually spec-correct vs the 7-Zip
-C++ reference, which may intend `0x3F` as `2^63` rather than a sentinel? — a crafted-only
-concern, since no creator emits `0x3F`).
+is not an oracle divergence; it is a hardening gap the brief's threat model asks for.
+
+**On the maintainer's follow-up (Q3 — "what cap does 7-Zip use, is it user-selectable, max?"):**
+7-Zip *encodes* with `NumCyclesPower = 19` (2¹⁹ rounds, ~sub-ms) and does not expose the value
+in its GUI/CLI, so real archives are effectively fixed at 19. The **format** stores it in the
+low 6 bits of the AES property byte, so a hostile file can carry 0–0x3F regardless. Whether the
+7-Zip *decoder* caps it (or loops `1 << value` unbounded, i.e. 7-Zip is itself DoS-able) is the
+open source question — see `7z-source-questions.md` §A. Independent of that, v2 should apply its
+own cap; recommend `NumCyclesPower > 24 → UnsupportedFeatureError`, mirroring the RAR5 cap v2
+already enforces. Also open for the source agent: is py7zr's `0x3F` "no-hash" shortcut actually
+spec-correct vs the 7-Zip reference (which may intend `0x3F` as `2^63`)? — crafted-only, since
+no creator emits `0x3F`.
 
 ---
 
@@ -117,3 +125,10 @@ a secret-derived compare with an `==`/`!=` where a drop-in `compare_digest` exis
 `sha256(hdr_check)[:4] != hdr_sum` check on the same line is over a non-secret and does not
 matter). WinZip AES already uses `hmac.compare_digest` for both its pw-verify and its HMAC;
 7z uses CRC (non-secret) so `!=` is fine there.
+
+**On the maintainer's follow-up (SUMMARY:36 — "is the difference just timing-attack
+resilience?"):** yes. The only thing `compare_digest` buys here is resistance to a timing
+side-channel on the password-check value, and for a local archive library there is no remote
+attacker measuring decrypt timing and no server-side secret — so there is effectively **no
+attack surface**. It is worth the one-line change purely for correctness/consistency (v2
+already uses `compare_digest` elsewhere), but it is not security-relevant. Lowest priority.

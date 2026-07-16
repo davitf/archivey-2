@@ -90,13 +90,27 @@ A full archive→`unrar`→VerifyingStream repro needs the `unrar` binary (absen
 `-htb`-encrypted RAR5 fixture; the two units above pin the exact defect and the oracle pins
 the intended behaviour.
 
-### Fix
+### Fix (resolved with maintainer — see QUESTIONS Q1)
 
-Guard blake2sp with the same predicate: `if info.blake2sp_hash is not None and not
-_crc_is_tweaked(info):`. (Rename `_crc_is_tweaked` → `_checksums_tweaked` since it now covers
-both.) Optionally add a `DIGEST_UNVERIFIABLE` diagnostic so a tweaked member reports "not
-verified" rather than silently unverified — matching how `VerifyingStream` already emits that
-code for unknown algorithms.
+The DEV reference (`archivey-dev/src/archivey/formats/rar_reader.py`) shows the tweak is RAR's
+`ConvertHashToMAC` — a **one-way forward transform**
+(`tweaked = HMAC-based(HashKey, real_hash)`), so the real checksum is *not* recoverable from
+the stored tweaked value. Two-step plan:
+
+1. **Interim correctness fix:** make `_member_hashes` symmetric — guard blake2sp with the
+   same predicate that already guards crc32 (`… and not _crc_is_tweaked(info)`; rename to
+   `_checksums_tweaked`). Stash the tweaked values in `member.extra`
+   (`rar.tweaked_crc32` / `rar.tweaked_blake2sp`). This removes the false `CorruptionError`
+   immediately. DEV did exactly this for crc32 (set `crc32 = None` when tweaked) and never
+   surfaced a tweaked blake2sp — which is why DEV never hit this bug.
+2. **Full fix (restore verification when the password is known):** verify by forward-transform
+   — compute the real CRC32/BLAKE2sp over the decrypted data, apply `ConvertHashToMAC` with the
+   HashKey `= PBKDF2-HMAC-SHA256(pw_utf8, salt, (1<<kdf_count)+16)`, and compare to the stored
+   tweaked value. CRC32 transform is `XOR of the eight uint32 words of
+   HMAC-SHA256(HashKey, crc_le32)`; BLAKE2sp is (per UnRAR, pending source confirmation in
+   `7z-source-questions.md`) `HMAC-SHA256(HashKey, blake2sp32)`. Needs the confirmed password /
+   HashKey threaded into the RAR verification stage; leave `member.hashes` empty when no
+   correct password is known at open time.
 
 ---
 
@@ -155,14 +169,17 @@ _verify_decoded_folder(folder, garbage, member_digests=[(16, None)])
 # control: digest_defined=True, crc=0x12345678 -> EncryptionError (correctly rejected)
 ```
 
-### Fix
+### Fix (resolved with maintainer — see QUESTIONS Q2) — best-effort, not fail-closed
 
-Fail closed: when an *encrypted* folder has neither a folder digest nor any member CRC,
-`_password_for_folder` should refuse to confirm a password (raise a typed
-`EncryptionError`/`UnsupportedFeatureError` — "cannot verify password: this encrypted 7z
-folder has no checksum") rather than accept the first candidate. This preserves VISION #3
-(honest error) at the cost of refusing a pathological archive that no real tool produces.
-See QUESTIONS Q2 — this trades against any "recover what you can" goal.
+Maintainer call: do **not** hard-error (error detection is best-effort, and the data might be
+correct). This matches 7-Zip, which also cannot detect a wrong password when no CRC is present.
+Note ZIP is **not** exposed the same way — WinZip AE-2 authenticates with a mandatory HMAC and
+ZipCrypto STORED is disambiguated by the central-directory CRC — so 7z is the only format here
+where an encrypted member can carry zero integrity anchor. Recommendation: keep the
+accept-and-return behaviour but **emit a diagnostic** (`DIGEST_UNVERIFIABLE` or a new
+`DECRYPTION_UNVERIFIED`) when an encrypted folder has no anchor, so the caller can distinguish
+"decrypted but unverifiable" from "verified". **Downgraded to Low** (honest-signal gap, not
+silent-without-notice).
 
 ---
 
