@@ -28,6 +28,7 @@ nav:
   - Internal:
       - Overview: internal/index.md
       - Threat model: internal/threat-model.md
+      - Open issues (gotchas triage): internal/open-issues.md
       - Compression-library analysis: internal/library-analysis.md
       - Known issues: internal/known-issues.md
       - Release-repo cutover: internal/release-repo-cutover.md
