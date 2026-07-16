@@ -17,6 +17,12 @@ Two distinct pure-``pyppmd`` abort families (fresh subprocesses, ~5 cycles each)
    mark) with no second call. ~15–25% crash / 5 cycles. So **avoiding after-eof
    alone is not enough** — unbounded ``max_length=-1`` is itself crashy.
 
+3. **oversized** (``--mode oversized``): sized ``decode(packed, len(data) + 65536)``
+   — no ``-1`` anywhere. Crashes at a similar rate to overshoot, while ``+64`` /
+   ``+4096`` over-requests stayed clean. The unsafe property is requesting
+   materially more output than the stream's true remaining payload; the exact
+   remaining size (py7zr-style) is the safe contract.
+
 Controls that stayed at 0 crashes in 100-child soaks: sized-only decode;
 pre-EOF ``decode(packed + b"\\0", size)``; skip after-eof when ``dec.eof``;
 underfed sized decode then dealloc (``--mode underfed-sized``); bounded decode
@@ -193,6 +199,31 @@ _MODES: dict[str, str] = {
             out = dec.decode(packed + b"\\0", len(data))
             assert out == data
         print("ok", pyppmd.__version__, "pre-eof-null")
+        """
+    ),
+    # Sized decode whose budget exceeds the true payload by 64 KiB — crashes WITHOUT
+    # any max_length=-1. Small over-requests (+64, +4096) stayed clean in 20-child
+    # soaks; +65536 crashed 13/20. The unsafe property is requesting materially more
+    # output than the stream can produce, not the -1 sentinel itself.
+    "oversized": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM = 6, 1 << 20
+        data = (b"alpha\\n" * 100) + (bytes(range(64)) * 16)
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        for _ in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed, len(data) + 65536)
+            assert out[: len(data)] == data
+        print("ok", pyppmd.__version__, "oversized")
         """
     ),
     # Control: sized decode with only half the input, then dealloc — the worker
