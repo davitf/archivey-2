@@ -241,6 +241,19 @@ uv run --no-sync python scripts/ppmd_native_stress.py 30 --scenarios warmup_code
 uv run --no-sync pytest -m ppmd_native_stress -k warmup --timeout=600 -o addopts=
 ```
 
+**Minimal upstream-facing repro (no archivey):** `scripts/pyppmd_crash_repro.py`
+depends only on ``pyppmd`` (+ stdlib). Hottest mode is ``extra-null`` — sized
+decode to ``eof``, then ``decode(b"\\0", -1)``:
+
+```bash
+pip install 'pyppmd==1.3.1'
+python scripts/pyppmd_crash_repro.py 30 --mode extra-null
+python scripts/pyppmd_crash_repro.py 30 --mode sized-safe   # control
+```
+
+Local soak on Linux/py3.11/pyppmd 1.3.1: ``extra-null`` ~6/20 crashes;
+``sized-safe`` 15/15 clean. Also useful for comparing ``1.2.0`` vs ``1.3.1``.
+
 ### Mitigation in the required CI matrix
 
 - **Skip** the `ppmd` parametrization of `test_py7zr_codec_fixtures_roundtrip` on `win32`
