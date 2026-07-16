@@ -163,6 +163,12 @@ def _windows_isolated_codec_roundtrip(
     each codec contains the blast radius and surfaces which label crashed (non-zero rc /
     NTSTATUS) instead of a suite-wide fatal exception with an ambiguous stack.
 
+    Isolation pinned the flake to the ``ppmd`` label (valid solid PPMd / ``pyppmd``); that
+    param is now skipped on ``win32`` in the required matrix and stress-tested by
+    ``scripts/windows_ppmd_stress.py`` / the non-blocking ``Windows PPMd stress``
+    workflow — see ``docs/internal/known-issues.md``. Other codec labels still use this
+    harness on Windows.
+
     The child writes flushed phase breadcrumbs to ``phase.txt`` so a hard abort still
     leaves a last-known step for the parent to report.
     """
@@ -339,7 +345,26 @@ def _windows_isolated_codec_roundtrip(
         pytest.param("bzip2", ("BZIP2",), id="bzip2"),
         pytest.param("zstd", ("ZSTD",), marks=requires_zstd(), id="zstd"),
         pytest.param("brotli", ("BROTLI",), marks=requires("brotli"), id="brotli"),
-        pytest.param("ppmd", ("PPMD",), marks=requires("pyppmd"), id="ppmd"),
+        # Windows: skipped here — intermittent STATUS_HEAP_CORRUPTION in pyppmd on a
+        # *valid* solid PPMd stream (not adversarial input). Investigated by the
+        # non-blocking ``Windows PPMd stress`` workflow / scripts/windows_ppmd_stress.py;
+        # see docs/internal/known-issues.md. Still runs on Linux/macOS.
+        pytest.param(
+            "ppmd",
+            ("PPMD",),
+            marks=[
+                requires("pyppmd"),
+                pytest.mark.skipif(
+                    sys.platform == "win32",
+                    reason=(
+                        "Windows pyppmd STATUS_HEAP_CORRUPTION flake on valid solid "
+                        "PPMd; covered by Windows PPMd stress CI (non-blocking) — "
+                        "see docs/internal/known-issues.md"
+                    ),
+                ),
+            ],
+            id="ppmd",
+        ),
     ],
 )
 def test_py7zr_codec_fixtures_roundtrip(
