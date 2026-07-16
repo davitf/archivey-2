@@ -458,6 +458,57 @@ def test_verify_on_close_after_full_single_read() -> None:
         stream.close()
 
 
+def test_verify_expected_size_exact_passes() -> None:
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT))
+    assert stream.read() == CONTENT
+    assert stream.read() == b""
+
+
+def test_verify_expected_size_short_raises_truncated() -> None:
+    """A hash-less member that ends before its declared size raises TruncatedError."""
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT) + 100)
+    assert stream.read() == CONTENT  # all available bytes delivered
+    with pytest.raises(TruncatedError):
+        stream.close()
+
+
+def test_verify_expected_size_overlong_stops_at_declared_size() -> None:
+    """An over-long stream stops at the declared size and raises, without reading the rest."""
+    inner = io.BytesIO(CONTENT)
+    declared = len(CONTENT) - 200
+    stream = VerifyingStream(inner, {}, expected_size=declared)
+    out = bytearray()
+    with pytest.raises(CorruptionError, match="exceeds"):
+        while True:
+            chunk = stream.read(64)
+            if not chunk:
+                break
+            out.extend(chunk)
+    # Bounded: never returned more than the declared size.
+    assert len(out) == declared
+    # And it stopped reading the inner near the boundary (did not drain all of it).
+    assert inner.tell() <= declared + 1
+
+
+def test_verify_expected_size_short_with_hash_is_digest_mismatch() -> None:
+    """A hashed short read surfaces as the digest mismatch, not a truncation error."""
+    stream = VerifyingStream(
+        io.BytesIO(CONTENT),
+        {"crc32": _crc32(CONTENT + b"more")},
+        expected_size=len(CONTENT) + 4,
+    )
+    assert stream.read() == CONTENT
+    with pytest.raises(CorruptionError, match="crc32"):
+        stream.close()
+
+
+def test_verify_expected_size_partial_read_then_close_is_ok() -> None:
+    """Deliberate partial read then close is not a truncation."""
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    stream.close()  # must not raise
+
+
 def test_verify_unverifiable_algorithm_skipped_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

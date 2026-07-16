@@ -14,6 +14,7 @@ from typing import BinaryIO
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.exceptions import (
+    CorruptionError,
     EncryptionError,
     StreamNotSeekableError,
     TruncatedError,
@@ -43,7 +44,6 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     SharedSource,
-    SlicingStream,
     SolidBlockReader,
     is_seekable,
     is_stream,
@@ -136,11 +136,35 @@ def _copy_stream_to_path(source: BinaryIO, dest: Path) -> None:
 
 
 class _UnrarOwnedStream(DelegatingStream):
-    """Stdout wrapper that terminates the owning ``unrar`` process on close."""
+    """Stdout wrapper that terminates the owning ``unrar`` process on close.
 
-    def __init__(self, stdout: BinaryIO, proc: subprocess.Popen[bytes]) -> None:
+    On close it maps ``unrar``'s exit code (RARLAB) to a typed error so a corrupt,
+    truncated, or wrong-password member surfaces honestly instead of a silent short
+    read. Only a self-exit code maps: when *we* terminate the process (early close /
+    teardown) the return code is negative and no error is raised. ``named_member``
+    distinguishes a per-member open (``-n`` mask) — where "no files matched" (code 10)
+    means the member could not be read — from the solid ALL-pipe, where an empty match
+    is not an error.
+
+    ``has_verifiable_hash`` suppresses the corruption/no-match mapping (codes 2/3/10):
+    when the member carries a CRC32/BLAKE2sp that archivey verifies itself, that check
+    is authoritative, and some legacy archives (e.g. RAR 1.5) make ``unrar`` report a
+    spurious CRC error (exit 3) while emitting correct, verified data. A wrong-password
+    exit (11) always maps — it means no usable data regardless of any stored hash.
+    """
+
+    def __init__(
+        self,
+        stdout: BinaryIO,
+        proc: subprocess.Popen[bytes],
+        *,
+        named_member: bool = False,
+        has_verifiable_hash: bool = False,
+    ) -> None:
         super().__init__(stdout)
         self._proc = proc
+        self._named_member = named_member
+        self._has_verifiable_hash = has_verifiable_hash
 
     def close(self) -> None:
         if self.closed:
@@ -159,9 +183,23 @@ class _UnrarOwnedStream(DelegatingStream):
             rc = self._proc.returncode
             # Mark closed without relying on DelegatingStream (already closed inner).
             super(DelegatingStream, self).close()
-            # unrar exit 11 = bad password (RARLAB).
+            # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
+            # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass; a
+            # negative code means we terminated it (early close) — not an error.
             if rc == 11:
                 raise EncryptionError("Incorrect RAR password or encrypted member")
+            if self._has_verifiable_hash:
+                # archivey verifies this member's CRC32/BLAKE2sp itself; that check is
+                # authoritative, so ignore unrar's (sometimes spurious) corruption codes.
+                return
+            if rc in (2, 3):
+                raise CorruptionError(
+                    f"unrar reported a fatal or CRC error (exit {rc}) reading member data"
+                )
+            if rc == 10 and self._named_member:
+                raise CorruptionError(
+                    "unrar found no matching member (exit 10); the member could not be read"
+                )
 
 
 class RarReader(BaseArchiveReader):
@@ -468,7 +506,13 @@ class RarReader(BaseArchiveReader):
             version_control=version_control,
         )
         self._live_unrar = proc
-        owned: BinaryIO = self._track_decompressed(_UnrarOwnedStream(stdout, proc))
+        # Each payload member in the pipe is verified individually (CRC/BLAKE2sp and
+        # declared length via VerifyingStream), so the pipe-level unrar exit code is
+        # redundant for corruption and is suppressed here to avoid legacy-format false
+        # positives; wrong-password (11) still maps.
+        owned: BinaryIO = self._track_decompressed(
+            _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
+        )
         solid = SolidBlockReader(owned)
         previous: ArchiveStream | None = None
         pipe_offset = 0
@@ -506,10 +550,17 @@ class RarReader(BaseArchiveReader):
         *,
         track_output: bool = True,
     ) -> ArchiveStream:
-        if member.hashes:
+        # Verify every member's declared length (and any CRC32/BLAKE2sp) as it is read:
+        # an over-long external decode stops at the declared size and errors, a short one
+        # raises, and a wrong one fails its digest. Applied to all members (not just
+        # hashed ones), so a hash-less member still can't be silently truncated. A seek
+        # off the sequential frontier disables the checks (VerifyingStream), preserving
+        # random access on seekable direct reads.
+        if member.size is not None or member.hashes:
             inner = VerifyingStream(
                 inner,
                 member.hashes,
+                expected_size=member.size,
                 collector=self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
@@ -567,22 +618,31 @@ class RarReader(BaseArchiveReader):
             return self._wrap_payload_stream(inner, member)
 
         path = self._ensure_archive_path()
-        # unrar needs the archive path (forward slashes), or ``path;n`` for history.
-        # Do not use the normalized ``member.name`` (may differ on separators).
+        # unrar addresses the member by its presented name (``path`` or ``path;n``) via a
+        # ``-n`` include mask (see open_unrar_p); a history row needs ``-ver``. Do not use
+        # the normalized ``member.name`` (may differ on separators).
         proc, stdout = open_unrar_p(
             path,
             password=self._unrar_password,
             member=_presented_filename(raw),
+            version_control=raw.is_file_version_history(),
         )
         self._live_unrar = proc
-        owned = self._track_decompressed(_UnrarOwnedStream(stdout, proc))
-        size = _member_stream_size(member)
-        sliced: BinaryIO = SlicingStream(owned, length=size, own_source=True)
+        owned = self._track_decompressed(
+            _UnrarOwnedStream(
+                stdout,
+                proc,
+                named_member=True,
+                has_verifiable_hash=bool(member.hashes),
+            )
+        )
         try:
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
-            return self._wrap_payload_stream(sliced, member, track_output=False)
+            # VerifyingStream (in _wrap_payload_stream) bounds and checks the pipe against
+            # the member's declared size (and any CRC32/BLAKE2sp).
+            return self._wrap_payload_stream(owned, member, track_output=False)
         except BaseException:
-            sliced.close()
+            owned.close()
             self._live_unrar = None
             raise
 

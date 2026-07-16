@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import BinaryIO, cast
 
-from archivey.exceptions import PackageNotInstalledError
+from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
 
 _cached_unrar: str | None = None
 
@@ -58,6 +58,31 @@ def _password_arg(password: str | bytes | None) -> str:
     return "-p" + password
 
 
+def _member_include_switch(member: str) -> str:
+    """Build a safe ``unrar`` include-mask switch for one member name.
+
+    A hostile archive can name a member like a switch (``-inul``) or an ``@listfile``
+    argument; passed positionally those are mis-parsed by ``unrar`` (a switch, or a
+    read of an attacker-chosen local file). Passing the name as the value of the ``-n``
+    include-mask switch, prefixed with ``./``, neutralizes both: the leading ``-`` is
+    not a switch (it is inside ``-n``) and the leading ``@`` is not a listfile (the
+    value starts with ``.``). The ``./`` also anchors the mask to the exact archive path
+    rather than matching the basename at any depth.
+
+    ``unrar`` masks treat ``*`` and ``?`` as wildcards with no escape (``[]`` are
+    literal, ``\\`` does not escape), so a name containing either cannot be addressed to
+    exactly one member; such reads are refused rather than risk emitting another
+    member's bytes.
+    """
+    if "*" in member or "?" in member:
+        raise UnsupportedFeatureError(
+            f"Cannot read RAR member {member!r} via unrar: its name contains a wildcard "
+            "character ('*' or '?') that unrar interprets as a match pattern with no "
+            "escape, so it cannot be addressed unambiguously."
+        )
+    return "-n./" + member
+
+
 def open_unrar_p(
     archive_path: str | Path,
     *,
@@ -65,12 +90,16 @@ def open_unrar_p(
     member: str | None = None,
     version_control: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
-    """Spawn ``unrar p -inul [-ver] [-pPWD|-p-] archive [member]``.
+    """Spawn ``unrar p -inul [-ver] [-pPWD|-p-] [-n./member] archive``.
 
-    ``version_control`` adds ``-ver`` so the ALL-pipe includes WinRAR file-version
-    history payloads (needed for solid demux when versioned FILE rows are present).
-    Named per-member opens use the exact presented name (``path;n``) and do not
-    need ``-ver``.
+    ``version_control`` adds ``-ver`` so the pipe includes WinRAR file-version history
+    payloads (needed for solid demux when versioned FILE rows are present, and for a
+    named open of a ``path;n`` history member — the ``-n`` mask excludes history rows
+    unless ``-ver`` is set).
+
+    A named ``member`` is passed as a ``-n./`` include mask, never positionally, so a
+    hostile member name cannot inject an ``unrar`` switch or ``@listfile`` argument
+    (see :func:`_member_include_switch`).
 
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
@@ -79,9 +108,9 @@ def open_unrar_p(
     if version_control:
         cmd.append("-ver")
     cmd.append(_password_arg(password))
-    cmd.append(str(archive_path))
     if member is not None:
-        cmd.append(member)
+        cmd.append(_member_include_switch(member))
+    cmd.append(str(archive_path))
     try:
         proc = subprocess.Popen(
             cmd,
