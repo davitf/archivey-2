@@ -61,8 +61,11 @@ all three dependency configs (`[all]` 1580 passed, `[all-lowest]` 1579, `[core-o
   members now read their own bytes.
 - **F4 + Q3** — `unrar` exit codes 2/3/10 map to typed errors (as a fallback when archivey
   has no hash to verify — a hashed member's CRC is authoritative, avoiding legacy-format
-  false positives); a new `LengthVerifyingStream` enforces exact member length on the
-  hash-less forward-only path (truncation → `TruncatedError`).
+  false positives); length verification is folded into `VerifyingStream` (`expected_size`)
+  and applied to **every** RAR member, bounding reads to the declared size (over-long →
+  `CorruptionError` at the boundary, short → `TruncatedError`), after the digest check.
+  (Consolidated with PR #122's conclusion; the separate `LengthVerifyingStream` was
+  removed. See `QUESTIONS.md` Q3.)
 - **F5** — a RAR3 `FILE_LARGE` member now skips its full 64-bit packed size
   (HIGH_PACK_SIZE), so the walk no longer under-seeks and misparses the next header on
   a >4 GiB packed member. Covered by a synthetic RAR3 test (a real fixture would be

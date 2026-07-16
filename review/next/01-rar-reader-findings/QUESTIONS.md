@@ -137,6 +137,18 @@ mapped?
 > whether `SlicingStream` should itself raise a truncation/corruption error when the
 > underlying ends before the declared `length`.
 >
+> **Final resolution (revised after PR #122): folded into `VerifyingStream`, applied to
+> every member.** The length check now lives in `VerifyingStream` via an optional
+> `expected_size`: reads are bounded to the declared size (an over-long decode stops
+> there and raises `CorruptionError` immediately instead of running unbounded), a short
+> stream raises `TruncatedError`, and it runs *after* the digest check so a hashed short
+> read still surfaces as a digest mismatch and the short verdict is deferred to close so
+> a wrong-password subprocess exit still wins. The RAR reader applies it to **all**
+> members (not just hash-less ones), so a hashed member on the `unrar` pipe can no longer
+> read unbounded before a CRC mismatch is noticed. The separate `LengthVerifyingStream`
+> was removed. (zip/7z can opt in by passing `expected_size`; deferred to coordinate with
+> PR #122's decoder-output-budget work.) The original analysis below is kept for context.
+>
 > Agreed: always verify length when we can (short → truncated/corrupt; long → corrupt;
 > stop as soon as the declared size is exceeded). On *where*, you floated the top-level
 > `ArchiveStream` vs the existing `VerifyingStream` vs a new class — I recommend the

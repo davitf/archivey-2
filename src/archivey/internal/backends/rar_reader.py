@@ -48,7 +48,7 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
     is_stream,
 )
-from archivey.internal.streams.verify import LengthVerifyingStream, VerifyingStream
+from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -550,19 +550,17 @@ class RarReader(BaseArchiveReader):
         *,
         track_output: bool = True,
     ) -> ArchiveStream:
-        # For a forward-only member stream (the unrar pipe / a solid-block slice) whose
-        # length is known, verify it delivers exactly that many bytes so a truncated or
-        # over-long external decode surfaces as a typed error rather than silent short
-        # data. This is the backstop for members with no stored hash; when a
-        # CRC32/BLAKE2sp is present VerifyingStream is authoritative (it already turns a
-        # short/wrong decode into a digest mismatch), so the length check is skipped to
-        # keep that error precise. Seekable direct reads keep native seek/partial-read.
-        if member.size is not None and not member.hashes and not is_seekable(inner):
-            inner = LengthVerifyingStream(inner, member.size)
-        if member.hashes:
+        # Verify every member's declared length (and any CRC32/BLAKE2sp) as it is read:
+        # an over-long external decode stops at the declared size and errors, a short one
+        # raises, and a wrong one fails its digest. Applied to all members (not just
+        # hashed ones), so a hash-less member still can't be silently truncated. A seek
+        # off the sequential frontier disables the checks (VerifyingStream), preserving
+        # random access on seekable direct reads.
+        if member.size is not None or member.hashes:
             inner = VerifyingStream(
                 inner,
                 member.hashes,
+                expected_size=member.size,
                 collector=self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,

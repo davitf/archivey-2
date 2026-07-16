@@ -1,7 +1,11 @@
-"""Decompressed-output digest verification stage.
+"""Decompressed-output digest (and length) verification stage.
 
 Wraps a *sequential* decompressed stream and checks the member's container-supplied
-digests (``ArchiveMember.hashes``) against the bytes actually read. Per the
+digests (``ArchiveMember.hashes``) — and, when ``expected_size`` is supplied, its
+declared decompressed length — against the bytes actually read. The length check bounds
+reads to the declared size (so an over-long decode stops there and raises instead of
+running unbounded), raises on a short stream, and runs alongside the digest check so a
+member with no stored hash still cannot be silently truncated. Per the
 ``compressed-streams`` spec:
 
 - Verification runs **only on a full sequential read to clean EOF**. A partial read is
@@ -32,7 +36,6 @@ over the decompressed bytes.
 from __future__ import annotations
 
 import hashlib
-import io
 import zlib
 from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
 
@@ -45,89 +48,12 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
 from archivey.internal.streams.streamtools import (
-    DelegatingStream,
     ReadOnlyIOStream,
     is_seekable,
 )
 
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
-
-
-class LengthVerifyingStream(DelegatingStream):
-    """Enforce that a *sequential* stream delivers exactly ``expected_size`` bytes.
-
-    For a forward-only member stream whose length is known from archive metadata (e.g. a
-    RARLAB ``unrar`` pipe or a solid-block slice), this turns a silently short or over-long
-    external decode into an honest error: it raises :class:`TruncatedError` if the
-    underlying ends before ``expected_size`` and :class:`CorruptionError` if it yields more.
-
-    Like :class:`VerifyingStream` it is meant for the sequential read path and only checks
-    what is actually read; a seek off the sequential frontier disables the check for the
-    rest of the stream's life (the remaining length is then indeterminate). It owns its
-    inner stream (closing it on close, matching the ``own_source`` slices it replaces).
-    """
-
-    def __init__(self, inner: BinaryIO, expected_size: int) -> None:
-        # readinto must route through read() so the length bookkeeping always runs.
-        super().__init__(inner, readinto_passthrough=False)
-        self._expected = expected_size
-        self._pos = 0
-        self._enabled = True
-        self._saw_eof = False
-        self._overflow_checked = False
-
-    def read(self, n: int = -1, /) -> bytes:
-        if not self._enabled:
-            return self._inner.read(n)
-        remaining = self._expected - self._pos
-        if remaining <= 0:
-            # Declared size delivered; confirm the underlying has no trailing bytes.
-            self._check_no_overflow()
-            return b""
-        want = remaining if n < 0 else min(n, remaining)
-        data = self._inner.read(want)
-        if not data:
-            # Underlying ended before the declared size. Don't raise here: the inner
-            # close may carry a more specific cause (e.g. wrong password / exit code),
-            # so the short-length verdict is applied at close, after inner is closed.
-            self._saw_eof = True
-            return b""
-        self._pos += len(data)
-        return data
-
-    def _check_no_overflow(self) -> None:
-        if self._overflow_checked:
-            return
-        self._overflow_checked = True
-        if self._inner.read(1):
-            raise CorruptionError(
-                f"Member data exceeded its declared size of {self._expected} bytes"
-            )
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # A seek makes the running length count meaningless; stop enforcing.
-        self._enabled = False
-        return self._inner.seek(offset, whence)
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        # Only a full sequential read that hit EOF short of the declared size is a
-        # truncation; a deliberate partial read then close is not. Close the inner first
-        # so its own error (wrong password, unrar exit code) takes precedence, then apply
-        # the short-length verdict.
-        truncated = (
-            self._enabled and self._saw_eof and self._pos < self._expected
-        )
-        try:
-            self._inner.close()
-        finally:
-            io.RawIOBase.close(self)
-        if truncated:
-            raise TruncatedError(
-                f"Member data ended after {self._pos} of {self._expected} expected bytes"
-            )
 
 
 class _IncrementalHasher(Protocol):
@@ -186,13 +112,22 @@ def _expected_as_bytes(value: int | bytes, hasher: _IncrementalHasher) -> bytes:
 
 
 class VerifyingStream(ReadOnlyIOStream):
-    """Wrap ``inner`` and verify ``expected`` digests at clean end-of-stream.
+    """Wrap ``inner`` and verify the member's ``expected`` digests (and, optionally, its
+    declared decompressed length) on a clean sequential read to end-of-stream.
 
     ``read`` hashes the bytes it returns (``readinto``/``readall`` come from
     :class:`ReadOnlyIOStream`, built on this ``read``, so they hash too) and checks the
     digests once the stream reaches clean EOF. ``seek``/``seekable`` delegate to ``inner``;
     a seek off the sequential frontier disables verification for the rest of the stream's
     life, since the running digest can no longer cover the whole member.
+
+    When ``expected_size`` is given, reads are bounded to that many bytes so an
+    over-long decode (a decompressor/pipe emitting more than the member's declared size)
+    stops at the declared size and raises :class:`CorruptionError` immediately rather than
+    running unbounded; a stream that ends short of it raises :class:`TruncatedError`. The
+    length check runs after the digest check (so a hashed short read still surfaces as a
+    digest mismatch) and the short verdict is applied at close, after the inner stream is
+    closed, so a more specific inner error (e.g. a wrong-password subprocess exit) wins.
     """
 
     def __init__(
@@ -200,12 +135,15 @@ class VerifyingStream(ReadOnlyIOStream):
         inner: BinaryIO,
         expected: Mapping[str, int | bytes],
         *,
+        expected_size: int | None = None,
         collector: DiagnosticCollector | None = None,
         member: ArchiveMember | None = None,
         archive_name: str | None = None,
     ) -> None:
         super().__init__()
         self._inner = inner
+        self._expected_size = expected_size
+        self._short = False
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
         for algorithm, value in expected.items():
@@ -237,9 +175,8 @@ class VerifyingStream(ReadOnlyIOStream):
         self._pos = 0  # bytes read so far — the sequential verification frontier
         self._verify_enabled = True  # cleared by a seek off the frontier
 
-    def _verify(self) -> None:
+    def _verify_digests(self) -> None:
         """Check every computable digest; raise on the first mismatch."""
-        self._verified = True
         for algorithm, expected in self._expected.items():
             if self._hashers[algorithm].digest() != expected:
                 raise CorruptionError(
@@ -247,8 +184,33 @@ class VerifyingStream(ReadOnlyIOStream):
                     f"decompressed content."
                 )
 
+    def _finish(self) -> None:
+        """Run end-of-stream checks once: over-length, then digests, then note short."""
+        self._verified = True
+        if self._expected_size is not None and self._pos >= self._expected_size:
+            # Delivered the declared size; the underlying must have nothing more.
+            if self._inner.read(1):
+                raise CorruptionError(
+                    "Decompressed content exceeds its declared size of "
+                    f"{self._expected_size} bytes."
+                )
+        self._verify_digests()
+        if self._expected_size is not None and self._pos < self._expected_size:
+            # Short read. Defer raising to close so a more specific inner error (e.g. a
+            # subprocess exit code) takes precedence; a hashed short read already raised
+            # a digest mismatch above.
+            self._short = True
+
     def read(self, n: int = -1, /) -> bytes:
-        data = self._inner.read(n)
+        if self._verify_enabled and self._expected_size is not None and not self._verified:
+            remaining = self._expected_size - self._pos
+            if remaining <= 0:
+                data = b""  # at the declared size — fall through to end-of-stream checks
+            else:
+                want = remaining if n < 0 else min(n, remaining)
+                data = self._inner.read(want)
+        else:
+            data = self._inner.read(n)
         if data:
             self._pos += len(data)
             if self._verify_enabled:
@@ -256,7 +218,7 @@ class VerifyingStream(ReadOnlyIOStream):
                     hasher.update(data)
             return data
         if self._verify_enabled and not self._verified:
-            self._verify()
+            self._finish()
         return data
 
     def seekable(self) -> bool:
@@ -275,11 +237,32 @@ class VerifyingStream(ReadOnlyIOStream):
         return self._inner.tell()
 
     def close(self) -> None:
-        if not self.closed:
-            # ``archive.read()`` often does a single ``read()`` that returns all
-            # bytes without a follow-up empty read, so verify here when the inner
-            # stream is already at clean EOF (partial reads still skip verification).
-            if self._verify_enabled and not self._verified and not self._inner.read(1):
-                self._verify()
+        if self.closed:
+            return
+        # ``archive.read()`` often does a single ``read()`` that returns all bytes without
+        # a follow-up empty read, so verify here when the inner stream is already at clean
+        # EOF (partial reads still skip verification).
+        finish_exc: CorruptionError | None = None
+        if self._verify_enabled and not self._verified:
+            reached_declared = (
+                self._expected_size is not None and self._pos >= self._expected_size
+            )
+            # ``_finish`` probes for over-length itself; only probe here to decide whether
+            # the stream ended cleanly when the declared size was not (yet) reached.
+            if reached_declared or not self._inner.read(1):
+                try:
+                    self._finish()
+                except CorruptionError as exc:
+                    finish_exc = exc  # still close the inner below before re-raising
+        short = self._short
+        try:
             self._inner.close()
+        finally:
             super().close()
+        if finish_exc is not None:
+            raise finish_exc
+        if short:
+            raise TruncatedError(
+                f"Decompressed content ended after {self._pos} of "
+                f"{self._expected_size} expected bytes."
+            )
