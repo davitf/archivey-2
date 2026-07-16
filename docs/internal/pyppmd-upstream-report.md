@@ -14,17 +14,21 @@ Archivey context (what we ship regardless of the upstream fix) lives in
 ## Suggested issue draft
 
 > **Title:** 1.3.x regression: heap corruption / SIGSEGV decoding *valid* PPMd7
-> data with `decode(..., -1)` (ThreadDecoder.c input-empty stop condition
-> removed in #126)
+> data whenever the decode request exceeds the remaining payload — `-1`,
+> after-eof, or plain oversized `max_length` (ThreadDecoder.c input-empty stop
+> condition removed in #126)
 
 ### Summary
 
-Since pyppmd **1.3.0**, `Ppmd7Decoder.decode` with `max_length=-1` — and any
-`decode` call issued after `eof` — intermittently aborts the process on
-**valid** PPMd7 data: `malloc(): invalid size (unsorted)` / SIGSEGV / SIGABRT
-on Linux, `STATUS_HEAP_CORRUPTION` (`0xC0000374`) on Windows. 1.1.1 and 1.2.0
-do not crash on the same inputs (they have a different bug: short/incorrect
-output on chunked decodes, which #126 was fixing).
+Since pyppmd **1.3.0**, `Ppmd7Decoder.decode` intermittently aborts the
+process on **valid** PPMd7 data whenever the requested output materially
+exceeds what the stream can still produce — via `max_length=-1`, via any
+`decode` call issued after `eof`, or via a plain sized request ≳64 KiB past
+the true payload (no `-1` involved). Symptoms: `malloc(): invalid size
+(unsorted)` / SIGSEGV / SIGABRT on Linux, `STATUS_HEAP_CORRUPTION`
+(`0xC0000374`) on Windows. 1.1.1 and 1.2.0 do not crash on the same inputs
+(they have a different bug: short/incorrect output on chunked decodes, which
+#126 was fixing).
 
 Measured with the attached single-file repro (fresh subprocess children,
 5 encode/decode cycles each):
@@ -33,9 +37,18 @@ Measured with the attached single-file repro (fresh subprocess children,
 |------|---------|------------------------|-----------|
 | `extra-null` | sized decode to `eof`, then `decode(b"\0", -1)` | ~40% of children | **30/30** |
 | `overshoot` | single `decode(packed, -1)` (no second call) | ~15–25% | **19/30** |
+| `oversized` | single **sized** `decode(packed, len(data) + 65536)` — no `-1` anywhere | — | **10–13/20** |
 | `sized-safe` | `decode(packed, len(data))` only | 0% | 0/30 |
 | `underfed-sized` | sized decode, half the input, then dealloc | 0% | 0/20 |
-| `hostile-tail` | sized decode to eof, then **bounded** decode of garbage | 0% | 0/20 |
+| `hostile-tail` | sized decode to eof, then small bounded decode of garbage | 0% | 0/20 |
+
+The `oversized` row is the sharpest datapoint: the crash does **not** require the
+`-1` sentinel. Requesting materially more output than the stream's true remaining
+payload is what crashes — `len(data) + 64` and `len(data) + 4096` over-requests were
+0/20 each, `+65536` crashed 13/20 (and an equivalent shape through a 64 KiB-chunked
+wrapper crashed 9/20). Requesting exactly the remaining output is safe at any size
+(a 1.2 MB payload decoded in 64 KiB input chunks with the exact total bound: 0/20
+across 60 full decodes).
 
 Linux A: the original CI investigation (x86_64, CPython 3.11/3.14).
 Linux B: independent re-run (x86_64, CPython 3.11.15, glibc 2.39,
@@ -46,6 +59,7 @@ codecs first crash more often — but the safe/unsafe split is stable.
 pip install 'pyppmd==1.3.1'
 python pyppmd_crash_repro.py 30 --mode extra-null   # crashes
 python pyppmd_crash_repro.py 30 --mode overshoot    # crashes
+python pyppmd_crash_repro.py 30 --mode oversized    # crashes, no -1 involved
 python pyppmd_crash_repro.py 30 --mode sized-safe   # control, clean
 ```
 
@@ -99,7 +113,7 @@ worth fixing while there):
   overshoots by one it never blocks again and free-runs past the buffer.
   The check should be `pos >= size`.
 
-### Why sized decodes are safe (and py7zr never sees this)
+### Why exact-sized decodes are safe (and py7zr never sees this)
 
 With `max_length` equal to the remaining declared output, the worker’s budget
 runs out exactly at the payload boundary and it exits cleanly — the model
@@ -107,7 +121,11 @@ never runs past the end of stream. py7zr always passes `max_length` to
 `decompress`, which is why it doesn't exhibit the crash. Callers can use the
 same discipline as a workaround (this is what archivey now does), but the
 library-level behavior is still a crash on valid data through a documented
-API.
+API — and per the `oversized` row, a caller who innocently over-requests
+(e.g. asks for a full read-buffer's worth near end of stream) hits the same
+corruption with no `-1` involved, so the sized API is only safe when the
+caller already knows the exact payload size. For end-markless PPMd7 that
+makes safe use impossible without external size information.
 
 ### Suggested fixes
 
@@ -131,6 +149,7 @@ When an upstream fix ships, re-run (all should be 0 crashes):
 ```bash
 python scripts/pyppmd_crash_repro.py 50 --mode extra-null
 python scripts/pyppmd_crash_repro.py 50 --mode overshoot
+python scripts/pyppmd_crash_repro.py 50 --mode oversized
 python scripts/pyppmd_crash_repro.py 50 --mode warmup-overshoot
 python scripts/pyppmd_crash_repro.py 30 --mode underfed-sized
 python scripts/pyppmd_crash_repro.py 30 --mode hostile-tail
