@@ -287,7 +287,25 @@ careful — (1) always pass folder/member ``unpack_size`` as ``max_length`` (no 
 (3) at compressed EOF, ``flush`` injects at most **one** documented extra NUL (bounded
 by remaining size) and reports anything still missing as ``TruncatedError`` — fabricated
 input is never pumped in a loop, so truncated/hostile data cannot be silently completed
-with garbage. Raw ``PpmdDecompressorStream`` without ``unpack_size`` remains best-effort.
+with garbage.
+
+**The exact bound is what matters — “bounded” is not enough.** A/B soaks showed sized
+requests that exceed the stream's true remaining output by ≳64 KiB crash 1.3.1 **without
+any ``-1``** (`oversized` mode: +65536 over → 13/20 and 10/20 in two soaks; +64 / +4096
+over → 0/20 each; large multi-chunk members with the exact bound → 0/20). Consequences:
+
+- **Unsized PPMd7 is rejected at construction** (`ValueError`): with no end mark and no
+  declared size there is no safe request size — and no correct output boundary anyway.
+  The 7z header always provides the folder size, so no product path is affected.
+- **Unsized PPMd8 stays supported** (end mark stops the native worker on valid data);
+  it decodes via bounded 64 KiB requests in a drain loop, never ``-1``. ZIP always
+  passes the member size in practice.
+- **Residual hostile-input gap (upstream-only fix):** a crafted 7z/ZIP header that
+  inflates ``unpack_size`` ≳64 KiB past the member's true content puts the one decode
+  call into the crashy class. Archivey cannot detect the lie before decoding; this
+  stays a threat-model item on par with other native-codec robustness assumptions
+  until pyppmd is fixed. (Small inflations measured cold; CRC checks catch the
+  garbage-output side after the fact.)
 The required-suite Windows PPMd roundtrip skip was removed under this contract; the
 non-blocking stress job still watches for regressions. Adversarial shapes a damaged or
 hostile archive can force (truncation, early close mid-member, inflated declared size

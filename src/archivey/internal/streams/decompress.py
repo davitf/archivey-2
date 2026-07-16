@@ -71,20 +71,37 @@ class BrotliDecoder(BaseDecoder):
         return bool(self._decomp.is_finished())
 
 
+# Per-call output request for PPMd8 decodes without a declared size; 64 KiB matches
+# the stream layer's read chunk. NOTE: a bound is NOT what makes decoding safe — on
+# pyppmd 1.3.x any request exceeding the stream's true remaining output by ≳64 KiB
+# corrupts the heap even without -1 (measured: +64/+4096 over → 0/20 crashes,
+# +65536 over → 13/20). PPMd8 is safe here because its end mark stops the native
+# worker on valid data before any over-decode; PPMd7 has no end mark, which is why
+# PpmdDecoder refuses to decode it without ``unpack_size`` at all.
+_PPMD_UNSIZED_DECODE_CHUNK = 65536
+
+
 class PpmdDecoder(BaseDecoder):
     """Decode a PPMd stream via ``pyppmd``.
 
     Variant 7 (``Ppmd7Decoder``) is the 7z var.H coder. Variant 8 (``Ppmd8Decoder``)
     is ZIP method 98 / WinZip ZIPX PPMd, which also carries a restore-method parameter.
 
-    ``unpack_size`` (when known, e.g. 7z folder unpack size) is passed through as
-    ``max_length`` on every ``decode`` call. PPMd7 has no end mark, so the size bound
-    is what tells the native decoder where the payload ends: pyppmd 1.3.x decodes
-    ``decode(..., -1)`` on a worker thread with an effectively unlimited symbol budget,
-    and running that worker past the true end of stream corrupts the heap (Linux
-    ``malloc`` abort/SIGSEGV, Windows ``STATUS_HEAP_CORRUPTION``). Bounding matches
-    py7zr's ``PpmdDecompressor.decompress(..., max_length)``; see
+    ``unpack_size`` (the 7z folder / ZIP member size) is passed through as
+    ``max_length`` on every ``decode`` call, matching py7zr's
+    ``PpmdDecompressor.decompress(..., max_length)``. This is load-bearing on pyppmd
+    1.3.x: the native worker thread decodes as many symbols as the request allows, and
+    running it materially past the true end of stream corrupts the heap (Linux
+    ``malloc`` abort/SIGSEGV, Windows ``STATUS_HEAP_CORRUPTION``) — measured for
+    ``-1`` and for sized requests ≳64 KiB beyond the real payload alike. Requesting
+    exactly the remaining output is the safe contract; see
     ``docs/internal/known-issues.md`` and ``docs/internal/pyppmd-upstream-report.md``.
+
+    Because PPMd7 has no end mark, there is no safe request size without knowing the
+    payload length — so ``unpack_size`` is **required** for variant 7 (the 7z header
+    always provides it). PPMd8 carries an end mark that stops the native worker on
+    valid data, so variant 8 may be unsized; it is then decoded via bounded
+    :data:`_PPMD_UNSIZED_DECODE_CHUNK` requests in a drain loop, never ``-1``.
 
     At compressed EOF, PPMd may still need an extra NUL input byte when the encoder
     omitted a trailing null (documented by pyppmd). ``flush`` feeds exactly one NUL
@@ -103,6 +120,13 @@ class PpmdDecoder(BaseDecoder):
     ) -> None:
         import pyppmd
 
+        if variant != 8 and unpack_size is None:
+            raise ValueError(
+                "PPMd7 (7z var.H) requires unpack_size: the format has no end mark, "
+                "and decoding without the exact output bound runs pyppmd past the "
+                "end of stream (native heap corruption on 1.3.x — see "
+                "docs/internal/known-issues.md)"
+            )
         self._order = order
         self._mem_size = mem_size
         self._variant = variant
@@ -129,10 +153,27 @@ class PpmdDecoder(BaseDecoder):
             return -1
         return max(0, self._unpack_size - self._produced)
 
+    def _decode_unsized(self, data: bytes) -> bytes:
+        # Unsized PPMd8 only (PPMd7 without a size is rejected in __init__). Never
+        # hand pyppmd max_length=-1; request bounded chunks and drain the internally
+        # buffered input instead. Valid PPMd8 stops at its end mark before any
+        # over-decode; the bound avoids the -1 allocation path and caps the damage
+        # on corrupt data. Stop when the decoder needs more input (await the next
+        # feed), hits eof, or goes quiet.
+        parts: list[bytes] = []
+        chunk = self._decomp.decode(data, _PPMD_UNSIZED_DECODE_CHUNK)
+        while chunk:
+            parts.append(chunk)
+            if self._decomp.eof or getattr(self._decomp, "needs_input", False):
+                break
+            chunk = self._decomp.decode(b"", _PPMD_UNSIZED_DECODE_CHUNK)
+        return b"".join(parts)
+
     def _decode(self, data: bytes, max_length: int) -> bytes:
         if max_length == 0:
             return b""
-        # Unbounded decode after native EOF is the crashy path on pyppmd 1.3.1.
+        # Decoding after native EOF is trailing garbage at best (and the crashy
+        # runaway path on pyppmd 1.3.x when unbounded) — drop the input instead.
         if self._decomp.eof and max_length < 0:
             return b""
         # Empty input + needs_input (pre-EOF): documented extra NUL (pyppmd / py7zr).
@@ -141,7 +182,9 @@ class PpmdDecoder(BaseDecoder):
             and getattr(self._decomp, "needs_input", False)
             and not self._decomp.eof
         ):
-            return self._decomp.decode(b"\0", max_length)
+            data = b"\0"
+        if max_length < 0:
+            return self._decode_unsized(data)
         return self._decomp.decode(data, max_length)
 
     def feed(self, chunk: bytes) -> DecodeOut:
@@ -162,7 +205,7 @@ class PpmdDecoder(BaseDecoder):
             return DecodeOut(b"")
         if self._decomp.eof or not getattr(self._decomp, "needs_input", False):
             return DecodeOut(b"")
-        chunk = self._decomp.decode(b"\0", max_length)
+        chunk = self._decode(b"\0", max_length)
         self._produced += len(chunk)
         return DecodeOut(chunk)
 
@@ -262,7 +305,8 @@ def PpmdDecompressorStream(
     """Decode a PPMd stream (forward-only).
 
     ``variant=7`` is 7z PPMd var.H; ``variant=8`` is ZIP method 98 (PPMd8).
-    Pass ``unpack_size`` when known (7z folder size) so PPMd7 decode calls are bounded.
+    ``unpack_size`` is required for PPMd7 (no end mark — see :class:`PpmdDecoder`)
+    and recommended for PPMd8 whenever the container declares the member size.
     """
     return DecompressorStream(
         path,

@@ -7,9 +7,11 @@ Windows/Linux native aborts can be chased on the *minimal* surface (see
 Notes:
 - In-process PPMd7 create/destroy loops are skipped on Windows (have aborted CI with
   ``STATUS_HEAP_CORRUPTION`` / access violation); that axis lives in the stress job.
-- Prefer ``unpack_size`` on archivey PPMd7 streams (7z always passes folder size). That
-  bounds ``decode`` ``max_length`` like py7zr and avoids ``decode(..., -1)`` overshoot.
-  Unsized PPMd7 ``read()`` remains best-effort and may overshoot on some pyppmd versions.
+- PPMd7 streams require ``unpack_size`` (7z always passes the folder size): the format
+  has no end mark, and on pyppmd 1.3.x any decode request materially past the true
+  payload corrupts the heap — the exact remaining size (py7zr-style) is the safe
+  contract. Unsized PPMd8 is allowed (end-marked) and never passes ``-1`` (bounded
+  drain loop).
 """
 
 from __future__ import annotations
@@ -324,3 +326,70 @@ def test_archivey_ppmd7_hostile_tail_stays_bounded() -> None:
             return
         assert len(data) <= claimed
         assert data[: len(payload)] == payload
+
+
+class _MaxLengthSpy:
+    """Wraps a pyppmd decoder, recording every ``max_length`` passed to ``decode``."""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        self.lengths: list[int] = []
+
+    def decode(self, data: bytes, length: int) -> bytes:
+        self.lengths.append(length)
+        return self._inner.decode(data, length)  # type: ignore[attr-defined]
+
+    @property
+    def eof(self) -> bool:
+        return self._inner.eof  # type: ignore[attr-defined]
+
+    @property
+    def needs_input(self) -> bool:
+        return self._inner.needs_input  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("variant", "sized"),
+    [(7, True), (8, True), (8, False)],
+    ids=["ppmd7-sized", "ppmd8-sized", "ppmd8-unsized"],
+)
+def test_ppmd_decoder_never_passes_unbounded_max_length(
+    variant: int, sized: bool
+) -> None:
+    """No decode call may reach pyppmd with ``max_length=-1``.
+
+    ``-1`` grants the pyppmd 1.3.x native worker an effectively unlimited symbol
+    budget — the heap-corruption path. Sized decodes pass the remaining
+    ``unpack_size``; unsized PPMd8 must use the bounded drain loop instead.
+    """
+    packed = _encode_ppmd7(_CONTENT) if variant == 7 else _encode_ppmd8(_CONTENT)
+    dec = PpmdDecoder(
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=variant,
+        unpack_size=len(_CONTENT) if sized else None,
+    )
+    spy = _MaxLengthSpy(dec._decomp)
+    dec._decomp = spy
+    out = dec.feed(packed).data
+    out += dec.flush().data
+    assert out[: len(_CONTENT)] == _CONTENT
+    assert spy.lengths, "expected at least one native decode call"
+    assert all(length >= 0 for length in spy.lengths), spy.lengths
+
+
+def test_archivey_ppmd7_requires_unpack_size() -> None:
+    """Unsized PPMd7 is rejected outright — there is no safe decode request for it.
+
+    PPMd7 has no end mark, and on pyppmd 1.3.x any decode request materially past
+    the true remaining output corrupts the heap (measured: requests ≥64 KiB beyond
+    the payload crash even without ``-1``). With no declared size there is no
+    correct output boundary either, so construction fails fast instead.
+    """
+    with pytest.raises(ValueError, match="unpack_size"):
+        PpmdDecompressorStream(
+            io.BytesIO(b""),
+            order=_ORDER,
+            mem_size=_MEM,
+            variant=7,
+        )
