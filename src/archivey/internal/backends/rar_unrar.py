@@ -51,11 +51,21 @@ def find_rarlab_unrar() -> str:
 
 
 def _password_arg(password: str | bytes | None) -> str:
+    """Return the ``unrar`` password switch.
+
+    Empty/absent → ``-p-`` (no password). Otherwise bare ``-p``; the password itself
+    is written to the child's stdin (see :func:`open_unrar_p`) so it never appears in
+    ``argv`` / ``/proc/<pid>/cmdline``.
+    """
     if password is None or password == b"" or password == "":
         return "-p-"
+    return "-p"
+
+
+def _password_stdin_bytes(password: str | bytes) -> bytes:
     if isinstance(password, bytes):
-        password = password.decode("utf-8", errors="surrogateescape")
-    return "-p" + password
+        return password
+    return password.encode("utf-8", errors="surrogateescape")
 
 
 def _member_include_switch(member: str) -> str:
@@ -90,7 +100,7 @@ def open_unrar_p(
     member: str | None = None,
     version_control: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
-    """Spawn ``unrar p -inul [-ver] [-pPWD|-p-] [-n./member] archive``.
+    """Spawn ``unrar p -inul [-ver] [-p|-p-] [-n./member] archive``.
 
     ``version_control`` adds ``-ver`` so the pipe includes WinRAR file-version history
     payloads (needed for solid demux when versioned FILE rows are present, and for a
@@ -101,25 +111,41 @@ def open_unrar_p(
     hostile member name cannot inject an ``unrar`` switch or ``@listfile`` argument
     (see :func:`_member_include_switch`).
 
+    When a non-empty ``password`` is given, the switch is bare ``-p`` and the password
+    (plus a trailing newline) is written to the child's stdin — ``unrar`` reads it from
+    stdin when redirected, keeping the secret out of ``argv``.
+
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
     unrar = find_rarlab_unrar()
     cmd = [unrar, "p", "-inul"]
     if version_control:
         cmd.append("-ver")
-    cmd.append(_password_arg(password))
+    pass_arg = _password_arg(password)
+    cmd.append(pass_arg)
     if member is not None:
         cmd.append(_member_include_switch(member))
     cmd.append(str(archive_path))
+    feed_password = pass_arg == "-p"
     try:
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             bufsize=1024 * 1024,
         )
     except OSError as exc:
         raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
+    if feed_password:
+        assert password is not None and password != b"" and password != ""
+        assert proc.stdin is not None
+        try:
+            proc.stdin.write(_password_stdin_bytes(password) + b"\n")
+            proc.stdin.close()
+        except BrokenPipeError:
+            # unrar exited before consuming the password; surface via exit-code mapping.
+            pass
     if proc.stdout is None:
         proc.kill()
         raise RuntimeError("unrar produced no stdout pipe")
