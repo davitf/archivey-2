@@ -127,12 +127,13 @@ class PpmdDecoder(BaseDecoder):
     def _decode(self, data: bytes, max_length: int) -> bytes:
         if max_length == 0:
             return b""
+        # Never touch the native decoder after it reports EOF. On pyppmd 1.3.1,
+        # further decode(..., -1) calls (empty or NUL) can abort the process; the
+        # documented extra-NUL path is only for pre-EOF short reads.
+        if self._decomp.eof:
+            return b""
         # Empty input + needs_input: feed the PPMd "extra" NUL (pyppmd / py7zr).
-        if (
-            not data
-            and getattr(self._decomp, "needs_input", False)
-            and not self._decomp.eof
-        ):
+        if not data and getattr(self._decomp, "needs_input", False):
             return self._decomp.decode(b"\0", max_length)
         return self._decomp.decode(data, max_length)
 
@@ -144,13 +145,15 @@ class PpmdDecoder(BaseDecoder):
     def flush(self) -> DecodeOut:
         # Drain with extra NULs while the decoder still wants input and we have room
         # under unpack_size (or unbound when size is unknown). Cap iterations so a
-        # stuck needs_input cannot loop forever.
+        # stuck needs_input cannot loop forever. Skip entirely once native EOF is set.
         parts: list[bytes] = []
         for _ in range(8):
+            if self._decomp.eof:
+                break
             max_length = self._max_length()
             if max_length == 0:
                 break
-            if self._decomp.eof or not getattr(self._decomp, "needs_input", False):
+            if not getattr(self._decomp, "needs_input", False):
                 break
             chunk = self._decomp.decode(b"\0", max_length)
             if not chunk:

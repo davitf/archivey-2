@@ -242,18 +242,24 @@ uv run --no-sync pytest -m ppmd_native_stress -k warmup --timeout=600 -o addopts
 ```
 
 **Minimal upstream-facing repro (no archivey):** `scripts/pyppmd_crash_repro.py`
-depends only on ``pyppmd`` (+ stdlib). Hottest mode is ``extra-null`` — sized
-decode to ``eof``, then ``decode(b"\\0", -1)``:
+depends only on ``pyppmd`` (+ stdlib). Two crash families on 1.3.1:
+
+| mode | what | ~crash rate (5 cycles/child) |
+|------|------|------------------------------|
+| `extra-null` | sized to eof, then `decode(b"\\0", -1)` | ~40% |
+| `overshoot` | `decode(packed, -1)` only | ~15–25% |
+| `sized-safe` / `pre-eof-null` / `skip-after-eof` | controls | 0% |
 
 ```bash
 pip install 'pyppmd==1.3.1'
 python scripts/pyppmd_crash_repro.py 30 --mode extra-null
-python scripts/pyppmd_crash_repro.py 30 --mode sized-safe   # control
+python scripts/pyppmd_crash_repro.py 30 --mode overshoot
+python scripts/pyppmd_crash_repro.py 30 --mode sized-safe
 ```
 
-Local soak on Linux/py3.11/pyppmd 1.3.1: ``extra-null`` ~6/20 crashes;
-``sized-safe`` 15/15 clean. Also useful for comparing ``1.2.0`` vs ``1.3.1``.
-
+**Archivey mitigation:** (1) never call native decode after ``eof``; (2) pass
+folder/member ``unpack_size`` as ``max_length`` so PPMd7 cannot overshoot. Avoiding
+after-eof alone is **not** sufficient — unbounded ``-1`` still aborts.
 ### Mitigation in the required CI matrix
 
 - **Skip** the `ppmd` parametrization of `test_py7zr_codec_fixtures_roundtrip` on `win32`

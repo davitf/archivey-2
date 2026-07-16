@@ -3,18 +3,26 @@
 
 For upstream bug reports and version bisects. Only needs ``pyppmd`` (+ stdlib).
 
-Background
-----------
-``pyppmd`` 1.3.1 intermittently aborts with heap corruption / ``SIGABRT`` /
-``SIGSEGV`` on *valid* PPMd7 streams. archivey hit this via 7z solid PPMd; the
-hottest pure-``pyppmd`` trigger found so far is:
+Background (pinned on Linux / pyppmd 1.3.1)
+-------------------------------------------
+Two distinct pure-``pyppmd`` abort families (fresh subprocesses, ~5 cycles each):
 
-  1. Sized decode to completion (``eof=True``).
-  2. Call ``decode(b"\\0", -1)`` anyway (the PyPI "extra input byte" path,
-     but after the stream is already finished).
+1. **after-eof unbounded** (``--mode extra-null``): sized decode to ``eof=True``,
+   then ``decode(b"\\0", -1)`` or ``decode(b"", -1)``. ~40% crash / 5 cycles.
+   Pre-EOF extra NUL (appended to input, or only while ``needs_input and not eof``)
+   has been clean. Repeated after-eof on the *same* decoder object was also clean;
+   the hot pattern is new decoder + after-eof unbounded, repeated in-process.
 
-``decode(..., -1)`` overshoot alone also crashes at a lower rate. Sized-only
-decode (control) has been clean in local soaks.
+2. **overshoot** (``--mode overshoot``): ``decode(packed, -1)`` on PPMd7 (no end
+   mark) with no second call. ~15–25% crash / 5 cycles. So **avoiding after-eof
+   alone is not enough** — unbounded ``max_length=-1`` is itself crashy.
+
+Controls that stayed at 0 crashes in 100-child soaks: sized-only decode;
+pre-EOF ``decode(packed + b"\\0", size)``; skip after-eof when ``dec.eof``.
+
+Leftover-state check: after a *surviving* after-eof call, subsequent *fresh*
+sized-only decoders were clean (0/80) — not a simple “poison the next decoder”
+bug for the happy path.
 
 Examples::
 
@@ -22,9 +30,11 @@ Examples::
     python scripts/pyppmd_crash_repro.py 50 --mode extra-null
     python scripts/pyppmd_crash_repro.py 40 --mode overshoot
     python scripts/pyppmd_crash_repro.py 40 --mode warmup-overshoot
-    python scripts/pyppmd_crash_repro.py 30 --mode sized-safe   # control
+    python scripts/pyppmd_crash_repro.py 30 --mode sized-safe
+    python scripts/pyppmd_crash_repro.py 30 --mode pre-eof-null
+    python scripts/pyppmd_crash_repro.py 30 --mode skip-after-eof
 
-    pip install 'pyppmd==1.2.0'   # compare older wheels
+    pip install 'pyppmd==1.2.0'
     pip install 'pyppmd==1.3.1'
 
 Exit code is non-zero if any child crashed or failed.
@@ -144,6 +154,52 @@ _MODES: dict[str, str] = {
             out = dec.decode(packed, len(data))
             assert out == data
         print("ok", pyppmd.__version__, "sized", len(data))
+        """
+    ),
+    # Control: extra NUL only before EOF (appended to compressed input).
+    "pre-eof-null": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM = 6, 1 << 20
+        data = b"alpha\\n" * 100
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        for _ in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed + b"\\0", len(data))
+            assert out == data
+        print("ok", pyppmd.__version__, "pre-eof-null")
+        """
+    ),
+    # Control: would-be after-eof path, but skipped because eof is set.
+    "skip-after-eof": textwrap.dedent(
+        """\
+        import faulthandler
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM = 6, 1 << 20
+        data = b"alpha\\n" * 100
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        for _ in range(cycles):
+            enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
+            packed = enc.encode(data) + enc.flush()
+            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            out = dec.decode(packed, len(data))
+            assert out == data and dec.eof
+            if not dec.eof:
+                _ = dec.decode(b"\\0", -1)
+        print("ok", pyppmd.__version__, "skipped-after-eof")
         """
     ),
 }

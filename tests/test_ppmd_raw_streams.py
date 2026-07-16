@@ -130,7 +130,12 @@ def test_archivey_ppmd7_trailing_null_payload() -> None:
 
 
 def test_archivey_ppmd7_unpack_size_prevents_overshoot() -> None:
-    """``unpack_size`` keeps PPMd7 output within the known member/folder length."""
+    """``unpack_size`` keeps PPMd7 output within the known member/folder length.
+
+    Unsized ``decode(..., -1)`` can overshoot and intermittently abort inside
+    ``pyppmd`` 1.3.1 — do not exercise that path in-process here; see
+    ``scripts/pyppmd_crash_repro.py --mode overshoot``.
+    """
     payload = b"alpha\n" * 100
     packed = _encode_ppmd7(payload)
     with PpmdDecompressorStream(
@@ -141,14 +146,16 @@ def test_archivey_ppmd7_unpack_size_prevents_overshoot() -> None:
         unpack_size=len(payload),
     ) as stream:
         assert read_exact(stream, len(payload)) == payload
-    # Unsized path: ``decode(..., -1)`` may overshoot on some pyppmd versions; when it
-    # does, the prefix must still match (containers rely on an outer size bound).
+    # Decoder reports finished at unpack_size; further reads are empty.
     with PpmdDecompressorStream(
-        io.BytesIO(packed), order=_ORDER, mem_size=_MEM, variant=7
+        io.BytesIO(packed),
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=7,
+        unpack_size=len(payload),
     ) as stream:
-        unsized = stream.read()
-    if len(unsized) >= len(payload):
-        assert unsized[: len(payload)] == payload
+        assert read_exact(stream, len(payload)) == payload
+        assert stream.read(1) == b""
 
 
 def test_ppmd_decoder_extra_null_flush_respects_remaining() -> None:
@@ -162,6 +169,22 @@ def test_ppmd_decoder_extra_null_flush_respects_remaining() -> None:
     assert dec.finished
     # Further flush must not invent more bytes past unpack_size.
     assert dec.flush().data == b""
+
+
+def test_ppmd_decoder_skips_native_calls_after_eof() -> None:
+    """After native EOF, feed/flush must not call decode again (pyppmd 1.3.1 abort)."""
+    payload = b"hello world"
+    packed = _encode_ppmd7(payload)
+    dec = PpmdDecoder(order=_ORDER, mem_size=_MEM, variant=7, unpack_size=len(payload))
+    out = dec.feed(packed).data
+    out += dec.flush().data
+    assert out == payload
+    assert dec.finished
+    assert dec._decomp.eof
+    # Further feed/flush must be no-ops (would be crashy if forwarded as decode -1).
+    assert dec.feed(b"\0\0\0").data == b""
+    assert dec.flush().data == b""
+    assert dec.feed(b"").data == b""
 
 
 def test_archivey_ppmd8_via_open_codec_stream() -> None:
