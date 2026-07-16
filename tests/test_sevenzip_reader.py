@@ -163,6 +163,12 @@ def _windows_isolated_codec_roundtrip(
     each codec contains the blast radius and surfaces which label crashed (non-zero rc /
     NTSTATUS) instead of a suite-wide fatal exception with an ambiguous stack.
 
+    Isolation pinned the flake to the ``ppmd`` label (valid solid PPMd / ``pyppmd``).
+    With PPMd decodes now bounded by folder ``unpack_size``, that param runs on
+    ``win32`` again through this harness like the other codec labels; the non-blocking
+    ``PPMd native stress`` workflow / ``scripts/ppmd_native_stress.py`` keep watching
+    for regressions — see ``docs/internal/known-issues.md``.
+
     The child writes flushed phase breadcrumbs to ``phase.txt`` so a hard abort still
     leaves a last-known step for the parent to report.
     """
@@ -339,6 +345,10 @@ def _windows_isolated_codec_roundtrip(
         pytest.param("bzip2", ("BZIP2",), id="bzip2"),
         pytest.param("zstd", ("ZSTD",), marks=requires_zstd(), id="zstd"),
         pytest.param("brotli", ("BROTLI",), marks=requires("brotli"), id="brotli"),
+        # PPMd: previously skipped on win32 due to intermittent pyppmd STATUS_HEAP_CORRUPTION
+        # on unbounded decode(..., -1). archivey now always passes folder unpack_size as
+        # max_length and never does unbounded after-eof decode; see known-issues.md.
+        # Still covered by the non-blocking PPMd native stress workflow.
         pytest.param("ppmd", ("PPMD",), marks=requires("pyppmd"), id="ppmd"),
     ],
 )

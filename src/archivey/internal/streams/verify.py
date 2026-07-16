@@ -40,7 +40,7 @@ import zlib
 from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
@@ -139,6 +139,7 @@ class VerifyingStream(ReadOnlyIOStream):
         collector: DiagnosticCollector | None = None,
         member: ArchiveMember | None = None,
         archive_name: str | None = None,
+        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
     ) -> None:
         super().__init__()
         self._inner = inner
@@ -146,6 +147,9 @@ class VerifyingStream(ReadOnlyIOStream):
         self._short = False
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
+        self._digest_transforms: dict[str, Callable[[bytes], bytes]] = (
+            dict(digest_transforms) if digest_transforms else {}
+        )
         for algorithm, value in expected.items():
             factory = _make_hasher(algorithm)
             if factory is None:
@@ -178,7 +182,11 @@ class VerifyingStream(ReadOnlyIOStream):
     def _verify_digests(self) -> None:
         """Check every computable digest; raise on the first mismatch."""
         for algorithm, expected in self._expected.items():
-            if self._hashers[algorithm].digest() != expected:
+            computed = self._hashers[algorithm].digest()
+            transform = self._digest_transforms.get(algorithm)
+            if transform is not None:
+                computed = transform(computed)
+            if computed != expected:
                 raise CorruptionError(
                     f"Digest mismatch for {algorithm!r}: stored value does not match the "
                     f"decompressed content."
@@ -189,12 +197,13 @@ class VerifyingStream(ReadOnlyIOStream):
         self._verified = True
         if self._expected_size is not None and self._pos >= self._expected_size:
             # Delivered the declared size; the underlying must have nothing more.
+            # This probe also drains post-payload authenticators (e.g. WinZip AES HMAC).
             try:
                 trailing = self._inner.read(1)
-            except Exception:  # noqa: BLE001 - accel may raise any decode error on truncate
-                trailing = (
-                    b""  # decoder refused further reads — treat as no trailing data
-                )
+            except ArchiveyError:
+                raise
+            except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
+                trailing = b""
             if trailing:
                 raise CorruptionError(
                     "Decompressed content exceeds its declared size of "
@@ -274,15 +283,25 @@ class VerifyingStream(ReadOnlyIOStream):
             # macOS) may raise on truncated input instead of returning b""; treat that
             # as EOF when we are still short of the declared size so silent short-reads
             # still become TruncatedError, without double-faulting after read() raised.
+            # Typed library errors (HMAC mismatch, etc.) must still propagate.
             more = False
             probe_raised = False
             if not reached_declared:
                 try:
                     more = bool(self._inner.read(1))
+                except ArchiveyError as exc:
+                    finish_exc = (
+                        exc
+                        if isinstance(exc, (CorruptionError, TruncatedError))
+                        else None
+                    )
+                    if finish_exc is None:
+                        raise
+                    more = True  # skip _finish; surface finish_exc after close
                 except Exception:  # noqa: BLE001 - accel truncate may raise any error
                     probe_raised = True
                     more = False
-            if reached_declared or not more:
+            if finish_exc is None and (reached_declared or not more):
                 if probe_raised and (
                     self._expected_size is not None and self._pos < self._expected_size
                 ):

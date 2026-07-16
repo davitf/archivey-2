@@ -7,12 +7,13 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+from archivey.diagnostics import DiagnosticCode, DigestContext
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -23,9 +24,14 @@ from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
     RarArchive,
+    RarEncryptionInfo,
     RarMemberInfo,
+    _check_rar5_password,
+    convert_blake2sp_to_mac,
+    convert_crc_to_mac,
     parse_rar_archive,
     parse_rar_volumes,
+    rar5_hash_key,
 )
 from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
@@ -33,6 +39,7 @@ from archivey.internal.backends.rar_unrar import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
@@ -117,12 +124,37 @@ def _crc_is_tweaked(info: RarMemberInfo) -> bool:
 
 
 def _member_hashes(info: RarMemberInfo) -> dict[str, int | bytes]:
+    """Plaintext digests safe for :class:`VerifyingStream` without a HashKey.
+
+    When ``RAR5_XENC_TWEAKED`` / ``HASHMAC`` (0x02) is set, the stored CRC32 and
+    BLAKE2sp are key-tweaked (``ConvertHashToMAC``) and must not be compared to the
+    plaintext digest. Those values are stashed in ``member.extra`` and verified via
+    forward-transform when a password is available (see
+    :meth:`RarReader._tweaked_verify_spec`).
+    """
     hashes: dict[str, int | bytes] = {}
-    if info.crc32 is not None and not _crc_is_tweaked(info):
+    tweaked = _crc_is_tweaked(info)
+    if info.crc32 is not None and not tweaked:
         hashes["crc32"] = info.crc32
-    if info.blake2sp_hash is not None:
+    if info.blake2sp_hash is not None and not tweaked:
         hashes["blake2sp"] = info.blake2sp_hash
     return hashes
+
+
+def _tweaked_hash_key(enc: RarEncryptionInfo, password: str) -> bytes | None:
+    """Return HashKey for ``password``, or ``None`` when the password is provably wrong.
+
+    A present PswCheck that rejects ``password`` returns ``None`` so callers skip
+    forward-transform verification (a wrong HashKey would false-``CorruptionError``
+    good plaintext). When the check is absent or unusable, the HashKey is still
+    derived — matching the password ``unrar`` will receive.
+    """
+    if enc.check_value is not None:
+        try:
+            _check_rar5_password(enc.check_value, enc.kdf_count, enc.salt, password)
+        except EncryptionError:
+            return None
+    return rar5_hash_key(password, enc.salt, enc.kdf_count)
 
 
 def _copy_stream_to_path(source: BinaryIO, dest: Path) -> None:
@@ -351,6 +383,10 @@ class RarReader(BaseArchiveReader):
                         "Incomplete RAR multi-volume set: end of archive expects "
                         "another volume"
                     )
+                # Data-only encryption (no header encrypt): parse succeeds without a
+                # password, so this is the unconfirmed first candidate. Safe for unrar
+                # and ConvertHashToMAC — a wrong candidate is rejected by the per-file
+                # PswCheck (0x01, when present) or by unrar exit 11.
                 return archive, self._first_candidate_str()
             except EncryptionError:
                 if not self._passwords.has_passwords():
@@ -431,6 +467,13 @@ class RarReader(BaseArchiveReader):
         if info.is_file_version_history():
             assert info.file_version is not None
             extra["rar.file_version"] = info.file_version
+        if _crc_is_tweaked(info):
+            # Stored digests are key-tweaked; keep them out of ``hashes`` (see
+            # ``_member_hashes``) but expose the raw values for callers / forward-verify.
+            if info.crc32 is not None:
+                extra["rar.tweaked_crc32"] = info.crc32
+            if info.blake2sp_hash is not None:
+                extra["rar.tweaked_blake2sp"] = info.blake2sp_hash
 
         create_system = (
             _RAR_HOST_OS_TO_CREATE_SYSTEM.get(info.host_os, CreateSystem.UNKNOWN)
@@ -473,6 +516,32 @@ class RarReader(BaseArchiveReader):
             presented_name=presented,
             archive_name=self._archive_name,
         )
+        if _crc_is_tweaked(info) and self._unrar_password is None:
+            # No password → cannot forward-transform; surface as unverifiable digests.
+            for algorithm in (
+                ("crc32", info.crc32 is not None),
+                ("blake2sp", info.blake2sp_hash is not None),
+            ):
+                algo, present = algorithm
+                if not present:
+                    continue
+                self._diagnostics_collector.emit(
+                    code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                    message=(
+                        f"Cannot verify tweaked RAR5 {algo} without a password "
+                        f"(ConvertHashToMAC); skipping integrity check for it."
+                    ),
+                    context=DigestContext(
+                        archive_name=self._archive_name,
+                        member_name=member.name,
+                        member_id=member._member_id,
+                        algorithm=algo,
+                        reason="tweaked_checksum",
+                    ),
+                    member=member,
+                    attach_to_member=True,
+                    logger=integrity_logger,
+                )
         return member
 
     @staticmethod
@@ -543,6 +612,41 @@ class RarReader(BaseArchiveReader):
             solid.close()
             self._live_unrar = None
 
+    def _tweaked_verify_spec(
+        self, info: RarMemberInfo
+    ) -> tuple[dict[str, int | bytes], dict[str, Callable[[bytes], bytes]]] | None:
+        """Build ``(expected, digest_transforms)`` for tweaked RAR5 checksums.
+
+        Returns ``None`` when checksums are not tweaked, no password is available, or
+        the password is provably wrong (PswCheck). Expected values are the *stored*
+        (already tweaked) digests; transforms apply ``ConvertHashToMAC`` to the
+        plaintext digest before compare.
+        """
+        if not _crc_is_tweaked(info):
+            return None
+        password = self._unrar_password
+        enc = info.file_encryption
+        if password is None or enc is None:
+            return None
+        hash_key = _tweaked_hash_key(enc, password)
+        if hash_key is None:
+            return None
+        expected: dict[str, int | bytes] = {}
+        transforms: dict[str, Callable[[bytes], bytes]] = {}
+        if info.crc32 is not None:
+            expected["crc32"] = info.crc32
+            transforms["crc32"] = lambda digest, hk=hash_key: convert_crc_to_mac(
+                int.from_bytes(digest, "big"), hk
+            ).to_bytes(4, "big")
+        if info.blake2sp_hash is not None:
+            expected["blake2sp"] = info.blake2sp_hash
+            transforms["blake2sp"] = lambda digest, hk=hash_key: (
+                convert_blake2sp_to_mac(digest, hk)
+            )
+        if not expected:
+            return None
+        return expected, transforms
+
     def _wrap_payload_stream(
         self,
         inner: BinaryIO,
@@ -556,14 +660,25 @@ class RarReader(BaseArchiveReader):
         # hashed ones), so a hash-less member still can't be silently truncated. A seek
         # off the sequential frontier disables the checks (VerifyingStream), preserving
         # random access on seekable direct reads.
-        if member.size is not None or member.hashes:
+        #
+        # Tweaked RAR5 digests (HASHMAC) are not in ``member.hashes``; when a password
+        # is available they are verified via ConvertHashToMAC transforms instead.
+        expected: Mapping[str, int | bytes] = member.hashes
+        transforms: Mapping[str, Callable[[bytes], bytes]] | None = None
+        raw = member._raw
+        if isinstance(raw, RarMemberInfo):
+            tweaked = self._tweaked_verify_spec(raw)
+            if tweaked is not None:
+                expected, transforms = tweaked
+        if member.size is not None or expected:
             inner = VerifyingStream(
                 inner,
-                member.hashes,
+                expected,
                 expected_size=member.size,
                 collector=self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
+                digest_transforms=transforms,
             )
         return self._wrap_member_stream(
             inner, member.name, size=member.size, track_output=track_output
@@ -628,12 +743,18 @@ class RarReader(BaseArchiveReader):
             version_control=raw.is_file_version_history(),
         )
         self._live_unrar = proc
+        # Prefer our VerifyingStream (including tweaked ConvertHashToMAC) over unrar's
+        # exit code for corruption; wrong-password (11) still maps.
+        has_hash = bool(member.hashes) or (
+            isinstance(raw, RarMemberInfo)
+            and self._tweaked_verify_spec(raw) is not None
+        )
         owned = self._track_decompressed(
             _UnrarOwnedStream(
                 stdout,
                 proc,
                 named_member=True,
-                has_verifiable_hash=bool(member.hashes),
+                has_verifiable_hash=has_hash,
             )
         )
         try:

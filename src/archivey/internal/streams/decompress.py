@@ -133,11 +133,42 @@ class BrotliDecoder(BaseDecoder):
         return not self._drain_budgeted
 
 
+# Per-call output request for PPMd8 decodes without a declared size; 64 KiB matches
+# the stream layer's read chunk. NOTE: a bound is NOT what makes decoding safe — on
+# pyppmd 1.3.x any request exceeding the stream's true remaining output by ≳64 KiB
+# corrupts the heap even without -1 (measured: +64/+4096 over → 0/20 crashes,
+# +65536 over → 13/20). PPMd8 is safe here because its end mark stops the native
+# worker on valid data before any over-decode; PPMd7 has no end mark, which is why
+# PpmdDecoder refuses to decode it without ``unpack_size`` at all.
+_PPMD_UNSIZED_DECODE_CHUNK = 65536
+
+
 class PpmdDecoder(BaseDecoder):
     """Decode a PPMd stream via ``pyppmd``.
 
     Variant 7 (``Ppmd7Decoder``) is the 7z var.H coder. Variant 8 (``Ppmd8Decoder``)
     is ZIP method 98 / WinZip ZIPX PPMd, which also carries a restore-method parameter.
+
+    ``unpack_size`` (the 7z folder / ZIP member size) is passed through as
+    ``max_length`` on every ``decode`` call, matching py7zr's
+    ``PpmdDecompressor.decompress(..., max_length)``. This is load-bearing on pyppmd
+    1.3.x: the native worker thread decodes as many symbols as the request allows, and
+    running it materially past the true end of stream corrupts the heap (Linux
+    ``malloc`` abort/SIGSEGV, Windows ``STATUS_HEAP_CORRUPTION``) — measured for
+    ``-1`` and for sized requests ≳64 KiB beyond the real payload alike. Requesting
+    exactly the remaining output is the safe contract; see
+    ``docs/internal/known-issues.md`` and ``docs/internal/pyppmd-upstream-report.md``.
+
+    Because PPMd7 has no end mark, there is no safe request size without knowing the
+    payload length — so ``unpack_size`` is **required** for variant 7 (the 7z header
+    always provides it). PPMd8 carries an end mark that stops the native worker on
+    valid data, so variant 8 may be unsized; it is then decoded via bounded
+    :data:`_PPMD_UNSIZED_DECODE_CHUNK` requests in a drain loop, never ``-1``.
+
+    At compressed EOF, PPMd may still need an extra NUL input byte when the encoder
+    omitted a trailing null (documented by pyppmd). ``flush`` feeds exactly one NUL
+    with the remaining ``max_length``, same as py7zr / the pyppmd PyPI sample; if
+    output is still short of ``unpack_size`` after that, the stream is truncated.
     """
 
     def __init__(
@@ -147,18 +178,27 @@ class PpmdDecoder(BaseDecoder):
         mem_size: int,
         variant: int = 7,
         restore_method: int = 0,
+        unpack_size: int | None = None,
     ) -> None:
         import pyppmd
 
+        if variant != 8 and unpack_size is None:
+            raise ValueError(
+                "PPMd7 (7z var.H) requires unpack_size: the format has no end mark, "
+                "and decoding without the exact output bound runs pyppmd past the "
+                "end of stream (native heap corruption on 1.3.x — see "
+                "docs/internal/known-issues.md)"
+            )
         self._order = order
         self._mem_size = mem_size
         self._variant = variant
         self._restore_method = restore_method
+        self._unpack_size = unpack_size
+        self._produced = 0
         if variant == 8:
             self._decomp: Any = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
         else:
             self._decomp = pyppmd.Ppmd7Decoder(order, mem_size)
-        self._pending = b""
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> PpmdDecoder:
         del point, inner
@@ -167,37 +207,89 @@ class PpmdDecoder(BaseDecoder):
             mem_size=self._mem_size,
             variant=self._variant,
             restore_method=self._restore_method,
+            unpack_size=self._unpack_size,
         )
 
+    def _max_length(self) -> int:
+        if self._unpack_size is None:
+            return -1
+        return max(0, self._unpack_size - self._produced)
+
+    def _decode_unsized(self, data: bytes) -> bytes:
+        # Unsized PPMd8 only (PPMd7 without a size is rejected in __init__). Never
+        # hand pyppmd max_length=-1; request bounded chunks and drain the internally
+        # buffered input instead. Valid PPMd8 stops at its end mark before any
+        # over-decode; the bound avoids the -1 allocation path and caps the damage
+        # on corrupt data. Stop when the decoder needs more input (await the next
+        # feed), hits eof, or goes quiet.
+        parts: list[bytes] = []
+        chunk = self._decomp.decode(data, _PPMD_UNSIZED_DECODE_CHUNK)
+        while chunk:
+            parts.append(chunk)
+            if self._decomp.eof or getattr(self._decomp, "needs_input", False):
+                break
+            chunk = self._decomp.decode(b"", _PPMD_UNSIZED_DECODE_CHUNK)
+        return b"".join(parts)
+
+    def _decode(self, data: bytes, max_length: int) -> bytes:
+        if max_length == 0:
+            return b""
+        # Decoding after native EOF is trailing garbage at best (and the crashy
+        # runaway path on pyppmd 1.3.x when unbounded) — drop the input instead.
+        if self._decomp.eof and max_length < 0:
+            return b""
+        # Empty input + needs_input (pre-EOF): documented extra NUL (pyppmd / py7zr).
+        if (
+            not data
+            and getattr(self._decomp, "needs_input", False)
+            and not self._decomp.eof
+        ):
+            data = b"\0"
+        if max_length < 0:
+            return self._decode_unsized(data)
+        return self._decomp.decode(data, max_length)
+
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
-        data = self._pending + chunk
-        self._pending = b""
-        if not data and max_length >= 0:
-            # pyppmd retains unconsumed input internally when length-limited.
-            if getattr(self._decomp, "needs_input", True):
-                return DecodeOut(b"")
-            length = max_length
-            return DecodeOut(self._decomp.decode(b"", length))
-        if not data:
-            return DecodeOut(b"")
-        length = -1 if max_length < 0 else max_length
-        return DecodeOut(self._decomp.decode(data, length))
+        # Honour both the container unpack_size cap and the stream-layer read budget.
+        unpack_cap = self._max_length()
+        if max_length >= 0 and unpack_cap >= 0:
+            limit = min(max_length, unpack_cap)
+        elif max_length >= 0:
+            limit = max_length
+        else:
+            limit = unpack_cap
+        out = self._decode(chunk, limit)
+        self._produced += len(out)
+        return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        # 7z/ZIP PPMd streams sometimes need a trailing NUL to finish when the decoder
-        # still reports needs_input at EOF (mirrors py7zr's PpmdDecompressor).
-        if getattr(self._decomp, "needs_input", False) and not self._decomp.eof:
-            return DecodeOut(self._decomp.decode(b"\0", -1))
-        return DecodeOut(b"")
+        # A stream whose encoder omitted the trailing byte still reports needs_input
+        # at compressed EOF; the documented recovery (pyppmd docs / py7zr) is exactly
+        # one extra NUL, bounded by the remaining size. Never inject fabricated input
+        # in a loop — on truncated data that decodes garbage through the native model,
+        # which can silently complete a member and (on pyppmd 1.3.x, if unbounded)
+        # corrupt the heap. Anything still missing after the single NUL is truncation,
+        # surfaced via ``finished``.
+        max_length = self._max_length()
+        if max_length == 0:
+            return DecodeOut(b"")
+        if self._decomp.eof or not getattr(self._decomp, "needs_input", False):
+            return DecodeOut(b"")
+        chunk = self._decode(b"\0", max_length)
+        self._produced += len(chunk)
+        return DecodeOut(chunk)
 
     @property
     def finished(self) -> bool:
+        # Prefer the container size when known: it detects truncation (short output
+        # at compressed EOF) and ends the member exactly at its boundary — PPMd7 has
+        # no end mark, so native eof alone cannot do either.
+        if self._unpack_size is not None:
+            return self._produced >= self._unpack_size
         return bool(self._decomp.eof)
 
     @property
     def needs_input(self) -> bool:
-        if self._pending:
-            return False
         return bool(getattr(self._decomp, "needs_input", True))
 
 
@@ -356,10 +448,13 @@ def PpmdDecompressorStream(
     mem_size: int,
     variant: int = 7,
     restore_method: int = 0,
+    unpack_size: int | None = None,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
 
     ``variant=7`` is 7z PPMd var.H; ``variant=8`` is ZIP method 98 (PPMd8).
+    ``unpack_size`` is required for PPMd7 (no end mark — see :class:`PpmdDecoder`)
+    and recommended for PPMd8 whenever the container declares the member size.
     """
     return DecompressorStream(
         path,
@@ -368,6 +463,7 @@ def PpmdDecompressorStream(
             mem_size=mem_size,
             variant=variant,
             restore_method=restore_method,
+            unpack_size=unpack_size,
         ),
         codec_name="ppmd",
     )

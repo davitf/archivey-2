@@ -1,15 +1,15 @@
-# Maintainer decisions — Brief 2 (crypto) — RESOLVED (source-confirmed)
+# Maintainer decisions — Brief 2 (crypto) — RESOLVED + APPLIED (#127)
 
 Answers below fold in davitf's PR #115 review (2026-07-15), a check of the `archivey-dev`
 reference at `730275b`, and the **7-Zip + UnRAR source answers** (2026-07-16, see
-`7z-source-questions.md` for the raw citations). All questions are now closed; the "plan"
-lines are the agreed implementation direction.
+`7z-source-questions.md` for the raw citations). All questions are closed; the plans below
+were implemented in **#127**.
 
-## Q1 — RAR5 tweaked-checksum BLAKE2sp (F1) — **untweak-and-verify (both transforms confirmed)**
+## Q1 — RAR5 tweaked-checksum BLAKE2sp (F1) — **DONE (untweak-and-verify)**
 
 The tweak is RAR's `ConvertHashToMAC` — a **one-way forward transform**, so we compute the
 real hash from decrypted data, transform it, and compare to the stored value (we cannot
-recover the real checksum from the tweaked one). Both transforms are now confirmed against
+recover the real checksum from the tweaked one). Both transforms are confirmed against
 UnRAR `crypt5.cpp`:
 
 - **HashKey** = `PBKDF2-HMAC-SHA256(pw_utf8, salt, (1 << kdf_count) + 16)` — the AES key is at
@@ -22,65 +22,49 @@ UnRAR `crypt5.cpp`:
   digest (`crypt5.cpp:206`). This is the path archivey-dev never implemented.
 - **Gate:** the tweak is applied **iff** the file's `FHEXTRA_CRYPT_HASHMAC` (0x02) flag is set
   (`arcread.cpp:1080`, `extract.cpp:934`) — which is exactly what v2's `_crc_is_tweaked` already
-  reads. **Correction to the earlier writeup:** encrypted-header (`-hp`) archives do **not**
-  auto-skip the tweak in the reader; unrar honours only the per-file 0x02 flag (untweaked
-  checksums under `-hp` are a *writer* choice to omit the flag). So no header-encryption
-  special-case is needed — key off 0x02 alone.
+  reads. Encrypted-header (`-hp`) archives do **not** auto-skip the tweak in the reader; unrar
+  honours only the per-file 0x02 flag.
 
-**Plan:**
-1. **Interim correctness fix:** make `_member_hashes` symmetric — drop `blake2sp` when 0x02 is
-   set, exactly as it already drops `crc32`; stash both tweaked values in `member.extra`
-   (`rar.tweaked_crc32` / `rar.tweaked_blake2sp`). Removes the false `CorruptionError`.
-2. **Full fix:** when a password is confirmed at open time, verify by forward-transform
-   (CRC32 + BLAKE2sp) with the HashKey; leave `member.hashes` empty when the password is
-   unknown. Strictly better than DEV (which did CRC only).
+**Applied (#127):**
+1. `_member_hashes` drops `blake2sp` when 0x02 is set (symmetric with crc32); tweaked values
+   live in `member.extra` (`rar.tweaked_crc32` / `rar.tweaked_blake2sp`).
+2. With a password, verify by forward-transform (CRC32 + BLAKE2sp) via
+   `VerifyingStream(digest_transforms=…)` and `rar5_hash_key` / `convert_*_to_mac`.
+   `member.hashes` stays empty when tweaked (plaintext digests are not recoverable from the
+   stored MAC). Without a password, emit `DIGEST_UNVERIFIABLE` (`reason="tweaked_checksum"`).
+3. Fixture `encryption_blake2sp.rar` + `tests/test_crypto_findings.py` cover the e2e path.
 
-## Q2 — 7z folders with no integrity anchor (F2) — **best-effort accept confirmed correct**
+## Q2 — 7z folders with no integrity anchor (F2) — **DONE (best-effort + diagnostic)**
 
-Source-confirmed: 7zAES has **no password check** of its own (unlike ZipAES/Rar5) — AES-CBC
-just filters, no padding/MAC gate. 7-Zip's only wrong-password gate is the extraction CRC,
-and *only when the CRC is defined* (`7zExtract.cpp:95,128`). With no CRC:
-- compressed member → the LZMA/LZMA2 decoder usually rejects garbage → `kDataError`;
-- **store/copy member → silently returns garbage (`kOK`)**.
+Source-confirmed: 7zAES has **no password check** of its own. 7-Zip's only wrong-password
+gate is the extraction CRC when defined. With no CRC, store/copy members silently return
+garbage.
 
-So archivey's best-effort accept **exactly matches 7-Zip** — "matching 7-Zip on CRC-less
-streams means accepting when decode succeeds, not inventing a password check 7-Zip doesn't
-have." Decision stands: keep accept-and-return, emit a `DIGEST_UNVERIFIABLE`/
-`DECRYPTION_UNVERIFIED` diagnostic on a no-anchor encrypted member. **F2 stays Low.** (ZIP is
-not exposed the same way — AE-2 has a mandatory HMAC, ZipCrypto STORED has the CD CRC.)
+**Applied (#127):** keep accept-and-return; emit `DIGEST_UNVERIFIABLE` with
+`reason="no_integrity_anchor"` (reused existing code rather than adding
+`DECRYPTION_UNVERIFIED`) for encrypted members whose folder has no digest and whose record
+has no CRC. **F2 stays Low.**
 
-## Q3 — 7z KDF cap + `0x3F` sentinel (F3) — **cap at 24 (matches 7-Zip exactly); 0x3F confirmed**
+## Q3 — 7z KDF cap + `0x3F` sentinel (F3) — **DONE (match 7-Zip)**
 
-Source-confirmed in `7zAes.cpp`:
-- **7-Zip *does* clamp** at property-parse time: `SetDecoderProperties2` accepts
-  `NumCyclesPower <= 24` **or** `== 0x3F`, else returns `E_NOTIMPL` (unsupported)
-  (`7zAes.cpp:27` `k_NumCyclesPower_Supported_MAX = 24`, `:260-279`). Values 25–62 never reach
-  the hash loop, so official 7-Zip never attempts 2⁶³ rounds. **v2 is currently *more*
-  permissive than 7-Zip** (accepts 25–62 → the DoS).
-- **`0x3F` special case is real** in official 7-Zip: `Key = salt‖password` zero-padded to 32,
-  no SHA-256 (`7zAes.cpp:41-50`). archivey/py7zr match — **the "is 0x3F really a sentinel?"
-  sub-question is resolved: yes, no divergence.**
-- **Counter layout confirmed:** 8-byte little-endian round index appended to `salt‖password`
-  (`7zAes.cpp:56-67`). archivey's `(s+i).to_bytes(8,"little")` matches.
-- Encoder default is **19**, hardcoded, never user-settable (`7zAes.cpp:232`).
+Source-confirmed in `7zAes.cpp`: accept `NumCyclesPower <= 24` or `== 0x3F`, else
+`E_NOTIMPL`. The `0x3F` no-hash sentinel is real; counter layout matches.
 
-**Plan:** match 7-Zip exactly — in `derive_sevenzip_aes_key` /
-`parse_sevenzip_aes_properties`, accept `cycles <= 24` or `cycles == 0x3F`, reject 25–62 with
-`UnsupportedFeatureError`. Not merely "our own defensive cap" — it is *the same cap 7-Zip
-enforces*, so it rejects nothing a real archive contains.
+**Applied (#127):** `parse_sevenzip_aes_properties` / `derive_sevenzip_aes_key` reject 25–62
+with `UnsupportedFeatureError`. Folder password-confirm re-raises that (and
+`PackageNotInstalledError`) instead of remapping to `EncryptionError`.
 
 ## Q4 — 7-Zip / UnRAR source checklist — **answered** (`7z-source-questions.md`)
 
-All items A–D answered from source. The only decision-changing surprise is D9 → see F4 below.
+All items A–D answered from source. D9 unlocked F4 below.
 
-## F4 (was "unavoidable") — **unrar password IS avoidable via bare `-p` + stdin**
+## F4 — **DONE (bare `-p` + stdin)**
 
-Source-confirmed correction: unrar supports a non-argv password channel — pass **bare `-p`**
-(no value) and write the password to the child's **stdin** (`GetPasswordText → getwstr` reads
-stdin when it is redirected; `printf '%s\n' "$pw" | unrar x -p archive.rar`). v2 uses
-`unrar p` with the *data* on stdout, so stdin is free — this is directly usable and keeps the
-password out of `argv`/`/proc/<pid>/cmdline`. There is still no env-var or `-p@file` channel.
+**Applied (#127):** `open_unrar_p` appends bare `-p` and writes `password + "\n"` on
+`stdin=PIPE` (keep `-p-` when no password). Tests spy on `Popen` (race-free vs
+`/proc/<pid>/cmdline`).
 
-**Plan (F4 upgraded from "documented limitation" to actionable):** change `_password_arg` /
-`open_unrar_p` to pass bare `-p` and feed `password + "\n"` via `stdin=PIPE` (keep `-p-` for
-the no-password case). Low severity, but now a concrete fix rather than an accepted leak.
+## F5 — **DONE (`compare_digest`)**
+
+**Applied (#127):** `_check_rar5_password` uses `hmac.compare_digest` for the check-blob
+integrity prefix and the derived 8-byte PswCheck.

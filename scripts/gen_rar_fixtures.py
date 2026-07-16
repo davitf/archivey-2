@@ -357,6 +357,12 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         (_File("store.txt", b"stored payload"),),
         extra=("-m0", "-htb"),
     )
+    build(
+        rar5_bin,
+        "encryption_blake2sp.rar",
+        (_File("store.txt", b"stored payload"),),
+        extra=("-m0", "-htb", "-ppassword"),
+    )
     _build_file_version(
         rar5_bin,
         out_dir / "file_version__.rar",

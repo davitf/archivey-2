@@ -14,11 +14,12 @@ from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
+from archivey.diagnostics import DiagnosticCode, DigestContext, MemberTimestampContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
+    PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -49,6 +50,7 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
+from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     infer_member_name_from_archive,
@@ -393,6 +395,34 @@ class SevenZipReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=logger,
             )
+        # Encrypted folder with no folder digest and no per-member CRC: 7zAES has no
+        # password check of its own, so a wrong password cannot be detected (matches
+        # 7-Zip). Surface that as DIGEST_UNVERIFIABLE rather than silently implying
+        # the decryption was authenticated.
+        if (
+            record.is_encrypted
+            and record.crc32 is None
+            and record.folder_index is not None
+            and not self._archive.folders[record.folder_index].digest_defined
+        ):
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                message=(
+                    "Encrypted 7z member has no folder digest and no member CRC; "
+                    "decryption cannot be authenticated (wrong passwords may go "
+                    "undetected on store/copy streams)."
+                ),
+                context=DigestContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    algorithm="",
+                    reason="no_integrity_anchor",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
         return member
 
     def _member_type(self, record: SevenZipFileRecord) -> MemberType:
@@ -519,6 +549,9 @@ class SevenZipReader(BaseArchiveReader):
                     raise EncryptionError("Wrong password or corrupt 7z folder")
                 _verify_decoded_folder(folder, decoded, member_digests=member_digests)
                 return kdf_password
+            except (UnsupportedFeatureError, PackageNotInstalledError):
+                # Hostile NumCyclesPower / missing [crypto] must not look like a wrong password.
+                raise
             except ArchiveyError as exc:
                 raise EncryptionError("Wrong password or corrupt 7z folder") from exc
             finally:

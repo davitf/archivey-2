@@ -31,34 +31,41 @@ binary (absent here) and the 7z/KDF triggers need format-legal-but-crafted archi
 
 | # | Sev | Where | One-liner | Repro | Status |
 |---|-----|-------|-----------|-------|--------|
-| F1 | **High** | `rar_reader.py:119` `_member_hashes` | RAR5 tweaked-checksum members keep the key-tweaked BLAKE2sp in `hashes`, so a correctly-decrypted `-htb`-encrypted member fails `VerifyingStream` with a spurious `CorruptionError` | unit (VerifyingStream + tweaked hash) + `_member_hashes` asymmetry; rarfile oracle guard | Confirmed (logic); full e2e needs `unrar` + `-htb` encrypted fixture |
-| F2 | Low *(was Medium — see Q2)* | `sevenzip_reader.py:119` `_verify_decoded_folder` | Encrypted 7z folder with **no folder digest and CRC-less members** (both format-legal) confirms *any* password and returns garbage with no error (no CRC gate, no `VerifyingStream`) | unit (`_verify_decoded_folder` accepts wrong-key garbage) | Confirmed (logic); maintainer: keep best-effort, emit a diagnostic rather than hard-error |
-| F3 | **Medium** | `crypto.py:176` `derive_sevenzip_aes_key` | 7z `NumCyclesPower` is uncapped below the `0x3F` sentinel; a hostile value `0x3E` forces ~2⁶² SHA-256 rounds (CPU DoS) during password confirmation / header decode. **7-Zip itself rejects 25–62 (`k_NumCyclesPower_Supported_MAX = 24`); v2 is more permissive than the reference** | `parse_sevenzip_aes_properties` + derive; 7-Zip source `7zAes.cpp:27,260` | Confirmed; fix = match 7-Zip (accept ≤24 or ==0x3F) |
-| F4 | Low (hardening) | `rar_unrar.py:53` `_password_arg` | Password passed to `unrar` as `-p<password>` in argv → visible to other local users via `ps`/`/proc`. **Fixable:** bare `-p` + password on stdin avoids argv (v2's `unrar p` leaves stdin free) | code read; UnRAR source (`GetPasswordText`) | Confirmed; concrete fix available |
-| F5 | Low (hardening) | `rar_parser.py:1406` `_check_rar5_password` | RAR5 password-check value (key-derived) compared with `!=` rather than `hmac.compare_digest` | code read | Confirmed; WinZip AES correctly uses `compare_digest` |
+| F1 | **High** | `rar_reader.py` `_member_hashes` | RAR5 tweaked-checksum members keep the key-tweaked BLAKE2sp in `hashes`, so a correctly-decrypted `-htb`-encrypted member fails `VerifyingStream` with a spurious `CorruptionError` | unit + e2e (`encryption_blake2sp.rar`) | **Fixed in #127** |
+| F2 | Low *(was Medium — see Q2)* | `sevenzip_reader.py` `_to_member` / `_verify_decoded_folder` | Encrypted 7z folder with **no folder digest and CRC-less members** confirms *any* password and returns garbage with no error | unit (`_verify_decoded_folder` + diagnostic emit) | **Fixed in #127** (diagnostic; best-effort kept) |
+| F3 | **Medium** | `crypto.py` `derive_sevenzip_aes_key` / `parse_sevenzip_aes_properties` | 7z `NumCyclesPower` uncapped below `0x3F`; hostile `0x3E` → ~2⁶² SHA-256 rounds. 7-Zip rejects 25–62 | unit (parse + derive) | **Fixed in #127** |
+| F4 | Low (hardening) | `rar_unrar.py` `open_unrar_p` | Password in `unrar` argv → visible via `ps`/`/proc`. Fix: bare `-p` + stdin | Popen spy + e2e | **Fixed in #127** |
+| F5 | Low (hardening) | `rar_parser.py` `_check_rar5_password` | RAR5 PswCheck compared with `!=` rather than `hmac.compare_digest` | unit | **Fixed in #127** |
 
-See `verification.md` (F1, F2, the silent-acceptance analysis — the headline),
-`kdf-and-ciphers.md` (F3, F5, and the bit-exactness oracle diffs), and
-`availability-and-contract.md` (F4, `[crypto]`-absent contract, `[all-lowest]` API floor).
-`QUESTIONS.md` records the resolved decisions and `7z-source-questions.md` holds the
-source-agent checklist **with the confirmed 7-Zip/UnRAR answers appended**. The "**what is
+See `verification.md` (F1, F2), `kdf-and-ciphers.md` (F3, F5), and
+`availability-and-contract.md` (F4). `QUESTIONS.md` records the resolved decisions;
+`7z-source-questions.md` holds the source-agent checklist with answers. The "**what is
 actually fine**" section is at the end of `verification.md`.
+
+## Applied fixes (#127)
+
+All five findings are implemented on `main` via #127 (rebased onto this review). Coverage
+lives in `tests/test_crypto_findings.py` plus the vendored fixture
+`tests/fixtures/rar/encryption_blake2sp.rar` (`-m0 -htb -ppassword`).
+
+| # | What landed |
+|---|-------------|
+| **F1** | `_member_hashes` drops both crc32 and blake2sp when HASHMAC (`0x02`) is set; tweaked values stashed in `member.extra` (`rar.tweaked_crc32` / `rar.tweaked_blake2sp`). With a password, `VerifyingStream` verifies via `ConvertHashToMAC` (`digest_transforms` + `rar5_hash_key` / `convert_crc_to_mac` / `convert_blake2sp_to_mac`). Without a password, emit `DIGEST_UNVERIFIABLE` (`reason="tweaked_checksum"`). `member.hashes` stays empty when tweaked (plaintext digests are not recoverable). |
+| **F2** | Best-effort accept unchanged. Encrypted CRC-less members in a folder with no digest emit `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) at list time. |
+| **F3** | `parse_sevenzip_aes_properties` / `derive_sevenzip_aes_key` accept `cycles <= 24` or `== 0x3F`; reject 25–62 with `UnsupportedFeatureError`. Password-confirm no longer remaps that to `EncryptionError`. |
+| **F4** | `open_unrar_p` passes bare `-p` and writes `password + "\n"` on the child's stdin (`-p-` when no password). |
+| **F5** | `_check_rar5_password` uses `hmac.compare_digest` for both the check-blob SHA-256 prefix and the derived PswCheck. |
 
 **Resolution notes (source-confirmed, 2026-07-16 — 7-Zip + UnRAR source):**
 - **F1** — both `ConvertHashToMAC` transforms confirmed in UnRAR `crypt5.cpp`: CRC32 = XOR-fold
   of `HMAC-SHA256(HashKey, crc_le4)`, BLAKE2sp = `HMAC-SHA256(HashKey, digest32)`, HashKey =
-  PBKDF2 at `(1<<kdf_count)+16`. Gate is the per-file `HASHMAC` (0x02) flag only (encrypted
-  headers do **not** auto-skip). Plan: interim symmetric blake2sp drop, then forward-transform
-  verify for both hashes.
+  PBKDF2 at `(1<<kdf_count)+16`. Gate is the per-file `HASHMAC` (0x02) flag only.
 - **F2** — 7zAES has **no** password check; 7-Zip returns garbage on a CRC-less store member
   too. Best-effort accept is confirmed correct; emit a diagnostic. **Low.**
-- **F3** — 7-Zip clamps `NumCyclesPower` to **≤24 or ==0x3F** (`E_NOTIMPL` otherwise), and the
-  `0x3F` "no-hash" sentinel is real. v2 should match exactly (reject 25–62). Not a "defensive
-  cap" — it is *the reference's own cap*. Counter layout + 0x3F verified bit-exact.
-- **F4** — upgraded from "unavoidable" to fixable: pass bare `-p` and feed the password via
-  stdin (unrar reads it there when redirected); v2's `unrar p` uses stdout for data, so stdin
-  is free.
-- **F5** — timing-only; no real attack surface; one-line `compare_digest` for consistency.
+- **F3** — 7-Zip clamps `NumCyclesPower` to **≤24 or ==0x3F** (`E_NOTIMPL` otherwise); `0x3F`
+  no-hash sentinel is real. Fix matches the reference exactly.
+- **F4** — bare `-p` + stdin is the non-argv password channel (UnRAR `GetPasswordText`).
+- **F5** — timing-only; fixed for consistency with WinZip AES.
 
 ## Ranking against VISION
 

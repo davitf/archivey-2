@@ -1,0 +1,85 @@
+name: PPMd native stress
+
+# Investigation vehicle for intermittent ``pyppmd`` native aborts on *valid* PPMd
+# streams (Windows STATUS_HEAP_CORRUPTION; Linux SIGSEGV / malloc abort after
+# other-codec warmup). See docs/internal/known-issues.md.
+#
+# Runs on every PR and on pushes to main so we keep signal, but lives in its *own*
+# workflow on purpose: do **not** add this check as a required status check — a red
+# run here must not block merge. The main CI Windows matrix skips the 7z PPMd codec
+# param; default pytest excludes ``ppmd_native_stress`` tests.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Isolated child iterations per scenario"
+        required: false
+        default: "20"
+
+concurrency:
+  group: ppmd-native-stress-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ppmd-stress:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }} / PPMd stress
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows: fresh PPMd-only children reproduce STATUS_HEAP_CORRUPTION.
+          - { os: windows-latest, python-version: "3.11" }
+          - { os: windows-latest, python-version: "3.14" }
+          # Linux: warmup_codecs is highly flaky (~1/3); raw_* stays clean so far.
+          - { os: ubuntu-latest, python-version: "3.11" }
+          - { os: ubuntu-latest, python-version: "3.14" }
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      ARCHIVEY_PPMD_STRESS_ITERS: ${{ github.event.inputs.iterations || '20' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync (dev + all extras)
+        run: uv sync --python ${{ matrix.python-version }} --group dev --extra all
+
+      - name: Assert synced venv Python matches matrix
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync python -c
+          "import sys; exp=tuple(map(int, '${{ matrix.python-version }}'.split('.')));
+          got=sys.version_info[:2]; assert got==exp, (got, exp); print(sys.version)"
+
+      - name: Stress PPMd (script — minimal surface + baseline + warmup)
+        # Non-zero exit when any child crashes — intentional for visibility.
+        # This workflow must stay non-required so a red run does not block merge.
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          python scripts/ppmd_native_stress.py
+          --summary ppmd-stress-summary-${{ matrix.os }}-py${{ matrix.python-version }}.md
+
+      - name: Stress PPMd (pytest marker entry points)
+        if: always()
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          pytest -m ppmd_native_stress -q --timeout=600 -o addopts=
+
+      - name: Upload stress summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppmd-stress-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: ppmd-stress-summary-${{ matrix.os }}-py${{ matrix.python-version }}.md
+          if-no-files-found: ignore
