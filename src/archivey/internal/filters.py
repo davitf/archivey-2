@@ -252,7 +252,11 @@ def _strip_trailing_dot_space(name: str) -> str:
     parts = name.split("/")
     out: list[str] = []
     for part in parts:
-        if part == "":  # empty from a leading/trailing/`//` separator: leave structure
+        # Empty (from a leading/trailing/`//` separator) and the path-navigation spellings
+        # "." / ".." are structural, not trailing-dot hazards — pass them through untouched
+        # ("." is the never-empty root from normalize_member_name; ".." is caught earlier by
+        # check_universal). Stripping them would wrongly collapse the segment to empty.
+        if part in ("", ".", ".."):
             out.append(part)
             continue
         stripped = part.rstrip(". ")

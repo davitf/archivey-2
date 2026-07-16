@@ -1677,12 +1677,18 @@ def test_o3_trailing_dot_space_stripped_strict_kept_standard(
     assert strict.results[0].status is ExtractionStatus.EXTRACTED
     assert sorted(p.name for p in (tmp_path / "strict").iterdir()) == [portable]
     assert strict.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_SANITIZED) == 1
-    # STANDARD keeps it faithful (as-is on POSIX).
+    # STANDARD does NOT rewrite the name (no sanitize diagnostic) — it keeps it faithful.
+    # The on-disk name is then the OS's call: POSIX writes it verbatim; Windows itself trims
+    # the trailing dot/space, so we only assert the faithful on-disk name off Windows.
     standard = extract(
         io.BytesIO(archive), tmp_path / "standard", policy=ExtractionPolicy.STANDARD
     )
     assert standard.results[0].status is ExtractionStatus.EXTRACTED
-    assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
+    assert (
+        standard.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_SANITIZED) is None
+    )
+    if os.name != "nt":
+        assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
 
 
 def test_o3_trailing_dot_directory_tree_stays_connected(tmp_path: Path) -> None:
@@ -1714,6 +1720,19 @@ def test_o3_all_dots_segment_rejected(tmp_path: Path) -> None:
     )
     assert report.results[0].status is ExtractionStatus.REJECTED
     assert isinstance(report.results[0].error, UnportableNameError)
+
+
+def test_o3_strip_passes_through_bare_dot_root(tmp_path: Path) -> None:
+    # A bare "." segment (the root dir; normalize_member_name maps a ZIP/TAR root "/" to
+    # ".") is a path spelling, not a trailing-dot hazard — the strip must NOT collapse it to
+    # empty and reject it. A "/"-rooted zip extracts cleanly under STRICT.
+    archive = tmp_path / "rooted.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("/"), b"")
+        zf.writestr("a.txt", b"hello")
+    report = extract(archive, tmp_path / "out", policy=ExtractionPolicy.STRICT)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
 
 
 # --- O7: surrogateescape sanitize ------------------------------------------
