@@ -171,8 +171,8 @@ def test_ppmd_decoder_extra_null_flush_respects_remaining() -> None:
     assert dec.flush().data == b""
 
 
-def test_ppmd_decoder_skips_native_calls_after_eof() -> None:
-    """After native EOF, feed/flush must not call decode again (pyppmd 1.3.1 abort)."""
+def test_ppmd_decoder_skips_unbounded_after_eof() -> None:
+    """After unpack_size is met, further feed/flush must not use decode(..., -1)."""
     payload = b"hello world"
     packed = _encode_ppmd7(payload)
     dec = PpmdDecoder(order=_ORDER, mem_size=_MEM, variant=7, unpack_size=len(payload))
@@ -180,8 +180,7 @@ def test_ppmd_decoder_skips_native_calls_after_eof() -> None:
     out += dec.flush().data
     assert out == payload
     assert dec.finished
-    assert dec._decomp.eof
-    # Further feed/flush must be no-ops (would be crashy if forwarded as decode -1).
+    # max_length is 0 once produced >= unpack_size — no native after-eof -1.
     assert dec.feed(b"\0\0\0").data == b""
     assert dec.flush().data == b""
     assert dec.feed(b"").data == b""

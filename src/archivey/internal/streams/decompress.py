@@ -127,13 +127,15 @@ class PpmdDecoder(BaseDecoder):
     def _decode(self, data: bytes, max_length: int) -> bytes:
         if max_length == 0:
             return b""
-        # Never touch the native decoder after it reports EOF. On pyppmd 1.3.1,
-        # further decode(..., -1) calls (empty or NUL) can abort the process; the
-        # documented extra-NUL path is only for pre-EOF short reads.
-        if self._decomp.eof:
+        # Unbounded decode after native EOF is the crashy path on pyppmd 1.3.1.
+        if self._decomp.eof and max_length < 0:
             return b""
-        # Empty input + needs_input: feed the PPMd "extra" NUL (pyppmd / py7zr).
-        if not data and getattr(self._decomp, "needs_input", False):
+        # Empty input + needs_input (pre-EOF): documented extra NUL (pyppmd / py7zr).
+        if (
+            not data
+            and getattr(self._decomp, "needs_input", False)
+            and not self._decomp.eof
+        ):
             return self._decomp.decode(b"\0", max_length)
         return self._decomp.decode(data, max_length)
 
@@ -143,19 +145,29 @@ class PpmdDecoder(BaseDecoder):
         return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        # Drain with extra NULs while the decoder still wants input and we have room
-        # under unpack_size (or unbound when size is unknown). Cap iterations so a
-        # stuck needs_input cannot loop forever. Skip entirely once native EOF is set.
+        # Drain remaining output under unpack_size. pyppmd 1.1.x can set eof early while
+        # still short of the known size; empty/NUL feeds with a *bounded* max_length then
+        # finish the member. Never use max_length=-1 after eof (1.3.1 native abort).
         parts: list[bytes] = []
-        for _ in range(8):
-            if self._decomp.eof:
-                break
+        for _ in range(64):
             max_length = self._max_length()
             if max_length == 0:
                 break
-            if not getattr(self._decomp, "needs_input", False):
+            if max_length < 0:
+                # Unknown size: only the pre-EOF needs_input NUL path.
+                if self._decomp.eof or not getattr(self._decomp, "needs_input", False):
+                    break
+                chunk = self._decomp.decode(b"\0", -1)
+            elif self._decomp.eof:
+                # Known remaining size + premature eof (1.1.x): pump empty/NUL bounded.
+                if getattr(self._decomp, "needs_input", False):
+                    chunk = self._decomp.decode(b"\0", max_length)
+                else:
+                    chunk = self._decomp.decode(b"", max_length)
+            elif getattr(self._decomp, "needs_input", False):
+                chunk = self._decomp.decode(b"\0", max_length)
+            else:
                 break
-            chunk = self._decomp.decode(b"\0", max_length)
             if not chunk:
                 break
             parts.append(chunk)
@@ -164,8 +176,10 @@ class PpmdDecoder(BaseDecoder):
 
     @property
     def finished(self) -> bool:
-        if self._unpack_size is not None and self._produced >= self._unpack_size:
-            return True
+        # Prefer the container size when known. Native eof alone is not enough: pyppmd
+        # 1.1.x can report eof before unpack_size is reached.
+        if self._unpack_size is not None:
+            return self._produced >= self._unpack_size
         return bool(self._decomp.eof)
 
 
