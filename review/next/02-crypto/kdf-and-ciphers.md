@@ -69,6 +69,10 @@ correct (it has to be, or the stdlib diff would fail).
 
 ## F3 (Medium) — 7z `NumCyclesPower` is uncapped → CPU DoS from a hostile archive
 
+> **Fixed in #127.** `parse_sevenzip_aes_properties` / `derive_sevenzip_aes_key` accept
+> `cycles <= 24` or `== 0x3F`; reject 25–62 with `UnsupportedFeatureError` (matches
+> 7-Zip's `k_NumCyclesPower_Supported_MAX`).
+
 `derive_sevenzip_aes_key` (`crypto.py:184`) validates only `0 <= cycles <= 0x3F` and treats
 `0x3F` as the no-hash sentinel. Every value `0x01..0x3E` is taken literally as `2^cycles`
 SHA-256 rounds. There is **no upper bound below the sentinel**, so a crafted AES coder
@@ -106,13 +110,17 @@ rounds. **v2 is currently *more permissive* than the reference** — it accepts 
 lines 56-67) matches archivey's `(s+i).to_bytes(8,"little")`. Encoder default is 19, hardcoded,
 never user-settable (line 232).
 
-**Fix:** match 7-Zip exactly — accept `cycles <= 24` **or** `cycles == 0x3F`, reject 25–62 with
-`UnsupportedFeatureError`. This is not a "defensive cap we invented"; it is *the same cap the
-reference enforces*, so it rejects nothing a real archive contains and closes the DoS.
+**Fix (applied in #127):** match 7-Zip exactly — accept `cycles <= 24` **or** `cycles == 0x3F`,
+reject 25–62 with `UnsupportedFeatureError`. This is not a "defensive cap we invented"; it is
+*the same cap the reference enforces*, so it rejects nothing a real archive contains and
+closes the DoS.
 
 ---
 
 ## F5 (Low, hardening) — RAR5 password-check compared with `!=`
+
+> **Fixed in #127.** `_check_rar5_password` uses `hmac.compare_digest` for both the
+> check-blob SHA-256 prefix and the derived PswCheck.
 
 `_check_rar5_password` (`rar_parser.py:1406`) compares the key-derived 8-byte password-check
 value with a plain `!=`:
@@ -134,5 +142,5 @@ matter). WinZip AES already uses `hmac.compare_digest` for both its pw-verify an
 resilience?"):** yes. The only thing `compare_digest` buys here is resistance to a timing
 side-channel on the password-check value, and for a local archive library there is no remote
 attacker measuring decrypt timing and no server-side secret — so there is effectively **no
-attack surface**. It is worth the one-line change purely for correctness/consistency (v2
-already uses `compare_digest` elsewhere), but it is not security-relevant. Lowest priority.
+attack surface**. **Applied in #127** as a one-line consistency fix (both the check-blob
+prefix and the derived PswCheck now use `hmac.compare_digest`).
