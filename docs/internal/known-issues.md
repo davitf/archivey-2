@@ -198,11 +198,14 @@ codecs are exercised in the same process **before** PPMd (`warmup_codecs` scenar
 | `fresh_baseline` alone | 0/20 crashes in the same soak |
 | Raw `pyppmd` encode/decode alone | 0/40 subprocesses |
 | Raw archivey `PpmdDecompressorStream` alone | clean in short soaks |
+| Warmup **without** PPMd (LZMA2/Deflate/Bzip2 only) | **0/30** crashes |
+| Same warmup **then** PPMd | **10/30** crashes |
 
-So Linux looks like a **process-wide native-state / multi-extension** problem (or py7zr +
-other codecs priming a bad heap), while Windows already fails on a **minimal fresh PPMd
-7z child**. They may share an upstream `pyppmd` defect or be distinct; treat the rates per
-scenario as the comparison table.
+So the Linux abort **is PPMd-related** — other-codec warmup alone does not fire it; PPMd
+after that warmup does. It still looks like process-wide native state interacting with
+`pyppmd` (not a pure “any native codec” crash). Windows can also fail on a minimal fresh
+PPMd 7z child; stress runs often show `raw_*` clean and `warmup_codecs` hot on both OSes.
+Treat per-scenario rates as the comparison table.
 
 Repro (non-blocking stress entry points):
 
