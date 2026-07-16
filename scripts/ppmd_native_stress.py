@@ -250,6 +250,7 @@ def _write_driver(path: Path, scenario: str, *, rounds: int, seed: int) -> None:
             import io
             import pyppmd
             from archivey.internal.streams.decompress import PpmdDecompressorStream
+            from archivey.internal.streams.streamtools import read_exact
             ORDER, MEM = 6, 1 << 20
             data = b"alpha\\n" * 100
             _phase("raw_archivey_ppmd7:encode")
@@ -261,7 +262,7 @@ def _write_driver(path: Path, scenario: str, *, rounds: int, seed: int) -> None:
             with PpmdDecompressorStream(
                 io.BytesIO(packed), order=ORDER, mem_size=MEM, variant=7
             ) as stream:
-                got = stream.read(len(data))
+                got = read_exact(stream, len(data))
             assert got == data
             _phase("roundtrip-ok")
             """
