@@ -257,10 +257,13 @@ def _write_driver(path: Path, scenario: str, *, rounds: int, seed: int) -> None:
             enc = pyppmd.Ppmd7Encoder(ORDER, MEM)
             packed = enc.encode(data) + enc.flush()
             _phase("raw_archivey_ppmd7:decode-sized")
-            # PPMd7 has no end mark; bound the read to the known uncompressed size
-            # (same as 7z SlicingStream does for a member).
+            # Pass unpack_size so PPMd7 decode uses max_length (not -1 overshoot).
             with PpmdDecompressorStream(
-                io.BytesIO(packed), order=ORDER, mem_size=MEM, variant=7
+                io.BytesIO(packed),
+                order=ORDER,
+                mem_size=MEM,
+                variant=7,
+                unpack_size=len(data),
             ) as stream:
                 got = read_exact(stream, len(data))
             assert got == data

@@ -214,6 +214,8 @@ class CodecParams:
     - ``properties`` — raw coder properties blob (e.g. 7z PPMd var.H parameters).
     - ``ppmd_order`` / ``ppmd_mem_size`` / ``ppmd_restore_method`` — ZIP method-98 PPMd8
       parameters (mutually exclusive with 7z ``properties`` for :class:`PpmdCodec`).
+    - ``unpack_size`` — known uncompressed output length (7z folder unpack size). Passed
+      to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark.
     """
 
     filters: list[dict] | None = None
@@ -221,6 +223,7 @@ class CodecParams:
     ppmd_order: int | None = None
     ppmd_mem_size: int | None = None
     ppmd_restore_method: int = 0
+    unpack_size: int | None = None
 
 
 _DEFAULT_PARAMS = CodecParams()
@@ -1166,9 +1169,15 @@ class PpmdCodec(StreamCodec):
                 mem_size=params.ppmd_mem_size,
                 variant=8,
                 restore_method=params.ppmd_restore_method,
+                unpack_size=params.unpack_size,
             )
         order, mem_size = _parse_ppmd_var_h_properties(params.properties)
-        return PpmdDecompressorStream(source, order=order, mem_size=mem_size)
+        return PpmdDecompressorStream(
+            source,
+            order=order,
+            mem_size=mem_size,
+            unpack_size=params.unpack_size,
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):

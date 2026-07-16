@@ -7,9 +7,9 @@ Windows/Linux native aborts can be chased on the *minimal* surface (see
 Notes:
 - In-process PPMd7 create/destroy loops are skipped on Windows (have aborted CI with
   ``STATUS_HEAP_CORRUPTION`` / access violation); that axis lives in the stress job.
-- Archivey PPMd7 streams via ``decode(..., -1)`` are skipped on ``pyppmd`` 1.1.x, which
-  can return a short buffer and set ``eof`` early on encoder-built payloads (sized raw
-  decode still works). py7zr-built 7z PPMd fixtures remain covered by the 7z suite.
+- Prefer ``unpack_size`` on archivey PPMd7 streams (7z always passes folder size). That
+  bounds ``decode`` ``max_length`` like py7zr and avoids ``decode(..., -1)`` overshoot.
+  Unsized PPMd7 ``read()`` remains best-effort and may overshoot on some pyppmd versions.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import sys
 import pytest
 
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.decompress import PpmdDecompressorStream
+from archivey.internal.streams.decompress import PpmdDecoder, PpmdDecompressorStream
 from archivey.internal.streams.streamtools import read_exact
 from tests.conftest import requires
 
@@ -30,26 +30,6 @@ pytestmark = requires("pyppmd")
 _ORDER = 6
 _MEM = 1 << 20
 _CONTENT = b"the quick brown fox jumps over the lazy dog\n" * 40
-
-
-def _pyppmd_version() -> tuple[int, ...]:
-    import pyppmd
-
-    parts: list[int] = []
-    for part in pyppmd.__version__.split("."):
-        if not part.isdigit():
-            break
-        parts.append(int(part))
-    return tuple(parts)
-
-
-_SKIP_ARCHIVEY_PPMD7 = pytest.mark.skipif(
-    _pyppmd_version() < (1, 2),
-    reason=(
-        "pyppmd 1.1.x Ppmd7Decoder.decode(..., -1) can return short output and set "
-        "eof early on encoder-built payloads; archivey's PPMd7 adapter uses that API"
-    ),
-)
 
 
 def _encode_ppmd7(data: bytes, *, order: int = _ORDER, mem: int = _MEM) -> bytes:
@@ -103,26 +83,85 @@ def test_raw_pyppmd8_roundtrip() -> None:
     assert out == _CONTENT
 
 
-@_SKIP_ARCHIVEY_PPMD7
 def test_archivey_ppmd7_decompressor_stream_sized_read() -> None:
     """Archivey PPMd7 stream with an explicit uncompressed-size bound (no 7z)."""
     packed = _encode_ppmd7(_CONTENT)
     with PpmdDecompressorStream(
-        io.BytesIO(packed), order=_ORDER, mem_size=_MEM, variant=7
+        io.BytesIO(packed),
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=7,
+        unpack_size=len(_CONTENT),
     ) as stream:
         # DecompressorStream may return short chunks; containers use read_exact.
         assert read_exact(stream, len(_CONTENT)) == _CONTENT
 
 
-@_SKIP_ARCHIVEY_PPMD7
 def test_archivey_ppmd7_via_open_codec_stream_properties() -> None:
     """``open_codec_stream(Codec.PPMD)`` with 7z var.H properties blob."""
     packed = _encode_ppmd7(_CONTENT)
     props = struct.pack("<BL", _ORDER, _MEM)
     with open_codec_stream(
-        Codec.PPMD, io.BytesIO(packed), params=CodecParams(properties=props)
+        Codec.PPMD,
+        io.BytesIO(packed),
+        params=CodecParams(properties=props, unpack_size=len(_CONTENT)),
     ) as stream:
         assert read_exact(stream, len(_CONTENT)) == _CONTENT
+
+
+def test_archivey_ppmd7_trailing_null_payload() -> None:
+    """Trailing NUL plaintext: sized decode must not overshoot (pyppmd extra-byte note).
+
+    pyppmd documents that the encoder may omit a final null and the decoder may need
+    an extra NUL input when output is short. With ``unpack_size``, archivey passes
+    remaining length as ``max_length`` (py7zr-style) so ``decode(..., -1)`` cannot
+    invent bytes past the member.
+    """
+    payload = b"hello world" + b"\0"
+    packed = _encode_ppmd7(payload)
+    with PpmdDecompressorStream(
+        io.BytesIO(packed),
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=7,
+        unpack_size=len(payload),
+    ) as stream:
+        assert read_exact(stream, len(payload)) == payload
+
+
+def test_archivey_ppmd7_unpack_size_prevents_overshoot() -> None:
+    """``unpack_size`` keeps PPMd7 output within the known member/folder length."""
+    payload = b"alpha\n" * 100
+    packed = _encode_ppmd7(payload)
+    with PpmdDecompressorStream(
+        io.BytesIO(packed),
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=7,
+        unpack_size=len(payload),
+    ) as stream:
+        assert read_exact(stream, len(payload)) == payload
+    # Unsized path: ``decode(..., -1)`` may overshoot on some pyppmd versions; when it
+    # does, the prefix must still match (containers rely on an outer size bound).
+    with PpmdDecompressorStream(
+        io.BytesIO(packed), order=_ORDER, mem_size=_MEM, variant=7
+    ) as stream:
+        unsized = stream.read()
+    if len(unsized) >= len(payload):
+        assert unsized[: len(payload)] == payload
+
+
+def test_ppmd_decoder_extra_null_flush_respects_remaining() -> None:
+    """Flush feeds at most remaining unpack_size bytes when needs_input (PyPI sample)."""
+    payload = b"x" * 50 + b"\0"
+    packed = _encode_ppmd7(payload)
+    dec = PpmdDecoder(order=_ORDER, mem_size=_MEM, variant=7, unpack_size=len(payload))
+    out = dec.feed(packed).data
+    out += dec.flush().data
+    assert out == payload
+    assert dec.finished
+    # Further flush must not invent more bytes past unpack_size.
+    assert dec.flush().data == b""
 
 
 def test_archivey_ppmd8_via_open_codec_stream() -> None:
@@ -148,7 +187,6 @@ def test_archivey_ppmd8_repeated_construct_destroy() -> None:
             assert stream.read() == _CONTENT
 
 
-@_SKIP_ARCHIVEY_PPMD7
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason=(
@@ -161,6 +199,10 @@ def test_archivey_ppmd7_repeated_construct_destroy() -> None:
     for _ in range(25):
         packed = _encode_ppmd7(_CONTENT)
         with PpmdDecompressorStream(
-            io.BytesIO(packed), order=_ORDER, mem_size=_MEM, variant=7
+            io.BytesIO(packed),
+            order=_ORDER,
+            mem_size=_MEM,
+            variant=7,
+            unpack_size=len(_CONTENT),
         ) as stream:
             assert read_exact(stream, len(_CONTENT)) == _CONTENT
