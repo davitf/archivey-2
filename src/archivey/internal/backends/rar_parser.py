@@ -856,7 +856,9 @@ def _parse_rar3(
             if header_size > _S_BLK_HDR.size:
                 rest = header_fd.read(header_size - _S_BLK_HDR.size)
                 if len(rest) != header_size - _S_BLK_HDR.size:
-                    raise CorruptionError("Unexpected EOF while reading RAR3 header body")
+                    raise CorruptionError(
+                        "Unexpected EOF while reading RAR3 header body"
+                    )
                 hdata = buf + rest
             else:
                 hdata = buf
@@ -981,7 +983,9 @@ def _parse_rar3(
             # 32 bits; ``member.compress_size`` carries the full 64-bit size (with
             # HIGH_PACK_SIZE) so the walk skips the whole packed region and does not land
             # mid-data on the next header.
-            packed_size = member.compress_size if (flags & _RAR3_FILE_LARGE) else add_size
+            packed_size = (
+                member.compress_size if (flags & _RAR3_FILE_LARGE) else add_size
+            )
             _seek_after_packed(source, data_offset, packed_size)
             continue
 

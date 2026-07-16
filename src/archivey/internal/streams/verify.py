@@ -202,10 +202,16 @@ class VerifyingStream(ReadOnlyIOStream):
             self._short = True
 
     def read(self, n: int = -1, /) -> bytes:
-        if self._verify_enabled and self._expected_size is not None and not self._verified:
+        if (
+            self._verify_enabled
+            and self._expected_size is not None
+            and not self._verified
+        ):
             remaining = self._expected_size - self._pos
             if remaining <= 0:
-                data = b""  # at the declared size — fall through to end-of-stream checks
+                data = (
+                    b""  # at the declared size — fall through to end-of-stream checks
+                )
             else:
                 want = remaining if n < 0 else min(n, remaining)
                 data = self._inner.read(want)
