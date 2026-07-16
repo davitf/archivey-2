@@ -103,6 +103,9 @@ See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,
   `uv run pytest`, `uv run ruff`. Type-checking is **Pyrefly + ty** (the library stays
   clean on both); mypy is not used. The package stays pip-installable (standard PEP 621
   metadata, `hatchling`).
+- **Format before commit** — CI fails on `ruff format --check`. Install the auto-format
+  git hook with `./scripts/install-git-hooks.sh` (see `AGENTS.md` / `CONTRIBUTING.md`);
+  otherwise run `uv run ruff format` yourself before committing.
 - **Before pushing, run the test suite in all three dependency configurations** — current
   versions (`[all]`), minimum versions (`[all-lowest]`), and the zero-dep core
   (`[core-only]`) — since optional libraries change behaviour by both presence and version.

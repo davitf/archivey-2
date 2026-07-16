@@ -19,17 +19,28 @@ Python **3.11+**. Tooling runs through [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
 uv sync                       # create/refresh the dev environment
+./scripts/install-git-hooks.sh  # required: auto ruff fix+format on commit
 uv run pytest                 # run the test suite
 uv run ruff check             # lint
-uv run ruff format            # format
-uv run pre-commit install     # optional: install git hooks (ruff lint + format)
-uv run pre-commit run --all-files  # run hooks on the whole tree
+uv run ruff format            # format (apply; CI uses `ruff format --check`)
+uv run pre-commit run --all-files  # optional: run the framework hooks on the whole tree
 uv run pyrefly check          # type-check (Pyrefly)
 uv run ty check               # type-check (ty)
 ```
 
 Pyrefly and ty are scoped to `src/`, so every command above runs clean with no extra
 path arguments.
+
+**Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
+`src/ tests/ scripts/ benchmarks/` and will fail on drift. Installing the git hook
+(`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
+paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
+run `uv run ruff format` yourself before committing — `ruff format --check` only
+reports problems; it does not rewrite files.
+
+(`uv run pre-commit install` remains an alternative if you prefer the
+`pre-commit` framework's own installer, but on Cursor Cloud it can land in the
+remapped `core.hooksPath`; `./scripts/install-git-hooks.sh` is the supported path.)
 
 RAR *data* tests need the system `unrar` binary (`apt-get install -y unrar`, etc.);
 without it those tests skip cleanly.

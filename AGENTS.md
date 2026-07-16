@@ -24,10 +24,38 @@ in place. Run tools with `--no-sync` to avoid a redundant re-resolve, e.g.:
 - Type-check: `uv run --no-sync pyrefly check` and `uv run --no-sync ty check`
   (both must stay clean; mypy/pyright are intentionally not used)
 
+### Formatting before commit (required)
+
+CI fails on unformatted Python (`ruff format --check` over `src/ tests/ scripts/
+benchmarks/`). **Do not commit without formatting.**
+
+1. **Cursor Cloud** installs the git hook via `.cursor/install.sh` on every boot.
+   On a fresh local clone (or if the hook is missing), run:
+
+   ```bash
+   ./scripts/install-git-hooks.sh
+   ```
+
+   (Cursor remaps `core.hooksPath`; this script installs into the chained original
+   hooks dir so it still runs. Prefer it over bare `pre-commit install`.)
+
+2. **Before every commit**, if the hook is not installed (or you used
+   `--no-verify`), run formatting yourself:
+
+   ```bash
+   uv run --no-sync ruff format src/ tests/ scripts/ benchmarks/
+   uv run --no-sync ruff check --fix src/ tests/ scripts/ benchmarks/
+   ```
+
+   `ruff format --check` only *detects* drift; it does not rewrite files. Always
+   run `ruff format` (no `--check`) to apply.
+
 Non-obvious gotchas:
 
-- The startup update script also installs the system `unrar` binary and the `openspec`
-  CLI (in addition to `uv sync`), so both are present without manual steps.
+- The startup update script is committed at `.cursor/install.sh` (wired via
+  `.cursor/environment.json`). It installs `unrar`, the `openspec` CLI, runs
+  `uv sync --group dev --extra all`, and `./scripts/install-git-hooks.sh`, so the
+  format-on-commit hook is present without a manual step.
 - **`unrar`** (system binary, from the `multiverse` apt component) backs RAR *data*
   tests; without it they skip cleanly rather than fail.
 - **`7z`** (system binary, from `p7zip-full`) is required by tests that build encrypted
