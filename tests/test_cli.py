@@ -283,6 +283,9 @@ def test_progress_callback_requires_tty(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+
     from archivey.cli import progress as progress_mod
     from archivey.internal.extraction_types import ExtractionProgress
     from archivey.types import ArchiveMember, MemberType
@@ -316,10 +319,11 @@ def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -
     def _fake_tqdm(**kwargs: object) -> _FakeBar:
         return _FakeBar(**kwargs)
 
-    # Patch the tqdm symbol the helper imports at call time.
-    import tqdm as tqdm_mod
+    # Inject a fake tqdm so this runs in core-only (no real tqdm installed).
+    fake_mod = types.ModuleType("tqdm")
+    fake_mod.tqdm = _fake_tqdm  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "tqdm", fake_mod)
 
-    monkeypatch.setattr(tqdm_mod, "tqdm", _fake_tqdm)
     cb = progress_mod.make_progress_callback(hide_progress=False, stream=_TTY())
     assert cb is not None
 
@@ -347,6 +351,23 @@ def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -
     assert len(created) == 1
     assert created[0]["mininterval"] == 0  # type: ignore[index]
     assert created[0]["disable"] is False  # type: ignore[index]
+
+
+def test_progress_callback_without_tqdm_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    from archivey.cli import progress as progress_mod
+
+    class _TTY(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setitem(sys.modules, "tqdm", None)  # type: ignore[arg-type]
+    assert (
+        progress_mod.make_progress_callback(hide_progress=False, stream=_TTY()) is None
+    )
 
 
 def test_track_io_reports(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> None:
