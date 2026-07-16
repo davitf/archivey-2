@@ -207,6 +207,33 @@ after that warmup does. It still looks like process-wide native state interactin
 PPMd 7z child; stress runs often show `raw_*` clean and `warmup_codecs` hot on both OSes.
 Treat per-scenario rates as the comparison table.
 
+### Version matrix (Linux, `warmup_codecs`, unbounded `decode(..., -1)`)
+
+To check whether the native abort is recent, the same stress was run across published
+`pyppmd` versions with archivey’s PPMd adapter forced back to unbounded `max_length=-1`
+(the pre-`unpack_size` behavior). 40 children each:
+
+| pyppmd | native crashes | other failures | passes |
+|--------|----------------|----------------|--------|
+| 1.1.1 | **0**/40 | 27 (CRC mismatch on solid 2nd member) | 13 |
+| 1.2.0 | **0**/40 | 27 (same CRC pattern) | 13 |
+| 1.3.1 | **12**/40 (`SIGSEGV`/`SIGABRT`) | 0 | 28 |
+
+`pyppmd==1.3.0` has no installable artifact on this platform (PyPI 404 / resolver miss);
+1.3.1 (2025-11-27) is the first 1.3.x wheel we could run. The 1.3.0/1.3.1 git delta includes
+threaded-decoder buffer/EOF changes (`ThreadDecoder.c`, #126).
+
+**Conclusion:** the Linux native abort reproduces on **1.3.1** and not on **1.1.1/1.2.0**
+under the same unbounded decode path. Older versions instead tend to return wrong bytes
+(CRC fail) on solid multi-member reads rather than aborting. This is a strong “recent
+regression in pyppmd 1.3.x” lead — not proof of the exact upstream commit, and Windows
+heap corruption was not re-tested in this matrix.
+
+With the current `unpack_size`/`max_length` bound (see below), the same Linux
+`warmup_codecs` soak was **0/80** crashes on 1.3.1 — so bounding decode is an effective
+mitigation even on the crashy wheel. Note `py7zr` 1.1.x declares `pyppmd>=1.3.1`, so
+pinning an older `pyppmd` is not a practical dependency escape while keeping that oracle.
+
 Repro (non-blocking stress entry points):
 
 ```bash
