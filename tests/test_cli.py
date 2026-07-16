@@ -295,7 +295,13 @@ def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -
         def close(self) -> None:
             self.closed = True
 
-    monkeypatch.setattr(progress_mod, "_load_tqdm", lambda: _FakeBar)
+    def _fake_tqdm(**kwargs: object) -> _FakeBar:
+        return _FakeBar(**kwargs)
+
+    # Patch the tqdm symbol the helper imports at call time.
+    import tqdm as tqdm_mod
+
+    monkeypatch.setattr(tqdm_mod, "tqdm", _fake_tqdm)
     cb = progress_mod.make_progress_callback(hide_progress=False, stream=_TTY())
     assert cb is not None
 

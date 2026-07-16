@@ -2,20 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from collections.abc import Callable
-from typing import Any, TextIO
+from typing import TextIO
 
 from archivey.internal.extraction_types import ExtractionProgress
-
-
-def _load_tqdm() -> Any | None:
-    """Import tqdm at call time so a core-only install never loads it at import time."""
-    try:
-        return importlib.import_module("tqdm").tqdm
-    except ImportError:
-        return None
 
 
 def _display_stream(preferred: TextIO) -> TextIO | None:
@@ -40,7 +31,7 @@ def make_progress_callback(
 ) -> Callable[[ExtractionProgress], None] | None:
     """Return an ``on_progress`` callback, or ``None`` when progress should be suppressed.
 
-    Imports ``tqdm`` lazily so a core-only install never loads it.
+    Imports ``tqdm`` lazily so a core-only install never loads it at import time.
     """
     if hide_progress:
         return None
@@ -50,11 +41,12 @@ def make_progress_callback(
     if display is None:
         return None
 
-    tqdm = _load_tqdm()
-    if tqdm is None:
+    try:
+        from tqdm import tqdm
+    except ImportError:
         return None
 
-    bar: Any = None
+    bar: tqdm | None = None
 
     def on_progress(progress: ExtractionProgress) -> None:
         nonlocal bar

@@ -32,8 +32,11 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Set up Python
         run: uv python install 3.11
-      - name: Sync (dev tooling)
-        run: uv sync --group dev
+      - name: Sync (dev tooling + all extras)
+        # Type checkers need optional deps importable (tqdm, pycdlib, …) so they can
+        # validate real types rather than suppress missing-import. `--extra all` matches
+        # the everyday recommended install; core-only is covered by the test matrix.
+        run: uv sync --group dev --extra all
       - name: Ruff lint
         run: uv run ruff check src/ tests/ scripts/ benchmarks/
       - name: Ruff format
