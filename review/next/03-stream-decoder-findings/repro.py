@@ -144,6 +144,18 @@ def finding3_lzw_memory_bomb() -> None:
         print(f"  same bomb via {name:8}: buffer after read(1) = {len(st._buffer):,} bytes")
         st.close()
 
+    # The stdlib fix model: gzip.GzipFile wraps the SAME zlib but caps output via
+    # decompress(buf, max_length) + unconsumed_tail, so read(1) stays tiny.
+    d_nocap = zlib.decompressobj(-15)
+    nocap = d_nocap.decompress(deflate[:65536])  # what ZlibDecoder.feed does (no cap)
+    d_cap = zlib.decompressobj(-15)
+    cap = d_cap.decompress(deflate[:8192], 1)  # what _GzipReader.read(1) does
+    print(
+        f"  fix model: decompress(64KB) -> {len(nocap):,} bytes; "
+        f"decompress(8KB, max_length=1) -> {len(cap)} byte, "
+        f"unconsumed_tail={len(d_cap.unconsumed_tail):,} held back"
+    )
+
 
 def _BrotliStream(data: bytes):  # noqa: N802 - factory-style helper
     from archivey.internal.streams.decompress import BrotliDecompressorStream

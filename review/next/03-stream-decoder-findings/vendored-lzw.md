@@ -50,8 +50,13 @@ artifact).
 
 The fix belongs in the base (an output budget on `Decoder.feed` + retained un-consumed
 input); the `max_length`-capable backends (zlib, lzma, bz2, pyppmd) and our own LZW can all
-honor it, brotli/deflate64 are the residual. Per-backend feasibility is worked out in
-`QUESTIONS.md` Q3.
+honor it, brotli/deflate64 are the residual. **Stdlib `gzip.GzipFile` is the working
+reference:** it wraps the same `zlib.decompressobj` but `read(1)` peaks at ~0.1 MB because
+`_GzipReader.read(size)` passes the caller's `size` as `max_length` and pushes back
+`unconsumed_tail` (feeding only ~8 KB compressed per call, not 64 KB) — same zlib object,
+opposite memory profile. archivey's `ZlibDecoder.feed` instead calls `decompress(chunk)`
+with no cap (`decompress.py:35`). Per-backend feasibility and the gzip mechanism are worked
+out in `QUESTIONS.md` Q3.
 
 Existing mitigations do not cover this:
 - The `ArchiveyConfig` decompression-ratio guard (`config.py:84`, `max_ratio=1000`,

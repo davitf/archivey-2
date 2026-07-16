@@ -84,7 +84,36 @@ already far below the `DecompressorStream` path.)
 
 So the fix belongs in the **base**, answering the maintainer's "what about the others?":
 give `Decoder.feed` an output budget and have it retain un-consumed input, decoding at most
-~N bytes per call. Feasibility per backend, from the table:
+~N bytes per call.
+
+**The stdlib has a working reference for the zlib case: `gzip.GzipFile`.** It wraps the
+*same* `zlib.decompressobj` archivey uses, yet `read(1)` peaks at ~0.1 MB, because
+`_GzipReader.read(size)` (CPython `gzip.py`) threads the caller's `size` down as
+`max_length` and pushes the un-consumed input back:
+
+```python
+buf = self._fp.read(io.DEFAULT_BUFFER_SIZE)              # (1) read ~8 KB compressed, not 64 KB
+uncompress = self._decompressor.decompress(buf, size)   # (2) cap OUTPUT to `size` bytes
+if self._decompressor.unconsumed_tail != b"":
+    self._fp.prepend(self._decompressor.unconsumed_tail)  # (3) hold back what wasn't consumed
+```
+
+Direct demo on the 50 MB payload above: `decompress(comp[:65536])` (what archivey's
+`ZlibDecoder.feed` does — no cap) returns **50,000,000 bytes**; `decompress(comp[:8192], 1)`
+(what `_GzipReader` does on `read(1)`) returns **1 byte** and leaves 8,177 bytes in
+`unconsumed_tail`. Same zlib object, opposite memory profile — the only differences are the
+`max_length` argument and the smaller feed. archivey balloons for exactly those two reasons:
+`ZlibDecoder.feed` calls `self._decomp.decompress(chunk)` with no `max_length`
+(`decompress.py:35`), and the base feeds a 65536-byte compressed chunk
+(`decompressor_stream.py:275`) and buffers all of it. `_compression.DecompressReader` (the
+shared base for `lzma`/`bz2` file objects) does the same thing generically with
+`self._decompressor.decompress(rawblock, size)` + `needs_input`, which is why `LZMAFile`/
+`BZ2File` don't balloon either. Mirroring this in the `Decoder`/base is the fix.
+
+One caveat: `GzipFile.read(-1)`/`readall()` calls `read(sys.maxsize)` — effectively an
+unlimited `max_length` — so a *full* read-all still materializes everything (unavoidable).
+gzip only bounds *bounded* reads; archivey's bug is that even a bounded `read(1)` balloons,
+which the above shows is avoidable. Feasibility per backend, from the table:
 
 - **zlib, lzma (xz/lzip/alone/raw), bz2, pyppmd** all expose a `max_length`/`length`
   bounded-decode plus internal retention of un-consumed input — the base can budget them
