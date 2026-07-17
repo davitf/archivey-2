@@ -42,6 +42,7 @@ deferred to a lighter follow-on pass.
 | `archive/2026-07-16-rar-reader/` | Native RAR hostile-input & correctness (PR #113) | F1–F6 fixed with tests. |
 | `archive/2026-07-16-crypto/` | Native decryption/KDF/verification correctness (PR #115) | F1–F5 fixed in #127. |
 | `archive/2026-07-16-stream-decoder/` | Post-#96 decoder layer, accelerators, vendored LZW (PR #122) | F1–F6 fixed in #128. |
+| `archive/2026-07-17-cli/` | CLI design + implementation (PR #131 → #120) | F1–F12 + D1–D8 addressed in #120; R1–R4 and hoist H1–H3 / D4 logging follow-ups fixed before merge. |
 
 ## Conventions every brief inherits
 
