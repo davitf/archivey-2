@@ -73,7 +73,6 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     skip_forward,
 )
-from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.types import (
     ArchiveFormat,
@@ -590,27 +589,16 @@ class SevenZipReader(BaseArchiveReader):
     def _wrap_folder_member(
         self, inner: BinaryIO, member: ArchiveMember
     ) -> ArchiveStream:
+        verify = member.size is not None or bool(member.hashes)
         return self._wrap_member_stream(
-            self._prepare_folder_member(inner, member),
+            inner,
             member.name,
             size=member.size,
             track_output=False,
+            expected_hashes=member.hashes if verify else None,
+            expected_size=member.size if verify else None,
+            verify_member=member if verify else None,
         )
-
-    def _prepare_folder_member(
-        self, inner: BinaryIO, member: ArchiveMember
-    ) -> BinaryIO:
-        """Verify + size-bound a solid-folder member view (no ``ArchiveStream`` yet)."""
-        if member.size is not None or member.hashes:
-            inner = VerifyingStream(
-                inner,
-                member.hashes,
-                expected_size=member.size,
-                collector=self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
-            )
-        return inner
 
     def _member_stream_from_solid(
         self, solid: SolidBlockReader, member: ArchiveMember
@@ -618,24 +606,25 @@ class SevenZipReader(BaseArchiveReader):
         """Hand out a stream whose solid positioning runs on first read.
 
         Uses ``solid.open_member(..., lazy=True)`` so an unselected handle can be
-        closed without skip-decoding. Verification is applied in ``open_fn`` (not at
-        yield time): ``VerifyingStream.close`` probes with ``read(1)``, which would
-        otherwise force the lazy solid open on every skipped member.
+        closed without skip-decoding. Verification is fused into the outer
+        ``ArchiveStream``: a never-opened lazy handle skips verify on close, so
+        unread members do not force solid positioning.
         """
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)
         lazy_solid = solid.open_member(prefix, size, lazy=True)
-
-        def open_fn(inner: BinaryIO = lazy_solid) -> BinaryIO:
-            return self._prepare_folder_member(inner, member)
+        verify = member.size is not None or bool(member.hashes)
 
         return self._wrap_member_stream(
             None,
             member.name,
-            open_fn=open_fn,
+            open_fn=lambda: lazy_solid,
             size=member.size,
             track_output=False,
             seekable=False,
+            expected_hashes=member.hashes if verify else None,
+            expected_size=member.size if verify else None,
+            verify_member=member if verify else None,
         )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:

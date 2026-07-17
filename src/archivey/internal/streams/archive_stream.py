@@ -4,6 +4,11 @@ This is the carrier for the exception-translation contract (see ``error-handling
 CONTRIBUTING). Any exception raised while opening or reading the wrapped stream is routed
 through a per-library *translator* (raw third-party exception → ``ArchiveyError`` subclass
 or ``None`` to let it propagate), then *stamped* with format/archive/member context.
+
+Member digest/length verification (formerly a separate ``VerifyingStream`` layer) is
+optional state on this handle — see ``expected_hashes`` / ``expected_size`` — so a
+member is served by one public stream that collapses nested codec ``ArchiveStream``s
+and hashes/bounds in the same ``read()``.
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ import sys
 import threading
 import weakref
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, BinaryIO, Callable, NoReturn
+from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, NoReturn
 
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -24,11 +29,13 @@ from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
+from archivey.internal.streams.verify import MemberVerifier, build_member_verifier
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.types import ArchiveMember
 
 # A translator maps a raw exception to an ArchiveyError, or returns None to signal "not
 # mine — let it propagate unchanged" (the catch-all-free rule in CONTRIBUTING).
@@ -78,6 +85,12 @@ class ArchiveStream(ReadOnlyIOStream):
         size: int | None = None,
         collector: DiagnosticCollector | None = None,
         on_close: CloseHook | None = None,
+        expected_hashes: Mapping[str, int | bytes] | None = None,
+        expected_size: int | None = None,
+        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+        verify_member: ArchiveMember | None = None,
+        archive_name: str | None = None,
+        verifier: MemberVerifier | None = None,
     ) -> None:
         super().__init__()
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
@@ -97,6 +110,21 @@ class ArchiveStream(ReadOnlyIOStream):
         self._diagnostics_watermark = (
             collector.watermark() if collector is not None else None
         )
+        # Fused member verification (None when there is nothing to check). Prefer an
+        # already-built ``verifier`` (collapse adoption); otherwise build from knobs.
+        # ``expected_size`` here is the verify bound only — bare ``size=`` (fsspec
+        # attribute) must not enable length checks on TAR/ISO/directory handles.
+        if verifier is not None:
+            self._verifier: MemberVerifier | None = verifier
+        else:
+            self._verifier = build_member_verifier(
+                expected_hashes,
+                expected_size=expected_size,
+                collector=collector,
+                member=verify_member,
+                archive_name=archive_name,
+                digest_transforms=digest_transforms,
+            )
         self._finalizer: weakref.finalize | None = None
         if not lazy:
             self._ensure_open()
@@ -270,6 +298,11 @@ class ArchiveStream(ReadOnlyIOStream):
         self._stamp = composed_stamp
         if self._rewind_warning is None and nested._rewind_warning is not None:
             self._rewind_warning = nested._rewind_warning
+        # Adopt fused verification from the nested member wrap (lazy stream_members
+        # outer has none; the inner ``_open_member`` wrap carries the knobs).
+        if self._verifier is None and nested._verifier is not None:
+            self._verifier = nested._verifier
+            nested._verifier = None
 
         with nested._open_lock:
             open_fn = nested._open_fn
@@ -321,12 +354,22 @@ class ArchiveStream(ReadOnlyIOStream):
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
         # is already routed through _fail inside it.
         inner = self._ensure_open()
+        verifier = self._verifier
         try:
+            if verifier is not None:
+                return verifier.read(inner, n)
             return inner.read(n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail(e)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
+        # When verifying, route through read() so digest/bounds stay consistent
+        # (same contract as VerifyingStream / ReadOnlyIOStream.readinto).
+        if self._verifier is not None:
+            mv = memoryview(b).cast("B")
+            data = self.read(len(mv))
+            mv[: len(data)] = data
+            return len(data)
         inner = self._ensure_open()
         readinto = getattr(inner, "readinto", None)
         if readinto is None:
@@ -348,6 +391,9 @@ class ArchiveStream(ReadOnlyIOStream):
             result = inner.seek(offset, whence)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail(e)
+        verifier = self._verifier
+        if verifier is not None:
+            verifier.note_seek(result)
         self._maybe_warn_rewind(before, result)
         return result
 
@@ -409,14 +455,22 @@ class ArchiveStream(ReadOnlyIOStream):
         # still propagate; dual-failure grouping is for ordinary close/teardown errors.
         close_exc: Exception | None = None
         try:
-            if self._inner is not None:
+            inner = self._inner
+            verifier = self._verifier
+            if inner is not None:
                 try:
-                    self._inner.close()
+                    if verifier is not None:
+                        # finish_on_close closes the inner (and runs deferred verify).
+                        verifier.finish_on_close(inner)
+                    else:
+                        inner.close()
                 except Exception as e:  # noqa: BLE001 - re-raised via the translator
                     try:
                         self._fail(e)
                     except Exception as translated:  # noqa: BLE001 - may be ArchiveyError
                         close_exc = translated
+            # Never-opened lazy handle: skip verify (solid unread members must not
+            # probe / force positioning).
         finally:
             super().close()
             self._detach_finalizer()

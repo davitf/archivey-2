@@ -1,36 +1,22 @@
-"""Decompressed-output digest (and length) verification stage.
+"""Decompressed-output digest (and length) verification.
 
-Wraps a *sequential* decompressed stream and checks the member's container-supplied
-digests (``ArchiveMember.hashes``) — and, when ``expected_size`` is supplied, its
-declared decompressed length — against the bytes actually read. The length check bounds
-reads to the declared size (so an over-long decode stops there and raises instead of
-running unbounded), raises on a short stream, and runs alongside the digest check so a
-member with no stored hash still cannot be silently truncated. Per the
-``compressed-streams`` spec:
+Container digests (``ArchiveMember.hashes``) and optional declared decompressed
+length are checked on a clean sequential read to EOF. The logic lives in
+:class:`MemberVerifier` so it can run either as a standalone
+:class:`VerifyingStream` wrapper (codec length backstops) or **fused into**
+:class:`~archivey.internal.streams.archive_stream.ArchiveStream` (the member
+hot path — one fewer Python layer, and nested codec ``ArchiveStream``s can
+collapse through).
 
-- Verification runs **only on a full sequential read to clean EOF**. A partial read is
-  never verified (the digest of partial content is undefined), so this stage applies to
-  the sequential read path, not to random-access reads.
-- The stage is transparent to seeking: it delegates ``seek``/``seekable`` to the inner
-  stream, but a seek that moves off the sequential frontier disables verification for the
-  rest of the stream's life (the running digest is then incomplete). So a member opened
-  ``MemberStreams.SEEKABLE`` is still verified if the caller only reads forward, and simply
-  skips the check once it seeks — mirroring the gzip truncation backstop in ``codecs.py``.
-- The mismatch is raised from the terminal read — the call that would return ``b""`` —
-  *after* every data chunk (including the last) has already been delivered. A
-  ``while chunk := f.read(n)`` consumer thus receives all bytes, then gets
-  ``CorruptionError`` instead of the final empty read.
-- An algorithm whose backend is missing (or that is unknown) is **skipped with a
-  ``DIGEST_UNVERIFIABLE`` diagnostic** rather than failing the read; algorithms that can
-  be computed (always including CRC32 via stdlib, and BLAKE2sp via the internal hasher)
-  are still verified.
-- ``close()`` also verifies when the inner stream is already at clean EOF, so a single
-  ``read()`` that consumed the whole member (as ``ArchiveReader.read`` does) still
-  checks digests.
+Per the ``compressed-streams`` spec:
 
-This is distinct from a codec's own internal integrity check (gzip trailer CRC, xz stream
-check) — those are surfaced by the codec backend; this verifies the *container's* digest
-over the decompressed bytes.
+- Verification runs **only on a full sequential read to clean EOF**. A partial
+  read is never verified. ``read(0)`` is a no-op (not EOF).
+- A seek off the sequential frontier disables verification for the rest of the
+  handle's life.
+- The mismatch is raised from the terminal empty read *after* every data chunk
+  has been delivered; ``close()`` also verifies when already at clean EOF.
+- Missing/unknown digest algorithms emit ``DIGEST_UNVERIFIABLE`` and are skipped.
 """
 
 from __future__ import annotations
@@ -111,28 +97,17 @@ def _expected_as_bytes(value: int | bytes, hasher: _IncrementalHasher) -> bytes:
     return value
 
 
-class VerifyingStream(ReadOnlyIOStream):
-    """Wrap ``inner`` and verify the member's ``expected`` digests (and, optionally, its
-    declared decompressed length) on a clean sequential read to end-of-stream.
+class MemberVerifier:
+    """Incremental digest/length checker over bytes read from an inner stream.
 
-    ``read`` hashes the bytes it returns (``readinto``/``readall`` come from
-    :class:`ReadOnlyIOStream`, built on this ``read``, so they hash too) and checks the
-    digests once the stream reaches clean EOF. ``seek``/``seekable`` delegate to ``inner``;
-    a seek off the sequential frontier disables verification for the rest of the stream's
-    life, since the running digest can no longer cover the whole member.
-
-    When ``expected_size`` is given, reads are bounded to that many bytes so an
-    over-long decode (a decompressor/pipe emitting more than the member's declared size)
-    stops at the declared size and raises :class:`CorruptionError` immediately rather than
-    running unbounded; a stream that ends short of it raises :class:`TruncatedError`. The
-    length check runs after the digest check (so a hashed short read still surfaces as a
-    digest mismatch) and the short verdict is applied at close, after the inner stream is
-    closed, so a more specific inner error (e.g. a wrong-password subprocess exit) wins.
+    Not a ``BinaryIO`` itself — :class:`VerifyingStream` and
+    :class:`~archivey.internal.streams.archive_stream.ArchiveStream` own one and
+    call :meth:`read` / :meth:`note_seek` / :meth:`finish_on_close` against their
+    inner handle.
     """
 
     def __init__(
         self,
-        inner: BinaryIO,
         expected: Mapping[str, int | bytes],
         *,
         expected_size: int | None = None,
@@ -141,8 +116,6 @@ class VerifyingStream(ReadOnlyIOStream):
         archive_name: str | None = None,
         digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
     ) -> None:
-        super().__init__()
-        self._inner = inner
         self._expected_size = expected_size
         self._short = False
         self._expected: dict[str, bytes] = {}
@@ -179,6 +152,14 @@ class VerifyingStream(ReadOnlyIOStream):
         self._pos = 0  # bytes read so far — the sequential verification frontier
         self._verify_enabled = True  # cleared by a seek off the frontier
 
+    @property
+    def enabled(self) -> bool:
+        return self._verify_enabled
+
+    @property
+    def pos(self) -> int:
+        return self._pos
+
     def _verify_digests(self) -> None:
         """Check every computable digest; raise on the first mismatch."""
         for algorithm, expected in self._expected.items():
@@ -192,14 +173,14 @@ class VerifyingStream(ReadOnlyIOStream):
                     f"decompressed content."
                 )
 
-    def _finish(self) -> None:
+    def _finish(self, inner: BinaryIO) -> None:
         """Run end-of-stream checks once: over-length, then digests, then note short."""
         self._verified = True
         if self._expected_size is not None and self._pos >= self._expected_size:
             # Delivered the declared size; the underlying must have nothing more.
             # This probe also drains post-payload authenticators (e.g. WinZip AES HMAC).
             try:
-                trailing = self._inner.read(1)
+                trailing = inner.read(1)
             except ArchiveyError:
                 raise
             except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
@@ -216,7 +197,11 @@ class VerifyingStream(ReadOnlyIOStream):
             # a digest mismatch above.
             self._short = True
 
-    def read(self, n: int = -1, /) -> bytes:
+    def read(self, inner: BinaryIO, n: int = -1) -> bytes:
+        """Read from ``inner``, update digests/bounds, and verify on clean EOF."""
+        # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
+        if n == 0:
+            return b""
         if (
             self._verify_enabled
             and self._expected_size is not None
@@ -230,16 +215,16 @@ class VerifyingStream(ReadOnlyIOStream):
             else:
                 want = remaining if n < 0 else min(n, remaining)
                 try:
-                    data = self._inner.read(want)
+                    data = inner.read(want)
                 except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
                     # Abandon length/digest checks: close must not raise a second fault
                     # after the caller already saw this decode error (macOS rapidgzip
-                    # mid-cut often raises here, then again on VerifyingStream.close).
+                    # mid-cut often raises here, then again on finish_on_close).
                     self._verify_enabled = False
                     raise
         else:
             try:
-                data = self._inner.read(n)
+                data = inner.read(n)
             except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
                 self._verify_enabled = False
                 raise
@@ -250,31 +235,22 @@ class VerifyingStream(ReadOnlyIOStream):
                     hasher.update(data)
             return data
         if self._verify_enabled and not self._verified:
-            self._finish()
+            self._finish(inner)
         return data
 
-    def seekable(self) -> bool:
-        return is_seekable(self._inner)
-
-    def seek(self, offset: int, whence: int = 0, /) -> int:
-        result = self._inner.seek(offset, whence)
-        # A seek off the sequential frontier makes the running digest incomplete; give up
-        # on verification (a no-op seek to the current position keeps it armed).
+    def note_seek(self, result: int) -> None:
+        """Update the frontier after a successful inner seek; disable if off-frontier."""
         if result != self._pos:
             self._verify_enabled = False
         self._pos = result
-        return result
 
-    def tell(self) -> int:
-        return self._inner.tell()
+    def finish_on_close(self, inner: BinaryIO) -> None:
+        """Run deferred EOF verification around an inner that is still open.
 
-    def close(self) -> None:
-        if self.closed:
-            return
-        # ``archive.read()`` often does a single ``read()`` that returns all bytes without
-        # a follow-up empty read, so verify here when the inner stream is already at clean
-        # EOF (partial reads still skip verification).
-        finish_exc: CorruptionError | TruncatedError | None = None
+        Always closes ``inner`` (and surfaces probe/finish errors after that close).
+        Callers that have not opened an inner yet should not call this.
+        """
+        finish_exc: ArchiveyError | None = None
         if self._verify_enabled and not self._verified:
             reached_declared = (
                 self._expected_size is not None and self._pos >= self._expected_size
@@ -283,20 +259,17 @@ class VerifyingStream(ReadOnlyIOStream):
             # macOS) may raise on truncated input instead of returning b""; treat that
             # as EOF when we are still short of the declared size so silent short-reads
             # still become TruncatedError, without double-faulting after read() raised.
-            # Typed library errors (HMAC mismatch, etc.) must still propagate.
+            # Typed library errors (HMAC mismatch, etc.) must still propagate — but the
+            # inner must still be closed (F2).
             more = False
             probe_raised = False
             if not reached_declared:
                 try:
-                    more = bool(self._inner.read(1))
+                    more = bool(inner.read(1))
                 except ArchiveyError as exc:
-                    finish_exc = (
-                        exc
-                        if isinstance(exc, (CorruptionError, TruncatedError))
-                        else None
-                    )
-                    if finish_exc is None:
-                        raise
+                    # Close the inner first, then re-raise (F2: never leave the
+                    # wrapper/inner unclosed on a typed probe error).
+                    finish_exc = exc
                     more = True  # skip _finish; surface finish_exc after close
                 except Exception:  # noqa: BLE001 - accel truncate may raise any error
                     probe_raised = True
@@ -311,16 +284,17 @@ class VerifyingStream(ReadOnlyIOStream):
                     )
                 else:
                     try:
-                        self._finish()
+                        self._finish(inner)
                     except CorruptionError as exc:
                         finish_exc = (
                             exc  # still close the inner below before re-raising
                         )
         short = self._short
-        try:
-            self._inner.close()
-        finally:
-            super().close()
+        # Close first. An inner teardown error (e.g. unrar wrong-password exit)
+        # must win over a deferred short/truncation verdict — same precedence as
+        # the pre-fusion VerifyingStream.close, so let a close error propagate over
+        # ``finish_exc`` / ``short`` below rather than swallowing it.
+        inner.close()
         if finish_exc is not None:
             raise finish_exc
         if short:
@@ -328,3 +302,97 @@ class VerifyingStream(ReadOnlyIOStream):
                 f"Decompressed content ended after {self._pos} of "
                 f"{self._expected_size} expected bytes."
             )
+
+
+def build_member_verifier(
+    expected: Mapping[str, int | bytes] | None,
+    *,
+    expected_size: int | None = None,
+    collector: DiagnosticCollector | None = None,
+    member: ArchiveMember | None = None,
+    archive_name: str | None = None,
+    digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+) -> MemberVerifier | None:
+    """Return a :class:`MemberVerifier` when there is something to check, else ``None``."""
+    hashes = expected if expected is not None else {}
+    if not hashes and expected_size is None:
+        return None
+    return MemberVerifier(
+        hashes,
+        expected_size=expected_size,
+        collector=collector,
+        member=member,
+        archive_name=archive_name,
+        digest_transforms=digest_transforms,
+    )
+
+
+class VerifyingStream(ReadOnlyIOStream):
+    """Wrap ``inner`` and verify digests/length via a :class:`MemberVerifier`.
+
+    Kept for codec length backstops and tests. Member backends fuse the same
+    verifier into :class:`~archivey.internal.streams.archive_stream.ArchiveStream`.
+    """
+
+    def __init__(
+        self,
+        inner: BinaryIO,
+        expected: Mapping[str, int | bytes],
+        *,
+        expected_size: int | None = None,
+        collector: DiagnosticCollector | None = None,
+        member: ArchiveMember | None = None,
+        archive_name: str | None = None,
+        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+    ) -> None:
+        super().__init__()
+        self._inner = inner
+        # This wrapper is used explicitly (codec length backstops, tests), so it always
+        # owns a verifier even when there is nothing to check — unlike the fused path,
+        # which uses ``build_member_verifier`` to skip the wrapper entirely in that case.
+        self._verifier = MemberVerifier(
+            expected,
+            expected_size=expected_size,
+            collector=collector,
+            member=member,
+            archive_name=archive_name,
+            digest_transforms=digest_transforms,
+        )
+
+    # Compat for tests / diagnostics that inspect frontier state.
+    @property
+    def _verify_enabled(self) -> bool:
+        return self._verifier.enabled
+
+    @property
+    def _pos(self) -> int:
+        return self._verifier.pos
+
+    @property
+    def _expected_size(self) -> int | None:
+        return self._verifier._expected_size
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._verifier.read(self._inner, n)
+
+    def seekable(self) -> bool:
+        return is_seekable(self._inner)
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        result = self._inner.seek(offset, whence)
+        self._verifier.note_seek(result)
+        return result
+
+    def tell(self) -> int:
+        return self._inner.tell()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            self._verifier.finish_on_close(self._inner)
+        finally:
+            # finish_on_close closes the inner; always mark the wrapper closed even
+            # when a typed probe error propagates (F2).
+            if not self.closed:
+                super().close()
