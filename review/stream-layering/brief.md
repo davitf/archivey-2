@@ -64,7 +64,8 @@ Composition site: `base_reader._wrap_member_stream` (`base_reader.py:572`) +
 `_lazy_member_stream` used to build an outer `ArchiveStream(lazy=True)` whose
 `open_fn` called `_open_member` → `_wrap_member_stream` (a *second*
 `ArchiveStream`). Nesting is now collapsed inside `ArchiveStream._ensure_open`
-via `_collapse_nested` (steals a still-lazy opener, or an already-opened inner) —
+via `_collapse_nested` (steals a still-lazy opener, or an already-opened inner, and
+**adopts nested translate/stamp/rewind_warning** so codec errors stay typed) —
 confirm the public handle's `_inner` after first read is **not** an `ArchiveStream`,
 and treat any remaining nesting as a regression. Solid sequential paths (7z/RAR)
 build a single wrapper directly.
