@@ -1,6 +1,8 @@
-> **Archive note (2026-07-17):** R1–R4 below were fixed on PR #120 before merge;
-> this file is the mid-pass verification snapshot. See `review/README.md` archive
-> table for the final outcome.
+> **Archive note (2026-07-17):** All actionable findings from this review were
+> addressed on PR #120 before merge (including R1–R4 and the hoist H1–H3 / D4
+> logging follow-ups documented in the rounds below). This file is the
+> chronological verification log. See `review/README.md` archive table for the
+> final outcome.
 
 # Brief 4 — verification of the fix pass (PR #120 @ `b75aacc`)
 
@@ -131,3 +133,119 @@ internal contradiction.
 R1 (one-line-ish, unblocks CI) → R2 (mechanical) → R3 (library-side suppress;
 turns D4 from liability to win) → R4 (maintainer decision, then a wording fix
 either way).
+
+---
+
+# Round 2 — verification of R1–R4 (`f201259`)
+
+Re-verified end-to-end on `f201259` (full suite: **1691 passed, 0 failed**;
+ruff/pyrefly/ty/`openspec validate --strict` all clean — R1's red CI test now
+passes locally).
+
+## Confirmed fixed
+
+- **R1** ✓ — no password → `Password required to decrypt the 7z header`; wrong
+  password → `Password(s) rejected for the 7z header` (both verified against a
+  live header-encrypted 7z; the garbage-decrypt→parse-failure path is also
+  mapped to rejected-header, with a new regression test).
+- **R2** ✓ — `allow_abbrev=False` on every subparser incl. reserved verbs;
+  `archivey x a.zip --over error` now exits 2; post-verb test added.
+- **R3** ✓ — trailing-slash-only DIRECTORY normalization suppressed in
+  `emit_member_name_normalized`; `archivey l <ordinary tar>` is warning-free;
+  observable renames (e.g. `./pkg` → `pkg/`) still warn; unit test added.
+- **R4 hoist, main paths** ✓ — single-root tar hoisted to `./root/` (wrapper
+  removed); single-file tar hoisted to `./file`; multi-top tar stays wrapped;
+  filtered streaming extract hoists the filtered root (D1 end-state); genuine
+  pre-existing collision under `rename` → `root (1)/` with a notice; spec/
+  design/IDEAS updated coherently and the indexed scenario row is now
+  qualified.
+
+## New findings — wrapper-identity collision (H1–H3)
+
+`maybe_hoist_single_root` treats "the hoist target name is taken" uniformly via
+`_collision_dest`, but when the sole root's name **equals the wrapper's own
+name** the "collision" is with the wrapper itself — the directory the hoist is
+about to delete. This is the most common tarball convention (`src.tar.gz`
+containing `src/`). All three overwrite behaviors mishandle it (all reproduced):
+
+| # | Sev | Repro (`src.tar` containing `src/f.txt`) | Result |
+|---|-----|------------------------------------------|--------|
+| **H1** | **Critical — data loss** | `archivey x src.tar --overwrite replace` | `_collision_dest` does `shutil.rmtree("src")` — that IS the wrapper holding the just-extracted data. The subsequent move fails (`No such file or directory: 'src/src'`), the run prints `2 extracted` and **exits 0**, and **no extracted files exist on disk**. A success-reporting invocation that destroys its own output. |
+| H2 | Medium | default (`rename`) | Lands at `./src (1)/f.txt` instead of `./src/f.txt` — renamed away from a "collision" with a directory that was about to be removed. |
+| H3 | Low | `--overwrite error` / `skip` | Keeps `./src/src/f.txt` (the exact double-nesting the hoist exists to remove) with a message implying a real conflict. |
+
+**Fix (covers all three):** special-case `child.name == wrapper.name` *before*
+`_collision_dest` — the target is the wrapper, so no collision logic applies:
+rename the wrapper aside to a unique temp sibling (`src.hoist-tmp`), move the
+child into place, rmdir the temp. ~10 lines in `maybe_hoist_single_root`; tests:
+the three rows above.
+
+**Design note (non-blocking, maintainer call):** on a *genuine* collision,
+`--overwrite replace` rmtree's the pre-existing tree before hoisting, which is
+more destructive than the indexed single-root path (extract into `.` merges,
+replacing per-file). Spec's "subject to the overwrite policy" permits it, but
+"replace colliding files" vs "delete whole colliding trees" is a real semantic
+gap for explicit `replace` users — consider keep-wrapper for that case too, or
+an explicit doc note.
+
+---
+
+# Round 3 — H1–H3 resolution + two answers (`741553e` on #120)
+
+**Maintainer directives applied** (2026-07-17): never delete files (replace
+only files being extracted); hoisting must produce the exact same result as
+extracting directly into the destination.
+
+## Q: do encrypted-header RARs have the R1 problem? — No
+
+Verified against the RAR5 and RAR3 encrypted-header fixtures: no password →
+`Password required to decrypt RAR headers`; wrong password → `Wrong password
+for RAR5 header encryption` / `Failed to decrypt RAR3 headers (wrong
+password?)` (RAR3 has no password-check value, hence the hedge — correct). All
+name the header surface and distinguish required from rejected. No change
+needed.
+
+## H1–H3 fix: hoist is now a per-file merge equivalent to direct extraction
+
+Pushed to #120 as `741553e` (per maintainer's "do the hoist fixes"):
+
+- `_collision_dest` (whole-entry resolution incl. the H1 `rmtree`) replaced by
+  `_merge_move`: directories merge into existing directories; file/symlink
+  collisions resolve per file exactly like `extract_all` — `rename` derives the
+  library's `name (N)` spelling (mirrors `_derive_free_name`), `replace` uses
+  `os.replace` on the single colliding file, `skip` keeps the existing file
+  (removing only our own just-extracted copy, which a direct extraction would
+  never have written). **No `rmtree` anywhere; pre-existing files are never
+  deleted.** Symlinks are moved as links and never descended into.
+- A collision the policy cannot resolve without deleting data (`error`, or a
+  dir-vs-file shape under `replace`/`skip`) stops the hoist, leaves the unmoved
+  remainder under the wrapper, and exits 1 — the direct extraction would have
+  failed on the same collision. (Deliberate residual divergence: direct
+  extraction fails with a partial splatter in archive order; the hoist fails
+  with the remainder safe under the wrapper. Layouts on the *failure* path are
+  not bit-identical; success paths are.)
+- The wrapper-identity case (`src.tar.gz` containing `src/`) is flattened in
+  place — the wrapper becomes the root, no collision logic runs. All three
+  H-repros now land at `./src/f.txt`, exit 0, no data touched.
+- Summary counts fold hoist renames/skips in (`extra_renamed`/`extra_skipped`),
+  so `3 extracted, 1 renamed …` matches the direct-extraction output.
+- Spec delta + design updated to state the equivalence contract and the
+  never-delete rule. 8 new tests: identity dir/file, per-policy equivalence
+  battery seeded against the direct-extraction baseline, error-keeps-wrapper,
+  and replace-never-rmtrees (dir-vs-file with a `precious.txt` inside).
+
+## New find while running the CONTRIBUTING three-leg gate: D4 logging leak
+
+The `all-lowest` leg failed **17** caplog-based warning tests across the suite:
+`configure_cli_logging` set `propagate = False` and kept a process-global
+handler on the `archivey` logger, which on pytest 8.3.0 (the declared floor)
+blinds every later `caplog` assertion once any CLI verb test has run. Invisible
+on the current-versions leg (newer pytest captures non-propagating loggers).
+Fixed in the same commit: the handler is now installed via a `cli_logging`
+context manager scoped to one `main()` invocation, `propagate` is untouched
+(a present handler already suppresses the last-resort handler), and level is
+restored on exit. Regression test asserts no handler/propagate/level residue.
+
+**Gates on `741553e`:** `[all]` 1699 passed; `[all-lowest]` 1699 passed (was
+17 failed); `[core-only]` 1386 passed + zero-dep check OK; ruff format/check,
+pyrefly, ty, `openspec validate --strict cli-v1` all clean.
