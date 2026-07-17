@@ -20,11 +20,16 @@ completed changes out of `changes/`.
 Round commissioned 2026-07-17 — the **non-security** pass toward the first public
 `0.2.0`, after the three security-adjacent reviews archived below. See each `brief.md`:
 
-| Dir | Review | Start condition |
-|-----|--------|-----------------|
-| `api-coherence/` | Public API & member-model coherence / ergonomics (incl. cross-backend parity) | now, against `main` |
-| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | **after PR #120 merges** |
-| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | now, against `main` |
+| Dir | Review |
+|-----|--------|
+| `api-coherence/` | Public API & member-model coherence / ergonomics (incl. cross-backend parity) |
+| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) |
+| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps |
+
+**All three run against `main` with the CLI (PR #120) merged in.** The CLI is the
+library's first real second consumer, so it sharpens all three: `api-coherence` reads
+the CLI's use of the public surface as evidence of gaps, `performance` benchmarks the
+CLI's `list`/`test`/`extract` as real workloads, and `cli-product` reviews it directly.
 
 `backlog.md` holds two more (test-strategy; structural-cleanliness / zero-tech-debt)
 deferred to a lighter follow-on pass.

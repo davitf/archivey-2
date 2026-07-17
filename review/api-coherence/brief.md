@@ -4,6 +4,12 @@ Read `review/README.md` (conventions, VISION tie-breakers, deliverable shape). T
 is a **non-security** review: correctness/hostile-input is covered by the archived
 security round. The lens here is *design*, not bugs.
 
+## Start condition
+
+Runs against `main` **with the CLI (PR #120) merged in** — the CLI is a required
+input, not just context (see "Why now" point 2). Confirm `src/archivey/cli/` is
+present before starting.
+
 ## Why now
 
 VISION's central promise is **"read every format behind one uniform interface."**
@@ -13,9 +19,14 @@ make this the moment:
 
 1. Reading is release-complete, so the surface is finally stable enough to judge as
    a whole rather than a moving target.
-2. The CLI (#120) is the **first real second consumer** of the library API. Where
-   the CLI had to reach past the public surface, add a helper, or work around an
-   awkward shape, that is direct evidence of an API gap — mine the CLI diff for it.
+2. **The merged CLI is the first real second consumer of the library API** — the
+   best evidence you have of how the surface behaves in someone else's hands. Read
+   `src/archivey/cli/` as a case study: every place it reaches past the public
+   surface, imports from `internal/`, adds a helper the library should have offered,
+   or works around an awkward shape is a concrete API gap. (E.g. `--track-io` wiring
+   `enable_measurement()`, the TTY password-provider gate, stem/`file_extension()`
+   handling — trace what the CLI needed and whether the public API gave it cleanly.)
+   This is a stronger signal than reading `__all__` in the abstract; lead with it.
 
 The public surface is currently **~85 exported names** (`src/archivey/__init__.py`
 `__all__`). "Is that the right size to commit to?" is the headline question, not a

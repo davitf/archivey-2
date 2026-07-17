@@ -4,6 +4,12 @@ Read `review/README.md` (conventions, VISION tie-breakers, deliverable shape). T
 is a **non-security** review of VISION claim #4 — the one load-bearing promise never
 reviewed on its own terms. It produces **numbers**, not opinions.
 
+## Start condition
+
+Runs against `main` **with the CLI (PR #120) merged in** — its `list` / `test` /
+`extract` are the real end-to-end workloads where the budget bites (and where the
+solid-block O(n²) trap surfaces), so they belong in the measurement set (§B).
+
 ## Why now
 
 VISION's performance budget is explicit and measurable:
@@ -34,6 +40,11 @@ users will benchmark themselves.
   vs streaming costs in `base_reader.py`.
 - `access-mode-and-cost` spec + `cost.py` (the cost model *predicts* these costs;
   check prediction vs reality).
+- The merged CLI (`src/archivey/cli/`) as an end-to-end harness: `list`/`test`/
+  `extract` on real fixtures are the user-facing workloads the budget is about, and
+  `--track-io` already surfaces `ByteCounter`/`SeekCounter` deltas — use it. A CLI
+  path that decodes more bytes than the job requires (e.g. `test` or `list` that
+  re-decodes a solid folder) is exactly the trap VISION names.
 
 ## What to measure (ranked by VISION stakes)
 
