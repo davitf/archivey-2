@@ -4,7 +4,14 @@ Ordered by VISION stakes. Bytes/seeks from `ByteCounter`/`SeekCounter` via
 `enable_measurement()` / CLI `--track-io`; wall attributions from cProfile.
 Repro: `measurements.py <section>`.
 
-## H1 — Selective extraction from a solid 7z decodes ~the whole folder (blocker)
+> **Post-merge status (2026-07-17, `main` @ `b9cdeac`):** H1 is fixed by #136
+> (verified 31.0× → 1.00×). The wrapper-side H2 candidates all landed via
+> #136/#137 and moved ZIP read-all wall by ~0% — the attribution below
+> over-weighted the wrapper stack; the revised attribution (decode-chunk
+> granularity + distributed per-member machinery) is in `residual-gap.md`,
+> which supersedes H2's candidate list.
+
+## H1 — Selective extraction from a solid 7z decodes ~the whole folder (blocker) — FIXED (#136)
 
 The VISION-named trap, reachable from the shipped CLI. Fixture: solid 7z,
 one folder, 32 × 64 KiB (2 MiB unpacked). Measured (`measurements.py solid`):
@@ -47,6 +54,14 @@ with a `bytes_decompressed ≤ prefix+member+slack` bound once fixed
 
 ## H2 — ZIP member-stream layering ≈ doubles decode cost (blocker, with P2)
 
+> **Revised post-#136/#137:** candidates 1 and 2 below were implemented (plus
+> verify fusion, beyond what this review asked) and the wall did not move.
+> Candidate 1 additionally turned out to be dead code on the default path: the
+> fused verifier converts a caller's `read(-1)` into a *bounded*
+> `read(declared_size)`, so `DecompressorStream.readall()` is never reached
+> when verification is on. Candidate 3 (larger decode chunks) is the one that
+> matters — see `residual-gap.md` for the measured sweep (1.38× → 1.23×).
+
 Evidence in `budget-table.md` (§ZIP read-all): per 256 KiB member, raw
 `zlib.decompress` is ~10 ms/run while the surrounding Python machinery adds
 ~16 ms/run: `DecompressorStream`'s chunked read loop with `bytearray` staging plus
@@ -71,8 +86,8 @@ Not proposed: touching the safety semantics (verification, translation, leases).
 `budget-table.md` §open+list. Detection (~0.2 ms: magic sniff + extension-map
 assembly per open) + per-member `ArchiveMember` build/registration/limit
 accounting (~45 µs/member). Million-archive sweep cost: ~5 min vs zipfile ~40 s.
-Candidates: cache the registry's extension map (it is rebuilt per `open_archive`
-call path today), defer the bidi-controls name scan to first display, and let
+Candidates: cache the registry's extension map (done in #136), defer the
+bidi-controls name scan to first display, and let
 `format=` skip the sniff entirely (already supported — worth documenting as the
 sweep-mode idiom). Retained memory is fine (~25 KiB/reader).
 

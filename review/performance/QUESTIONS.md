@@ -2,6 +2,13 @@
 
 Decisions this review cannot make unilaterally (per the pause-and-ask rule).
 
+> **Post-#136/#137 status:** Q5 is resolved (both halves implemented in #136;
+> the error-timing shift was handled by translating the deferred `EOFError` to
+> `TruncatedError` at first read). Q1–Q4 and Q6 remain open; Q1 and Q4 have new
+> evidence noted inline below. `residual-gap.md` gives P2 a concrete lever
+> (decode-chunk granularity: ZIP read-all 1.38× → 1.23× on the review probe),
+> which lowers the stakes of Q1's option (c).
+
 ## Q1 — What does "≤1.3× on common paths" cover, exactly?
 
 VISION's sentence names "open/list/read/extract on ZIP and TAR". Measured today
@@ -50,7 +57,15 @@ either, so parity is defensible. Options: a config knob
 cheap. Leaning: leave semantics alone, fix H2 — but this is an API-design call
 (overlaps the api-coherence review).
 
-## Q5 — H1 fix shape: lazy solid positioning vs extraction early-exit?
+*Post-#137 evidence:* the wrapper layer is gone (verify is fused into
+`ArchiveStream`) and the digest cost is measured at parity with `zipfile`'s own
+CRC (~4 ms per 16 MiB pass on the review host) — the perf case for a skip knob
+is now essentially zero. One nuance for whoever designs the knob anyway: the
+fused verifier bounds `read(-1)` to the declared size, which *disables* the
+`readall()` fast path (`residual-gap.md` §1) — worth keeping in mind so a
+"verify off" mode doesn't accidentally have different chunking behaviour.
+
+## Q5 — H1 fix shape: lazy solid positioning vs extraction early-exit? — RESOLVED (#136)
 
 Lazy positioning in `SevenZipReader._iter_with_data` honors the documented lazy
 contract (`base_reader.py:435-439`) and fixes *all* selector cases, but moves the

@@ -6,6 +6,9 @@ patterns, and "an implementation that re-reads a solid block fails the benchmark
 
 **Reviewed at:** `main` @ `7139c13` (CLI #120 merged), branch
 `claude/performance-brief-review-176s93`.
+**Post-merge update (2026-07-17):** re-measured at `main` @ `b9cdeac` after #136
+(solid lazy open + early exit) and #137 (verify fusion) merged — see
+"Post-merge update" below and `residual-gap.md` for the revised attribution.
 **Baseline:** `[all]` config — 1699 passed / 131 skipped, `ruff` / `pyrefly` / `ty`
 clean, committed structural gate green (exit 0), realistic harness green (exit 0).
 **Host:** 4-core x86_64 KVM, Linux 6.18, CPython 3.11. Wall ratios are directional
@@ -41,16 +44,39 @@ bounded.
 |---|----------|---------|-------|--------|
 | P1 | **blocker** | ≤1.3× wall budget enforced nowhere; nightly hard-fails only at 10×, VISION band informational | `benchmarks/harness.py:55,826-834`, `benchmark-wall.yml` | open — decision needed (Q2) |
 | P2 | **blocker** | Budget not met: ZIP read-all 2.2–2.3×, extract-all 2.4–3.7×, open+list 5–8×; TAR read 1.8× | `budget-table.md` | open |
-| P3 | **blocker** | Selective solid-7z extraction decodes ~whole folder for one early member (31× needed bytes); CLI `extract archive.7z <name>` hits it | `sevenzip_reader.py:283-323`, `extraction.py:340` | open — fix proposed (`hotspots.md` H1) |
+| P3 | **blocker** | Selective solid-7z extraction decodes ~whole folder for one early member (31× needed bytes); CLI `extract archive.7z <name>` hits it | `sevenzip_reader.py:283-323`, `extraction.py:340` | **fixed by #136** — verified 31.0× → 1.00× |
 | P4 | high | Non-solid re-decompression is invisible to the gate: decode-twice-deliver-once ZIP regression passes (byte axis counts delivered output; seek slack ×2+8 absorbs churn; wall ungated) | `gate-efficacy.md` G4, `repro.py` probe 3 | open |
 | P5 | high | A full 2× solid re-decode passes the gate (`SOLID_DECODE_FACTOR = 2.0`, non-strict bound) — VISION says a re-read must fail | `harness.py:51,526-532`, `repro.py` probe 2 | open — tighten (Q3) |
 | P6 | med | Harness has no stdlib peer for open/list/extract (why P2's extract miss went unnoticed); no RAR case in committed baseline; ZIP-AES / native-codec / in-ZIP-accelerated paths unbenchmarked | `gate-efficacy.md` G6/G7 | open |
-| P7 | med | Per-`open()` 5–8× zipfile (detection + member-model build ~0.3 ms/archive) — the founding million-archive sweep pays minutes | `hotspots.md` H3 | follow-up |
+| P7 | med | Per-`open()` 5–8× zipfile (detection + member-model build ~0.3 ms/archive) — the founding million-archive sweep pays minutes | `hotspots.md` H3 | partial — #136 caches the extension map; rest open |
 | P8 | low | rapidgzip AUTO threshold (1 MiB) conservative: seek workloads win ~1.5× well below it; provenance script never measured compressed sizes near 1 MiB | `hotspots.md` H5 | follow-up |
 | P9 | low | Measurement blind spots: 7z password-confirm folder decode uncounted; RAR byte axis (unrar pipe output) cannot see solid rewind | `gate-efficacy.md` G6 | follow-up |
 
 Blocker rationale (per brief): P1/P4/P5 = "gate can't catch a regression"; P2 = "budget
 missed"; P3 is the VISION-named trap reachable from the shipped CLI.
+
+## Post-merge update (#136 / #137, `main` @ `b9cdeac`)
+
+Re-verified after both stream-layer PRs merged (full suite green in `[all]`;
+selective-solid probe re-run against main, #136, #137 trees):
+
+- **P3 is fixed and pinned.** Selective extract/stream of one early solid-7z
+  member: 31.0× over-decode → exactly 1.00×, full sequential read still decodes
+  once; regression tests in `test_solid.py` / `test_measurement.py` pin it.
+- **H2's attribution is revised — wrapper layering is *not* the ZIP gap.**
+  #136+#137 implemented the wrapper-side H2 candidates (readall join, nested
+  `ArchiveStream` collapse, verify fusion: STORED stack is now
+  `ArchiveStream → SlicingStream`) and ZIP read-all wall did not move (±2%,
+  within noise, on both their harness runs and my independent probe). The real
+  cost is **decode granularity**: `_COMPRESSED_READ_SIZE = 8192` feeds ~8 KiB
+  compressed slices through a 5-frame Python loop ~17×/member while `zipfile`
+  decompresses each member in a single C call. Raising the feed (or a
+  known-size single-shot fast path) takes ZIP read-all from 1.38× → **1.23×
+  stdlib** on this host — under the 1.3× budget. Full numbers, remaining
+  per-member overhead (~190 µs/member, distributed), and the investigation
+  plan: `residual-gap.md`.
+- **Still open:** P1 (enforcement), P2 (budget — now with a concrete lever),
+  P4/P5 (gate bounds), P6 (stdlib peers), Q1–Q4/Q6.
 
 ## What is actually fine
 
@@ -85,4 +111,6 @@ missed"; P3 is the VISION-named trap reachable from the shipped CLI.
 - `hotspots.md` — attributed hotspots H1–H5 with `ByteCounter`/profile evidence.
 - `QUESTIONS.md` — maintainer decisions (budget interpretation, gate policy,
   threshold, verify-skip knob).
-- `repro.py`, `measurements.py` — runnable evidence.
+- `residual-gap.md` — post-#136/#137 attribution of the remaining ZIP gap +
+  next investigation areas and methodology.
+- `repro.py`, `measurements.py`, `attrib.py` — runnable evidence.
