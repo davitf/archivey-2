@@ -654,6 +654,51 @@ def test_verify_expected_size_partial_read_then_close_is_ok() -> None:
     stream.close()  # must not raise
 
 
+def test_verify_read0_is_not_eof() -> None:
+    """F1: read(0) must not run end-of-stream verification (BytesIO / file contract)."""
+    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT)})
+    assert stream.read(0) == b""
+    assert stream.read(5) == CONTENT[:5]
+    assert stream.read(0) == b""  # mid-stream
+    assert stream.read() == CONTENT[5:]
+    assert stream.read() == b""
+
+
+def test_verify_read0_hashless_does_not_truncate_on_close() -> None:
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT))
+    assert stream.read(0) == b""
+    stream.close()  # must not raise TruncatedError
+
+
+def test_verify_close_closes_inner_on_typed_probe_error() -> None:
+    """F2: a typed probe error must still close the wrapper and inner."""
+    from archivey.exceptions import EncryptionError
+
+    class Boom(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"ab")
+            self.close_called = False
+
+        def read(self, n: int = -1) -> bytes:
+            data = super().read(n)
+            if not data:
+                raise EncryptionError("boom")
+            return data
+
+        def close(self) -> None:
+            self.close_called = True
+            super().close()
+
+    inner = Boom()
+    stream = VerifyingStream(inner, {}, expected_size=3)
+    assert stream.read(2) == b"ab"
+    with pytest.raises(EncryptionError, match="boom"):
+        stream.close()
+    assert stream.closed
+    assert inner.closed
+    assert inner.close_called
+
+
 def test_verify_unverifiable_algorithm_skipped_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

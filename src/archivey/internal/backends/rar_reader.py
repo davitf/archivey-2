@@ -56,7 +56,6 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
     is_stream,
 )
-from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -125,7 +124,7 @@ def _crc_is_tweaked(info: RarMemberInfo) -> bool:
 
 
 def _member_hashes(info: RarMemberInfo) -> dict[str, int | bytes]:
-    """Plaintext digests safe for :class:`VerifyingStream` without a HashKey.
+    """Plaintext digests safe for member verification without a HashKey.
 
     When ``RAR5_XENC_TWEAKED`` / ``HASHMAC`` (0x02) is set, the stored CRC32 and
     BLAKE2sp are key-tweaked (``ConvertHashToMAC``) and must not be compared to the
@@ -577,9 +576,9 @@ class RarReader(BaseArchiveReader):
         )
         self._live_unrar = proc
         # Each payload member in the pipe is verified individually (CRC/BLAKE2sp and
-        # declared length via VerifyingStream), so the pipe-level unrar exit code is
-        # redundant for corruption and is suppressed here to avoid legacy-format false
-        # positives; wrong-password (11) still maps.
+        # declared length via fused ArchiveStream verify), so the pipe-level unrar
+        # exit code is redundant for corruption and is suppressed here to avoid
+        # legacy-format false positives; wrong-password (11) still maps.
         owned: BinaryIO = self._track_decompressed(
             _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
         )
@@ -599,25 +598,26 @@ class RarReader(BaseArchiveReader):
                 size = _member_stream_size(member)
                 # Capture the pipe offset for this member, then advance the running
                 # cursor. ``lazy=True`` defers skip-decode until first read; verify
-                # wrap stays inside open_fn so VerifyingStream.close cannot probe an
-                # unselected handle into a solid open.
+                # is fused into the outer ArchiveStream so a never-opened handle
+                # skips verify on close (no solid positioning for unread members).
                 member_offset = pipe_offset
                 pipe_offset += size
                 lazy_solid = solid.open_member(member_offset, size, lazy=True)
 
-                def open_fn(
-                    inner: BinaryIO = lazy_solid,
-                    m: ArchiveMember = member,
-                ) -> BinaryIO:
-                    return self._prepare_payload_stream(inner, m)
-
+                hashes, vsize, transforms, verify_member = self._payload_verify_args(
+                    member
+                )
                 stream = self._wrap_member_stream(
                     None,
                     member.name,
-                    open_fn=open_fn,
+                    open_fn=lambda inner=lazy_solid: inner,
                     size=member.size,
                     track_output=False,
                     seekable=False,
+                    expected_hashes=hashes,
+                    expected_size=vsize,
+                    digest_transforms=transforms,
+                    verify_member=verify_member,
                 )
                 previous = stream
                 yield member, stream
@@ -667,21 +667,20 @@ class RarReader(BaseArchiveReader):
             return None
         return expected, transforms
 
-    def _prepare_payload_stream(
-        self,
-        inner: BinaryIO,
-        member: ArchiveMember,
-    ) -> BinaryIO:
-        """Verify + size-bound a RAR payload view (no ``ArchiveStream`` yet)."""
-        # Verify every member's declared length (and any CRC32/BLAKE2sp) as it is read:
-        # an over-long external decode stops at the declared size and errors, a short one
-        # raises, and a wrong one fails its digest. Applied to all members (not just
-        # hashed ones), so a hash-less member still can't be silently truncated. A seek
-        # off the sequential frontier disables the checks (VerifyingStream), preserving
-        # random access on seekable direct reads.
-        #
-        # Tweaked RAR5 digests (HASHMAC) are not in ``member.hashes``; when a password
-        # is available they are verified via ConvertHashToMAC transforms instead.
+    def _payload_verify_args(
+        self, member: ArchiveMember
+    ) -> tuple[
+        Mapping[str, int | bytes] | None,
+        int | None,
+        Mapping[str, Callable[[bytes], bytes]] | None,
+        ArchiveMember | None,
+    ]:
+        """Return ``(hashes, size, transforms, member)`` for fused verify, or Nones.
+
+        Verify every member's declared length (and any CRC32/BLAKE2sp) as it is
+        read. Tweaked RAR5 digests (HASHMAC) use ConvertHashToMAC transforms when
+        a password is available.
+        """
         expected: Mapping[str, int | bytes] = member.hashes
         transforms: Mapping[str, Callable[[bytes], bytes]] | None = None
         raw = member._raw
@@ -689,17 +688,9 @@ class RarReader(BaseArchiveReader):
             tweaked = self._tweaked_verify_spec(raw)
             if tweaked is not None:
                 expected, transforms = tweaked
-        if member.size is not None or expected:
-            inner = VerifyingStream(
-                inner,
-                expected,
-                expected_size=member.size,
-                collector=self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
-                digest_transforms=transforms,
-            )
-        return inner
+        if member.size is None and not expected:
+            return None, None, None, None
+        return expected, member.size, transforms, member
 
     def _wrap_payload_stream(
         self,
@@ -708,11 +699,16 @@ class RarReader(BaseArchiveReader):
         *,
         track_output: bool = True,
     ) -> ArchiveStream:
+        hashes, size, transforms, verify_member = self._payload_verify_args(member)
         return self._wrap_member_stream(
-            self._prepare_payload_stream(inner, member),
+            inner,
             member.name,
             size=member.size,
             track_output=track_output,
+            expected_hashes=hashes,
+            expected_size=size,
+            digest_transforms=transforms,
+            verify_member=verify_member,
         )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
@@ -774,8 +770,8 @@ class RarReader(BaseArchiveReader):
             version_control=raw.is_file_version_history(),
         )
         self._live_unrar = proc
-        # Prefer our VerifyingStream (including tweaked ConvertHashToMAC) over unrar's
-        # exit code for corruption; wrong-password (11) still maps.
+        # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
+        # unrar's exit code for corruption; wrong-password (11) still maps.
         has_hash = bool(member.hashes) or (
             isinstance(raw, RarMemberInfo)
             and self._tweaked_verify_spec(raw) is not None
@@ -790,8 +786,7 @@ class RarReader(BaseArchiveReader):
         )
         try:
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
-            # VerifyingStream (in _wrap_payload_stream) bounds and checks the pipe against
-            # the member's declared size (and any CRC32/BLAKE2sp).
+            # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
             return self._wrap_payload_stream(owned, member, track_output=False)
         except BaseException:
             owned.close()

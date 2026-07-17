@@ -74,7 +74,6 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     read_exact,
 )
-from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.zip_aes import (
     open_winzip_aes_member,
@@ -814,13 +813,13 @@ class ZipReader(BaseArchiveReader):
         hashes = member.hashes if member is not None else {}
         size = member.size if member is not None else info.file_size
         if hashes or size is not None:
-            decoded = VerifyingStream(
+            return self._wrap_member_stream(
                 decoded,
-                hashes,
+                member_name,
+                size=size,
+                expected_hashes=hashes,
                 expected_size=size,
-                collector=self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
+                verify_member=member,
             )
         return self._wrap_member_stream(decoded, member_name, size=size)
 
@@ -1030,13 +1029,13 @@ class ZipReader(BaseArchiveReader):
         hashes = member.hashes if member is not None else {}
         size = member.size if member is not None else info.file_size
         if hashes or size is not None:
-            decoded = VerifyingStream(
+            return self._wrap_member_stream(
                 decoded,
-                hashes,
+                member_name,
+                size=size,
+                expected_hashes=hashes,
                 expected_size=size,
-                collector=self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
+                verify_member=member,
             )
         return self._wrap_member_stream(decoded, member_name, size=size)
 
@@ -1320,7 +1319,7 @@ class ZipReader(BaseArchiveReader):
             # Traditional ZipCrypto stays on the stdlib zipfile decryption path.
             raw = self._open_zip_entry(info, member, member_name=member.name)
             return self._wrap_member_stream(raw, member.name, size=member.size)
-        # Unencrypted: codec layer already wrapped (+ VerifyingStream) in _open_codec_member.
+        # Unencrypted: codec layer + fused verify in _open_codec_member.
         return self._open_codec_member(info, member, member_name=member.name)
 
     def _get_archive_info(self) -> ArchiveInfo:

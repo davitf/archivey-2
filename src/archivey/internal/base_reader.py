@@ -580,6 +580,10 @@ class BaseArchiveReader(ArchiveReader):
         size: int | None = None,
         track_output: bool = True,
         seekable: bool | None = None,
+        expected_hashes: Mapping[str, int | bytes] | None = None,
+        expected_size: int | None = None,
+        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+        verify_member: ArchiveMember | None = None,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -604,6 +608,11 @@ class BaseArchiveReader(ArchiveReader):
         ``track_output=False`` to avoid double-counting. When ``open_fn`` may return an
         ``ArchiveStream``, pass ``track_output=False`` (counting belongs on that inner
         wrap); collapse happens in ``_ensure_open``.
+
+        Pass ``expected_hashes`` / ``expected_size`` to fuse container digest and
+        length verification into the returned ``ArchiveStream`` (no separate
+        ``VerifyingStream`` layer). A never-opened lazy handle skips verify on
+        close, so solid unread members stay cheap.
         """
         if (inner is None) == (open_fn is None):
             raise TypeError("exactly one of inner or open_fn is required")
@@ -631,6 +640,11 @@ class BaseArchiveReader(ArchiveReader):
                 seekable=(self._seek_declared() if seekable is None else seekable),
                 size=size,
                 collector=self._diagnostics_collector,
+                expected_hashes=expected_hashes,
+                expected_size=expected_size,
+                digest_transforms=digest_transforms,
+                verify_member=verify_member,
+                archive_name=self._archive_name,
             )
 
         assert inner is not None
@@ -648,6 +662,11 @@ class BaseArchiveReader(ArchiveReader):
             ),
             size=size,
             collector=self._diagnostics_collector,
+            expected_hashes=expected_hashes,
+            expected_size=expected_size,
+            digest_transforms=digest_transforms,
+            verify_member=verify_member,
+            archive_name=self._archive_name,
         )
 
     @abstractmethod

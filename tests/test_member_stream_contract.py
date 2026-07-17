@@ -263,6 +263,28 @@ def test_stream_members_do_not_nest_archive_streams(tmp_path: Path) -> None:
             pytest.fail("expected a file member")
 
 
+def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> None:
+    """STORED ZIP: public ArchiveStream verifies directly over SlicingStream.
+
+    After verify-fusion, the codec ArchiveStream collapses through and there is
+    no VerifyingStream in the chain (review/stream-layering collapse design).
+    """
+    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.streamtools.slice import SlicingStream
+    from archivey.internal.streams.verify import VerifyingStream
+
+    path = tmp_path / "stored.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.bin", b"hello-verify-fuse")
+    with open_archive(path) as ar, ar.open("a.bin") as f:
+        assert isinstance(f, ArchiveStream)
+        assert f._verifier is not None
+        assert not isinstance(f._inner, ArchiveStream)
+        assert not isinstance(f._inner, VerifyingStream)
+        assert isinstance(f._inner, SlicingStream)
+        assert f.read() == b"hello-verify-fuse"
+
+
 def test_member_stream_advertises_size(member: tuple[Path, str]) -> None:
     # The fsspec-style `size` attribute carries the decompressed length when the
     # archive metadata knows it (feeds nested-archive sizing and the bomb tracker).
