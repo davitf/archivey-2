@@ -91,10 +91,15 @@ def test_close_block_false_leaves_block_open() -> None:
 
 
 def test_lazy_open_member_defers_skip_until_read() -> None:
+    from archivey.internal.streams.streamtools.solid import _MemberSlice
+
     block = _CountingBlock(b"AAAABBBBCCCC")
     reader = SolidBlockReader(block)
     first = reader.open_member(0, 4, lazy=True)
     second = reader.open_member(4, 4, lazy=True)
+    # Same type as eager; no extra wrapper layer.
+    assert isinstance(first, _MemberSlice)
+    assert isinstance(second, _MemberSlice)
     # Claiming lazy handles must not touch the block.
     assert block.bytes_read == 0
     first.close()  # unread — free
@@ -110,6 +115,16 @@ def test_lazy_open_member_out_of_order_still_rejected_at_claim() -> None:
     reader.open_member(4, 4).read()
     with pytest.raises(ValueError, match="in order"):
         reader.open_member(0, 4, lazy=True)
+
+
+def test_lazy_then_read_after_later_member_raises() -> None:
+    """A pending slice whose offset was passed by another open cannot be read later."""
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    early = reader.open_member(0, 4, lazy=True)
+    assert reader.open_member(4, 4).read() == b"BBBB"
+    with pytest.raises(ValueError, match="in order"):
+        early.read()
 
 
 def test_skip_forward_helper_raises_on_short_stream() -> None:

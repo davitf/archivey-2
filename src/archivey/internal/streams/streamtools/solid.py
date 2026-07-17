@@ -8,11 +8,11 @@ member's unread tail, or an inter-member gap) is consumed only when the *next* m
 opened, so closing a member the caller never advances past costs nothing. Closing the
 reader closes the block without draining.
 
-``open_member(..., lazy=True)`` defers that open (and its skip-decode) until the first
-read on the returned handle — so an iterator that yields then closes an unselected
-member pays nothing. This is the sequential/iteration primitive. Random access into a
-solid block is served differently (a seekable slice over a seekable decode), so this
-class is deliberately forward-only and does not seek.
+``open_member(..., lazy=True)`` returns the same :class:`_MemberSlice` type but defers
+that open (and its skip-decode) until the first read — so an iterator that yields then
+closes an unselected member pays nothing. This is the sequential/iteration primitive.
+Random access into a solid block is served differently (a seekable slice over a
+seekable decode), so this class is deliberately forward-only and does not seek.
 
 Like the rest of ``streamtools`` this module knows nothing about archivey's error
 hierarchy: a truncated block surfaces as a plain :class:`EOFError` for the caller to
@@ -46,15 +46,49 @@ class _MemberSlice(ReadOnlyIOStream):
     Non-owning: closing a member slice never closes the shared block — the
     :class:`SolidBlockReader` owns that. Reads are bounded to the member's declared size
     and flow through the reader so it always knows the block's position.
+
+    When constructed with ``pending=True`` (``open_member(..., lazy=True)``), the
+    skip-to-``offset`` runs on first read rather than at construction; closing without
+    reading never touches the block.
     """
 
-    def __init__(self, reader: SolidBlockReader, size: int) -> None:
+    def __init__(
+        self,
+        reader: SolidBlockReader,
+        offset: int,
+        size: int,
+        *,
+        pending: bool = False,
+    ) -> None:
         super().__init__()
         self._reader = reader
+        self._offset = offset
         self._size = size
         self._remaining = size
+        self._pending = pending
+
+    def _ensure_positioned(self) -> None:
+        if not self._pending:
+            return
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        reader = self._reader
+        if reader._closed:
+            raise ValueError("SolidBlockReader is closed")
+        if self._offset < reader._pos:
+            raise ValueError(
+                f"solid members must be opened in order: offset {self._offset} < "
+                f"position {reader._pos}"
+            )
+        # Finalize any prior active member and jump the gap (same as eager open_member).
+        reader._current = None
+        skip_forward(reader._block, self._offset - reader._pos)
+        reader._pos = self._offset
+        reader._current = self
+        self._pending = False
 
     def read(self, n: int = -1, /) -> bytes:
+        self._ensure_positioned()
         if self._remaining <= 0:
             return b""
         if n < 0 or n > self._remaining:
@@ -64,47 +98,16 @@ class _MemberSlice(ReadOnlyIOStream):
         return data
 
     def tell(self) -> int:
-        return self._size - self._remaining
-
-
-class _LazyMember(ReadOnlyIOStream):
-    """Deferred ``open_member``: skip-decode runs on first read, not at construction.
-
-    Closing without reading never touches the block. Useful when a sequential pass
-    yields every member but only some are selected — the unselected handles close
-    free.
-    """
-
-    def __init__(self, reader: SolidBlockReader, offset: int, size: int) -> None:
-        super().__init__()
-        self._reader = reader
-        self._offset = offset
-        self._size = size
-        self._inner: BinaryIO | None = None
-
-    def _ensure(self) -> BinaryIO:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        if self._inner is None:
-            self._inner = self._reader.open_member(self._offset, self._size, lazy=False)
-        return self._inner
-
-    def read(self, n: int = -1, /) -> bytes:
-        return self._ensure().read(n)
-
-    def tell(self) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        if self._inner is None:
+        if self._pending:
             return 0
-        return self._inner.tell()
+        return self._size - self._remaining
 
     def close(self) -> None:
         if self.closed:
             return
-        if self._inner is not None:
-            self._inner.close()
-            self._inner = None
+        # Unopened pending slices must not touch the block.
         super().close()
 
 
@@ -119,7 +122,8 @@ class SolidBlockReader:
 
     Pass ``lazy=True`` to defer that open until the first read on the returned handle
     (claim-time still rejects ``offset`` behind the current position). Closing a lazy
-    handle without reading never skip-decodes.
+    handle without reading never skip-decodes. Eager and lazy both return the same
+    :class:`_MemberSlice` type — no extra wrapper layer.
     """
 
     def __init__(self, block: BinaryIO, *, close_block: bool = True) -> None:
@@ -138,13 +142,13 @@ class SolidBlockReader:
                 f"{self._pos}"
             )
         if lazy:
-            return _LazyMember(self, offset, size)
+            return _MemberSlice(self, offset, size, pending=True)
         # Finalize the previous member and jump the gap in one forward skip. This is where
         # a prior member's unread tail is actually consumed (lazy drain).
         self._current = None
         skip_forward(self._block, offset - self._pos)
         self._pos = offset
-        slice_ = _MemberSlice(self, size)
+        slice_ = _MemberSlice(self, offset, size, pending=False)
         self._current = slice_
         return slice_
 
