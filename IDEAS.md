@@ -262,6 +262,33 @@
   cheap UX win worth doing, provided it ships clearly labeled as advisory so nobody mistakes
   it for a safety control.
 
+## CLI (post-`cli-v1` follow-ups)
+
+> Parked from PR #131 review decisions (Brief 4) so they survive merge of #120.
+> The `cli-v1` change itself is implemented; these are the consciously deferred
+> pieces — promote each with its own OpenSpec change when scheduled.
+
+- **Smart-dest post-hoc hoist (streaming / no-index)** — today, when no cheap
+  member index exists (plain TAR; future stdin), extract with no `-d` always
+  wraps into `./<archive-stem>/` rather than forcing a pre-extract listing pass
+  (D1 catch on #120). End state: extract into the wrapper in one forward pass,
+  then if the wrapper contains exactly one top-level directory (and nothing
+  else), hoist it to cwd and remove the wrapper — recovers unar-style
+  single-root reuse **and** filter-aware D1 semantics (what's on disk *is* the
+  filtered set) without an index. Edges to design carefully: overwrite/collision
+  during hoist, partial-failure (wrapper half-full), UX ("extracting into
+  foo/" then files appear as `./root/`), cross-device `rename`. Natural sibling
+  of **stdin archive sources** (Decision 15 reserved `-`).
+
+- **Skip-damaged-member iteration for `test` / salvage-adjacent reads** — CLI
+  `test` now counts open-time failures and still prints the summary, but once
+  `stream_members` raises the generator is dead and later members are lost
+  (solid / poisoned streams). Library-side: surface per-member open errors
+  without terminating iteration (e.g. yield `(member, error)` or a documented
+  "skip damaged unit" mode) so `test` can continue where the format allows.
+  Overlaps salvage (above) but is narrower — integrity reporting, not
+  best-effort recovery of truncated archives.
+
 ## Strategy & adoption (2026-07 review backlog)
 
 > Parked here from the 2026-07 architecture-review discussion so nothing is lost.
@@ -312,7 +339,6 @@
   of the writing spec, since it shapes `add_member` and the round-trip contract).
 - **Free-threading position** (threat-model C4) — parallel extraction / parallel
   decode under 3.13t; interacts with the existing parallel-extraction idea above.
-- **CLI earlier, as dev tool + demo** — `archivey list/test/extract` was invaluable for
-  eyeballing DEV against real archives and is the ten-second demo of safe extraction
-  ("the unzip that can't be zip-slipped"). Roadmap moves it right after the native
-  readers (see PLAN); a selling point, though not the main one.
+- **CLI earlier, as dev tool + demo** — ~~`archivey list/test/extract` was
+  invaluable…~~ **Done in `cli-v1` (PR #120).** Remaining CLI backlog lives under
+  **CLI (post-`cli-v1` follow-ups)** above.
