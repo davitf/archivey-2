@@ -13,7 +13,7 @@ from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import run_extract
 from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
-from archivey.cli.logging_config import configure_cli_logging
+from archivey.cli.logging_config import cli_logging
 from archivey.cli.test_cmd import run_test
 from archivey.exceptions import ArchiveyError
 
@@ -346,10 +346,9 @@ def main(
         print(code, file=err_stream)
         return EXIT_USAGE
 
-    configure_cli_logging(verbose=bool(getattr(args, "verbose", False)), err=err_stream)
-
     try:
-        return _dispatch(args, out=out_stream, err=err_stream)
+        with cli_logging(verbose=bool(getattr(args, "verbose", False)), err=err_stream):
+            return _dispatch(args, out=out_stream, err=err_stream)
     except CliError as exc:
         print(exc.message, file=err_stream)
         return exc.code

@@ -76,7 +76,17 @@ single-file/single-stream archive. When no cheap index is available (plain TAR,
 future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
-the cwd (subject to the overwrite policy) and remove the empty wrapper.
+the cwd and remove the wrapper. The hoist SHALL produce the same final layout
+as extracting directly into the cwd: directories merge into existing
+directories, and per-file collisions resolve by the overwrite policy (`rename`
+derives the library's `name (N)` spelling; `replace` replaces only the
+individual files being extracted; `skip` keeps the existing file). The hoist
+MUST NOT delete pre-existing files or directories under any policy. A collision
+the policy cannot resolve without deleting data (`error`, or a dir-vs-file
+shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
+under the wrapper, and exit nonzero — mirroring the failure a direct extraction
+would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
+containing `src/`) SHALL be flattened in place, not treated as a collision.
 Container-name collisions SHALL be resolved by the overwrite policy.
 Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 (`--overwrite` may select `error` / `skip` / `replace` / `rename`).

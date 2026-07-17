@@ -190,9 +190,16 @@ avoid double-nesting:
 - **No cheap index** (plain TAR; future stdin) → **always** extract into
   `./<archive-stem>/` (no pre-extract listing pass), then **hoist** if the
   wrapper ends with exactly one top-level entry (file or directory) — recovers
-  single-root reuse and filter-aware D1 without an index. Collision during hoist
-  follows the overwrite policy (`rename` → `name (N)`; `skip`/`error` leave the
-  wrapper).
+  single-root reuse and filter-aware D1 without an index or a tar reread. The
+  hoist is contractually equivalent to extracting directly into cwd: dirs merge,
+  per-file collisions follow the overwrite policy (`rename` → library `name (N)`
+  spelling; `replace` replaces only files being extracted; `skip` keeps the
+  existing file), and **pre-existing files are never deleted**. A collision the
+  policy cannot resolve without deleting data (`error`, or dir-vs-file under
+  `replace`/`skip`) stops the hoist, leaves the remainder under the wrapper, and
+  exits nonzero — the direct extraction would have failed on the same collision.
+  A sole root named like the wrapper itself (`src.tar.gz` containing `src/`) is
+  flattened in place, not treated as a collision.
 - **Container-name collision** (`./foo/` already exists) → resolved by the
   overwrite policy; default `rename` (Decision 3) yields `foo (1)/`, `foo (2)/`, ….
 

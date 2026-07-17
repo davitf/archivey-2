@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import shutil
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -133,26 +133,78 @@ def resolve_smart_dest(
     )
 
 
-def _collision_dest(name: str, overwrite: OverwritePolicy) -> Path | None:
-    """Resolve ``name`` in cwd under ``overwrite``; ``None`` means skip hoist."""
-    dest = Path(name)
-    if not dest.exists():
-        return dest
+@dataclass
+class _HoistResult:
+    """Outcome of :func:`maybe_hoist_single_root` for reporting and exit code."""
+
+    target: Path  # where the content ended up (the wrapper when not hoisted)
+    ok: bool = True  # False → collision/failure; caller exits nonzero
+    renamed: int = 0
+    skipped: int = 0
+
+
+class _HoistConflict(Exception):
+    """A collision the overwrite policy cannot resolve without deleting data."""
+
+    def __init__(self, dest: Path) -> None:
+        super().__init__(str(dest))
+        self.dest = dest
+
+
+def _free_name(dest: Path, *, is_dir: bool) -> Path:
+    """First ``name (N)`` free on disk — mirrors extraction ``_derive_free_name``
+    (counter before the final suffix for files; whole-segment append for dirs)."""
+    stem, suffix = (dest.name, "") if is_dir else (dest.stem, dest.suffix)
+    n = 1
+    while True:
+        candidate = dest.parent / f"{stem} ({n}){suffix}"
+        if not os.path.lexists(candidate):
+            return candidate
+        n += 1
+
+
+def _merge_move(
+    src: Path,
+    dest: Path,
+    overwrite: OverwritePolicy,
+    result: _HoistResult,
+    err: TextIO,
+) -> None:
+    """Move ``src`` to ``dest`` with the same per-file semantics as extracting
+    directly into ``dest``'s parent: directories merge, file/symlink collisions
+    resolve by the overwrite policy. Pre-existing files are never deleted — the
+    only removal is our own just-extracted copy under SKIP, which a direct
+    extraction would never have written. Symlinks are moved as links and never
+    descended into (on either side)."""
+    if not os.path.lexists(dest):
+        os.rename(src, dest)
+        return
+    src_is_dir = src.is_dir() and not src.is_symlink()
+    dest_is_dir = dest.is_dir() and not dest.is_symlink()
+    if src_is_dir and dest_is_dir:
+        for entry in sorted(src.iterdir()):
+            _merge_move(entry, dest / entry.name, overwrite, result, err)
+        src.rmdir()
+        return
     if overwrite is OverwritePolicy.RENAME:
-        n = 1
-        while Path(f"{name} ({n})").exists():
-            n += 1
-        return Path(f"{name} ({n})")
-    if overwrite is OverwritePolicy.SKIP:
-        return None
-    if overwrite is OverwritePolicy.REPLACE:
-        if dest.is_dir():
-            shutil.rmtree(dest)
-        else:
-            dest.unlink()
-        return dest
-    # ERROR: leave the wrapper intact rather than aborting a successful extract.
-    return None
+        free = _free_name(dest, is_dir=src_is_dir)
+        os.rename(src, free)
+        result.renamed += 1
+        print(f"renamed: {dest} -> {free}", file=err)
+        return
+    if overwrite is OverwritePolicy.REPLACE and not src_is_dir and not dest_is_dir:
+        os.replace(src, dest)  # replaces exactly the file being extracted
+        return
+    if overwrite is OverwritePolicy.SKIP and not src_is_dir:
+        src.unlink()
+        result.skipped += 1
+        print(f"skipped: {dest}", file=err)
+        return
+    # ERROR policy — or a dir-vs-file shape that REPLACE/SKIP cannot express
+    # without deleting pre-existing data. Stop; the caller keeps the remainder
+    # under the wrapper and exits nonzero (direct extraction would have failed
+    # on this same collision).
+    raise _HoistConflict(dest)
 
 
 def maybe_hoist_single_root(
@@ -160,38 +212,61 @@ def maybe_hoist_single_root(
     *,
     overwrite: OverwritePolicy,
     err: TextIO,
-) -> Path:
-    """If ``wrapper`` holds exactly one top-level entry, move it to cwd (R4/D1).
+) -> _HoistResult:
+    """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
 
-    Recovers unar-style single-root reuse (and filter-aware D1 for streaming) after
-    an always-wrap extract, without a pre-extract metadata pass. Returns the final
-    path used for the summary line.
+    Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
+    after an always-wrap extract, without a pre-extract metadata pass. The final
+    layout matches extracting directly into the wrapper's parent: directories
+    merge into existing ones and per-file collisions follow the overwrite policy
+    (:func:`_merge_move`). When the sole root shares the wrapper's own name
+    (``src.tar.gz`` containing ``src/``), the child is flattened in place — the
+    wrapper *becomes* the root, so no collision logic applies to it.
     """
-    if wrapper == Path(".") or not wrapper.is_dir():
-        return wrapper
+    if wrapper == Path(".") or wrapper.is_symlink() or not wrapper.is_dir():
+        return _HoistResult(wrapper)
     try:
         children = list(wrapper.iterdir())
     except OSError:
-        return wrapper
+        return _HoistResult(wrapper)
     if len(children) != 1:
-        return wrapper
+        return _HoistResult(wrapper)
     child = children[0]
-    dest = _collision_dest(child.name, overwrite)
-    if dest is None:
-        print(
-            f"left in {wrapper}/ (could not hoist {child.name!r}: destination exists)",
-            file=err,
-        )
-        return wrapper
+    dest = wrapper.parent / child.name
+    result = _HoistResult(dest)
     try:
-        shutil.move(str(child), str(dest))
-        wrapper.rmdir()
+        if dest == wrapper:
+            if child.is_dir() and not child.is_symlink():
+                # Flatten: wrapper/src/* → wrapper/*. The wrapper held only this
+                # child, so the moves cannot collide.
+                for entry in sorted(child.iterdir()):
+                    entry.rename(wrapper / entry.name)
+                child.rmdir()
+            else:
+                # Sole non-dir entry named like the wrapper: step the wrapper
+                # aside so the entry can take its place.
+                side = _free_name(wrapper, is_dir=True)
+                wrapper.rename(side)
+                (side / child.name).rename(dest)
+                side.rmdir()
+        else:
+            _merge_move(child, dest, overwrite, result, err)
+            wrapper.rmdir()
+    except _HoistConflict as conflict:
+        print(f"Destination already exists: {conflict.dest}", file=err)
+        print(f"hoist stopped; remaining files left in {wrapper}/", file=err)
+        return _HoistResult(
+            wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
+        )
     except OSError as exc:
-        print(f"hoist skipped: {exc}", file=err)
-        return wrapper
-    label = f"{dest}/" if dest.is_dir() else str(dest)
-    print(f"moved to {label}", file=err)
-    return dest
+        print(f"hoist failed: {exc}", file=err)
+        print(f"files left in {wrapper}/", file=err)
+        return _HoistResult(
+            wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
+        )
+    is_dir = result.target.is_dir() and not result.target.is_symlink()
+    print(f"moved to {result.target}{'/' if is_dir else ''}", file=err)
+    return result
 
 
 def _report_extraction(
@@ -200,11 +275,18 @@ def _report_extraction(
     target: Path,
     verbose: bool,
     err: TextIO,
+    extra_renamed: int = 0,
+    extra_skipped: int = 0,
 ) -> None:
-    """Print rename notices + a closing summary from the library report (F3/D2)."""
+    """Print rename notices + a closing summary from the library report (F3/D2).
+
+    ``extra_renamed`` / ``extra_skipped`` fold in collisions resolved during the
+    post-extract hoist (the library report covers only the wrapper extraction,
+    which is collision-free by construction).
+    """
     extracted = 0
-    renamed = 0
-    skipped = 0
+    renamed = extra_renamed
+    skipped = extra_skipped
     rejected = 0
     failed = 0
     for result in report:
@@ -316,11 +398,21 @@ def run_extract(
                     file=err,
                 )
                 return EXIT_FAIL
+            hoist = _HoistResult(target)
             if may_hoist:
-                target = maybe_hoist_single_root(
+                hoist = maybe_hoist_single_root(
                     target, overwrite=overwrite_enum, err=err
                 )
-            _report_extraction(report, target=target, verbose=verbose, err=err)
+            _report_extraction(
+                report,
+                target=hoist.target,
+                verbose=verbose,
+                err=err,
+                extra_renamed=hoist.renamed,
+                extra_skipped=hoist.skipped,
+            )
+            if not hoist.ok:
+                return EXIT_FAIL
         finally:
             if on_progress is not None:
                 on_progress.close()

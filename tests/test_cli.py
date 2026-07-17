@@ -572,3 +572,143 @@ def test_password_rejected_message_distinct_from_required() -> None:
             None,
             lambda _pwd: (_ for _ in ()).throw(EncryptionError("unreachable")),
         )
+
+
+def _tar(path: Path, entries: dict[str, bytes]) -> Path:
+    import tarfile
+
+    with tarfile.open(path, "w") as tf:
+        for name, data in entries.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return path
+
+
+def test_hoist_root_named_like_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # src.tar containing src/ — the "collision" is the wrapper itself; flatten in
+    # place instead of renaming away (H2) or deleting extracted data (H1).
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "src.tar", {"src/f.txt": b"data"})
+    for overwrite in ("rename", "replace", "error", "skip"):
+        assert main(["extract", str(archive), "--overwrite", overwrite]) == EXIT_OK
+        assert (tmp_path / "src" / "f.txt").read_bytes() == b"data"
+        assert not (tmp_path / "src (1)").exists()
+        import shutil
+
+        shutil.rmtree(tmp_path / "src")
+
+
+def test_hoist_single_file_named_like_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # src.tar containing a single top-level FILE named "src".
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "src.tar", {"src": b"solo"})
+    assert main(["extract", str(archive)]) == EXIT_OK
+    assert (tmp_path / "src").read_bytes() == b"solo"
+    assert not (tmp_path / "src (1)").exists()
+
+
+def _seed_existing_root(tmp_path: Path) -> None:
+    (tmp_path / "root").mkdir()
+    (tmp_path / "root" / "keep.txt").write_bytes(b"MINE")
+    (tmp_path / "root" / "clash.txt").write_bytes(b"MINE")
+
+
+def _hoist_collision_archive(tmp_path: Path) -> Path:
+    return _tar(
+        tmp_path / "bundle.tar",
+        {"root/new.txt": b"NEW", "root/clash.txt": b"ARCHIVE"},
+    )
+
+
+def test_hoist_merges_like_direct_extraction_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Equivalence contract: hoisting == extracting directly into cwd. Dirs merge;
+    # the colliding file gets the library's "name (1)" treatment; nothing deleted.
+    monkeypatch.chdir(tmp_path)
+    archive = _hoist_collision_archive(tmp_path)
+    _seed_existing_root(tmp_path)
+    assert main(["extract", str(archive)]) == EXIT_OK
+    root = tmp_path / "root"
+    assert (root / "keep.txt").read_bytes() == b"MINE"
+    assert (root / "clash.txt").read_bytes() == b"MINE"
+    assert (root / "clash (1).txt").read_bytes() == b"ARCHIVE"
+    assert (root / "new.txt").read_bytes() == b"NEW"
+    assert not (tmp_path / "bundle").exists()
+    assert not (tmp_path / "root (1)").exists()
+
+
+def test_hoist_merges_like_direct_extraction_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    archive = _hoist_collision_archive(tmp_path)
+    _seed_existing_root(tmp_path)
+    assert main(["extract", str(archive), "--overwrite", "skip"]) == EXIT_OK
+    root = tmp_path / "root"
+    assert (root / "clash.txt").read_bytes() == b"MINE"
+    assert (root / "new.txt").read_bytes() == b"NEW"
+    assert not (tmp_path / "bundle").exists()
+
+
+def test_hoist_merges_like_direct_extraction_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    archive = _hoist_collision_archive(tmp_path)
+    _seed_existing_root(tmp_path)
+    assert main(["extract", str(archive), "--overwrite", "replace"]) == EXIT_OK
+    root = tmp_path / "root"
+    assert (root / "clash.txt").read_bytes() == b"ARCHIVE"  # only this file replaced
+    assert (root / "keep.txt").read_bytes() == b"MINE"
+    assert (root / "new.txt").read_bytes() == b"NEW"
+    assert not (tmp_path / "bundle").exists()
+
+
+def test_hoist_collision_under_error_keeps_wrapper_and_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Direct extraction would fail on this collision; the hoist fails the same
+    # way but keeps the unmoved remainder safely under the wrapper.
+    monkeypatch.chdir(tmp_path)
+    archive = _hoist_collision_archive(tmp_path)
+    _seed_existing_root(tmp_path)
+    assert main(["extract", str(archive), "--overwrite", "error"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "Destination already exists" in err
+    assert (tmp_path / "root" / "clash.txt").read_bytes() == b"MINE"
+    # The conflicting file is still available under the wrapper, not lost.
+    assert (tmp_path / "bundle" / "root" / "clash.txt").read_bytes() == b"ARCHIVE"
+
+
+def test_hoist_never_deletes_colliding_tree_under_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Archive member "root/clash" is a FILE; on disk ./root/clash is a DIRECTORY.
+    # replace must not rmtree the directory — it fails and keeps everything.
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "bundle.tar", {"root/clash": b"ARCHIVE"})
+    (tmp_path / "root" / "clash").mkdir(parents=True)
+    (tmp_path / "root" / "clash" / "precious.txt").write_bytes(b"MINE")
+    assert main(["extract", str(archive), "--overwrite", "replace"]) == EXIT_FAIL
+    assert (tmp_path / "root" / "clash" / "precious.txt").read_bytes() == b"MINE"
+    assert (tmp_path / "bundle" / "root" / "clash").read_bytes() == b"ARCHIVE"
+
+
+def test_cli_logging_leaves_no_global_state(sample_zip: Path) -> None:
+    # The D4 handler must be scoped to one invocation: a leaked handler or
+    # propagate=False blinds caplog-based library tests (pytest 8.3 floor).
+    import logging
+
+    root = logging.getLogger("archivey")
+    assert main(["list", str(sample_zip)]) == EXIT_OK
+    assert root.handlers == []
+    assert root.propagate is True
+    assert root.level == logging.NOTSET
