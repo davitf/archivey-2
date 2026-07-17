@@ -15,6 +15,7 @@ from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode, DigestContext
 from archivey.exceptions import (
+    ArchiveyError,
     CorruptionError,
     EncryptionError,
     StreamNotSeekableError,
@@ -597,23 +598,17 @@ class RarReader(BaseArchiveReader):
                     continue
                 size = _member_stream_size(member)
                 # Capture the pipe offset for this member, then advance the running
-                # cursor. open_member itself is deferred to first read so an
-                # unselected/unread member does not skip-decode its predecessors
-                # (same laziness contract as SevenZipReader._member_stream_from_solid).
+                # cursor. ``lazy=True`` defers skip-decode until first read; verify
+                # wrap stays inside open_fn so VerifyingStream.close cannot probe an
+                # unselected handle into a solid open.
                 member_offset = pipe_offset
                 pipe_offset += size
+                lazy_solid = solid.open_member(member_offset, size, lazy=True)
 
                 def open_fn(
-                    offset: int = member_offset,
-                    member_size: int = size,
+                    inner: BinaryIO = lazy_solid,
                     m: ArchiveMember = member,
                 ) -> BinaryIO:
-                    try:
-                        inner = solid.open_member(offset, member_size)
-                    except EOFError as exc:
-                        raise TruncatedError(
-                            "RAR solid stream ended before the requested member"
-                        ) from exc
                     return self._prepare_payload_stream(inner, m)
 
                 stream = self._wrap_member_stream(
@@ -631,6 +626,11 @@ class RarReader(BaseArchiveReader):
                 previous.close()
             solid.close()
             self._live_unrar = None
+
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, EOFError):
+            return TruncatedError("RAR solid stream ended before the requested member")
+        return None
 
     def _tweaked_verify_spec(
         self, info: RarMemberInfo

@@ -615,28 +615,18 @@ class SevenZipReader(BaseArchiveReader):
     def _member_stream_from_solid(
         self, solid: SolidBlockReader, member: ArchiveMember
     ) -> ArchiveStream:
-        """Hand out a lazy stream; ``solid.open_member`` runs on first read.
+        """Hand out a stream whose solid positioning runs on first read.
 
-        Positioning at yield time would skip-decode every preceding unread member as
-        the iterator advances — breaking the ``stream_members`` laziness contract
-        (unselected/unread members must not be decompressed) and making selective
-        extraction of one early solid member decode ~the whole folder. ``SolidBlockReader``
-        already skips unread tails lazily when the *next* member is opened; deferring
-        that open to first-read time is what makes skipped members free.
-
-        Single ``ArchiveStream``: ``open_fn`` returns the prepared BinaryIO (verify
-        only), not another wrapper.
+        Uses ``solid.open_member(..., lazy=True)`` so an unselected handle can be
+        closed without skip-decoding. Verification is applied in ``open_fn`` (not at
+        yield time): ``VerifyingStream.close`` probes with ``read(1)``, which would
+        otherwise force the lazy solid open on every skipped member.
         """
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)
+        lazy_solid = solid.open_member(prefix, size, lazy=True)
 
-        def open_fn() -> BinaryIO:
-            try:
-                inner = solid.open_member(prefix, size)
-            except EOFError as exc:
-                raise TruncatedError(
-                    "7z folder ended before the requested member"
-                ) from exc
+        def open_fn(inner: BinaryIO = lazy_solid) -> BinaryIO:
             return self._prepare_folder_member(inner, member)
 
         return self._wrap_member_stream(
@@ -647,6 +637,11 @@ class SevenZipReader(BaseArchiveReader):
             track_output=False,
             seekable=False,
         )
+
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, EOFError):
+            return TruncatedError("7z folder ended before the requested member")
+        return None
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:

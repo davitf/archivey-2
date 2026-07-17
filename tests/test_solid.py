@@ -90,6 +90,28 @@ def test_close_block_false_leaves_block_open() -> None:
     assert block.was_closed is False
 
 
+def test_lazy_open_member_defers_skip_until_read() -> None:
+    block = _CountingBlock(b"AAAABBBBCCCC")
+    reader = SolidBlockReader(block)
+    first = reader.open_member(0, 4, lazy=True)
+    second = reader.open_member(4, 4, lazy=True)
+    # Claiming lazy handles must not touch the block.
+    assert block.bytes_read == 0
+    first.close()  # unread — free
+    assert block.bytes_read == 0
+    assert second.read() == b"BBBB"
+    # Skipped the first member's range only when the second was actually read.
+    assert block.bytes_read == 8
+
+
+def test_lazy_open_member_out_of_order_still_rejected_at_claim() -> None:
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    reader.open_member(4, 4).read()
+    with pytest.raises(ValueError, match="in order"):
+        reader.open_member(0, 4, lazy=True)
+
+
 def test_skip_forward_helper_raises_on_short_stream() -> None:
     stream = io.BytesIO(b"1234")
     skip_forward(stream, 4)
