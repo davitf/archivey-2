@@ -262,6 +262,26 @@
   cheap UX win worth doing, provided it ships clearly labeled as advisory so nobody mistakes
   it for a safety control.
 
+## CLI (post-`cli-v1` follow-ups)
+
+> Parked from PR #131 review decisions (Brief 4) so they survive merge of #120.
+> The `cli-v1` change itself is implemented; these are the consciously deferred
+> pieces — promote each with its own OpenSpec change when scheduled.
+
+- ~~**Smart-dest post-hoc hoist (streaming / no-index)**~~ — **Done on #120**
+  (R4): always-wrap then hoist a single top-level entry to cwd after a successful
+  no-index extract. Remaining related work: stdin archive sources (Decision 15
+  reserved `-`).
+
+- **Skip-damaged-member iteration for `test` / salvage-adjacent reads** — CLI
+  `test` now counts open-time failures and still prints the summary, but once
+  `stream_members` raises the generator is dead and later members are lost
+  (solid / poisoned streams). Library-side: surface per-member open errors
+  without terminating iteration (e.g. yield `(member, error)` or a documented
+  "skip damaged unit" mode) so `test` can continue where the format allows.
+  Overlaps salvage (above) but is narrower — integrity reporting, not
+  best-effort recovery of truncated archives.
+
 ## Strategy & adoption (2026-07 review backlog)
 
 > Parked here from the 2026-07 architecture-review discussion so nothing is lost.
@@ -312,7 +332,6 @@
   of the writing spec, since it shapes `add_member` and the round-trip contract).
 - **Free-threading position** (threat-model C4) — parallel extraction / parallel
   decode under 3.13t; interacts with the existing parallel-extraction idea above.
-- **CLI earlier, as dev tool + demo** — `archivey list/test/extract` was invaluable for
-  eyeballing DEV against real archives and is the ten-second demo of safe extraction
-  ("the unzip that can't be zip-slipped"). Roadmap moves it right after the native
-  readers (see PLAN); a selling point, though not the main one.
+- **CLI earlier, as dev tool + demo** — ~~`archivey list/test/extract` was
+  invaluable…~~ **Done in `cli-v1` (PR #120).** Remaining CLI backlog lives under
+  **CLI (post-`cli-v1` follow-ups)** above.

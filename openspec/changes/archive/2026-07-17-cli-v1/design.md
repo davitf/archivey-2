@@ -75,11 +75,13 @@ Bare `archivey` with no archive path prints help and exits non-zero (usage).
 **Default-to-list dispatch (known-verb-wins).** The default verb makes the first
 positional ambiguous — verb or archive path? The rule: if the first token is a
 **registered verb or alias** — `list`/`l`, `test`/`t`, `extract`/`x`, `info`/`i`,
-`detect`, plus the reserved `hash`/`create`/`convert` — dispatch that verb;
+`detect`, plus the reserved `hash`/`create`/`convert`/`cat` — dispatch that verb;
 otherwise treat the token as an archive path and run `list`. The reserved words
 are load-bearing for parsing *before* they are implemented: `archivey create`
 MUST error as "not yet" (Decision 7 / flag hygiene), not silently list a file
-named `create`.
+named `create`. `cat` is reserved now for the same reason (member-to-stdout is a
+likely future verb). New verbs may be reserved or added later and take
+precedence over same-named files; the escape hatch below is permanent.
 
 The only casualty is a file whose name is exactly a verb word (`./x`, `./list`,
 `./hash`). Escape hatch: name the verb explicitly — `archivey list x`,
@@ -182,8 +184,24 @@ avoid double-nesting:
 - **Single-file / single-stream archives** (`.gz`, `.bz2`, `.xz` of one file) →
   write the decompressed file into `.` with no wrapper dir (matches `gunzip`
   expectations).
+- **Tops are computed on the filtered member set** when a cheap index exists
+  (ZIP/7z/RAR). So `archivey x a.zip 'b/*'` that only extracts under `b/` reuses
+  `.` rather than wrapping in `./a/`.
+- **No cheap index** (plain TAR; future stdin) → **always** extract into
+  `./<archive-stem>/` (no pre-extract listing pass), then **hoist** if the
+  wrapper ends with exactly one top-level entry (file or directory) — recovers
+  single-root reuse and filter-aware D1 without an index or a tar reread. The
+  hoist is contractually equivalent to extracting directly into cwd: dirs merge,
+  per-file collisions follow the overwrite policy (`rename` → library `name (N)`
+  spelling; `replace` replaces only files being extracted; `skip` keeps the
+  existing file), and **pre-existing files are never deleted**. A collision the
+  policy cannot resolve without deleting data (`error`, or dir-vs-file under
+  `replace`/`skip`) stops the hoist, leaves the remainder under the wrapper, and
+  exits nonzero — the direct extraction would have failed on the same collision.
+  A sole root named like the wrapper itself (`src.tar.gz` containing `src/`) is
+  flattened in place, not treated as a collision.
 - **Container-name collision** (`./foo/` already exists) → resolved by the
-  overwrite policy; default `rename` (Decision 3) yields `foo-1/`, `foo-2/`, ….
+  overwrite policy; default `rename` (Decision 3) yields `foo (1)/`, `foo (2)/`, ….
 
 When `-d DIR` **is** given, extract straight into `DIR` verbatim — no smart
 wrapping. Explicit dest means "I know what I want," including `-d .` which

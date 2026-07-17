@@ -204,8 +204,17 @@ class SevenZipReader(BaseArchiveReader):
         header_encrypted = False
         while isinstance(block, EncodedHeader):
             header_encrypted = header_encrypted or encoded_header_needs_password(block)
-            decoded = self._decode_encoded_header_block(fp, block)
-            block = parse_header_block(decoded)
+            try:
+                decoded = self._decode_encoded_header_block(fp, block)
+                block = parse_header_block(decoded)
+            except (UnsupportedFeatureError, CorruptionError) as exc:
+                # AES header decrypt has no MAC: a wrong password yields garbage that
+                # fails property parsing rather than raising EncryptionError in decrypt.
+                if header_encrypted and self._passwords.has_static_candidates():
+                    raise EncryptionError(
+                        "Password(s) rejected for the 7z header"
+                    ) from exc
+                raise
         assert isinstance(block, PlainHeader)
         return materialize_archive(
             signature, block, is_header_encrypted=header_encrypted
@@ -233,7 +242,13 @@ class SevenZipReader(BaseArchiveReader):
                 )
             return decode(None)
         except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError("Password required to decrypt the 7z header") from exc
+            # Keep required-vs-rejected (D8) but restore the header surface (R1): listing
+            # needs a password is different UX from a wrong password on the header.
+            if exc.message.startswith("Password required"):
+                raise EncryptionError(
+                    "Password required to decrypt the 7z header"
+                ) from exc
+            raise EncryptionError("Password(s) rejected for the 7z header") from exc
 
     @staticmethod
     def _folder_pack_start_indices(archive: SevenZipArchive) -> list[int]:
@@ -560,9 +575,7 @@ class SevenZipReader(BaseArchiveReader):
         try:
             password = self._passwords.attempt(member, confirm)
         except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError(
-                "Password required to decrypt this 7z member"
-            ) from exc
+            raise EncryptionError(exc.message) from exc
         self._folder_passwords[folder_index] = password
         return password
 

@@ -13,6 +13,9 @@ authors = [
     { name = "Davi Figueiredo", email = "gh@davitf.com" }
 ]
 
+[project.scripts]
+archivey = "archivey.cli.main:main"
+
 [project.optional-dependencies]
 7z = [
     # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
@@ -115,6 +118,11 @@ dev = [
     # Property-based tests for the safety logic (tests/test_property_safety.py); mirrors
     # the mutation harness as the second pre-Phase-6 fuzzing-scaffold gate.
     "hypothesis>=6.100.0",
+    # tqdm ([cli] extra) — listed here like pycdlib so a local `uv sync --group dev`
+    # can type-check the CLI progress helper. CI lint uses `--extra all` (see
+    # .github/workflows/ci.yml) so every optional dep is resolved for pyrefly/ty.
+    # Runtime still degrades cleanly when tqdm is absent (ImportError → no bar).
+    "tqdm>=4.67.0",
 ]
 # Documentation toolchain. Kept out of `dev` so the common lint/test loop stays light;
 # build the site with `uv run --group docs mkdocs build --strict`.

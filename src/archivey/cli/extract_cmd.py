@@ -1,0 +1,419 @@
+"""``extract`` / ``x`` verb."""
+
+from __future__ import annotations
+
+import os
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TextIO
+
+from archivey import (
+    ExtractionPolicy,
+    ExtractionReport,
+    ExtractionStatus,
+    OverwritePolicy,
+)
+from archivey.cli.common import open_for_cli, reject_salvage
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
+from archivey.cli.filters import member_predicate
+from archivey.cli.password import resolve_password
+from archivey.cli.progress import ProgressCallback, make_progress_callback
+from archivey.config import PasswordInput
+from archivey.exceptions import ArchiveyError
+from archivey.reader import ArchiveReader
+from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
+
+
+def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
+    """Stem used for the smart enclosing directory.
+
+    Prefer the format's canonical extension (covers ``.tar.Z``, ``.tzst``, …); fall
+    back to stripping a final suffix and a remaining ``.tar``. Never return empty
+    (a file named exactly ``.tar.gz`` would otherwise become cwd and splatter).
+    """
+    name = path.name
+    ext = format.file_extension()
+    if ext:
+        suffix = f".{ext}"
+        if name.lower().endswith(suffix.lower()):
+            stem = name[: -len(suffix)]
+            return stem or "archive"
+    stem_path = path
+    if stem_path.suffix:
+        stem_path = stem_path.with_suffix("")
+        if stem_path.suffix.lower() == ".tar":
+            stem_path = stem_path.with_suffix("")
+    return stem_path.name or "archive"
+
+
+def _top_level_names(members: list[ArchiveMember]) -> set[str]:
+    tops: set[str] = set()
+    for member in members:
+        name = member.name.strip("/")
+        if not name:
+            continue
+        tops.add(name.split("/", 1)[0])
+    return tops
+
+
+def _enclosing_dir(
+    archive: Path,
+    *,
+    format: ArchiveFormat,
+    overwrite: OverwritePolicy,
+) -> Path:
+    """Always-wrap destination used when no cheap member index is available (D1)."""
+    stem = _archive_stem(archive, format=format)
+    dest = Path(stem)
+    if not dest.exists():
+        return dest
+    if overwrite is OverwritePolicy.RENAME:
+        n = 1
+        while Path(f"{stem} ({n})").exists():
+            n += 1
+        return Path(f"{stem} ({n})")
+    return dest
+
+
+def smart_dest(
+    archive: Path,
+    *,
+    format: ArchiveFormat,
+    members: list[ArchiveMember],
+    overwrite: OverwritePolicy,
+) -> Path:
+    """Anti-tarbomb dest from an indexed member list (tops may already be filtered)."""
+    if format.container == ContainerFormat.RAW_STREAM:
+        return Path(".")
+    tops = _top_level_names(members)
+    if len(tops) <= 1:
+        return Path(".")
+    return _enclosing_dir(archive, format=format, overwrite=overwrite)
+
+
+@dataclass(frozen=True)
+class _SmartDestPlan:
+    """Where to extract, and whether a post-extract single-root hoist may run."""
+
+    target: Path
+    may_hoist: bool
+
+
+def resolve_smart_dest(
+    reader: ArchiveReader,
+    archive: Path,
+    *,
+    pred: Callable[[ArchiveMember], bool] | None,
+    overwrite: OverwritePolicy,
+) -> _SmartDestPlan:
+    """Choose the default dest without forcing a streaming metadata pass (D1).
+
+    - Single-file / raw-stream → cwd.
+    - Indexed archive → tops on the **filtered** member set (wrap / reuse / cwd).
+    - No cheap index (tar, future stdin, …) → always ``./<stem>/``, then
+      :func:`maybe_hoist_single_root` may lift a single extracted top entry to cwd.
+    """
+    fmt = reader.format
+    if fmt.container == ContainerFormat.RAW_STREAM:
+        return _SmartDestPlan(Path("."), may_hoist=False)
+
+    indexed = reader.get_members_if_available()
+    if indexed is None:
+        return _SmartDestPlan(
+            _enclosing_dir(archive, format=fmt, overwrite=overwrite),
+            may_hoist=True,
+        )
+
+    members = [m for m in indexed if pred is None or pred(m)]
+    return _SmartDestPlan(
+        smart_dest(archive, format=fmt, members=members, overwrite=overwrite),
+        may_hoist=False,
+    )
+
+
+@dataclass
+class _HoistResult:
+    """Outcome of :func:`maybe_hoist_single_root` for reporting and exit code."""
+
+    target: Path  # where the content ended up (the wrapper when not hoisted)
+    ok: bool = True  # False → collision/failure; caller exits nonzero
+    renamed: int = 0
+    skipped: int = 0
+
+
+class _HoistConflict(Exception):
+    """A collision the overwrite policy cannot resolve without deleting data."""
+
+    def __init__(self, dest: Path) -> None:
+        super().__init__(str(dest))
+        self.dest = dest
+
+
+def _free_name(dest: Path, *, is_dir: bool) -> Path:
+    """First ``name (N)`` free on disk — mirrors extraction ``_derive_free_name``
+    (counter before the final suffix for files; whole-segment append for dirs)."""
+    stem, suffix = (dest.name, "") if is_dir else (dest.stem, dest.suffix)
+    n = 1
+    while True:
+        candidate = dest.parent / f"{stem} ({n}){suffix}"
+        if not os.path.lexists(candidate):
+            return candidate
+        n += 1
+
+
+def _merge_move(
+    src: Path,
+    dest: Path,
+    overwrite: OverwritePolicy,
+    result: _HoistResult,
+    err: TextIO,
+) -> None:
+    """Move ``src`` to ``dest`` with the same per-file semantics as extracting
+    directly into ``dest``'s parent: directories merge, file/symlink collisions
+    resolve by the overwrite policy. Pre-existing files are never deleted — the
+    only removal is our own just-extracted copy under SKIP, which a direct
+    extraction would never have written. Symlinks are moved as links and never
+    descended into (on either side)."""
+    if not os.path.lexists(dest):
+        os.rename(src, dest)
+        return
+    src_is_dir = src.is_dir() and not src.is_symlink()
+    dest_is_dir = dest.is_dir() and not dest.is_symlink()
+    if src_is_dir and dest_is_dir:
+        for entry in sorted(src.iterdir()):
+            _merge_move(entry, dest / entry.name, overwrite, result, err)
+        src.rmdir()
+        return
+    if overwrite is OverwritePolicy.RENAME:
+        free = _free_name(dest, is_dir=src_is_dir)
+        os.rename(src, free)
+        result.renamed += 1
+        print(f"renamed: {dest} -> {free}", file=err)
+        return
+    if overwrite is OverwritePolicy.REPLACE and not src_is_dir and not dest_is_dir:
+        os.replace(src, dest)  # replaces exactly the file being extracted
+        return
+    if overwrite is OverwritePolicy.SKIP and not src_is_dir:
+        src.unlink()
+        result.skipped += 1
+        print(f"skipped: {dest}", file=err)
+        return
+    # ERROR policy — or a dir-vs-file shape that REPLACE/SKIP cannot express
+    # without deleting pre-existing data. Stop; the caller keeps the remainder
+    # under the wrapper and exits nonzero (direct extraction would have failed
+    # on this same collision).
+    raise _HoistConflict(dest)
+
+
+def maybe_hoist_single_root(
+    wrapper: Path,
+    *,
+    overwrite: OverwritePolicy,
+    err: TextIO,
+) -> _HoistResult:
+    """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
+
+    Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
+    after an always-wrap extract, without a pre-extract metadata pass. The final
+    layout matches extracting directly into the wrapper's parent: directories
+    merge into existing ones and per-file collisions follow the overwrite policy
+    (:func:`_merge_move`). When the sole root shares the wrapper's own name
+    (``src.tar.gz`` containing ``src/``), the child is flattened in place — the
+    wrapper *becomes* the root, so no collision logic applies to it.
+    """
+    if wrapper == Path(".") or wrapper.is_symlink() or not wrapper.is_dir():
+        return _HoistResult(wrapper)
+    try:
+        children = list(wrapper.iterdir())
+    except OSError:
+        return _HoistResult(wrapper)
+    if len(children) != 1:
+        return _HoistResult(wrapper)
+    child = children[0]
+    dest = wrapper.parent / child.name
+    result = _HoistResult(dest)
+    try:
+        if dest == wrapper:
+            if child.is_dir() and not child.is_symlink():
+                # Flatten: wrapper/src/* → wrapper/*. The wrapper held only this
+                # child, so the moves cannot collide.
+                for entry in sorted(child.iterdir()):
+                    entry.rename(wrapper / entry.name)
+                child.rmdir()
+            else:
+                # Sole non-dir entry named like the wrapper: step the wrapper
+                # aside so the entry can take its place.
+                side = _free_name(wrapper, is_dir=True)
+                wrapper.rename(side)
+                (side / child.name).rename(dest)
+                side.rmdir()
+        else:
+            _merge_move(child, dest, overwrite, result, err)
+            wrapper.rmdir()
+    except _HoistConflict as conflict:
+        print(f"Destination already exists: {conflict.dest}", file=err)
+        print(f"hoist stopped; remaining files left in {wrapper}/", file=err)
+        return _HoistResult(
+            wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
+        )
+    except OSError as exc:
+        print(f"hoist failed: {exc}", file=err)
+        print(f"files left in {wrapper}/", file=err)
+        return _HoistResult(
+            wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
+        )
+    is_dir = result.target.is_dir() and not result.target.is_symlink()
+    print(f"moved to {result.target}{'/' if is_dir else ''}", file=err)
+    return result
+
+
+def _report_extraction(
+    report: ExtractionReport,
+    *,
+    target: Path,
+    verbose: bool,
+    err: TextIO,
+    extra_renamed: int = 0,
+    extra_skipped: int = 0,
+) -> None:
+    """Print rename notices + a closing summary from the library report (F3/D2).
+
+    ``extra_renamed`` / ``extra_skipped`` fold in collisions resolved during the
+    post-extract hoist (the library report covers only the wrapper extraction,
+    which is collision-free by construction).
+    """
+    extracted = 0
+    renamed = extra_renamed
+    skipped = extra_skipped
+    rejected = 0
+    failed = 0
+    for result in report:
+        status = result.status
+        if status is ExtractionStatus.EXTRACTED:
+            extracted += 1
+            was_renamed = (
+                result.requested_path is not None
+                and result.path is not None
+                and result.requested_path != result.path
+            )
+            if was_renamed:
+                renamed += 1
+                # Renames change where data lives — always report them.
+                print(
+                    f"renamed: {result.requested_path} -> {result.path}",
+                    file=err,
+                )
+            elif verbose:
+                print(f"extracted: {result.member.name}", file=err)
+        elif status is ExtractionStatus.SKIPPED:
+            skipped += 1
+            # Skips also change outcomes under --overwrite skip; always note.
+            where = result.requested_path or result.member.name
+            print(f"skipped: {where}", file=err)
+        elif status is ExtractionStatus.REJECTED:
+            rejected += 1
+            detail = f": {result.error}" if result.error is not None else ""
+            print(f"rejected: {result.member.name}{detail}", file=err)
+        elif status is ExtractionStatus.FAILED:
+            failed += 1
+            detail = f": {result.error}" if result.error is not None else ""
+            print(f"failed: {result.member.name}{detail}", file=err)
+
+    if target == Path("."):
+        dest_label = "."
+    elif target.is_dir():
+        dest_label = f"{target}/"
+    else:
+        dest_label = str(target)
+    print(
+        f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
+        f"{f', {rejected} rejected' if rejected else ''}"
+        f"{f', {failed} failed' if failed else ''}"
+        f" → {dest_label}",
+        file=err,
+    )
+
+
+def run_extract(
+    *,
+    archive: str,
+    dest: str | None,
+    patterns: list[str],
+    exclude: list[str],
+    policy: str,
+    overwrite: str,
+    salvage: bool,
+    password: str | None,
+    track_io: bool,
+    hide_progress: bool,
+    verbose: bool,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+) -> int:
+    del out  # extract reports to stderr; files go to the filesystem
+    reject_salvage(salvage)
+    err = err if err is not None else sys.stderr
+    pwd: PasswordInput = resolve_password(password)
+    pred = member_predicate(patterns, exclude)
+    policy_enum = ExtractionPolicy(policy)
+    overwrite_enum = OverwritePolicy(overwrite)
+    archive_path = Path(archive)
+
+    with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
+        may_hoist = False
+        if dest is not None:
+            target = Path(dest)
+        else:
+            plan = resolve_smart_dest(
+                reader,
+                archive_path,
+                pred=pred,
+                overwrite=overwrite_enum,
+            )
+            target = plan.target
+            may_hoist = plan.may_hoist
+            if target != Path("."):
+                print(f"extracting into {target}/", file=err)
+
+        on_progress: ProgressCallback | None = make_progress_callback(
+            hide_progress=hide_progress, stream=err
+        )
+        try:
+            try:
+                report = reader.extract_all(
+                    target,
+                    members=pred,
+                    policy=policy_enum,
+                    overwrite=overwrite_enum,
+                    on_progress=on_progress,
+                )
+            except (ArchiveyError, OSError) as exc:
+                # OnError.STOP (library default) re-raises the first member failure.
+                # OSError (disk full, perms) must get the same stop notice (F10).
+                print(exc, file=err)
+                print(
+                    "extraction stopped; remaining members were not extracted",
+                    file=err,
+                )
+                return EXIT_FAIL
+            hoist = _HoistResult(target)
+            if may_hoist:
+                hoist = maybe_hoist_single_root(
+                    target, overwrite=overwrite_enum, err=err
+                )
+            _report_extraction(
+                report,
+                target=hoist.target,
+                verbose=verbose,
+                err=err,
+                extra_renamed=hoist.renamed,
+                extra_skipped=hoist.skipped,
+            )
+            if not hoist.ok:
+                return EXIT_FAIL
+        finally:
+            if on_progress is not None:
+                on_progress.close()
+    return EXIT_OK

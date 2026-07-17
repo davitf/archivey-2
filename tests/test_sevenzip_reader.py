@@ -398,6 +398,16 @@ def test_header_encrypted_archive_requires_password(tmp_path: Path) -> None:
     _assert_roundtrip(archive, _FILES, password="secret")
 
 
+def test_header_encrypted_wrong_password_mentions_header(tmp_path: Path) -> None:
+    archive = tmp_path / "header-encrypted-wrong.7z"
+    _write_py7zr_archive(archive, _FILES, password="secret", header_encryption=True)
+
+    with pytest.raises(EncryptionError, match="(?i)header") as caught:
+        open_archive(archive, password="wrong").close()
+    assert "rejected" in caught.value.message.lower()
+    assert "Password required" not in caught.value.message
+
+
 @requires("bcj")
 def test_lzma1_bcj_fixture_roundtrip(tmp_path: Path) -> None:
     """py7zr LZMA1+BCJ archives decode via staged pybcj (not combined liblzma)."""

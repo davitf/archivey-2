@@ -579,6 +579,23 @@ def test_password_rejected() -> None:
         open_archive(io.BytesIO(_build_tar()), format=ArchiveFormat.TAR, password="x")
 
 
+def test_password_provider_ok_on_unencrypted_format() -> None:
+    # A PasswordProvider that is never called is not "supplying a password". Formats
+    # without encryption must still open (the CLI registers a getpass provider by default).
+    called = {"n": 0}
+
+    def provider(_request: object) -> None:
+        called["n"] += 1
+        return
+
+    with open_archive(
+        io.BytesIO(_build_tar()), format=ArchiveFormat.TAR, password=provider
+    ) as reader:
+        names = [m.name for m in reader.members()]
+    assert "hello.txt" in names
+    assert called["n"] == 0
+
+
 def test_out_of_range_mtime_degrades_to_none() -> None:
     # A crafted PAX mtime beyond datetime's range must not sink the listing.
     buf = io.BytesIO()

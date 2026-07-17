@@ -510,9 +510,11 @@ class ZipReader(BaseArchiveReader):
         only when it overrode the cp437 APPNOTE default (for the diagnostic), else ``None``.
         UTF-8 is self-validating, so a clean decode is strong evidence the bytes are UTF-8;
         legacy bytes that are coincidentally valid UTF-8 are the documented residual risk.
+        Pure ASCII (and any other bytes that decode identically under UTF-8 and cp437) is
+        not an override — both encodings agree, so no diagnostic.
         """
         try:
-            return raw_name.decode("utf-8"), "utf-8"
+            utf8_decoded = raw_name.decode("utf-8")
         except UnicodeDecodeError:
             fallback = self._config.zip_unflagged_fallback_encoding
             if fallback.lower().replace("-", "").replace("_", "") in {
@@ -526,6 +528,9 @@ class ZipReader(BaseArchiveReader):
             except LookupError:
                 # An unknown fallback encoding name: keep the cp437 decode rather than fail.
                 return cp437_decoded, None
+        if utf8_decoded == cp437_decoded:
+            return utf8_decoded, None
+        return utf8_decoded, "utf-8"
 
     def _to_member(self, info: zipfile.ZipInfo) -> ArchiveMember:
         full_mode = info.external_attr >> 16

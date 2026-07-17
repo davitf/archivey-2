@@ -46,6 +46,7 @@ from archivey.internal.extraction import (
 )
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
+    apply_name_policy,
     check_universal,
     transform_standard,
     transform_strict,
@@ -1734,6 +1735,13 @@ def test_o3_strip_passes_through_bare_dot_root(tmp_path: Path) -> None:
     report = extract(archive, tmp_path / "out", policy=ExtractionPolicy.STRICT)
     assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
     assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
+
+
+def test_o3_bare_dot_root_not_trailing_dot_under_strict() -> None:
+    # normalize_member_name maps a bare ZIP/TAR root ("/") to "." — that is a path
+    # segment spelling, not a Win32 trailing-dot hazard like "foo.".
+    member = _member(".", type=MemberType.DIRECTORY)
+    assert apply_name_policy(member, ExtractionPolicy.STRICT) is member
 
 
 # --- O7: surrogateescape sanitize ------------------------------------------
