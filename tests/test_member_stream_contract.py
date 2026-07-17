@@ -237,6 +237,32 @@ def test_member_streams_are_archive_streams(member: tuple[Path, str]) -> None:
                 stream.close()
 
 
+def test_stream_members_do_not_nest_archive_streams(tmp_path: Path) -> None:
+    """``stream_members`` must hand out a single ArchiveStream, not wrap-over-wrap.
+
+    Regression for the lazy-open double wrap (``_lazy_member_stream`` over
+    ``_wrap_member_stream``): after first read, the public handle's inner must not
+    itself be an ``ArchiveStream``.
+    """
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    path = tmp_path / "a.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.txt", b"payload")
+    with open_archive(path) as ar:
+        for member, stream in ar.stream_members():
+            if not member.is_file or stream is None:
+                continue
+            assert isinstance(stream, ArchiveStream)
+            assert stream.read() == b"payload"
+            inner = stream._inner
+            assert inner is not None
+            assert not isinstance(inner, ArchiveStream)
+            break
+        else:
+            pytest.fail("expected a file member")
+
+
 def test_member_stream_advertises_size(member: tuple[Path, str]) -> None:
     # The fsspec-style `size` attribute carries the decompressed length when the
     # archive metadata knows it (feeds nested-archive sizing and the bomb tracker).

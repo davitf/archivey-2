@@ -590,6 +590,17 @@ class SevenZipReader(BaseArchiveReader):
     def _wrap_folder_member(
         self, inner: BinaryIO, member: ArchiveMember
     ) -> ArchiveStream:
+        return self._wrap_member_stream(
+            self._prepare_folder_member(inner, member),
+            member.name,
+            size=member.size,
+            track_output=False,
+        )
+
+    def _prepare_folder_member(
+        self, inner: BinaryIO, member: ArchiveMember
+    ) -> BinaryIO:
+        """Verify + size-bound a solid-folder member view (no ``ArchiveStream`` yet)."""
         if member.size is not None or member.hashes:
             inner = VerifyingStream(
                 inner,
@@ -599,9 +610,7 @@ class SevenZipReader(BaseArchiveReader):
                 member=member,
                 archive_name=self._archive_name,
             )
-        return self._wrap_member_stream(
-            inner, member.name, size=member.size, track_output=False
-        )
+        return inner
 
     def _member_stream_from_solid(
         self, solid: SolidBlockReader, member: ArchiveMember
@@ -614,6 +623,9 @@ class SevenZipReader(BaseArchiveReader):
         extraction of one early solid member decode ~the whole folder. ``SolidBlockReader``
         already skips unread tails lazily when the *next* member is opened; deferring
         that open to first-read time is what makes skipped members free.
+
+        Single ``ArchiveStream``: ``open_fn`` returns the prepared BinaryIO (verify
+        only), not another wrapper.
         """
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)
@@ -625,16 +637,15 @@ class SevenZipReader(BaseArchiveReader):
                 raise TruncatedError(
                     "7z folder ended before the requested member"
                 ) from exc
-            return self._wrap_folder_member(inner, member)
+            return self._prepare_folder_member(inner, member)
 
-        return ArchiveStream(
-            open_fn,
-            translate=self._translate_exception,
-            stamp=lambda exc: self._stamp_error_context(exc, member.name),
-            lazy=True,
-            seekable=False,
+        return self._wrap_member_stream(
+            None,
+            member.name,
+            open_fn=open_fn,
             size=member.size,
-            collector=self._diagnostics_collector,
+            track_output=False,
+            seekable=False,
         )
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:

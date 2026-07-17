@@ -60,11 +60,14 @@ Composition site: `base_reader._wrap_member_stream` (`base_reader.py:572`) +
 `zip_reader.py:816` (VerifyingStream) — map the equivalent stack for **every** backend
 (TAR, 7z solid, RAR-via-unrar, ISO, single-file, directory).
 
-**Concrete double-wrap to confirm:** the default `_lazy_member_stream` builds an outer
-`ArchiveStream(lazy=True)` whose `open_fn` calls `_open_member` → `_wrap_member_stream`,
-which builds a *second* `ArchiveStream`. Solid sequential paths (7z/RAR) now use the
-same pattern after the H1 lazy-positioning fix. That nested outer is a first-class
-collapse candidate (construction + per-read dispatch), distinct from fusing verify/slice.
+**Concrete double-wrap (fixed on the perf follow-up branch):** the default
+`_lazy_member_stream` used to build an outer `ArchiveStream(lazy=True)` whose
+`open_fn` called `_open_member` → `_wrap_member_stream` (a *second*
+`ArchiveStream`). That nesting is now collapsed via
+`ArchiveStream.release_inner` / `_wrap_member_stream(..., open_fn=...)` — confirm
+the public handle's `_inner` after first read is **not** an `ArchiveStream`, and
+treat any remaining nesting as a regression. Solid sequential paths (7z/RAR)
+build a single wrapper the same way.
 
 ## Part 1 — Correctness audit (do this first; it defines the invariants a collapse must keep)
 
@@ -91,8 +94,8 @@ overhead. Verify each, with `file:line` and the concrete input/state:
 - **`ArchiveStream`** (`archive_stream.py`): the lazy-open claim/lock and the "open_fn
   claimed then failed" path; `_fail` translation ordering (closed-file before the
   per-library translator); the finalizer/lease release and its interpreter-exit caveat;
-  `size` derivation; **nested** `ArchiveStream` (lazy outer over already-wrapped inner) —
-  does close/lease/diagnostics watermark behave once or twice, and is that intentional?
+  `size` derivation; `release_inner` (used to flatten a deferred `_open_member` wrap) —
+  confirm close/lease ownership stays on the public handle only.
 - **`SharedSource`/CONCURRENT**: how views are minted per handle and whether the
   single-live-stream / re-seek invariants survive. **This is the main constraint on
   fusion** (see Part 2).
@@ -110,18 +113,17 @@ The maintainer's hypothesis to evaluate, accept/refute, or refine:
 Evaluate concretely:
 
 - **Per-layer verdict table.** For each layer (member-boundary slice, `fix_stream_start_position`
-  slice, verify, outer, *and the redundant nested outer from `_lazy_member_stream`*)
-  classify: *fuse into the outer stream* / *keep separate, structural* /
-  *already conditional (skip)* / *construction-only collapse* (same type nested twice).
-  Justify each against the Part-1 invariants. Decode engine stays out of scope
-  (Topic 6) — list it as *keep separate* with a one-line pointer, not a redesign.
-- **What fuses cleanly.** `VerifyingStream` is the strongest candidate: the outer
-  `ArchiveStream` already reads through an inner and owns `size`; folding the hasher +
-  `expected_size` bound into its `read`/`close` removes a whole layer on *every* member.
-  But it's conditional (nested `open_stream`/inner-archive handles and non-FILE members
-  don't verify) — show the fused stream stays correct when there's nothing to verify.
-  Separately: collapsing the **double `ArchiveStream`** on the lazy-open path is likely
-  the cheapest win and may not need a full verify/slice fusion — quantify it alone.
+  slice, verify, outer) classify: *fuse into the outer stream* / *keep separate,
+  structural* / *already conditional (skip)*. The redundant nested outer from
+  `_lazy_member_stream` is **already collapsed** (confirm; do not re-propose). Justify
+  each against the Part-1 invariants. Decode engine stays out of scope (Topic 6) —
+  list it as *keep separate* with a one-line pointer, not a redesign.
+- **What fuses cleanly.** `VerifyingStream` is the strongest remaining candidate: the
+  outer `ArchiveStream` already reads through an inner and owns `size`; folding the
+  hasher + `expected_size` bound into its `read`/`close` removes a whole layer on
+  *every* member. But it's conditional (nested `open_stream`/inner-archive handles and
+  non-FILE members don't verify) — show the fused stream stays correct when there's
+  nothing to verify.
 - **What resists fusion, and why.** Member-boundary slicing entangles with
   `SharedSource` (multiple concurrent views over one handle, re-seek under lock) and
   with internal uses (`fix_stream_start_position`, codec body slices) that aren't at
@@ -147,8 +149,8 @@ Evaluate concretely:
   (the `ArchiveStream` lock+finalizer+watermark, the `VerifyingStream` hasher setup, the
   `SlicingStream`) — reuse #134's harness / `--track-io` and add a microbench. Tie the
   projected win back to the **wrapper share** of the 2.2× / 2.4–3.7× gaps, not the
-  whole gap. Prefer: STORED vs deflate, and "collapse nested ArchiveStream only" as an
-  incremental measurement before full verify+slice fusion.
+  whole gap. Prefer: STORED vs deflate as the isolation axis (nested `ArchiveStream`
+  is already gone).
 
 ## Non-goals
 - Not re-opening the #96 decoder composition or the accelerator internals — those are
@@ -170,6 +172,5 @@ invariants it preserves, what stays separate and why, and the measured/estimated
 The headline the maintainer wants: **can a single stream under the `ArchiveStream`
 identity replace slicing+verification without weakening any Part-1 invariant, and how
 much does it buy?** Give a clear yes/no/partial with the design and the numbers, not a
-menu. If the answer is "partial," prefer a ranked sequence (e.g. collapse nested
-`ArchiveStream` first; fuse verify next; leave SharedSource slicing) over an options
-list.
+menu. If the answer is "partial," prefer a ranked sequence (e.g. fuse verify next;
+leave SharedSource slicing) over an options list.

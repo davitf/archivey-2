@@ -614,16 +614,15 @@ class RarReader(BaseArchiveReader):
                         raise TruncatedError(
                             "RAR solid stream ended before the requested member"
                         ) from exc
-                    return self._wrap_payload_stream(inner, m, track_output=False)
+                    return self._prepare_payload_stream(inner, m)
 
-                stream = ArchiveStream(
-                    open_fn,
-                    translate=self._translate_exception,
-                    stamp=lambda exc, m=member: self._stamp_error_context(exc, m.name),
-                    lazy=True,
-                    seekable=False,
+                stream = self._wrap_member_stream(
+                    None,
+                    member.name,
+                    open_fn=open_fn,
                     size=member.size,
-                    collector=self._diagnostics_collector,
+                    track_output=False,
+                    seekable=False,
                 )
                 previous = stream
                 yield member, stream
@@ -668,13 +667,12 @@ class RarReader(BaseArchiveReader):
             return None
         return expected, transforms
 
-    def _wrap_payload_stream(
+    def _prepare_payload_stream(
         self,
         inner: BinaryIO,
         member: ArchiveMember,
-        *,
-        track_output: bool = True,
-    ) -> ArchiveStream:
+    ) -> BinaryIO:
+        """Verify + size-bound a RAR payload view (no ``ArchiveStream`` yet)."""
         # Verify every member's declared length (and any CRC32/BLAKE2sp) as it is read:
         # an over-long external decode stops at the declared size and errors, a short one
         # raises, and a wrong one fails its digest. Applied to all members (not just
@@ -701,8 +699,20 @@ class RarReader(BaseArchiveReader):
                 archive_name=self._archive_name,
                 digest_transforms=transforms,
             )
+        return inner
+
+    def _wrap_payload_stream(
+        self,
+        inner: BinaryIO,
+        member: ArchiveMember,
+        *,
+        track_output: bool = True,
+    ) -> ArchiveStream:
         return self._wrap_member_stream(
-            inner, member.name, size=member.size, track_output=track_output
+            self._prepare_payload_stream(inner, member),
+            member.name,
+            size=member.size,
+            track_output=track_output,
         )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:

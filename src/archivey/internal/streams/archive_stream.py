@@ -229,6 +229,26 @@ class ArchiveStream(ReadOnlyIOStream):
             self._inner = opened
             return self._inner
 
+    def release_inner(self) -> BinaryIO:
+        """Hand off the opened inner stream and neutralize this wrapper.
+
+        Used to collapse nested ``ArchiveStream`` wrapping (a lazy outer whose
+        ``open_fn`` calls a path that already returns ``ArchiveStream``): the caller
+        takes ownership of the bytes stream; closing this wrapper will not close it.
+        Translate/stamp on the outer handle remain the public contract.
+        """
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        inner = self._ensure_open()
+        with self._open_lock:
+            self._inner = None
+            self._open_fn = None
+        self._detach_finalizer()
+        self._on_close = None
+        # Mark closed without touching ``inner`` (``close`` would otherwise close it).
+        super().close()
+        return inner
+
     def _fail(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""
         if isinstance(e, ArchiveyError):
