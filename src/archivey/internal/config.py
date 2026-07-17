@@ -31,7 +31,13 @@ class StreamConfig:
     archive access mode for backends that still need to know forward-only vs random.
     ``compressed_input_size`` is the known compressed byte length of the source (path
     size, slice length, …), used by ``use_rapidgzip`` AUTO's minimum-size gate; ``None``
-    means unknown (AUTO keeps pre-threshold behaviour).
+    means unknown (AUTO keeps pre-threshold behaviour when truncation is also
+    verifiable). ``expected_decompressed_size`` is a container-declared uncompressed
+    length (ZIP central-dir size, …) used both to gate rapidgzip AUTO and to wrap the
+    accelerator in a length-verifying stream. ``gzip_isize_backstop`` is set when a
+    seekable gzip source has a readable ISIZE trailer — enough for AUTO to select
+    rapidgzip with the ISIZE truncation check, but *not* a hard ``VerifyingStream``
+    bound (ISIZE is mod 2**32 and multi-member trailers only cover the last member).
     """
 
     streaming: bool = False
@@ -39,6 +45,8 @@ class StreamConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     compressed_input_size: int | None = None
+    expected_decompressed_size: int | None = None
+    gzip_isize_backstop: bool = False
 
 
 def stream_config_from_archivey(

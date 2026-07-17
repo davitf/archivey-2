@@ -17,7 +17,7 @@ import zlib
 import pytest
 
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import (
     Codec,
@@ -26,6 +26,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.streams.streamtools import SlicingStream
+from archivey.internal.streams.verify import VerifyingStream
 
 # Large enough that compressed size exceeds the AUTO threshold for less-compressible
 # payloads; used when a test needs AUTO to select rapidgzip.
@@ -39,7 +40,13 @@ def _raw_deflate(data: bytes) -> bytes:
 
 
 def _assert_accelerator(stream: object) -> None:
-    assert isinstance(getattr(stream, "_inner", None), _AcceleratorStream)
+    inner = getattr(stream, "_inner", None)
+    # Length-verifying / ISIZE wraps sit outside the accelerator.
+    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
+
+    while isinstance(inner, (VerifyingStream, _GzipTruncationCheckStream)):
+        inner = getattr(inner, "_inner", None)
+    assert isinstance(inner, _AcceleratorStream)
 
 
 def _assert_stdlib_zlib(stream: object) -> None:
@@ -152,9 +159,24 @@ def test_auto_selects_rapidgzip_above_threshold() -> None:
     pytest.importorskip("rapidgzip")
     compressed = zlib.compress(_LARGE)
     assert len(compressed) >= RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
-    auto = StreamConfig(use_rapidgzip=AcceleratorMode.AUTO, seekable=True)
+    auto = StreamConfig(
+        use_rapidgzip=AcceleratorMode.AUTO,
+        seekable=True,
+        expected_decompressed_size=len(_LARGE),
+    )
     with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed), config=auto) as stream:
         _assert_accelerator(stream)
+        assert stream.read() == _LARGE
+
+
+def test_auto_without_decompressed_size_uses_stdlib_even_when_large() -> None:
+    """AUTO must not select rapidgzip when truncation cannot be verified."""
+    pytest.importorskip("rapidgzip")
+    compressed = zlib.compress(_LARGE)
+    assert len(compressed) >= RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    auto = StreamConfig(use_rapidgzip=AcceleratorMode.AUTO, seekable=True)
+    with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed), config=auto) as stream:
+        _assert_stdlib_zlib(stream)
         assert stream.read() == _LARGE
 
 
@@ -182,13 +204,99 @@ def test_corrupt_deflate_zlib_body_translates_to_corruption(
             stream.read()
 
 
-def test_standalone_zlib_midcut_may_short_read_through_rapidgzip() -> None:
-    """Accepted limitation: rapidgzip may silently short-read a mid-stream zlib cut.
+def test_standalone_zlib_midcut_raises_via_stdlib_under_auto() -> None:
+    """AUTO without a declared decompressed size must use stdlib (raises TruncatedError)."""
+    pytest.importorskip("rapidgzip")
+    full = zlib.compress(_SMALL * 100)
+    cut = full[: max(len(full) // 2, 20)]
+    # Default AUTO + no expected_decompressed_size → stdlib path.
+    auto = StreamConfig(use_rapidgzip=AcceleratorMode.AUTO, seekable=True)
+    with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=auto) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
 
-    Stdlib ``zlib`` would raise ``incomplete or truncated stream``; the accelerator
-    path has no Adler-32 / ISIZE backstop. Either a short read or a translated
-    ``CorruptionError``/``TruncatedError`` is acceptable — a raw rapidgzip exception
-    is not.
+
+def test_standalone_zlib_midcut_raises_with_expected_size_on_accelerator() -> None:
+    """Accelerator + known decompressed size must surface truncation via VerifyingStream."""
+    pytest.importorskip("rapidgzip")
+    payload = _SMALL * 100
+    full = zlib.compress(payload)
+    cut = full[: max(len(full) // 2, 20)]
+    on = StreamConfig(
+        use_rapidgzip=AcceleratorMode.ON,
+        seekable=True,
+        expected_decompressed_size=len(payload),
+    )
+    # Keep close inside the expected-error scope: macOS rapidgzip may raise on read
+    # *and* would previously re-raise from VerifyingStream.close on context exit.
+    stream = open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on)
+    try:
+        with pytest.raises((TruncatedError, CorruptionError)):
+            data = stream.read()
+            stream.close()
+            assert len(data) < len(payload)
+    finally:
+        if not stream.closed:
+            try:
+                stream.close()
+            except (TruncatedError, CorruptionError):
+                pass
+
+
+def test_verifying_stream_close_after_inner_read_error_is_quiet() -> None:
+    """After a decode error on read, close must not raise a second length fault."""
+    from archivey.internal.streams.verify import VerifyingStream
+
+    class _Boom(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"partial")
+            self._blown = False
+
+        def read(self, n: int = -1) -> bytes:  # noqa: ARG002
+            if self._blown:
+                raise RuntimeError("std::exception")
+            self._blown = True
+            return super().read()
+
+    stream = VerifyingStream(_Boom(), {}, expected_size=100)
+    with pytest.raises(RuntimeError, match="std::exception"):
+        # First read returns "partial"; second (empty follow-up from readall path) —
+        # drive a second read that raises, matching mid-cut accelerator behaviour.
+        assert stream.read(7) == b"partial"
+        stream.read(1)
+    # Close must be quiet: verification was abandoned after the inner error.
+    stream.close()
+
+
+def test_verifying_stream_close_maps_probe_error_to_truncated() -> None:
+    """Silent short-read + probe exception on close → TruncatedError (macOS accel)."""
+    from archivey.internal.streams.verify import VerifyingStream
+
+    class _ShortThenBoom(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"partial")
+            self._eof_reads = 0
+
+        def read(self, n: int = -1) -> bytes:
+            if self.tell() >= 7:
+                self._eof_reads += 1
+                raise RuntimeError("std::exception")
+            return super().read(n)
+
+    stream = VerifyingStream(_ShortThenBoom(), {}, expected_size=100)
+    assert stream.read() == b"partial"
+    with pytest.raises(TruncatedError, match="ended after 7 of 100"):
+        stream.close()
+
+
+def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size() -> (
+    None
+):
+    """Accepted ON-without-size limitation: rapidgzip may silently short-read.
+
+    ``ON`` bypasses the AUTO verifiable-size gate; without a declared length there is
+    no backstop. Either a short read or a translated error is acceptable — a raw
+    rapidgzip exception is not.
     """
     pytest.importorskip("rapidgzip")
     full = zlib.compress(_SMALL * 100)

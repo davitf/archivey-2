@@ -577,10 +577,11 @@ class SevenZipReader(BaseArchiveReader):
     def _wrap_folder_member(
         self, inner: BinaryIO, member: ArchiveMember
     ) -> ArchiveStream:
-        if member.hashes:
+        if member.size is not None or member.hashes:
             inner = VerifyingStream(
                 inner,
                 member.hashes,
+                expected_size=member.size,
                 collector=self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,

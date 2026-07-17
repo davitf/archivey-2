@@ -26,7 +26,9 @@ class AcceleratorMode(Enum):
       sequential silently (it is an enhancement, not a requirement). For the
       ``rapidgzip`` DEFLATE-family path, AUTO also requires the known compressed
       input size to reach :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (see
-      :meth:`enabled_for`).
+      :meth:`enabled_for`) **and** a verifiable decompressed size
+      (``StreamConfig.expected_decompressed_size``, or gzip ISIZE) so truncation
+      cannot be silently short-read.
     """
 
     AUTO = "auto"
@@ -125,7 +127,8 @@ class ArchiveyConfig:
     """
 
     # Tri-state for the [seekable] rapidgzip accelerator (gzip / zlib / raw deflate).
-    # Under AUTO, also requires known compressed input ≥ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE.
+    # Under AUTO, also requires known compressed input ≥ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    # and a verifiable decompressed size (so truncation cannot be silently swallowed).
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     # Tri-state for rapidgzip's bundled bzip2 random-access backend.
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO

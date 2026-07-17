@@ -56,12 +56,25 @@ class Decoder(Protocol):
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder: ...
 
-    def feed(self, chunk: bytes) -> DecodeOut: ...
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        """Decode ``chunk``, producing at most ``max_length`` output bytes when ≥ 0.
+
+        When ``max_length`` limits output, unconsumed compressed input must be retained
+        so a subsequent ``feed(b"", max_length=…)`` (while :attr:`needs_input` is false)
+        can continue without the stream reading more from the source. ``max_length=-1``
+        means unlimited (used by ``readall`` / flush-to-EOF).
+        """
+        ...
 
     def flush(self) -> DecodeOut: ...
 
     @property
     def finished(self) -> bool: ...
+
+    @property
+    def needs_input(self) -> bool:
+        """False when more output can be produced without reading new compressed bytes."""
+        ...
 
     @property
     def pending_error(self) -> BaseException | None: ...
@@ -87,11 +100,24 @@ class BaseDecoder:
     def clear_pending_error(self) -> None:
         self._pending_error = None
 
+    @property
+    def needs_input(self) -> bool:
+        return True
+
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]:
         del inner, last_known
         return [], None
+
+
+# Compressed bytes read per fill when the decoder needs more input. Matches CPython
+# gzip / _compression.DecompressReader (io.DEFAULT_BUFFER_SIZE), not a full 64 KiB —
+# keeping the feed small works with max_length to bound peak buffer on read(n).
+_COMPRESSED_READ_SIZE = 8192
+# Output budget when skipping forward during seek (unbounded skip would reintroduce
+# the per-read amplification bomb on highly compressible spans).
+_SEEK_OUTPUT_CHUNK = 65536
 
 
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
@@ -107,6 +133,7 @@ def build_index_backwards(
     codec_name: str = "",
     collector: DiagnosticCollector | None = None,
     scan: str = "backwards_index",
+    include_block: Callable[[Any], bool] | None = None,
 ) -> tuple[list[SeekPoint], int | None]:
     """Backward scan → seek points + total decompressed size.
 
@@ -114,6 +141,11 @@ def build_index_backwards(
     ``CorruptionError`` (e.g. valid-but-unparseable trailing data) it emits
     ``SEEK_INDEX_DEGRADED`` and returns an empty index so the stream falls back to
     sequential decoding.
+
+    ``include_block``, when set, filters scanned bounds before they become seek
+    points (e.g. XZ zero-``uncompressed_size`` blocks that share a decompressed
+    offset with the next real block and are never useful resume targets). The
+    total size still comes from the last bound's ``decompressed_end``.
     """
     file_size = inner.seek(0, io.SEEK_END)
     try:
@@ -140,6 +172,7 @@ def build_index_backwards(
         to_point(b)
         for b in bounds
         if b.decompressed_start > last_known.decompressed_offset
+        and (include_block is None or include_block(b))
     ]
     total: int | None = bounds[-1].decompressed_end if bounds else None
     return points, total
@@ -201,8 +234,10 @@ class DecompressorStream(ReadOnlyIOStream):
         - For other offsets, an exact duplicate is skipped; a *forward* refinement
           (same ``state``, ``compressed_offset`` moves forward) last-wins — unix-compress
           empty CLEAR segments legitimately re-emit the same decompressed offset at a
-          later compressed resume point. Divergent ``state`` or a backwards
-          ``compressed_offset`` still asserts (xz/lzip should filter those away).
+          later compressed resume point. A ``state=None`` placeholder yields to a richer
+          non-``None`` resume state (XZ block bounds over a progressive stream-start).
+          Divergent non-``None`` states raise :class:`CorruptionError` (never a raw
+          ``AssertionError``) so hostile indexes cannot escape the ``ArchiveyError`` tree.
         """
         for point in points:
             # Origin refinement always applies — resume must skip a committed header
@@ -235,20 +270,33 @@ class DecompressorStream(ReadOnlyIOStream):
                 self._seek_points.append(point)
 
     def _resolve_same_offset_collision(self, index: int, point: SeekPoint) -> None:
-        """Skip duplicates; allow forward compressed-offset refinement; else assert."""
+        """Skip duplicates; allow forward refinement / richer-state merge; else error."""
         existing = self._seek_points[index]
-        if (
-            existing.compressed_offset == point.compressed_offset
-            and existing.state is point.state
+
+        def _same_state(a: object, b: object) -> bool:
+            # Identity for shared objects; value equality for re-emitted XZ block bounds
+            # (progressive enrichment vs build_index construct distinct instances).
+            return a is b or a == b
+
+        if existing.compressed_offset == point.compressed_offset and _same_state(
+            existing.state, point.state
         ):
             return
-        if (
-            point.compressed_offset >= existing.compressed_offset
-            and existing.state is point.state
+        if point.compressed_offset >= existing.compressed_offset and _same_state(
+            existing.state, point.state
         ):
             self._seek_points[index] = point
             return
-        assert False, (
+        # Prefer a non-None resume state over a progressive placeholder (XZ: block
+        # bounds beat a stream-start SeekPoint emitted before enrichment / after a
+        # prior build_index). Same-offset with only one side carrying state is the
+        # legitimate multi-stream path; keep the richer point.
+        if existing.state is None and point.state is not None:
+            self._seek_points[index] = point
+            return
+        if existing.state is not None and point.state is None:
+            return
+        raise CorruptionError(
             "seek-point collision at the same decompressed_offset with "
             f"differing resume data: existing={existing!r} new={point!r}"
         )
@@ -271,8 +319,15 @@ class DecompressorStream(ReadOnlyIOStream):
             self.add_seek_points(out.points)
         return out.data
 
-    def _read_decompressed_chunk(self) -> bytes:
-        chunk = self._inner.read(65536)
+    def _read_decompressed_chunk(self, max_length: int = -1) -> bytes:
+        if not self._decoder.needs_input:
+            drained = self._ingest_decode(self._decoder.feed(b"", max_length))
+            if drained:
+                return drained
+            # Decoder claimed retained input but produced nothing (e.g. a stuck
+            # lzma needs_input=False under a budget). Fall through to reading more
+            # compressed bytes — or EOF — so the caller cannot spin forever.
+        chunk = self._inner.read(_COMPRESSED_READ_SIZE)
         if not chunk:
             self._eof = True
             leftover = self._ingest_decode(self._decoder.flush())
@@ -281,7 +336,7 @@ class DecompressorStream(ReadOnlyIOStream):
             self._size = self._pos + len(self._buffer) + len(leftover)
             self._index_built = True  # a forward scan to EOF is a complete index
             return leftover
-        return self._ingest_decode(self._decoder.feed(chunk))
+        return self._ingest_decode(self._decoder.feed(chunk, max_length))
 
     def readall(self) -> bytes:
         while not self._eof:
@@ -291,19 +346,28 @@ class DecompressorStream(ReadOnlyIOStream):
         if self._size is None or self._pos <= self._size:
             self._pos += len(data)
             self._size = self._pos
+        # A read(-1)/readall() caller expects the complete stream and will not call
+        # again, so a deferred pending_error (e.g. truncated .Z) must raise here —
+        # unlike chunked read(n), which returns bytes now and raises on the next empty
+        # read. Partial bytes from this call are dropped: the caller asked for the
+        # whole stream and it is incomplete.
+        err = self._decoder.pending_error
+        if err is not None:
+            self._decoder.clear_pending_error()
+            raise err
         return data
 
     def read(self, n: int = -1, /) -> bytes:
         if n == 0:
             return b""
         if n is None or n < 0:
-            data = self.readall()
-        else:
-            if len(self._buffer) < n and not self._eof:
-                self._buffer.extend(self._read_decompressed_chunk())
-            data = bytes(self._buffer[:n])
-            del self._buffer[:n]
-            self._pos += len(data)
+            return self.readall()
+        while len(self._buffer) < n and not self._eof:
+            need = n - len(self._buffer)
+            self._buffer.extend(self._read_decompressed_chunk(need))
+        data = bytes(self._buffer[:n])
+        del self._buffer[:n]
+        self._pos += len(data)
         if not data:
             err = self._decoder.pending_error
             if err is not None:
@@ -320,9 +384,11 @@ class DecompressorStream(ReadOnlyIOStream):
         if not self._index_enabled or self._index_built or self._index_build_attempted:
             return
         inner_pos = self._inner.tell()
-        new_points, new_size = self._decoder.build_index(
-            self._inner, self._seek_points[-1]
-        )
+        # Always scan from the absolute origin. Using a mid-stream last_known (from
+        # progressive enrichment) as the baseline renumbers later streams' decompressed
+        # offsets incorrectly. A full from-origin scan is cheap (index/trailer only) and
+        # makes block-chain resume safe after a partial forward read.
+        new_points, new_size = self._decoder.build_index(self._inner, SeekPoint(0, 0))
         self._index_build_attempted = True
         if new_points or new_size is not None:
             self._index_built = True
@@ -370,7 +436,7 @@ class DecompressorStream(ReadOnlyIOStream):
                 self._pos += len(self._buffer)
                 self._buffer.clear()
                 while not self._eof:
-                    data = self._read_decompressed_chunk()
+                    data = self._read_decompressed_chunk(_SEEK_OUTPUT_CHUNK)
                     self._pos += len(data)
                 assert self._size is not None
             new_pos = self._size + offset
@@ -388,13 +454,13 @@ class DecompressorStream(ReadOnlyIOStream):
             return self._pos
 
         if new_pos < self._pos:
-            self._reset_to_seek_point(self._find_best_seek_point(new_pos))
+            self._reset_to_seek_point(self._prepare_seek_point(new_pos))
         elif new_pos <= self._pos + len(self._buffer):
             del self._buffer[: new_pos - self._pos]
             self._pos = new_pos
             return self._pos
         else:
-            best = self._find_best_seek_point(new_pos)
+            best = self._prepare_seek_point(new_pos)
             if best.decompressed_offset > self._pos:
                 self._reset_to_seek_point(best)
             else:
@@ -406,7 +472,7 @@ class DecompressorStream(ReadOnlyIOStream):
             return self._pos
 
         while not self._eof:
-            decompressed = self._read_decompressed_chunk()
+            decompressed = self._read_decompressed_chunk(_SEEK_OUTPUT_CHUNK)
             if self._pos + len(decompressed) >= new_pos:
                 self._buffer.extend(decompressed[new_pos - self._pos :])
                 self._pos = new_pos
@@ -415,6 +481,21 @@ class DecompressorStream(ReadOnlyIOStream):
 
         self._pos = new_pos
         return self._pos
+
+    def _prepare_seek_point(self, pos: int) -> SeekPoint:
+        """Best resume point for ``pos``, with a complete index if block-state is used.
+
+        Progressive enrichment only adds points for *completed* streams. Resuming via
+        an ``_XzBlockBounds`` point builds a closed block chain from that point plus
+        already-indexed later blocks; if later streams are not indexed yet the chain
+        finishes early and the stream silently EOFs. Force a full from-origin index
+        before any stateful resume so the chain includes every subsequent block.
+        """
+        best = self._find_best_seek_point(pos)
+        if best.state is not None and not self._index_built:
+            self._ensure_index_built()
+            best = self._find_best_seek_point(pos)
+        return best
 
     def tell(self, /) -> int:
         return self._pos

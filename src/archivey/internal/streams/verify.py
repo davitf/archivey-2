@@ -40,7 +40,7 @@ import zlib
 from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
@@ -197,7 +197,14 @@ class VerifyingStream(ReadOnlyIOStream):
         self._verified = True
         if self._expected_size is not None and self._pos >= self._expected_size:
             # Delivered the declared size; the underlying must have nothing more.
-            if self._inner.read(1):
+            # This probe also drains post-payload authenticators (e.g. WinZip AES HMAC).
+            try:
+                trailing = self._inner.read(1)
+            except ArchiveyError:
+                raise
+            except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
+                trailing = b""
+            if trailing:
                 raise CorruptionError(
                     "Decompressed content exceeds its declared size of "
                     f"{self._expected_size} bytes."
@@ -222,9 +229,20 @@ class VerifyingStream(ReadOnlyIOStream):
                 )
             else:
                 want = remaining if n < 0 else min(n, remaining)
-                data = self._inner.read(want)
+                try:
+                    data = self._inner.read(want)
+                except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+                    # Abandon length/digest checks: close must not raise a second fault
+                    # after the caller already saw this decode error (macOS rapidgzip
+                    # mid-cut often raises here, then again on VerifyingStream.close).
+                    self._verify_enabled = False
+                    raise
         else:
-            data = self._inner.read(n)
+            try:
+                data = self._inner.read(n)
+            except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+                self._verify_enabled = False
+                raise
         if data:
             self._pos += len(data)
             if self._verify_enabled:
@@ -256,18 +274,48 @@ class VerifyingStream(ReadOnlyIOStream):
         # ``archive.read()`` often does a single ``read()`` that returns all bytes without
         # a follow-up empty read, so verify here when the inner stream is already at clean
         # EOF (partial reads still skip verification).
-        finish_exc: CorruptionError | None = None
+        finish_exc: CorruptionError | TruncatedError | None = None
         if self._verify_enabled and not self._verified:
             reached_declared = (
                 self._expected_size is not None and self._pos >= self._expected_size
             )
-            # ``_finish`` probes for over-length itself; only probe here to decide whether
-            # the stream ended cleanly when the declared size was not (yet) reached.
-            if reached_declared or not self._inner.read(1):
+            # Probe whether the stream ended cleanly. Accelerators (esp. rapidgzip on
+            # macOS) may raise on truncated input instead of returning b""; treat that
+            # as EOF when we are still short of the declared size so silent short-reads
+            # still become TruncatedError, without double-faulting after read() raised.
+            # Typed library errors (HMAC mismatch, etc.) must still propagate.
+            more = False
+            probe_raised = False
+            if not reached_declared:
                 try:
-                    self._finish()
-                except CorruptionError as exc:
-                    finish_exc = exc  # still close the inner below before re-raising
+                    more = bool(self._inner.read(1))
+                except ArchiveyError as exc:
+                    finish_exc = (
+                        exc
+                        if isinstance(exc, (CorruptionError, TruncatedError))
+                        else None
+                    )
+                    if finish_exc is None:
+                        raise
+                    more = True  # skip _finish; surface finish_exc after close
+                except Exception:  # noqa: BLE001 - accel truncate may raise any error
+                    probe_raised = True
+                    more = False
+            if finish_exc is None and (reached_declared or not more):
+                if probe_raised and (
+                    self._expected_size is not None and self._pos < self._expected_size
+                ):
+                    finish_exc = TruncatedError(
+                        f"Decompressed content ended after {self._pos} of "
+                        f"{self._expected_size} expected bytes."
+                    )
+                else:
+                    try:
+                        self._finish()
+                    except CorruptionError as exc:
+                        finish_exc = (
+                            exc  # still close the inner below before re-raising
+                        )
         short = self._short
         try:
             self._inner.close()
