@@ -25,11 +25,16 @@ Round commissioned 2026-07-17 — the **non-security** pass toward the first pub
 | `api-coherence/` | Public API & member-model coherence / ergonomics (incl. cross-backend parity) |
 | `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) |
 | `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps |
+| `stream-layering/` | Stream wrapper stack — are the checks correct, and can slicing+verification collapse into one stream under `ArchiveStream`? |
 
-**All three run against `main` with the CLI (PR #120) merged in.** The CLI is the
+The first three run against `main` with the CLI (PR #120) merged in — the CLI is the
 library's first real second consumer, so it sharpens all three: `api-coherence` reads
 the CLI's use of the public surface as evidence of gaps, `performance` benchmarks the
 CLI's `list`/`test`/`extract` as real workloads, and `cli-product` reviews it directly.
+
+`stream-layering/` was commissioned after the performance review (PR #134) attributed
+part of the missed budget to the per-member wrapper stack; it pairs a correctness audit
+of the slice/verify/outer wrappers with a collapse-for-performance design question.
 
 `backlog.md` holds two more (test-strategy; structural-cleanliness / zero-tech-debt)
 deferred to a lighter follow-on pass.
