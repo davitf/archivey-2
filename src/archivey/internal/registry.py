@@ -108,12 +108,14 @@ class BackendRegistry:
         self._writers: dict[ArchiveFormat, type[WriteBackend]] = {}
         # Unique reader classes in registration order (a class may serve several formats).
         self._reader_classes: list[type[ReadBackend]] = []
+        self._extension_map_cache: dict[str, ArchiveFormat] | None = None
 
     def register_reader(self, backend_cls: type[ReadBackend]) -> None:
         if backend_cls not in self._reader_classes:
             self._reader_classes.append(backend_cls)
         for fmt in backend_cls.FORMATS:
             self._readers[fmt] = backend_cls
+        self._extension_map_cache = None
 
     def register_writer(self, backend_cls: type[WriteBackend]) -> None:
         for fmt in backend_cls.FORMATS:
@@ -150,7 +152,14 @@ class BackendRegistry:
         return probes
 
     def extension_map(self) -> dict[str, ArchiveFormat]:
-        """The merged ``extension -> format`` map across backends and the stream codecs."""
+        """The merged ``extension -> format`` map across backends and the stream codecs.
+
+        Cached after first build: registration is import-time (and rare in tests), while
+        ``open_archive`` looks the map up on every call. Invalidated on ``register_reader``.
+        """
+        cached = self._extension_map_cache
+        if cached is not None:
+            return cached
         merged: dict[str, ArchiveFormat] = {}
         for cls in self._reader_classes:
             merged.update(cls.EXTENSIONS)
@@ -158,6 +167,7 @@ class BackendRegistry:
             if codec.single_file_format is not None:
                 for ext in codec.extensions:
                     merged[ext] = codec.single_file_format
+        self._extension_map_cache = merged
         return merged
 
     # --- availability --------------------------------------------------------------------

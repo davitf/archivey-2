@@ -606,13 +606,36 @@ class SevenZipReader(BaseArchiveReader):
     def _member_stream_from_solid(
         self, solid: SolidBlockReader, member: ArchiveMember
     ) -> ArchiveStream:
-        try:
-            inner = solid.open_member(
-                self._member_prefix(member), _member_stream_size(member)
-            )
-        except EOFError as exc:
-            raise TruncatedError("7z folder ended before the requested member") from exc
-        return self._wrap_folder_member(inner, member)
+        """Hand out a lazy stream; ``solid.open_member`` runs on first read.
+
+        Positioning at yield time would skip-decode every preceding unread member as
+        the iterator advances — breaking the ``stream_members`` laziness contract
+        (unselected/unread members must not be decompressed) and making selective
+        extraction of one early solid member decode ~the whole folder. ``SolidBlockReader``
+        already skips unread tails lazily when the *next* member is opened; deferring
+        that open to first-read time is what makes skipped members free.
+        """
+        prefix = self._member_prefix(member)
+        size = _member_stream_size(member)
+
+        def open_fn() -> BinaryIO:
+            try:
+                inner = solid.open_member(prefix, size)
+            except EOFError as exc:
+                raise TruncatedError(
+                    "7z folder ended before the requested member"
+                ) from exc
+            return self._wrap_folder_member(inner, member)
+
+        return ArchiveStream(
+            open_fn,
+            translate=self._translate_exception,
+            stamp=lambda exc: self._stamp_error_context(exc, member.name),
+            lazy=True,
+            seekable=False,
+            size=member.size,
+            collector=self._diagnostics_collector,
+        )
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:

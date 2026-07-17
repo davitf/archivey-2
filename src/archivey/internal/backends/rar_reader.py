@@ -596,14 +596,35 @@ class RarReader(BaseArchiveReader):
                     yield member, None
                     continue
                 size = _member_stream_size(member)
-                try:
-                    inner = solid.open_member(pipe_offset, size)
-                except EOFError as exc:
-                    raise TruncatedError(
-                        "RAR solid stream ended before the requested member"
-                    ) from exc
+                # Capture the pipe offset for this member, then advance the running
+                # cursor. open_member itself is deferred to first read so an
+                # unselected/unread member does not skip-decode its predecessors
+                # (same laziness contract as SevenZipReader._member_stream_from_solid).
+                member_offset = pipe_offset
                 pipe_offset += size
-                stream = self._wrap_payload_stream(inner, member, track_output=False)
+
+                def open_fn(
+                    offset: int = member_offset,
+                    member_size: int = size,
+                    m: ArchiveMember = member,
+                ) -> BinaryIO:
+                    try:
+                        inner = solid.open_member(offset, member_size)
+                    except EOFError as exc:
+                        raise TruncatedError(
+                            "RAR solid stream ended before the requested member"
+                        ) from exc
+                    return self._wrap_payload_stream(inner, m, track_output=False)
+
+                stream = ArchiveStream(
+                    open_fn,
+                    translate=self._translate_exception,
+                    stamp=lambda exc, m=member: self._stamp_error_context(exc, m.name),
+                    lazy=True,
+                    seekable=False,
+                    size=member.size,
+                    collector=self._diagnostics_collector,
+                )
                 previous = stream
                 yield member, stream
         finally:

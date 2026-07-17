@@ -339,10 +339,18 @@ class DecompressorStream(ReadOnlyIOStream):
         return self._ingest_decode(self._decoder.feed(chunk, max_length))
 
     def readall(self) -> bytes:
+        # Prefer join-of-chunks over staging through the shared bytearray: a whole-stream
+        # read never needs the partial-read buffer, and the extend + bytes(buffer) copy
+        # was a measurable share of ZIP read-all overhead (perf review H2).
+        chunks: list[bytes] = []
+        if self._buffer:
+            chunks.append(bytes(self._buffer))
+            self._buffer.clear()
         while not self._eof:
-            self._buffer.extend(self._read_decompressed_chunk())
-        data = bytes(self._buffer)
-        self._buffer.clear()
+            chunk = self._read_decompressed_chunk()
+            if chunk:
+                chunks.append(chunk)
+        data = b"".join(chunks)
         if self._size is None or self._pos <= self._size:
             self._pos += len(data)
             self._size = self._pos
