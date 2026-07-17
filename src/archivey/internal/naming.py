@@ -142,8 +142,20 @@ def emit_member_name_normalized(
     presented_name: str,
     archive_name: str | None = None,
 ) -> None:
-    """Emit ``MEMBER_NAME_NORMALIZED`` when normalization changed ``presented_name``."""
+    """Emit ``MEMBER_NAME_NORMALIZED`` when normalization changed ``presented_name``.
+
+    Suppresses the no-op case where a DIRECTORY member only gained the canonical
+    trailing slash (Python's ``tarfile`` strips it on read) — that is not an
+    observable override, and warning once per directory on every ordinary tar is
+    noise (R3 / Brief 4).
+    """
     if member.name == presented_name:
+        return
+    if (
+        member.type is MemberType.DIRECTORY
+        and presented_name + "/" == member.name
+        and not presented_name.endswith("/")
+    ):
         return
     message = f"Member name normalized: {presented_name!r} -> {member.name!r}"
     collector.emit(

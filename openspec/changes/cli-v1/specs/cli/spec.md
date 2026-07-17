@@ -73,10 +73,11 @@ avoid tarbombs. When a cheap member index is available without a streaming scan
 multiple top-level entries; extract into `.` when it already has a single
 top-level directory (no redundant nesting) or the archive is a
 single-file/single-stream archive. When no cheap index is available (plain TAR,
-future stdin sources, …), the destination SHALL be `./<archive-stem>/` (always
-wrap) rather than forcing a full metadata pass before extraction; post-hoc
-hoisting of a single extracted root MAY be added later. Container-name
-collisions SHALL be resolved by the overwrite policy.
+future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
+(always wrap — no pre-extract metadata pass); after a successful extract, if
+that wrapper contains exactly one top-level entry, the system SHALL hoist it to
+the cwd (subject to the overwrite policy) and remove the empty wrapper.
+Container-name collisions SHALL be resolved by the overwrite policy.
 Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 (`--overwrite` may select `error` / `skip` / `replace` / `rename`).
 
@@ -93,9 +94,10 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `archivey test <archive>` / `archivey t <archive>` | Fully reads members, verifies stored digests, reports failures |
 | `archivey extract <archive>` / `archivey x …` | Extracts under `--policy` default `strict`, overwrite default `rename`, into the smart default dest |
 | `archivey extract <archive>` where archive has many top-level entries | Extracts into `./<archive-stem>/` (no cwd splatter) |
-| `archivey extract <archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
+| `archivey extract <indexed-archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
 | `archivey extract <indexed-archive> 'b/*'` where filtered set has single root `b/` | Extracts into `.` (tops on filtered set); lands as `./b/…` |
-| `archivey extract <no-index-archive>` (e.g. plain TAR) with no `-d` | Extracts into `./<archive-stem>/` without a pre-extract listing pass |
+| `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
+| `archivey extract <no-index-archive>` with multiple top-level entries | Extracts into `./<archive-stem>/` (no hoist) |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |

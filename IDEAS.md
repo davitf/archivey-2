@@ -268,17 +268,10 @@
 > The `cli-v1` change itself is implemented; these are the consciously deferred
 > pieces — promote each with its own OpenSpec change when scheduled.
 
-- **Smart-dest post-hoc hoist (streaming / no-index)** — today, when no cheap
-  member index exists (plain TAR; future stdin), extract with no `-d` always
-  wraps into `./<archive-stem>/` rather than forcing a pre-extract listing pass
-  (D1 catch on #120). End state: extract into the wrapper in one forward pass,
-  then if the wrapper contains exactly one top-level directory (and nothing
-  else), hoist it to cwd and remove the wrapper — recovers unar-style
-  single-root reuse **and** filter-aware D1 semantics (what's on disk *is* the
-  filtered set) without an index. Edges to design carefully: overwrite/collision
-  during hoist, partial-failure (wrapper half-full), UX ("extracting into
-  foo/" then files appear as `./root/`), cross-device `rename`. Natural sibling
-  of **stdin archive sources** (Decision 15 reserved `-`).
+- ~~**Smart-dest post-hoc hoist (streaming / no-index)**~~ — **Done on #120**
+  (R4): always-wrap then hoist a single top-level entry to cwd after a successful
+  no-index extract. Remaining related work: stdin archive sources (Decision 15
+  reserved `-`).
 
 - **Skip-damaged-member iteration for `test` / salvage-adjacent reads** — CLI
   `test` now counts open-time failures and still prints the summary, but once

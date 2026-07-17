@@ -79,6 +79,14 @@ def test_abbrev_password_rejected(sample_zip: Path) -> None:
     assert main(["--pass", "secret", str(sample_zip)]) == EXIT_USAGE
 
 
+def test_abbrev_overwrite_rejected_post_verb(sample_zip: Path, tmp_path: Path) -> None:
+    # Subparsers also need allow_abbrev=False (R2) — --over must not become --overwrite.
+    dest = tmp_path / "out"
+    assert (
+        main(["x", str(sample_zip), "-d", str(dest), "--over", "error"]) == EXIT_USAGE
+    )
+
+
 def test_bare_invocation_is_usage() -> None:
     assert main([]) == EXIT_USAGE
 
@@ -508,10 +516,10 @@ def test_smart_dest_uses_filtered_tops_when_indexed(
     assert not (tmp_path / "a").exists()
 
 
-def test_smart_dest_always_wraps_when_no_index(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_smart_dest_hoists_single_root_when_no_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Plain TAR has no cheap index — always wrap even for a single top-level root.
+    # Plain TAR has no cheap index — wrap then hoist a single top-level root (R4).
     import tarfile
 
     monkeypatch.chdir(tmp_path)
@@ -521,8 +529,29 @@ def test_smart_dest_always_wraps_when_no_index(
         info.size = 1
         tf.addfile(info, io.BytesIO(b"x"))
     assert main(["extract", str(archive)]) == EXIT_OK
-    assert (tmp_path / "bundle" / "root" / "a.txt").read_bytes() == b"x"
-    assert not (tmp_path / "root").exists()
+    err = capsys.readouterr().err
+    assert "extracting into bundle/" in err
+    assert "moved to root/" in err
+    assert (tmp_path / "root" / "a.txt").read_bytes() == b"x"
+    assert not (tmp_path / "bundle").exists()
+
+
+def test_smart_dest_keeps_wrapper_for_multi_top_tar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tarfile
+
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / "messy.tar"
+    with tarfile.open(archive, "w") as tf:
+        for name, data in (("a.txt", b"a"), ("b.txt", b"b")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    assert main(["extract", str(archive)]) == EXIT_OK
+    assert (tmp_path / "messy" / "a.txt").read_bytes() == b"a"
+    assert (tmp_path / "messy" / "b.txt").read_bytes() == b"b"
+    assert not (tmp_path / "a.txt").exists()
 
 
 def test_password_rejected_message_distinct_from_required() -> None:

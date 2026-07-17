@@ -82,6 +82,22 @@ def test_no_warning_when_unchanged(caplog: pytest.LogCaptureFixture) -> None:
     assert not caplog.records
 
 
+def test_no_warning_for_directory_trailing_slash_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # tarfile strips the trailing slash; adding it back is not an observable override.
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.naming import emit_member_name_normalized
+    from archivey.types import ArchiveMember
+
+    member = ArchiveMember(type=MemberType.DIRECTORY, name="pkg/", raw_name=None)
+    collector = DiagnosticCollector()
+    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
+        emit_member_name_normalized(collector, member=member, presented_name="pkg")
+    assert not caplog.records
+    assert collector.snapshot().total_count == 0
+
+
 def test_link_target_backslash_is_literal() -> None:
     # A link target follows the same backslash rule as member names: the backend already
     # converted separators where the format treats "\" as one, so here it is a literal

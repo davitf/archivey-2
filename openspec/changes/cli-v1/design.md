@@ -187,9 +187,12 @@ avoid double-nesting:
 - **Tops are computed on the filtered member set** when a cheap index exists
   (ZIP/7z/RAR). So `archivey x a.zip 'b/*'` that only extracts under `b/` reuses
   `.` rather than wrapping in `./a/`.
-- **No cheap index** (plain TAR; future stdin) → **always** `./<archive-stem>/`.
-  Do not force a full metadata pass just for smart-dest. Post-hoc hoist of a
-  single extracted root is deferred until streaming/stdin extract ships.
+- **No cheap index** (plain TAR; future stdin) → **always** extract into
+  `./<archive-stem>/` (no pre-extract listing pass), then **hoist** if the
+  wrapper ends with exactly one top-level entry (file or directory) — recovers
+  single-root reuse and filter-aware D1 without an index. Collision during hoist
+  follows the overwrite policy (`rename` → `name (N)`; `skip`/`error` leave the
+  wrapper).
 - **Container-name collision** (`./foo/` already exists) → resolved by the
   overwrite policy; default `rename` (Decision 3) yields `foo (1)/`, `foo (2)/`, ….
 

@@ -168,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["l"],
         parents=[common_sub],
         conflict_handler="resolve",
+        allow_abbrev=False,
         help="list archive members (default verb)",
     )
     p_list.add_argument("archive", help="archive path")
@@ -185,6 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["t"],
         parents=[common_sub],
         conflict_handler="resolve",
+        allow_abbrev=False,
         help="full-read integrity check (verify stored digests)",
     )
     p_test.add_argument("archive", help="archive path")
@@ -197,6 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["x"],
         parents=[common_sub],
         conflict_handler="resolve",
+        allow_abbrev=False,
         help="safely extract members",
     )
     p_extract.add_argument("archive", help="archive path")
@@ -227,6 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["i", "detect"],
         parents=[common_sub],
         conflict_handler="resolve",
+        allow_abbrev=False,
         help="format detection + archive identity",
     )
     p_info.add_argument("archive", help="archive path")
@@ -238,7 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
         ("convert", "archive conversion is not implemented yet"),
         ("cat", "member streaming to stdout is not implemented yet"),
     ):
-        p = sub.add_parser(name, parents=[common_sub], help=f"reserved ({hint})")
+        p = sub.add_parser(
+            name,
+            parents=[common_sub],
+            allow_abbrev=False,
+            help=f"reserved ({hint})",
+        )
         p.add_argument("archive", nargs="?", default=None)
         p.set_defaults(_run="reserved", _reserved_message=hint)
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -91,30 +93,105 @@ def smart_dest(
     return _enclosing_dir(archive, format=format, overwrite=overwrite)
 
 
+@dataclass(frozen=True)
+class _SmartDestPlan:
+    """Where to extract, and whether a post-extract single-root hoist may run."""
+
+    target: Path
+    may_hoist: bool
+
+
 def resolve_smart_dest(
     reader: ArchiveReader,
     archive: Path,
     *,
     pred: Callable[[ArchiveMember], bool] | None,
     overwrite: OverwritePolicy,
-) -> Path:
+) -> _SmartDestPlan:
     """Choose the default dest without forcing a streaming metadata pass (D1).
 
     - Single-file / raw-stream → cwd.
     - Indexed archive → tops on the **filtered** member set (wrap / reuse / cwd).
-    - No cheap index (tar, future stdin, …) → always ``./<stem>/``; post-hoc hoist
-      of a single extracted root is deferred until streaming extract lands.
+    - No cheap index (tar, future stdin, …) → always ``./<stem>/``, then
+      :func:`maybe_hoist_single_root` may lift a single extracted top entry to cwd.
     """
     fmt = reader.format
     if fmt.container == ContainerFormat.RAW_STREAM:
-        return Path(".")
+        return _SmartDestPlan(Path("."), may_hoist=False)
 
     indexed = reader.get_members_if_available()
     if indexed is None:
-        return _enclosing_dir(archive, format=fmt, overwrite=overwrite)
+        return _SmartDestPlan(
+            _enclosing_dir(archive, format=fmt, overwrite=overwrite),
+            may_hoist=True,
+        )
 
     members = [m for m in indexed if pred is None or pred(m)]
-    return smart_dest(archive, format=fmt, members=members, overwrite=overwrite)
+    return _SmartDestPlan(
+        smart_dest(archive, format=fmt, members=members, overwrite=overwrite),
+        may_hoist=False,
+    )
+
+
+def _collision_dest(name: str, overwrite: OverwritePolicy) -> Path | None:
+    """Resolve ``name`` in cwd under ``overwrite``; ``None`` means skip hoist."""
+    dest = Path(name)
+    if not dest.exists():
+        return dest
+    if overwrite is OverwritePolicy.RENAME:
+        n = 1
+        while Path(f"{name} ({n})").exists():
+            n += 1
+        return Path(f"{name} ({n})")
+    if overwrite is OverwritePolicy.SKIP:
+        return None
+    if overwrite is OverwritePolicy.REPLACE:
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        else:
+            dest.unlink()
+        return dest
+    # ERROR: leave the wrapper intact rather than aborting a successful extract.
+    return None
+
+
+def maybe_hoist_single_root(
+    wrapper: Path,
+    *,
+    overwrite: OverwritePolicy,
+    err: TextIO,
+) -> Path:
+    """If ``wrapper`` holds exactly one top-level entry, move it to cwd (R4/D1).
+
+    Recovers unar-style single-root reuse (and filter-aware D1 for streaming) after
+    an always-wrap extract, without a pre-extract metadata pass. Returns the final
+    path used for the summary line.
+    """
+    if wrapper == Path(".") or not wrapper.is_dir():
+        return wrapper
+    try:
+        children = list(wrapper.iterdir())
+    except OSError:
+        return wrapper
+    if len(children) != 1:
+        return wrapper
+    child = children[0]
+    dest = _collision_dest(child.name, overwrite)
+    if dest is None:
+        print(
+            f"left in {wrapper}/ (could not hoist {child.name!r}: destination exists)",
+            file=err,
+        )
+        return wrapper
+    try:
+        shutil.move(str(child), str(dest))
+        wrapper.rmdir()
+    except OSError as exc:
+        print(f"hoist skipped: {exc}", file=err)
+        return wrapper
+    label = f"{dest}/" if dest.is_dir() else str(dest)
+    print(f"moved to {label}", file=err)
+    return dest
 
 
 def _report_extraction(
@@ -162,7 +239,12 @@ def _report_extraction(
             detail = f": {result.error}" if result.error is not None else ""
             print(f"failed: {result.member.name}{detail}", file=err)
 
-    dest_label = "." if target == Path(".") else f"{target}/"
+    if target == Path("."):
+        dest_label = "."
+    elif target.is_dir():
+        dest_label = f"{target}/"
+    else:
+        dest_label = str(target)
     print(
         f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
         f"{f', {rejected} rejected' if rejected else ''}"
@@ -198,15 +280,18 @@ def run_extract(
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
+        may_hoist = False
         if dest is not None:
             target = Path(dest)
         else:
-            target = resolve_smart_dest(
+            plan = resolve_smart_dest(
                 reader,
                 archive_path,
                 pred=pred,
                 overwrite=overwrite_enum,
             )
+            target = plan.target
+            may_hoist = plan.may_hoist
             if target != Path("."):
                 print(f"extracting into {target}/", file=err)
 
@@ -231,6 +316,10 @@ def run_extract(
                     file=err,
                 )
                 return EXIT_FAIL
+            if may_hoist:
+                target = maybe_hoist_single_root(
+                    target, overwrite=overwrite_enum, err=err
+                )
             _report_extraction(report, target=target, verbose=verbose, err=err)
         finally:
             if on_progress is not None:
