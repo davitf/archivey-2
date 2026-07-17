@@ -16,7 +16,7 @@ from archivey.internal.streams.counting import (
     OutputCountingStream,
     SeekCountingStream,
 )
-from tests.conftest import requires_binary
+from tests.conftest import requires, requires_binary
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _RAR_BASIC_CONTENTS = {
@@ -176,3 +176,47 @@ def test_solid_sequential_decodes_once(
             mid = reader.bytes_decompressed
             reader.read(target)
             assert reader.bytes_decompressed > mid
+
+
+@requires("py7zr")
+def test_solid_selective_stream_decodes_only_needed(tmp_path: Path) -> None:
+    """Unselected solid members must not be decompressed (archive-reading laziness).
+
+    Regression for the perf-review H1 trap: eager solid positioning at yield time
+    made ``stream_members`` / selective extract of one early member decode ~the
+    whole folder. Bound is prefix+member with a tiny EOF-probe slack.
+    """
+    files = {f"m{i:03d}.bin": bytes([i]) * 4096 for i in range(8)}
+    source = tmp_path / "src"
+    source.mkdir()
+    for name, data in files.items():
+        (source / name).write_bytes(data)
+    archive = tmp_path / "solid.7z"
+    py7zr = pytest.importorskip("py7zr")
+    with py7zr.SevenZipFile(archive, "w", filters=[{"id": py7zr.FILTER_LZMA2}]) as zf:
+        for name in sorted(files):
+            zf.write(source / name, arcname=name)
+
+    first = "m000.bin"
+    needed = len(files[first])
+    with enable_measurement(), open_archive(archive) as reader:
+        assert isinstance(reader, BaseArchiveReader)
+        assert reader.info.is_solid is True
+        pairs = [
+            (member, stream.read() if stream is not None else None)
+            for member, stream in reader.stream_members(members=[first])
+        ]
+        assert len(pairs) == 1
+        member, data = pairs[0]
+        assert member.name == first
+        assert data == files[first]
+        # Whole folder is 32 KiB; a regression that positions every member lands ~28–32 KiB.
+        assert reader.bytes_decompressed <= needed + 64
+
+    with enable_measurement(), open_archive(archive) as reader:
+        assert isinstance(reader, BaseArchiveReader)
+        dest = tmp_path / "out"
+        report = reader.extract_all(dest, members=[first])
+        assert len(report.results) == 1
+        assert (dest / first).read_bytes() == files[first]
+        assert reader.bytes_decompressed <= needed + 64

@@ -590,6 +590,17 @@ class SevenZipReader(BaseArchiveReader):
     def _wrap_folder_member(
         self, inner: BinaryIO, member: ArchiveMember
     ) -> ArchiveStream:
+        return self._wrap_member_stream(
+            self._prepare_folder_member(inner, member),
+            member.name,
+            size=member.size,
+            track_output=False,
+        )
+
+    def _prepare_folder_member(
+        self, inner: BinaryIO, member: ArchiveMember
+    ) -> BinaryIO:
+        """Verify + size-bound a solid-folder member view (no ``ArchiveStream`` yet)."""
         if member.size is not None or member.hashes:
             inner = VerifyingStream(
                 inner,
@@ -599,20 +610,38 @@ class SevenZipReader(BaseArchiveReader):
                 member=member,
                 archive_name=self._archive_name,
             )
-        return self._wrap_member_stream(
-            inner, member.name, size=member.size, track_output=False
-        )
+        return inner
 
     def _member_stream_from_solid(
         self, solid: SolidBlockReader, member: ArchiveMember
     ) -> ArchiveStream:
-        try:
-            inner = solid.open_member(
-                self._member_prefix(member), _member_stream_size(member)
-            )
-        except EOFError as exc:
-            raise TruncatedError("7z folder ended before the requested member") from exc
-        return self._wrap_folder_member(inner, member)
+        """Hand out a stream whose solid positioning runs on first read.
+
+        Uses ``solid.open_member(..., lazy=True)`` so an unselected handle can be
+        closed without skip-decoding. Verification is applied in ``open_fn`` (not at
+        yield time): ``VerifyingStream.close`` probes with ``read(1)``, which would
+        otherwise force the lazy solid open on every skipped member.
+        """
+        prefix = self._member_prefix(member)
+        size = _member_stream_size(member)
+        lazy_solid = solid.open_member(prefix, size, lazy=True)
+
+        def open_fn(inner: BinaryIO = lazy_solid) -> BinaryIO:
+            return self._prepare_folder_member(inner, member)
+
+        return self._wrap_member_stream(
+            None,
+            member.name,
+            open_fn=open_fn,
+            size=member.size,
+            track_output=False,
+            seekable=False,
+        )
+
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, EOFError):
+            return TruncatedError("7z folder ended before the requested member")
+        return None
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:

@@ -214,7 +214,13 @@ class ArchiveStream(ReadOnlyIOStream):
             open_fn = self._open_fn
             self._open_fn = None  # claim: only one caller proceeds to open_fn
         try:
-            opened = open_fn()
+            opened: BinaryIO = open_fn()
+            # Lazy ``stream_members`` open_fn often returns another ``ArchiveStream``
+            # (from ``_open_member`` → ``_wrap_member_stream``, or a codec stream under
+            # that). Collapse here so the public handle is a single wrapper — but adopt
+            # the nested translator/stamp/rewind_warning so codec errors stay typed.
+            while isinstance(opened, ArchiveStream):
+                opened = self._collapse_nested(opened)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             # _open_fn stays None (claimed above) so a retry raises rather than
             # re-entering a half-open backend.
@@ -228,6 +234,63 @@ class ArchiveStream(ReadOnlyIOStream):
                 raise ValueError("I/O operation on closed file.")
             self._inner = opened
             return self._inner
+
+    def _collapse_nested(self, nested: ArchiveStream) -> BinaryIO:
+        """Reduce a nested ``ArchiveStream`` to a bytes stream for this handle.
+
+        If ``nested`` is still lazy, its opener is taken and invoked (this handle is
+        opening *now*, so deferral transfers rather than being forced early). If it is
+        already open, its inner is stolen. Either way the nested wrapper is neutralized
+        and will not close the result.
+
+        Codec streams (``open_codec_stream``) carry a library-specific translator;
+        member wrappers often wrap those again. Adopting nested ``translate`` /
+        ``stamp`` / ``rewind_warning`` keeps BadGzipFile / zlib.error / etc. typed
+        after the collapse.
+        """
+        if nested.closed:
+            raise ValueError("I/O operation on closed file.")
+
+        nested_translate = nested._translate
+        nested_stamp = nested._stamp
+        outer_translate = self._translate
+        outer_stamp = self._stamp
+
+        def composed_translate(exc: Exception) -> ArchiveyError | None:
+            translated = nested_translate(exc)
+            if translated is not None:
+                return translated
+            return outer_translate(exc)
+
+        def composed_stamp(err: ArchiveyError) -> None:
+            nested_stamp(err)
+            outer_stamp(err)
+
+        self._translate = composed_translate
+        self._stamp = composed_stamp
+        if self._rewind_warning is None and nested._rewind_warning is not None:
+            self._rewind_warning = nested._rewind_warning
+
+        with nested._open_lock:
+            open_fn = nested._open_fn
+            inner = nested._inner
+            nested._open_fn = None
+            nested._inner = None
+        nested._detach_finalizer()
+        nested._on_close = None
+        # Mark closed without touching stolen opener/inner.
+        super(ArchiveStream, nested).close()
+
+        if inner is not None:
+            return inner
+        if open_fn is not None:
+            opened = open_fn()
+            while isinstance(opened, ArchiveStream):
+                opened = self._collapse_nested(opened)
+            return opened
+        raise ArchiveyUsageError(
+            "Cannot collapse nested ArchiveStream: it has no opener and no inner stream."
+        )
 
     def _fail(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""

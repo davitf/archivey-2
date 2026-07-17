@@ -15,6 +15,7 @@ from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode, DigestContext
 from archivey.exceptions import (
+    ArchiveyError,
     CorruptionError,
     EncryptionError,
     StreamNotSeekableError,
@@ -596,14 +597,28 @@ class RarReader(BaseArchiveReader):
                     yield member, None
                     continue
                 size = _member_stream_size(member)
-                try:
-                    inner = solid.open_member(pipe_offset, size)
-                except EOFError as exc:
-                    raise TruncatedError(
-                        "RAR solid stream ended before the requested member"
-                    ) from exc
+                # Capture the pipe offset for this member, then advance the running
+                # cursor. ``lazy=True`` defers skip-decode until first read; verify
+                # wrap stays inside open_fn so VerifyingStream.close cannot probe an
+                # unselected handle into a solid open.
+                member_offset = pipe_offset
                 pipe_offset += size
-                stream = self._wrap_payload_stream(inner, member, track_output=False)
+                lazy_solid = solid.open_member(member_offset, size, lazy=True)
+
+                def open_fn(
+                    inner: BinaryIO = lazy_solid,
+                    m: ArchiveMember = member,
+                ) -> BinaryIO:
+                    return self._prepare_payload_stream(inner, m)
+
+                stream = self._wrap_member_stream(
+                    None,
+                    member.name,
+                    open_fn=open_fn,
+                    size=member.size,
+                    track_output=False,
+                    seekable=False,
+                )
                 previous = stream
                 yield member, stream
         finally:
@@ -611,6 +626,11 @@ class RarReader(BaseArchiveReader):
                 previous.close()
             solid.close()
             self._live_unrar = None
+
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, EOFError):
+            return TruncatedError("RAR solid stream ended before the requested member")
+        return None
 
     def _tweaked_verify_spec(
         self, info: RarMemberInfo
@@ -647,13 +667,12 @@ class RarReader(BaseArchiveReader):
             return None
         return expected, transforms
 
-    def _wrap_payload_stream(
+    def _prepare_payload_stream(
         self,
         inner: BinaryIO,
         member: ArchiveMember,
-        *,
-        track_output: bool = True,
-    ) -> ArchiveStream:
+    ) -> BinaryIO:
+        """Verify + size-bound a RAR payload view (no ``ArchiveStream`` yet)."""
         # Verify every member's declared length (and any CRC32/BLAKE2sp) as it is read:
         # an over-long external decode stops at the declared size and errors, a short one
         # raises, and a wrong one fails its digest. Applied to all members (not just
@@ -680,8 +699,20 @@ class RarReader(BaseArchiveReader):
                 archive_name=self._archive_name,
                 digest_transforms=transforms,
             )
+        return inner
+
+    def _wrap_payload_stream(
+        self,
+        inner: BinaryIO,
+        member: ArchiveMember,
+        *,
+        track_output: bool = True,
+    ) -> ArchiveStream:
         return self._wrap_member_stream(
-            inner, member.name, size=member.size, track_output=track_output
+            self._prepare_payload_stream(inner, member),
+            member.name,
+            size=member.size,
+            track_output=track_output,
         )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:

@@ -462,20 +462,21 @@ class BaseArchiveReader(ArchiveReader):
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
-        already translates and stamps its own errors, and ``ArchiveStream`` passes an
-        ``ArchiveyError`` through (re-stamping is a no-op), so deferral does not change
-        what a failed open raises — only when.
+        already returns an ``ArchiveStream``; nesting is collapsed inside
+        :meth:`ArchiveStream._ensure_open` so the public handle is a **single**
+        wrapper. Deferral does not change what a failed open raises — only when.
         """
-        stream = ArchiveStream(
-            lambda: self._open_member(member),
-            translate=self._translate_exception,
-            stamp=lambda exc: self._stamp_error_context(exc, member.name),
-            lazy=True,
-            seekable=self._seek_declared(),
-            size=member.size,
-            collector=self._diagnostics_collector,
+        return self._register_public_stream(
+            self._wrap_member_stream(
+                None,
+                member.name,
+                open_fn=lambda: self._open_member(member),
+                size=member.size,
+                # ``_open_member`` already applied output tracking inside its wrap.
+                track_output=False,
+                seekable=self._seek_declared(),
+            )
         )
-        return self._register_public_stream(stream)
 
     @abstractmethod
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
@@ -571,12 +572,14 @@ class BaseArchiveReader(ArchiveReader):
 
     def _wrap_member_stream(
         self,
-        inner: BinaryIO,
+        inner: BinaryIO | None,
         member_name: str | None,
         *,
+        open_fn: Callable[[], BinaryIO] | None = None,
         lazy: bool = False,
         size: int | None = None,
         track_output: bool = True,
+        seekable: bool | None = None,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -586,14 +589,51 @@ class BaseArchiveReader(ArchiveReader):
         than a raw codec exception, and so the handle advertises its decompressed length
         (the fsspec-style ``size``) for cheap nested-archive source sizing.
 
+        Pass ``open_fn`` (and ``inner=None``) for a lazy open — one ``ArchiveStream``,
+        opened on first read. If ``open_fn`` returns an ``ArchiveStream`` (e.g. from
+        ``_open_member``), :meth:`ArchiveStream._ensure_open` collapses the nesting
+        automatically so callers never see a double wrapper.
+
         Seekability is gated by ``MemberStreams.SEEKABLE``: without it the wrapper reports
-        non-seekable even when ``inner`` could seek.
+        non-seekable even when ``inner`` could seek. Pass ``seekable=`` to override the
+        default (eager: declared ∧ ``is_seekable(inner)``; lazy: declared).
 
         When measurement is on and ``track_output`` is true (the default), decoded bytes
         delivered through this handle are added to :attr:`bytes_decompressed`. Solid
         backends that already count at the folder/block decode layer pass
-        ``track_output=False`` to avoid double-counting.
+        ``track_output=False`` to avoid double-counting. When ``open_fn`` may return an
+        ``ArchiveStream``, pass ``track_output=False`` (counting belongs on that inner
+        wrap); collapse happens in ``_ensure_open``.
         """
+        if (inner is None) == (open_fn is None):
+            raise TypeError("exactly one of inner or open_fn is required")
+
+        if open_fn is not None:
+            if track_output:
+
+                def tracked_open(
+                    raw_open: Callable[[], BinaryIO] = open_fn,
+                ) -> BinaryIO:
+                    # open_fn should return a bytes stream when tracking here; nested
+                    # ArchiveStream collapse is handled in ArchiveStream._ensure_open
+                    # (use track_output=False when open_fn returns ArchiveStream).
+                    return self._track_decompressed(raw_open())
+
+                use_open: Callable[[], BinaryIO] = tracked_open
+            else:
+                use_open = open_fn
+
+            return ArchiveStream(
+                use_open,
+                translate=self._translate_exception,
+                stamp=lambda exc: self._stamp_error_context(exc, member_name),
+                lazy=True,
+                seekable=(self._seek_declared() if seekable is None else seekable),
+                size=size,
+                collector=self._diagnostics_collector,
+            )
+
+        assert inner is not None
         if track_output:
             inner = self._track_decompressed(inner)
         return ArchiveStream(
@@ -601,7 +641,11 @@ class BaseArchiveReader(ArchiveReader):
             translate=self._translate_exception,
             stamp=lambda exc: self._stamp_error_context(exc, member_name),
             lazy=lazy,
-            seekable=self._seek_declared() and is_seekable(inner),
+            seekable=(
+                self._seek_declared() and is_seekable(inner)
+                if seekable is None
+                else seekable
+            ),
             size=size,
             collector=self._diagnostics_collector,
         )
