@@ -292,11 +292,9 @@ class MemberVerifier:
         short = self._short
         # Close first. An inner teardown error (e.g. unrar wrong-password exit)
         # must win over a deferred short/truncation verdict — same precedence as
-        # the pre-fusion VerifyingStream.close.
-        try:
-            inner.close()
-        except Exception:
-            raise
+        # the pre-fusion VerifyingStream.close, so let a close error propagate over
+        # ``finish_exc`` / ``short`` below rather than swallowing it.
+        inner.close()
         if finish_exc is not None:
             raise finish_exc
         if short:
@@ -349,7 +347,10 @@ class VerifyingStream(ReadOnlyIOStream):
     ) -> None:
         super().__init__()
         self._inner = inner
-        verifier = build_member_verifier(
+        # This wrapper is used explicitly (codec length backstops, tests), so it always
+        # owns a verifier even when there is nothing to check — unlike the fused path,
+        # which uses ``build_member_verifier`` to skip the wrapper entirely in that case.
+        self._verifier = MemberVerifier(
             expected,
             expected_size=expected_size,
             collector=collector,
@@ -357,18 +358,6 @@ class VerifyingStream(ReadOnlyIOStream):
             archive_name=archive_name,
             digest_transforms=digest_transforms,
         )
-        # Always construct a verifier when this wrapper is used explicitly (even if
-        # both hashes and size are empty — length-only call sites pass expected_size).
-        if verifier is None:
-            verifier = MemberVerifier(
-                {},
-                expected_size=expected_size,
-                collector=collector,
-                member=member,
-                archive_name=archive_name,
-                digest_transforms=digest_transforms,
-            )
-        self._verifier = verifier
 
     # Compat for tests / diagnostics that inspect frontier state.
     @property
