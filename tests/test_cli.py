@@ -40,6 +40,43 @@ def test_inject_default_list() -> None:
     ]
     assert _inject_default_list(["x", "a.zip"]) == ["x", "a.zip"]
     assert _inject_default_list(["create", "a.zip"]) == ["create", "a.zip"]
+    # Bare "-" is a positional (reserved stdin), not an option.
+    assert _inject_default_list(["-"]) == ["list", "-"]
+
+
+def test_global_flags_before_verb(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Shared-parents argparse pitfall: pre-verb globals must survive subparser defaults.
+    assert main(["--track-io", str(sample_zip)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "track-io:" in err
+
+    assert main(["-v", "test", str(sample_zip)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "OK   a.txt" in err or "a.txt" in err
+    assert "OK," in err or "failed" in err
+
+
+def test_password_before_verb_reaches_dispatch(
+    sample_zip: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.cli import main as main_mod
+
+    seen: dict[str, object] = {}
+
+    def _capture_test(**kwargs: object) -> int:
+        seen.update(kwargs)
+        return EXIT_OK
+
+    monkeypatch.setattr(main_mod, "run_test", _capture_test)
+    assert main(["--password", "secret", "test", str(sample_zip)]) == EXIT_OK
+    assert seen.get("password") == "secret"
+
+
+def test_abbrev_password_rejected(sample_zip: Path) -> None:
+    # allow_abbrev=False: --pass must not become --password with a mangled value.
+    assert main(["--pass", "secret", str(sample_zip)]) == EXIT_USAGE
 
 
 def test_bare_invocation_is_usage() -> None:
@@ -84,7 +121,8 @@ def test_dash_prefixed_verb_rejected(sample_zip: Path) -> None:
 
 
 def test_stdin_token_reserved() -> None:
-    assert main(["list", "-"]) == EXIT_FAIL
+    assert main(["list", "-"]) == EXIT_USAGE
+    assert main(["-"]) == EXIT_USAGE
 
 
 def test_reserved_verbs(sample_zip: Path) -> None:
@@ -94,7 +132,7 @@ def test_reserved_verbs(sample_zip: Path) -> None:
 
 
 def test_salvage_reserved(sample_zip: Path) -> None:
-    assert main(["list", str(sample_zip), "--salvage"]) == EXIT_FAIL
+    assert main(["list", str(sample_zip), "--salvage"]) == EXIT_USAGE
     assert (
         main(
             [
@@ -105,7 +143,7 @@ def test_salvage_reserved(sample_zip: Path) -> None:
                 str(sample_zip.parent / "o"),
             ]
         )
-        == EXIT_FAIL
+        == EXIT_USAGE
     )
 
 
@@ -220,9 +258,56 @@ def test_extract_dest_dot_splatter(
 def test_info_and_detect(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["info", str(sample_zip)]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "ArchiveFormat.ZIP" in out
+    assert "ZIP" in out
     assert "format:" in out
+    assert "ArchiveFormat.ZIP" not in out
     assert main(["detect", str(sample_zip)]) == EXIT_OK
+
+
+def test_info_track_io_is_explicit_na(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["info", str(sample_zip), "--track-io"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "track-io: n/a" in err
+
+
+def test_extract_reports_renames(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    z = _zip(tmp_path / "c.zip", {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.txt").write_bytes(b"old")
+    assert (
+        main(
+            [
+                "extract",
+                str(z),
+                "-d",
+                str(dest),
+                "--overwrite",
+                "rename",
+            ]
+        )
+        == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert "renamed:" in err
+    assert "extracted," in err and "renamed," in err
+    assert (dest / "a.txt").read_bytes() == b"old"
+    # Library rename spelling: "a (1).txt"
+    assert any(p.name.startswith("a (") for p in dest.iterdir())
+
+
+def test_extract_verbose_lists_members(
+    sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dest = tmp_path / "out"
+    assert main(["-v", "extract", str(sample_zip), "-d", str(dest)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "extracted: a.txt" in err
+    assert "→" in err
 
 
 def test_list_missing_archive(tmp_path: Path) -> None:
@@ -259,10 +344,10 @@ def test_c_is_not_integrity_alias(sample_zip: Path) -> None:
 def test_no_tqdm_progress_still_extracts(
     sample_zip: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Simulate missing tqdm: progress helper returns None; extract still works.
-    import archivey.cli.progress as progress_mod
+    # Patch where extract_cmd looks up the helper (import-by-name binding).
+    import archivey.cli.extract_cmd as extract_mod
 
-    monkeypatch.setattr(progress_mod, "make_progress_callback", lambda **_: None)
+    monkeypatch.setattr(extract_mod, "make_progress_callback", lambda **_: None)
     dest = tmp_path / "out"
     assert main(["extract", str(sample_zip), "-d", str(dest)]) == EXIT_OK
     assert (dest / "a.txt").exists()
@@ -375,3 +460,33 @@ def test_track_io_reports(sample_zip: Path, capsys: pytest.CaptureFixture[str]) 
     err = capsys.readouterr().err
     assert "track-io:" in err
     assert "bytes_decompressed=" in err
+
+
+def test_test_open_failure_still_prints_summary(
+    sample_zip: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Open-time failures must count as FAIL and still reach the summary (F4).
+    from archivey.exceptions import ReadError
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    def _immediate(self: BaseArchiveReader, members: object = None) -> object:
+        raise ReadError("simulated open failure")
+        yield  # pragma: no cover — make this a generator
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _immediate)
+    assert main(["test", str(sample_zip)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "FAIL:" in err
+    assert "0 OK, 1 failed" in err
+
+
+def test_archive_stem_uses_format_extension() -> None:
+    from archivey.cli.extract_cmd import _archive_stem
+    from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
+
+    assert _archive_stem(Path("photos.tar.gz"), format=ArchiveFormat.TAR_GZ) == "photos"
+    assert _archive_stem(Path(".tar.gz"), format=ArchiveFormat.TAR_GZ) == "archive"
+    tar_z = ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS)
+    assert _archive_stem(Path("data.tar.Z"), format=tar_z) == "data"

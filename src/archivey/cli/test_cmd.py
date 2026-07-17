@@ -33,12 +33,30 @@ def run_test(
     ok = 0
     failed = 0
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
-        for member, stream in reader.stream_members(pred):
+        # Manual iteration so open-time failures (wrong password, corrupt header)
+        # count as FAIL and still reach the summary (F4). Once the generator raises,
+        # further next() yields StopIteration — remaining members are lost (library
+        # limitation for solid / poisoned streams).
+        it = iter(reader.stream_members(pred))
+        while True:
+            try:
+                member, stream = next(it)
+            except StopIteration:
+                break
+            except ArchiveyError as exc:
+                failed += 1
+                print(f"FAIL: {exc}", file=err)
+                continue
+            except OSError as exc:
+                failed += 1
+                print(f"FAIL: {exc}", file=err)
+                continue
+
             if stream is None:
-                # Directories / links / non-file: no body to verify.
-                ok += 1
+                # Directories / links / non-file: no body to verify — omit from counts
+                # so "N OK" matches unzip -t style (files only).
                 if verbose:
-                    print(f"OK   {member.name}", file=err)
+                    print(f"skip {member.name}", file=err)
                 continue
             try:
                 with stream:

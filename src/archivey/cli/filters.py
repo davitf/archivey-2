@@ -24,9 +24,10 @@ def member_predicate(
 
     def matches(member: ArchiveMember) -> bool:
         name = member.name
-        if include_pats and not any(fnmatch.fnmatch(name, p) for p in include_pats):
+        # fnmatchcase: deterministic across platforms (fnmatch is case-folding on Windows).
+        if include_pats and not any(fnmatch.fnmatchcase(name, p) for p in include_pats):
             return False
-        if exclude_pats and any(fnmatch.fnmatch(name, p) for p in exclude_pats):
+        if exclude_pats and any(fnmatch.fnmatchcase(name, p) for p in exclude_pats):
             return False
         return True
 

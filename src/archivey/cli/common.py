@@ -10,6 +10,7 @@ from typing import TextIO
 
 from archivey import open_archive
 from archivey.cli.errors import CliError
+from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.config import PasswordInput
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
@@ -19,14 +20,16 @@ from archivey.reader import ArchiveReader
 def reject_stdin_token(archive: str) -> None:
     """Fail fast when ``-`` is used (stdin archives reserved, not supported)."""
     if archive == "-":
+        # Grammar-level "not available yet" → usage exit (D7), matching reserved verbs.
         raise CliError(
-            "stdin archives are not supported yet (the '-' token is reserved)"
+            "stdin archives are not supported yet (the '-' token is reserved)",
+            code=EXIT_USAGE,
         )
 
 
 def reject_salvage(salvage: bool) -> None:
     if salvage:
-        raise CliError("--salvage is not implemented yet")
+        raise CliError("--salvage is not implemented yet", code=EXIT_USAGE)
 
 
 @contextmanager
@@ -54,10 +57,12 @@ def _report_track_io(reader: ArchiveReader, err: TextIO) -> None:
     if not isinstance(reader, BaseArchiveReader):
         print("track-io: counters unavailable for this reader", file=err)
         return
+    consumed = reader.compressed_bytes_consumed
+    consumed_s = "-" if consumed is None else str(consumed)
     print(
         "track-io:"
         f" bytes_decompressed={reader.bytes_decompressed}"
-        f" compressed_bytes_consumed={reader.compressed_bytes_consumed}"
+        f" compressed_bytes_consumed={consumed_s}"
         f" source_seek_count={reader.source_seek_count}",
         file=err,
     )
