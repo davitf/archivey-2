@@ -129,6 +129,7 @@ def test_reserved_verbs(sample_zip: Path) -> None:
     assert main(["create", str(sample_zip)]) == EXIT_USAGE
     assert main(["hash", str(sample_zip)]) == EXIT_USAGE
     assert main(["convert", str(sample_zip)]) == EXIT_USAGE
+    assert main(["cat", str(sample_zip)]) == EXIT_USAGE
 
 
 def test_salvage_reserved(sample_zip: Path) -> None:
@@ -490,3 +491,55 @@ def test_archive_stem_uses_format_extension() -> None:
     assert _archive_stem(Path(".tar.gz"), format=ArchiveFormat.TAR_GZ) == "archive"
     tar_z = ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS)
     assert _archive_stem(Path("data.tar.Z"), format=tar_z) == "data"
+
+
+def test_smart_dest_uses_filtered_tops_when_indexed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Indexed ZIP with multi-top archive, but filter selects a single root → cwd.
+    monkeypatch.chdir(tmp_path)
+    z = _zip(
+        tmp_path / "pack.zip",
+        {"a/x.txt": b"a", "b/y.txt": b"b", "c/z.txt": b"c"},
+    )
+    assert main(["extract", str(z), "b/*"]) == EXIT_OK
+    assert (tmp_path / "b" / "y.txt").read_bytes() == b"b"
+    assert not (tmp_path / "pack").exists()
+    assert not (tmp_path / "a").exists()
+
+
+def test_smart_dest_always_wraps_when_no_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Plain TAR has no cheap index — always wrap even for a single top-level root.
+    import tarfile
+
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / "bundle.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("root/a.txt")
+        info.size = 1
+        tf.addfile(info, io.BytesIO(b"x"))
+    assert main(["extract", str(archive)]) == EXIT_OK
+    assert (tmp_path / "bundle" / "root" / "a.txt").read_bytes() == b"x"
+    assert not (tmp_path / "root").exists()
+
+
+def test_password_rejected_message_distinct_from_required() -> None:
+    from archivey.exceptions import EncryptionError
+    from archivey.internal.password import _PasswordCandidates
+
+    candidates = _PasswordCandidates.from_input("wrong")
+    with pytest.raises(EncryptionError, match="rejected") as caught:
+        candidates.attempt(
+            None,
+            lambda _pwd: (_ for _ in ()).throw(EncryptionError("nope")),
+        )
+    assert "Password required" not in caught.value.message
+
+    empty = _PasswordCandidates.from_input(None)
+    with pytest.raises(EncryptionError, match="Password required"):
+        empty.attempt(
+            None,
+            lambda _pwd: (_ for _ in ()).throw(EncryptionError("unreachable")),
+        )

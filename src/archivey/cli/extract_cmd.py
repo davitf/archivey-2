@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO
 
@@ -19,6 +20,7 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
+from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
 
@@ -54,6 +56,25 @@ def _top_level_names(members: list[ArchiveMember]) -> set[str]:
     return tops
 
 
+def _enclosing_dir(
+    archive: Path,
+    *,
+    format: ArchiveFormat,
+    overwrite: OverwritePolicy,
+) -> Path:
+    """Always-wrap destination used when no cheap member index is available (D1)."""
+    stem = _archive_stem(archive, format=format)
+    dest = Path(stem)
+    if not dest.exists():
+        return dest
+    if overwrite is OverwritePolicy.RENAME:
+        n = 1
+        while Path(f"{stem} ({n})").exists():
+            n += 1
+        return Path(f"{stem} ({n})")
+    return dest
+
+
 def smart_dest(
     archive: Path,
     *,
@@ -61,24 +82,39 @@ def smart_dest(
     members: list[ArchiveMember],
     overwrite: OverwritePolicy,
 ) -> Path:
-    """Compute the anti-tarbomb default destination when ``-d`` is omitted."""
+    """Anti-tarbomb dest from an indexed member list (tops may already be filtered)."""
     if format.container == ContainerFormat.RAW_STREAM:
         return Path(".")
     tops = _top_level_names(members)
     if len(tops) <= 1:
         return Path(".")
+    return _enclosing_dir(archive, format=format, overwrite=overwrite)
 
-    stem = _archive_stem(archive, format=format)
-    dest = Path(stem)
-    if not dest.exists():
-        return dest
-    if overwrite is OverwritePolicy.RENAME:
-        # Match the library's file-rename style: "name (N)" (not "name-N").
-        n = 1
-        while Path(f"{stem} ({n})").exists():
-            n += 1
-        return Path(f"{stem} ({n})")
-    return dest
+
+def resolve_smart_dest(
+    reader: ArchiveReader,
+    archive: Path,
+    *,
+    pred: Callable[[ArchiveMember], bool] | None,
+    overwrite: OverwritePolicy,
+) -> Path:
+    """Choose the default dest without forcing a streaming metadata pass (D1).
+
+    - Single-file / raw-stream → cwd.
+    - Indexed archive → tops on the **filtered** member set (wrap / reuse / cwd).
+    - No cheap index (tar, future stdin, …) → always ``./<stem>/``; post-hoc hoist
+      of a single extracted root is deferred until streaming extract lands.
+    """
+    fmt = reader.format
+    if fmt.container == ContainerFormat.RAW_STREAM:
+        return Path(".")
+
+    indexed = reader.get_members_if_available()
+    if indexed is None:
+        return _enclosing_dir(archive, format=fmt, overwrite=overwrite)
+
+    members = [m for m in indexed if pred is None or pred(m)]
+    return smart_dest(archive, format=fmt, members=members, overwrite=overwrite)
 
 
 def _report_extraction(
@@ -165,12 +201,10 @@ def run_extract(
         if dest is not None:
             target = Path(dest)
         else:
-            # Need a member list for the smart-dest heuristic.
-            members = reader.members()
-            target = smart_dest(
+            target = resolve_smart_dest(
+                reader,
                 archive_path,
-                format=reader.format,
-                members=members,
+                pred=pred,
                 overwrite=overwrite_enum,
             )
             if target != Path("."):

@@ -13,6 +13,7 @@ from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import run_extract
 from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
+from archivey.cli.logging_config import configure_cli_logging
 from archivey.cli.test_cmd import run_test
 from archivey.exceptions import ArchiveyError
 
@@ -31,6 +32,7 @@ _VERBS = frozenset(
         "hash",
         "create",
         "convert",
+        "cat",
     }
 )
 
@@ -147,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Inspect, verify, and safely extract archives. "
             "Bare invocation defaults to list. "
-            "Forthcoming: hash, create, convert."
+            "Forthcoming: hash, create, convert, cat."
         ),
         parents=[common],
         conflict_handler="resolve",
@@ -234,6 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("hash", "hash emission is not implemented yet"),
         ("create", "archive creation is not implemented yet"),
         ("convert", "archive conversion is not implemented yet"),
+        ("cat", "member streaming to stdout is not implemented yet"),
     ):
         p = sub.add_parser(name, parents=[common_sub], help=f"reserved ({hint})")
         p.add_argument("archive", nargs="?", default=None)
@@ -273,6 +276,7 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
             patterns=list(args.patterns),
             exclude=list(args.exclude),
             salvage=bool(args.salvage),
+            hide_progress=bool(args.hide_progress),
             out=out,
             err=err,
         )
@@ -332,6 +336,8 @@ def main(
             return code
         print(code, file=err_stream)
         return EXIT_USAGE
+
+    configure_cli_logging(verbose=bool(getattr(args, "verbose", False)), err=err_stream)
 
     try:
         return _dispatch(args, out=out_stream, err=err_stream)

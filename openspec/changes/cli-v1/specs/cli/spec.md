@@ -6,10 +6,12 @@ The system SHALL provide an `archivey` command whose verbs are **subcommands**:
 each verb is a bare word (never dash-prefixed) with a single-letter bare-word
 alias. When no verb is present the verb SHALL default to `list`. Verb dispatch
 SHALL be **known-verb-wins**: if the first positional token is a registered verb
-or alias (including reserved verbs `hash` / `create` / `convert`), the system
-SHALL dispatch that verb; otherwise it SHALL treat the token as an archive path
-and run `list`. A file whose name equals a verb word SHALL be reachable by naming
-the verb explicitly (e.g. `archivey list x`). Verbs MUST NOT be selectable via a
+or alias (including reserved verbs `hash` / `create` / `convert` / `cat`), the
+system SHALL dispatch that verb; otherwise it SHALL treat the token as an
+archive path and run `list`. A file whose name equals a verb word SHALL be
+reachable by naming the verb explicitly (e.g. `archivey list x`). New verbs MAY
+be added later and take precedence over same-named files; the `list <path>`
+escape hatch is permanent. Verbs MUST NOT be selectable via a
 dash-prefixed option form (e.g. `-x` SHALL NOT mean `extract`); options always
 take a dash, verbs never do. Progress output SHALL use
 `tqdm` from `[cli]` when available; core MUST NOT depend on `tqdm`. The console
@@ -65,10 +67,16 @@ positionals after the archive path SHALL be member filters only (no bare
 positional destination). When `-d` is given, extraction SHALL write into that
 directory verbatim (`-d .` reproduces classic splatter-into-cwd behavior). When
 `-d` is omitted, the destination SHALL default to a smart enclosing directory to
-avoid tarbombs: extract into `./<archive-stem>/` when the archive has multiple
-top-level entries; extract into `.` when the archive already has a single
-top-level directory (no redundant nesting) or is a single-file/single-stream
-archive. Container-name collisions SHALL be resolved by the overwrite policy.
+avoid tarbombs. When a cheap member index is available without a streaming scan
+(ZIP / 7z / RAR central directory, etc.), tops SHALL be computed on the
+**filtered** member set: extract into `./<archive-stem>/` when that set has
+multiple top-level entries; extract into `.` when it already has a single
+top-level directory (no redundant nesting) or the archive is a
+single-file/single-stream archive. When no cheap index is available (plain TAR,
+future stdin sources, …), the destination SHALL be `./<archive-stem>/` (always
+wrap) rather than forcing a full metadata pass before extraction; post-hoc
+hoisting of a single extracted root MAY be added later. Container-name
+collisions SHALL be resolved by the overwrite policy.
 Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 (`--overwrite` may select `error` / `skip` / `replace` / `rename`).
 
@@ -79,12 +87,15 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `archivey <archive>` | Same as `archivey list <archive>` (first token is not a known verb → list) |
 | `archivey ./x` where `x` is a file and also the `extract` alias | Dispatches `extract` (known-verb-wins); list the file via `archivey list ./x` |
 | `archivey create <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
+| `archivey cat <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
 | `archivey list <archive>` / `archivey l <archive>` | Layer-1 member listing |
 | `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
 | `archivey test <archive>` / `archivey t <archive>` | Fully reads members, verifies stored digests, reports failures |
 | `archivey extract <archive>` / `archivey x …` | Extracts under `--policy` default `strict`, overwrite default `rename`, into the smart default dest |
 | `archivey extract <archive>` where archive has many top-level entries | Extracts into `./<archive-stem>/` (no cwd splatter) |
 | `archivey extract <archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
+| `archivey extract <indexed-archive> 'b/*'` where filtered set has single root `b/` | Extracts into `.` (tops on filtered set); lands as `./b/…` |
+| `archivey extract <no-index-archive>` (e.g. plain TAR) with no `-d` | Extracts into `./<archive-stem>/` without a pre-extract listing pass |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
@@ -130,15 +141,17 @@ not-implemented message so callers cannot assume best-effort reads.
 
 The system SHALL NOT reuse a verb letter that commonly means create/compress for
 integrity checking (in particular `c` MUST NOT mean "check"; leave it for a
-future `create`). Help text MAY mention `hash`, `create`, and `convert` as
-forthcoming without implementing them.
+future `create`). Help text MAY mention `hash`, `create`, `convert`, and `cat`
+as forthcoming without implementing them. `cat` SHALL be reserved now so a later
+member-to-stdout verb does not silently change the meaning of
+`archivey cat` for a same-named archive file.
 
 #### Scenario: flag hygiene
 
 | Case | Expected |
 | --- | --- |
 | `t` | Means `test` (integrity), not create |
-| Unknown verb `hash` / `create` / `convert` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
+| Unknown verb `hash` / `create` / `convert` / `cat` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
 
 ### Requirement: exit codes are minimal and argparse-aligned
 

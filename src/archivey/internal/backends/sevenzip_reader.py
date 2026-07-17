@@ -233,7 +233,7 @@ class SevenZipReader(BaseArchiveReader):
                 )
             return decode(None)
         except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError("Password required to decrypt the 7z header") from exc
+            raise EncryptionError(exc.message) from exc
 
     @staticmethod
     def _folder_pack_start_indices(archive: SevenZipArchive) -> list[int]:
@@ -560,9 +560,7 @@ class SevenZipReader(BaseArchiveReader):
         try:
             password = self._passwords.attempt(member, confirm)
         except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError(
-                "Password required to decrypt this 7z member"
-            ) from exc
+            raise EncryptionError(exc.message) from exc
         self._folder_passwords[folder_index] = password
         return password
 

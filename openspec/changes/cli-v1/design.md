@@ -75,11 +75,13 @@ Bare `archivey` with no archive path prints help and exits non-zero (usage).
 **Default-to-list dispatch (known-verb-wins).** The default verb makes the first
 positional ambiguous — verb or archive path? The rule: if the first token is a
 **registered verb or alias** — `list`/`l`, `test`/`t`, `extract`/`x`, `info`/`i`,
-`detect`, plus the reserved `hash`/`create`/`convert` — dispatch that verb;
+`detect`, plus the reserved `hash`/`create`/`convert`/`cat` — dispatch that verb;
 otherwise treat the token as an archive path and run `list`. The reserved words
 are load-bearing for parsing *before* they are implemented: `archivey create`
 MUST error as "not yet" (Decision 7 / flag hygiene), not silently list a file
-named `create`.
+named `create`. `cat` is reserved now for the same reason (member-to-stdout is a
+likely future verb). New verbs may be reserved or added later and take
+precedence over same-named files; the escape hatch below is permanent.
 
 The only casualty is a file whose name is exactly a verb word (`./x`, `./list`,
 `./hash`). Escape hatch: name the verb explicitly — `archivey list x`,
@@ -182,8 +184,14 @@ avoid double-nesting:
 - **Single-file / single-stream archives** (`.gz`, `.bz2`, `.xz` of one file) →
   write the decompressed file into `.` with no wrapper dir (matches `gunzip`
   expectations).
+- **Tops are computed on the filtered member set** when a cheap index exists
+  (ZIP/7z/RAR). So `archivey x a.zip 'b/*'` that only extracts under `b/` reuses
+  `.` rather than wrapping in `./a/`.
+- **No cheap index** (plain TAR; future stdin) → **always** `./<archive-stem>/`.
+  Do not force a full metadata pass just for smart-dest. Post-hoc hoist of a
+  single extracted root is deferred until streaming/stdin extract ships.
 - **Container-name collision** (`./foo/` already exists) → resolved by the
-  overwrite policy; default `rename` (Decision 3) yields `foo-1/`, `foo-2/`, ….
+  overwrite policy; default `rename` (Decision 3) yields `foo (1)/`, `foo (2)/`, ….
 
 When `-d DIR` **is** given, extract straight into `DIR` verbatim — no smart
 wrapping. Explicit dest means "I know what I want," including `-d .` which

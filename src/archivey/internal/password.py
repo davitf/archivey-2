@@ -217,9 +217,18 @@ class _PasswordCandidates:
             attempt += 1
 
         message = (
-            last_error.message
-            if last_error is not None
-            else "Password required to read this encrypted member"
+            (
+                last_error.message
+                if last_error is not None
+                and "wrong password" in last_error.message.lower()
+                else "Password(s) rejected for this encrypted member"
+            )
+            if tried
+            else (
+                last_error.message
+                if last_error is not None
+                else "Password required to read this encrypted member"
+            )
         )
         exhausted = _PasswordCandidatesExhausted(message, last_error=last_error)
         if last_error is not None:
