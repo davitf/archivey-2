@@ -462,10 +462,9 @@ class BaseArchiveReader(ArchiveReader):
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
-        already returns an ``ArchiveStream``; we flatten it via
-        :meth:`ArchiveStream.release_inner` so the public handle is a **single**
-        wrapper (not ``ArchiveStream`` over ``ArchiveStream``). Deferral does not
-        change what a failed open raises — only when.
+        already returns an ``ArchiveStream``; nesting is collapsed inside
+        :meth:`ArchiveStream._ensure_open` so the public handle is a **single**
+        wrapper. Deferral does not change what a failed open raises — only when.
         """
         return self._register_public_stream(
             self._wrap_member_stream(
@@ -592,8 +591,8 @@ class BaseArchiveReader(ArchiveReader):
 
         Pass ``open_fn`` (and ``inner=None``) for a lazy open — one ``ArchiveStream``,
         opened on first read. If ``open_fn`` returns an ``ArchiveStream`` (e.g. from
-        ``_open_member``), it is flattened via :meth:`ArchiveStream.release_inner` so
-        callers never see a nested wrapper.
+        ``_open_member``), :meth:`ArchiveStream._ensure_open` collapses the nesting
+        automatically so callers never see a double wrapper.
 
         Seekability is gated by ``MemberStreams.SEEKABLE``: without it the wrapper reports
         non-seekable even when ``inner`` could seek. Pass ``seekable=`` to override the
@@ -602,27 +601,30 @@ class BaseArchiveReader(ArchiveReader):
         When measurement is on and ``track_output`` is true (the default), decoded bytes
         delivered through this handle are added to :attr:`bytes_decompressed`. Solid
         backends that already count at the folder/block decode layer pass
-        ``track_output=False`` to avoid double-counting.
+        ``track_output=False`` to avoid double-counting. When ``open_fn`` may return an
+        ``ArchiveStream``, pass ``track_output=False`` (counting belongs on that inner
+        wrap); collapse happens in ``_ensure_open``.
         """
         if (inner is None) == (open_fn is None):
             raise TypeError("exactly one of inner or open_fn is required")
 
         if open_fn is not None:
+            if track_output:
 
-            def tracked_open(
-                raw_open: Callable[[], BinaryIO] = open_fn,
-            ) -> BinaryIO:
-                raw = raw_open()
-                if isinstance(raw, ArchiveStream):
-                    # Collapse ArchiveStream-over-ArchiveStream from deferred
-                    # ``_open_member`` (and any similar nested wrap).
-                    raw = raw.release_inner()
-                if track_output:
-                    raw = self._track_decompressed(raw)
-                return raw
+                def tracked_open(
+                    raw_open: Callable[[], BinaryIO] = open_fn,
+                ) -> BinaryIO:
+                    # open_fn should return a bytes stream when tracking here; nested
+                    # ArchiveStream collapse is handled in ArchiveStream._ensure_open
+                    # (use track_output=False when open_fn returns ArchiveStream).
+                    return self._track_decompressed(raw_open())
+
+                use_open: Callable[[], BinaryIO] = tracked_open
+            else:
+                use_open = open_fn
 
             return ArchiveStream(
-                tracked_open,
+                use_open,
                 translate=self._translate_exception,
                 stamp=lambda exc: self._stamp_error_context(exc, member_name),
                 lazy=True,

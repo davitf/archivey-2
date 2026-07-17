@@ -214,7 +214,12 @@ class ArchiveStream(ReadOnlyIOStream):
             open_fn = self._open_fn
             self._open_fn = None  # claim: only one caller proceeds to open_fn
         try:
-            opened = open_fn()
+            opened: BinaryIO = open_fn()
+            # Lazy ``stream_members`` open_fn often returns another ``ArchiveStream``
+            # (from ``_open_member`` → ``_wrap_member_stream``). Collapse here so the
+            # public handle is a single wrapper; callers need not know about nesting.
+            while isinstance(opened, ArchiveStream):
+                opened = ArchiveStream._collapse_nested(opened)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             # _open_fn stays None (claimed above) so a retry raises rather than
             # re-entering a half-open backend.
@@ -229,25 +234,37 @@ class ArchiveStream(ReadOnlyIOStream):
             self._inner = opened
             return self._inner
 
-    def release_inner(self) -> BinaryIO:
-        """Hand off the opened inner stream and neutralize this wrapper.
+    @staticmethod
+    def _collapse_nested(nested: ArchiveStream) -> BinaryIO:
+        """Reduce a nested ``ArchiveStream`` to a bytes stream for the outer handle.
 
-        Used to collapse nested ``ArchiveStream`` wrapping (a lazy outer whose
-        ``open_fn`` calls a path that already returns ``ArchiveStream``): the caller
-        takes ownership of the bytes stream; closing this wrapper will not close it.
-        Translate/stamp on the outer handle remain the public contract.
+        If ``nested`` is still lazy, its opener is taken and invoked (the outer is
+        opening *now*, so deferral transfers rather than being forced early by a
+        separate ``release_inner`` call). If it is already open, its inner is stolen.
+        Either way the nested wrapper is neutralized and will not close the result.
         """
-        if self.closed:
+        if nested.closed:
             raise ValueError("I/O operation on closed file.")
-        inner = self._ensure_open()
-        with self._open_lock:
-            self._inner = None
-            self._open_fn = None
-        self._detach_finalizer()
-        self._on_close = None
-        # Mark closed without touching ``inner`` (``close`` would otherwise close it).
-        super().close()
-        return inner
+        with nested._open_lock:
+            open_fn = nested._open_fn
+            inner = nested._inner
+            nested._open_fn = None
+            nested._inner = None
+        nested._detach_finalizer()
+        nested._on_close = None
+        # Mark closed without touching stolen opener/inner.
+        super(ArchiveStream, nested).close()
+
+        if inner is not None:
+            return inner
+        if open_fn is not None:
+            opened = open_fn()
+            while isinstance(opened, ArchiveStream):
+                opened = ArchiveStream._collapse_nested(opened)
+            return opened
+        raise ArchiveyUsageError(
+            "Cannot collapse nested ArchiveStream: it has no opener and no inner stream."
+        )
 
     def _fail(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""

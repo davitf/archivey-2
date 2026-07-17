@@ -63,11 +63,11 @@ Composition site: `base_reader._wrap_member_stream` (`base_reader.py:572`) +
 **Concrete double-wrap (fixed on the perf follow-up branch):** the default
 `_lazy_member_stream` used to build an outer `ArchiveStream(lazy=True)` whose
 `open_fn` called `_open_member` → `_wrap_member_stream` (a *second*
-`ArchiveStream`). That nesting is now collapsed via
-`ArchiveStream.release_inner` / `_wrap_member_stream(..., open_fn=...)` — confirm
-the public handle's `_inner` after first read is **not** an `ArchiveStream`, and
-treat any remaining nesting as a regression. Solid sequential paths (7z/RAR)
-build a single wrapper the same way.
+`ArchiveStream`). Nesting is now collapsed inside `ArchiveStream._ensure_open`
+via `_collapse_nested` (steals a still-lazy opener, or an already-opened inner) —
+confirm the public handle's `_inner` after first read is **not** an `ArchiveStream`,
+and treat any remaining nesting as a regression. Solid sequential paths (7z/RAR)
+build a single wrapper directly.
 
 ## Part 1 — Correctness audit (do this first; it defines the invariants a collapse must keep)
 
@@ -94,8 +94,9 @@ overhead. Verify each, with `file:line` and the concrete input/state:
 - **`ArchiveStream`** (`archive_stream.py`): the lazy-open claim/lock and the "open_fn
   claimed then failed" path; `_fail` translation ordering (closed-file before the
   per-library translator); the finalizer/lease release and its interpreter-exit caveat;
-  `size` derivation; `release_inner` (used to flatten a deferred `_open_member` wrap) —
-  confirm close/lease ownership stays on the public handle only.
+  `size` derivation; `_collapse_nested` (flattens a deferred `_open_member` wrap inside
+  `_ensure_open`, stealing a still-lazy opener or an already-opened inner) — confirm
+  close/lease ownership stays on the public handle only.
 - **`SharedSource`/CONCURRENT**: how views are minted per handle and whether the
   single-live-stream / re-seek invariants survive. **This is the main constraint on
   fusion** (see Part 2).
