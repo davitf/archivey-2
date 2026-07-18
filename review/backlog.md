@@ -9,9 +9,14 @@ character and timing:
   polish, so run them together rather than as two frontier deep dives.
 - **Topic 6** (decode-engine performance) — a later *performance* round, once the
   `stream-layering` wrapper work has landed; mostly independent of it.
+  *(stream-layering fusion landed in #137 — Topic 6 is unblocked on that axis.
+  Also absorb parked stream-layering Q4: real `SlicingStream.readinto`.)*
 - **Topic 7** (outside-in adoption / confidence) — a **capstone**, meaningful only
   *after everything else is fully addressed*; it judges the finished library, not a
   work in progress.
+
+Live triage of the *current* in-flight round's remaining items is in
+[`STATUS.md`](STATUS.md) (actionable / needs-decision / future archive-copy).
 
 When commissioned, each gets its own top-level directory with a `brief.md` and
 archives when addressed (see `README.md`).

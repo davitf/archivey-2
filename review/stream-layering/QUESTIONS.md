@@ -1,6 +1,11 @@
 # Questions for the maintainer
 
-## Q1 — Accept the partial-collapse verdict?
+> **Status (2026-07-18):** Q1–Q3 decided and implemented in #137. **Q4** is the
+> only leftover — recommend **park** (future / archive-copy). This review is
+> otherwise complete and can move to `archive/` once Q4 is deferred. See
+> `../STATUS.md`.
+
+## Q1 — Accept the partial-collapse verdict? — DONE (#137)
 
 **Implemented in this PR** (on top of #136): `MemberVerifier` fused into
 `ArchiveStream`; ZIP/7z/RAR backends pass `expected_hashes` /
@@ -16,19 +21,23 @@ Alternatives considered and rejected:
 - **Sell fusion as closing the ≤1.3× gap** — numbers say ~5% STORED end-to-end;
   deflate remains Topic 6.
 
-## Q2 — F1 severity / fix venue
+## Q2 — F1 severity / fix venue — DONE (#137)
 
 **Done in this PR** with the fusion (`MemberVerifier.read` treats `n == 0` as
 a no-op).
 
-## Q3 — Keep `VerifyingStream` as a helper type?
+## Q3 — Keep `VerifyingStream` as a helper type? — DONE (#137)
 
 **Chose (b):** `MemberVerifier` holds the logic; `VerifyingStream` remains a
 thin wrapper for `codecs.py`'s length-only backstop and unit tests. Member
 backends no longer construct it. Deleting the class later is optional cleanup.
 
-## Q4 — `SlicingStream.readinto` follow-up?
+## Q4 — `SlicingStream.readinto` follow-up? — PARK (future)
 
 The brief hoped a fused `readinto` would matter more than dispatch count. On
 this host it does not, until the slice layer also stops allocating. Worth a
 follow-up task, or park until an extract path is shown `readinto`-bound?
+
+**Triage (2026-07-18):** **park** — copy to `backlog.md` / Topic 6 adjacency
+when archiving this review. Not a 0.2.0 blocker; no extract path has been
+shown `readinto`-bound.

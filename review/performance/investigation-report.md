@@ -162,14 +162,15 @@ informational for VISION; sanity ceiling stays 10×. Recommendation from #134
 
 ## Open questions (updated)
 
-| # | Status after this PR |
+| # | Status after this PR / later |
 |---|---|
-| Q1 budget scope | Still open; new evidence favors (b)/(c): many-small is a different claim |
+| Q1 budget scope | **Direction recorded** (#140): listing = peer ratios (2–3× ZIP/TAR; parity 7z/RAR). Implementation open — see `../STATUS.md` |
 | Q2 wall enforcement | Still open; peers added for ZIP open/extract |
 | Q3 `SOLID_DECODE_FACTOR` | **Done here** (1.25) |
-| Q4 verify-skip knob | Unchanged; perf case still ~nil post-#137 |
+| Q4 verify-skip knob | Unchanged; perf case still ~nil post-#137 — lean leave-as-is |
 | Q5 H1 fix shape | Resolved in #136 |
 | Q6 solid-random bound | **Done here** (ci ×1.5) |
+| O8 (side-finding) | **Mitigated in #141** |
 
 ## How to re-verify
 

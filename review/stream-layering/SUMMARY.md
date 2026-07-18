@@ -44,10 +44,14 @@ budget closer.
 
 | # | Sev | Finding | Where | Status |
 |---|-----|---------|-------|--------|
-| F1 | **Medium** | `VerifyingStream.read(0)` (and mid-stream `read(0)`) is treated as EOF — false `CorruptionError` / `TruncatedError`. `_GzipTruncationCheckStream` already pins the opposite contract. | `verify.py` (`MemberVerifier.read`) | **fixed** (this PR) |
-| F2 | Low | `VerifyingStream.close()` can leave wrapper+inner unclosed when the EOF probe raises a non-`CorruptionError`/`TruncatedError` `ArchiveyError` (e.g. `EncryptionError`). | `verify.py` (`finish_on_close`) | **fixed** (this PR) |
-| D1 | design | **Fuse verify into `ArchiveStream`** (conditional when hashes/size present); leave `SlicingStream`/`SharedSource`/`LockedStream` and the decode engine separate. Ranked sequence in `collapse-design.md`. | `archive_stream.py`, backends | **implemented** (this PR) |
-| D2 | design | Nested codec `ArchiveStream` under `VerifyingStream` remains after #136; verify-fusion is what lets `_collapse_nested` finish the job. | live STORED stack: `AS → SlicingStream` | **fixed** by D1 |
+| F1 | **Medium** | `VerifyingStream.read(0)` (and mid-stream `read(0)`) is treated as EOF — false `CorruptionError` / `TruncatedError`. `_GzipTruncationCheckStream` already pins the opposite contract. | `verify.py` (`MemberVerifier.read`) | **fixed** (#137) |
+| F2 | Low | `VerifyingStream.close()` can leave wrapper+inner unclosed when the EOF probe raises a non-`CorruptionError`/`TruncatedError` `ArchiveyError` (e.g. `EncryptionError`). | `verify.py` (`finish_on_close`) | **fixed** (#137) |
+| D1 | design | **Fuse verify into `ArchiveStream`** (conditional when hashes/size present); leave `SlicingStream`/`SharedSource`/`LockedStream` and the decode engine separate. Ranked sequence in `collapse-design.md`. | `archive_stream.py`, backends | **implemented** (#137) |
+| D2 | design | Nested codec `ArchiveStream` under `VerifyingStream` remains after #136; verify-fusion is what lets `_collapse_nested` finish the job. | live STORED stack: `AS → SlicingStream` | **fixed** by D1 (#137) |
+| Q4 | follow-up | Real `SlicingStream.readinto` (seek+`readinto` under lock) | `slicing.py` | **parked** — future / archive-copy |
+
+> **Archive readiness (2026-07-18):** all actionable findings done. Park Q4 then
+> move this directory to `archive/`. See `../STATUS.md`.
 
 ## What is actually fine
 
