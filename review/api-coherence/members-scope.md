@@ -107,4 +107,4 @@ raw surface; anti entries need a decision (they are current); and `7z l` parity 
 lost. This is strictly more surface and more per-format caveats than the
 recommendation — which is why it isn't the recommendation.
 
-→ Decision recorded as **Q2** in `QUESTIONS.md`.
+→ **Decided (Q2):** keep everything; no include/exclude argument. See `QUESTIONS.md`.

@@ -80,14 +80,15 @@ one spec delta + backend materialization change + sweep assertion.
 
 `ListingCost.REQUIRES_SCANNING`'s docstring names its canonical examples: "an
 uncompressed tar, **or a RAR with no quick-open record**" (`cost.py:24-27`). The RAR
-backend reports `INDEXED` unconditionally (`rar_reader.py:773`). The native parser does
-walk headers file-by-file at open (there is no central index in RAR without the
-quick-open record), so by the receipt's own definition ("describes static open-time
-properties" — `access-mode-and-cost` spec) the honest value for a no-quick-open RAR is
-arguably `REQUIRES_SCANNING`; by the "cost you'll pay *now*" reading it's `INDEXED`
-because open already paid the scan. The two public artifacts disagree — **Q3**.
-(`access-mode-and-cost`'s example matrix lists ZIP/tar/7z but is silent on RAR, so the
-spec doesn't break the tie.)
+backend reports `INDEXED` unconditionally. The native parser always walks
+headers at open and never reads QO; after open, listing is already paid.
+
+**Decided (Q3): keep `INDEXED`; fix the docstring.** Receipt axis = what the
+caller pays *after* open. Investigation (prevalence of no-QO, cost of a
+TAR-like lazy scan, unrar re-parse on member open) is in `QUESTIONS.md` §Q3 —
+short version: no-QO is common (all RAR3/4; small/default-partial RAR5; **0/15**
+of this repo’s RAR5 fixtures have a QO marker); lazy/QO paths are real work with
+limited payoff while data opens go through `unrar` anyway.
 
 ## The rest of the matrix — checked, uniform
 

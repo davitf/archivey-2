@@ -11,7 +11,7 @@ item is fixed or consciously deferred here / in `backlog.md`.
 |--------|---------------------|----------------------|-------------------|
 | `stream-layering/` | yes (#137) | **done** (F1/F2/D1/D2); Q4 parked → future | **almost** — park Q4 then archive |
 | `performance/` | yes (#134 + #139/#140/#143/#146) | partial (P3–P5 done; P7 listing L0–L2 done, L3 partial; P1/P2/P6 open) | no |
-| `api-coherence/` | yes (#133) | **none yet** — all findings still open | no |
+| `api-coherence/` | yes (#133) | **Q1–Q6 decided** (docs in QUESTIONS); code follow-ups open | no |
 | `cli-product/` | **no** — brief only | review not run | no |
 
 ---
@@ -30,17 +30,19 @@ or the finding is a clear proposed fix with no spec conflict).
 | **P2 remainder** | Many-small `read_all` follows the listing story (same per-member machinery as P7). Large-member ZIP read already ≤1.25× after #139; realistic extract ~1.9× (inside ~2× band) — no further extract code pending Q2. |
 | **VISION/docs** | Re-word the ≤1.3× claim to match Q1 (decompression-dominated ≤1.3×; listing as peer ratios) once enforcement (Q2) is chosen. |
 
-### From `api-coherence/` (no decision blocker once Q4 is a blanket “yes”)
+### From `api-coherence/` (Q1–Q6 decided 2026-07-18 — implement)
 
-These are pre-release surface/doc fixes the review already proposed; they still
-need an explicit Q4/Q6 nod, but the *implementation* is mechanical:
-
-| ID | Action (after Q4 / Q6 confirm) |
-|----|--------------------------------|
-| **S1 / S3** | Demote `*Context` + `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` from `__all__`; export `PasswordInput` / decide `OnDiagnostic`; drop `core.source_name`; document `open_stream` in `api.md`. |
-| **S2** | `ArchiveFormat.display_name` (or similar) so the CLI stops parsing `repr()`. |
+| ID | Action |
+|----|--------|
+| **P1 / Q1** | Unify last-entry-wins `is_current` on ZIP/TAR RA materialization; align specs; sweep asserts uniform duplicate contract. **Not already done** — only 7z/RAR set the field today. |
+| **Q2** | Docs/recipes only (listing stays “everything”); pairs with P1. |
+| **P2 / Q3** | Keep RAR `listing_cost=INDEXED`; fix `cost.py` docstring + grab-bag prose; document open always walks headers / QO unused; add RAR row to `test_cost_receipt.py`. |
+| **S1 / S3 / Q4** | Demote `*Context` + `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` from `__all__`; export `PasswordInput` + `OnDiagnostic`; drop `core.source_name`; document `open_stream` in `api.md`. |
+| **S2 / Q6** | `ArchiveFormat.display_name` **property** so the CLI stops parsing `repr()`. |
 | **E1** | Public measurement / IO-stats API so CLI `--track-io` leaves `internal/`. |
-| **E3** | Split or reason-tag `ExtractionStatus.SKIPPED` (non-current vs overwrite). |
+| **E3 / Q6** | Split `ExtractionStatus.SKIPPED` into distinct statuses (overwrite vs non-current). |
+| **Q6 hashes** | **Typing (review fix now):** `HashAlgorithm` enum + `Mapping[HashAlgorithm, bytes]` (crc32 `int` → 4-byte `bytes`; include `ADLER32` member). **Filling digests:** OpenSpec `surface-stored-stream-digests` (zlib Adler peek, lzip multi-member `crc32_combine`) — separate change, depends on typing. |
+| **Q6 WriteError / `[7z-write]`** | Demote/unexport `WriteError` for read-only 0.2.0; remove or stop advertising `[7z-write]` until writing lands (py7zr remains a dev oracle). |
 
 ### Process
 
@@ -57,15 +59,10 @@ Do not implement these until the maintainer answers (pause-and-ask).
 
 ### `api-coherence/QUESTIONS.md`
 
-| Q | Finding | Why blocked |
-|---|---------|-------------|
-| **Q1** | **P1** duplicate-name / `is_current` | Spec conflict (`safe-extraction` vs `archive-data-model`) + three format behaviours. Recommended: unify last-entry-wins on random-access formats. |
-| **Q2** | `members()` scope | Recommendation is “keep everything, no include/exclude arg” — needs explicit yes/no. |
-| **Q3** | **P2** RAR `listing_cost` | Doc says `REQUIRES_SCANNING` for no-quick-open; impl always `INDEXED`. |
-| **Q4** | Surface demote/add list | Blanket approval or line-item veto. |
-| **Q5** | **E2** library `verify` primitive | Priority: now vs post-0.2.0 (additive either way). |
-| **Q6** | Freeze nits | `WriteError` keep/demote; SKIPPED split shape; `hashes` int/bytes; display-name spelling. |
-| **Q7** | Partial members + honest error accessor | **Later-surfaced** (from #149 Option F review), not in #133. Adjacent to Q5/salvage; park vs explore-change. |
+| Q | Status |
+|---|--------|
+| **Q1–Q6** | **Decided** 2026-07-18 — see §1 and `api-coherence/QUESTIONS.md` |
+| **Q7** | **Deferred to next review round** (partial members + honest error) |
 
 ### `performance/QUESTIONS.md`
 
@@ -108,7 +105,9 @@ dedicated follow-up brief — they are not 0.2.0 blockers from the current round
 | ID | Notes |
 |----|-------|
 | **D1** | CLI list marks for `ANTI` / non-current — belongs to **`cli-product/`** when that review runs. |
-| **E2** (if Q5 = post-0.2.0) | Library `verify` / `VerifyReport` — `IDEAS.md` or a post-freeze change. |
+| **E2 / Q5** | Library `verify` / `VerifyReport` — deferred past 0.2.0; uncertain whether callers verify without extracting often enough. Park in `IDEAS.md`. |
+| **Q7** | Partial members + honest error accessor — **next review round** (VISION claim 3). Option F interim stands. |
+| **Stored stream digests** | zlib Adler-32 + lzip multi-member combine — OpenSpec **`surface-stored-stream-digests`** (after hashes typing). |
 
 ### Already on `backlog.md` (not from this round’s findings)
 

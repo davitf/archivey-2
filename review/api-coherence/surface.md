@@ -65,8 +65,9 @@ having decided what it promises. Either document or demote each. Migration: doc-
   `file_extension()`-style method `display_name()`) returning `"ZIP"`, `"TAR_GZ"`, or
   the constructed fallback. One property; the CLI helper collapses.
 - **`WriteError`** — exported and documented in the tree, but nothing raises it until
-  Phase 9 writing lands. Freezing an unraisable exception is harmless-but-odd; keep
-  only if you're confident Phase 9 keeps the name (Q6).
+  Phase 9 writing lands. **Decided (Q6): demote / remove from the 0.2.0 read-only
+  surface** (and stop advertising `[7z-write]` until writing is real). Do not freeze
+  writing leftovers into the first public release.
 
 ## Smallest surface that still serves the three use cases
 
