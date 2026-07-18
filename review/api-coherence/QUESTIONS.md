@@ -159,6 +159,50 @@ Nothing else is exposed. Docs/specs explicitly say `.bz2` / `.xz` / **zlib** / b
 
 Fold Adler-32 zlib surfacing into the same hashes implementation change as the enum + crc32→bytes migration (parity fix, not a separate freeze question).
 
+### Q6 hashes — multi-member streams: single-only vs combine math
+
+Multi-member/framed streams (gzip, lzip, xz, zstd, rare concatenated zlib) are
+common — that’s why we omit digests when we can’t attribute a trailer to the
+*whole* synthetic member. Two strategies:
+
+**A. Single-member only (after index / detection).** Already the gzip/lzip rule.
+Once the index (or `gzip_has_additional_member`) says “one unit,” peek the one
+trailer. Extends cleanly to zlib Adler-32 and to xz when the backward index
+shows a single block (and check type is one we understand). Cheap; no new math.
+
+**B. Combine per-unit digests into a whole-stream digest.** For **CRC-32** and
+**Adler-32**, yes — if you have each unit’s digest *and* the uncompressed length
+of every unit after the first:
+
+- `CRC(A‖B) = crc32_combine(CRC(A), CRC(B), len(B))` (GF(2) polynomial; zlib)
+- `Adler(A‖B) = adler32_combine(Adler(A), Adler(B), len(B))` (mod 65521; simpler)
+
+Same idea for CRC32c / CRC64 with the right polynomial; **not** for SHA-256 /
+full cryptographic hashes (and zstd’s stored value is only the low 32 bits of
+XXH64). CPython exposes `zlib.crc32_combine` / `adler32_combine` only from
+**3.15**; we are on 3.11 → small pure-Python (or vendored) combine helpers if we
+want this before then. Verified Adler combine against `zlib.adler32` on 3.11.
+
+| Format | What we already know | Combine feasible? |
+|---|---|---|
+| **lzip** | Backward index walks *every* trailer: CRC32 + full `data_size` u64 (exact). Today the index **discards** the CRC (`lzip.py` `_read_index_backwards`). | **Best win.** Fold CRCs with `crc32_combine` → one `CRC32` for the synthetic member even when multi-member. |
+| **gzip** | Last trailer only is at EOF; earlier members need decompress or magic scan to find trailers. `ISIZE` is **mod 2³²** (wrong `len2` if a member ≥ 4 GiB). | Math works *if* you have all CRCs + exact lengths; **getting** mid-member trailers without a decompress pass is the blocker. Keep single-member-only unless we grow a real member walker. |
+| **zlib** | One Adler-32 at EOF for a single stream. Concatenated zlib is uncommon. | Single-stream peek; combine only if we ever detect/split concatenated streams. |
+| **xz** | Backward index: per-block uncompressed sizes (full ints) + check *type*; **does not read** check field bytes. Payload check is **per block** (CRC32 / CRC64 default / SHA-256 / none). | Combine only when check type is **CRC32** (or we implement CRC64 combine) *and* we seek-read each block’s check bytes. SHA-256 → no. Default CRC64 → need a CRC64 combine helper. Multi-stream files: combine across streams only if check types match. |
+| **zstd** | No frame parser today; optional content checksum = low 32 of XXH64; sizes optional. | Not practical until we parse frames; XXH64 combine is a different animal and we only have 32 bits stored. |
+
+**Recommendation for the hashes implementation change:**
+
+1. Enum + all values `bytes` + zlib `ADLER32` single-stream peek (as above).
+2. **lzip: surface combined `CRC32` for multi-member** via index CRCs + combine
+   (high value, data already in hand).
+3. gzip/xz: keep **single-unit-only** for v0.2.0; optionally xz single-block
+   CRC32 peek. Document combine as the path if we later want multi-gzip/xz
+   without decompress.
+4. Do not pretend a combined digest is “stored by the format” in docs — it’s
+   **derived** from stored per-unit digests; still valid for cheap dedupe and
+   matches `hash(concat(parts))`.
+
 | **`ArchiveFormat` display name (S2)** | **Add a `display_name` property** (not a method). CLI stops parsing `repr()`. |
 
 ---
