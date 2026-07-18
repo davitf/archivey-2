@@ -118,9 +118,9 @@ parses as a *non-empty* plausible header.
 | P3 | **fixed** (#136) |
 | P4 / P5 | **fixed** (#139) |
 | P6 | **partial** — ZIP peers in #139; **py7zr/rarfile + TAR open_list peers added** (#143); RAR/encrypted/accel data cases still missing |
-| P7 | **partial** — #143 model-build fast paths + L1/L2 listing fixes (`listing-attribution.md`); ZIP open+list still above 2–3×; 7z closer to native band |
+| P7 | **partial** — #143 model-build fast paths + #146 L1/L2/L3 listing fixes (`listing-attribution.md`); ZIP open+list still above 2–3×; 7z closer to native band |
 | P8 / P9 | **follow-up** (future / archive-copy) |
-| Q1 | **direction recorded** (#140) — listing peers + ZIP model-build (#143) + L1/L2 from attribution worklist; residual band miss remains |
+| Q1 | **direction recorded** (#140) — listing peers + ZIP model-build (#143) + L1/L2/L3 from attribution worklist (#146); residual band miss remains |
 | Q2 / Q4 | **need decision** |
 | Q3 / Q5 / Q6 | **resolved** |
 
@@ -161,6 +161,7 @@ parses as a *non-empty* plausible header.
   next investigation areas and methodology.
 - `listing-attribution.md` — post-#143 per-format listing decomposition
   (ZIP derivation / 7z parser byte-loop / RAR fixture artifact) with the
-  **L0–L5 worklist**; L0 (#143), L1/L2 (implemented), L3 partial, L4/L5 deferred.
+  **L0–L5 worklist**; L0 **done (#143)**, L1/L2 **done (#146)**, L3 **partial
+  (#146)** (volume skip shipped; large RAR fixture open), L4/L5 deferred.
 - `repro.py`, `measurements.py`, `attrib.py`, `listing_probe.py` — runnable
   evidence.

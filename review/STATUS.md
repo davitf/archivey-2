@@ -10,7 +10,7 @@ item is fixed or consciously deferred here / in `backlog.md`.
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
 | `stream-layering/` | yes (#137) | **done** (F1/F2/D1/D2); Q4 parked → future | **almost** — park Q4 then archive |
-| `performance/` | yes (#134 + #139/#140) | partial (P3–P5 done; P1/P2/P6/P7 open) | no |
+| `performance/` | yes (#134 + #139/#140/#143/#146) | partial (P3–P5 done; P7 listing L0–L2 done, L3 partial; P1/P2/P6 open) | no |
 | `api-coherence/` | yes (#133) | **none yet** — all findings still open | no |
 | `cli-product/` | **no** — brief only | review not run | no |
 
@@ -25,7 +25,7 @@ or the finding is a clear proposed fix with no spec conflict).
 
 | ID | Action |
 |----|--------|
-| **P7 / H3** | **partial** — #143 model-build fast paths + L1 (7z bulk UTF-16 names) / L2 (`ArchiveMember` slots + trimmed kwargs) from `listing-attribution.md`. ZIP many-small ~3.7×; 7z open+list probe ~2.0× (was ~3.4×). Still above Q1 bands; L4 deferred, L5 needs OpenSpec. |
+| **P7 / H3** | **partial** — #143 model-build + **#146** L1 (7z bulk UTF-16 names) / L2 (`ArchiveMember` slots + trimmed kwargs) / L3 volume fast-reject. ZIP many-small ~3.7×; 7z open+list probe ~2.0× (was ~3.4×). Still above Q1 bands; L3 large RAR fixture + L4 deferred; L5 needs OpenSpec. |
 | **P6 remainder** | **partial** — `py7zr` / `rarfile` / TAR `open_list` peers + Q1 band labels in harness. RAR/encrypted/accel *data* cases still missing. |
 | **P2 remainder** | Many-small `read_all` follows the listing story (same per-member machinery as P7). Large-member ZIP read already ≤1.25× after #139; realistic extract ~1.9× (inside ~2× band) — no further extract code pending Q2. |
 | **VISION/docs** | Re-word the ≤1.3× claim to match Q1 (decompression-dominated ≤1.3×; listing as peer ratios) once enforcement (Q2) is chosen. |
