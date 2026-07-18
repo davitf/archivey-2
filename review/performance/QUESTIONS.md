@@ -3,8 +3,8 @@
 Decisions this review cannot make unilaterally (per the pause-and-ask rule).
 
 > **Status (2026-07-18):** Q3, Q5, Q6 **resolved** (#136 / #139). Q1 has a
-> **maintainer direction** (#140) — listing peers + ZIP/TAR model-build fast paths
-> landed (this change); ZIP open+list still above the 2–3× band. **Still need a
+> **maintainer direction** (#140) — listing peers (#143) + L1/L2/L3 listing
+> fixes (#146) landed; ZIP open+list still above the 2–3× band. **Still need a
 > decision:** Q2 (wall enforcement), Q4 (verify-skip knob; perf case ~nil
 > post-#137). See `../STATUS.md`.
 
