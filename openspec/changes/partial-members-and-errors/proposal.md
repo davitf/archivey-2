@@ -17,7 +17,7 @@ side and without publishing a partial cache as a complete listing.
   rejected as ambiguous).
 - Keep `members()` / `scan_members()` as **complete-or-raise** (no kwargs; no
   soft incomplete list from those names).
-- Change `get_members_if_available()` to `-> MemberListReport | None` so a
+- Change `members_report_if_available()` to `-> MemberListReport | None` so a
   **known-incomplete** listing surfaces its prefix + `error` (a floor count for
   progress/size) instead of collapsing to `None`; `None` now means only
   "nothing materialized and a scan would be required," not "cheap index absent
@@ -58,7 +58,7 @@ side and without publishing a partial cache as a complete listing.
   `diagnostics.py` (or types) for `MemberListReport`, TAR EOF path as the first
   consumer, CLI `list_cmd`.
 - Public API: additive `MemberListReport` + `members_report()`; **signature**
-  change for `get_members_if_available()` (`list[ArchiveMember] | None` →
+  change for `members_report_if_available()` (`list[ArchiveMember] | None` →
   `MemberListReport | None`; `len`/iterate/index callers unaffected via the
   report's sequence ergonomics); **behavioral** change for RA `__iter__` /
   `stream_members` on terminal archive errors (yield-then-raise instead of

@@ -16,7 +16,7 @@ Member selection for extraction is `extract_all(members=...)` (`safe-extraction`
 pass (drains remainder), or after completion (returns cache). Starting the pass
 consumes it. `members_report()` MAY likewise start or finish the pass and consumes
 it; it returns `MemberListReport` instead of raising on terminal archive-level
-listing errors (`archive-reading`). `get_members_if_available()` never
+listing errors (`archive-reading`). `members_report_if_available()` never
 begins/advances/consumes the pass.
 
 On both access modes, `__iter__` and `stream_members` SHALL yield every
@@ -47,7 +47,7 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | `extract_all` | ✅; RA extract-prep fail-closed on terminal listing error | ✅ once; streaming write-then-raise |
 | `scan_members` | ✅ (= `members`); complete-or-raise | ✅ finishes/returns pass; complete-or-raise |
 | `members_report` | ✅ always returns `MemberListReport` | ✅ may consume pass; always returns report |
-| `get_members_if_available` | ✅ report peek: stored report (complete or incomplete) / upfront index / `None`; never scans | ✅ report peek, no-consume |
+| `members_report_if_available` | ✅ report peek: stored report (complete or incomplete) / upfront index / `None`; never scans | ✅ report peek, no-consume |
 | `members` / `get` / `open` / `read` | ✅; `members`/`get` complete-or-raise | ⛔ |
 | `in` (identity) | ✅ no scan (incl. recovered report members) | ✅ no scan |
 | `cost` / `info` / `format` / `close` / CM | ✅ | ✅ |

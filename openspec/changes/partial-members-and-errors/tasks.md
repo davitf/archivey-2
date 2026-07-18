@@ -4,6 +4,14 @@
       sequence ergonomics mirroring `ExtractionReport`; export from public surface
 - [ ] 1.2 Add `ArchiveReader.members_report() -> MemberListReport` to the ABC and
       `BaseArchiveReader` skeleton
+- [ ] 1.3 Rename `get_members_if_available` → `members_report_if_available`
+      everywhere: ABC + `base_reader.py`, `directory_reader.py`, CLI
+      (`test_cmd`/`extract_cmd`), `extraction.py`, the base specs that name it
+      (`archive-reading`, `access-mode-and-cost`, `reader-concurrency`,
+      `format-tar`, `format-directory`, `safe-extraction`), and tests
+      (`test_reader_contract`, `test_directory`, `test_single_file`, `test_tar`,
+      `test_zip`, `test_listing_limits`). Leave `get(name)` untouched (distinct
+      Mapping-style lookup)
 
 ## 2. Materialization: one stored report (N1)
 
@@ -18,7 +26,7 @@
       `get(name)` from the stored report (raise `error` if set) so they stay
       complete-or-raise
 - [ ] 2.3 Implement `members_report()` (return the stored report; replay on
-      repeat calls) and change `get_members_if_available()` to
+      repeat calls) and change `members_report_if_available()` to
       `-> MemberListReport | None` (stored report complete-or-incomplete / upfront
       index / `None`, never scanning); keep `ResourceLimitError` raise-only
 

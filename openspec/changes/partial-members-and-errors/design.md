@@ -40,8 +40,11 @@ a successful complete `_members_cache`.
 - Soft extract / Option E report field for archive-level EOF after writes — RA
   extract-prep stays fail-closed.
 - Q5 / E2 `verify` / per-member `OnError.CONTINUE` on `stream_members`.
-- Exception-payload-only design as the primary surface (optional later
-  convenience, not required here).
+- Carrying the recovered prefix on the terminal exception (e.g.
+  `error.recovered_members`) — as the primary surface *or* as an add-on. The
+  prefix is reachable exactly one way (the report, plus the members yielded
+  before a raise); the exception carries only the error. Two ways to get the same
+  data is a worse surface than one obvious one (Decision 1).
 - Kwargs on `members()` / diagnostics-only honesty.
 
 ## Investigations
@@ -111,8 +114,10 @@ ergonomics (optional; specs can require or leave as convenience — prefer yes f
 CLI/parity).
 
 **Rejected:** diagnostics-only; `members(raise_on_error=…)`; making `members()`
-always return a report; exception `.recovered_members` as the *only* surface;
-`list_members()` (reads as a synonym of `members()`).
+always return a report; exception `.recovered_members` in **any** form (primary
+or add-on) — the prefix has one home, the report, and the terminal exception
+carries only the error (two paths to the same data is a worse surface, see
+Non-Goals); `list_members()` (reads as a synonym of `members()`).
 
 ### 2. RA yield-then-raise for iteration (option 7)
 
@@ -149,7 +154,7 @@ enforced by hand:
 - `get(name)` → *found → return; not-found and `error` set → raise the terminal
   error; not-found and complete → default*. Absence is only a definite "no" once
   the listing is complete.
-- `get_members_if_available()` → the stored report if one exists (complete or
+- `members_report_if_available()` → the stored report if one exists (complete or
   incomplete) without scanning, else the upfront index as a complete report for
   `_MEMBER_LIST_UPFRONT` backends, else `None` (Decision 3a).
 - `members_report()` → return `_report`.
@@ -182,7 +187,7 @@ Completeness (`error`) is orthogonal to link resolution: an upfront index or an
 incomplete prefix may carry unresolved links; `error is None` means "the listing
 is complete," not "links are resolved."
 
-### 3a. `get_members_if_available()` returns a report, not just a complete list
+### 3a. `members_report_if_available()` returns a report, not just a complete list
 
 Signature changes from `-> list[ArchiveMember] | None` to
 `-> MemberListReport | None`. Rationale: on a **known-incomplete** listing the old
@@ -198,7 +203,7 @@ iteration loses information it could use. Returning the report exposes both stat
 - nothing materialized and a scan would be required → `None`.
 
 It stays a peek: the incomplete case only returns a report if a prior pass already
-stored it. `get_members_if_available()` still never triggers the scan that would
+stored it. `members_report_if_available()` still never triggers the scan that would
 discover the damage, never reads member data, and never consumes the forward pass.
 Because `MemberListReport` mirrors `ExtractionReport` sequence ergonomics
 (iterate / `len` / index), the common progress-sizing callers (`len(report)`,
