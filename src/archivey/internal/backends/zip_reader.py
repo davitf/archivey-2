@@ -122,6 +122,13 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     98: CompressionAlgorithm.PPMD,
 }
 
+# Shared compression tuples for the common ZIP methods — avoid per-member
+# CompressionMethod construction on the open+list hot path (perf review H3/Q1).
+_ZIP_COMPRESSION_TUPLES: dict[int, tuple[CompressionMethod, ...]] = {
+    method_id: (CompressionMethod(algo=algo),)
+    for method_id, algo in _ZIP_COMPRESSION_ALGOS.items()
+}
+
 # ZIP method id -> shared codec-layer Codec for unencrypted member decode.
 _ZIP_METHOD_CODECS: dict[int, Codec] = {
     0: Codec.STORED,
@@ -160,6 +167,9 @@ _BACKSLASH_SEPARATOR_SYSTEMS: frozenset[CreateSystem] = frozenset(
         CreateSystem.VFAT,
     }
 )
+_CREATE_SYSTEM_BY_VALUE: dict[int, CreateSystem] = {
+    member.value: member for member in CreateSystem
+}
 
 
 # Raw exceptions a ZIP member open/read can raise that _translate_exception maps to typed
@@ -252,9 +262,12 @@ def _zip_timestamps(
 
     # One scan collecting both timestamp extra fields, applied afterwards in precedence
     # order (NTFS below Extended Timestamp) regardless of their order in the blob.
+    # Empty extra is the common case (zipfile.writestr / many tools) — skip the scan.
     ntfs_field: bytes | None = None
     ut_field: bytes | None = None
     extra = info.extra or b""
+    if not extra:
+        return modified, accessed, created, issues
     pos = 0
     while pos + 4 <= len(extra):
         tag, length = struct.unpack("<HH", extra[pos : pos + 4])
@@ -546,10 +559,9 @@ class ZipReader(BaseArchiveReader):
         else:
             member_type = MemberType.FILE
 
-        try:
-            create_system = CreateSystem(info.create_system)
-        except ValueError:
-            create_system = CreateSystem.UNKNOWN
+        create_system = _CREATE_SYSTEM_BY_VALUE.get(
+            info.create_system, CreateSystem.UNKNOWN
+        )
         # Convert "\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
         backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
@@ -572,9 +584,10 @@ class ZipReader(BaseArchiveReader):
         # so cp437 would yield mojibake. With no authoritative signal (flag clear AND no
         # explicit encoding=), prefer UTF-8 when the stored bytes are valid UTF-8, else a
         # configurable legacy fallback. A set flag or explicit encoding= is honored as-is.
+        # ASCII bytes decode identically under UTF-8 and cp437 — skip the sniff.
         name_source = decoded
         inferred_encoding: str | None = None
-        if not is_utf8_flagged and self._encoding is None:
+        if not is_utf8_flagged and self._encoding is None and not raw_name.isascii():
             name_source, inferred_encoding = self._sniff_unflagged_name(
                 raw_name, decoded
             )
@@ -582,9 +595,6 @@ class ZipReader(BaseArchiveReader):
             name_source, member_type, backslash_is_separator=backslash_is_separator
         )
 
-        algo = _ZIP_COMPRESSION_ALGOS.get(
-            info.compress_type, CompressionAlgorithm.UNKNOWN
-        )
         aes_info = (
             parse_winzip_aes_extra(info.extra) if info.compress_type == 99 else None
         )
@@ -592,6 +602,12 @@ class ZipReader(BaseArchiveReader):
             # Method 99 is a wrapper; surface the underlying compression algorithm.
             algo = _ZIP_COMPRESSION_ALGOS.get(
                 aes_info.actual_method, CompressionAlgorithm.UNKNOWN
+            )
+            compression: tuple[CompressionMethod, ...] = (CompressionMethod(algo=algo),)
+        else:
+            compression = _ZIP_COMPRESSION_TUPLES.get(
+                info.compress_type,
+                (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),),
             )
 
         modified, accessed, created, ts_issues = _zip_timestamps(info)
@@ -619,7 +635,7 @@ class ZipReader(BaseArchiveReader):
             accessed=accessed,
             created=created,
             mode=mode,
-            compression=(CompressionMethod(algo=algo),),
+            compression=compression,
             is_encrypted=bool(info.flag_bits & 0x1),
             comment=_decode_with_fallback(info.comment) if info.comment else None,
             create_system=create_system,

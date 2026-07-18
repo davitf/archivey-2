@@ -54,6 +54,7 @@ Wrong passwords usually fail loudly. A few format niches do not.
 | Situation | What happens | What to do |
 | --- | --- | --- |
 | 7z AES + store/copy + **no** folder digest and **no** member CRC | Format-legal; wrong password can yield garbage (matches 7-Zip). Archivey emits `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). | Treat the payload as unverified; prefer archives that store CRCs |
+| 7z **header-encrypted**, wrong password | Usually fails; a rare decode that looks like an empty header is rejected as `EncryptionError` (never a silent empty listing). Residual: garbage that parses as a non-empty plausible header can still slip (inherent without a password check value). | Prefer a known-good password; don’t treat “0 members” as proof of emptiness without checking diagnostics/errors |
 | ZipCrypto + multi-password + **STORED** | ~1/256 wrong candidates pass the weak open check → may CRC-scan the whole member | Prefer a single known password for huge stored members |
 | 7z with several candidates | Each wrong try pays key derivation | List the most likely password first |
 

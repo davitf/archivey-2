@@ -113,6 +113,12 @@ def _member_type(info: tarfile.TarInfo) -> MemberType:
     return MemberType.OTHER
 
 
+# Shared across FILE/HARDLINK members — avoid per-member CompressionMethod construction.
+_STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
+    CompressionMethod(algo=CompressionAlgorithm.STORED),
+)
+
+
 def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
     """Parse a PAX ``atime``/``ctime`` (float Unix seconds) into a tz-aware UTC datetime.
 
@@ -432,7 +438,7 @@ class TarReader(BaseArchiveReader):
             modified = None
 
         compression = (
-            (CompressionMethod(algo=CompressionAlgorithm.STORED),)
+            _STORED_COMPRESSION
             if member_type in (MemberType.FILE, MemberType.HARDLINK)
             else ()
         )

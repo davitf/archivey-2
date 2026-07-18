@@ -230,7 +230,9 @@ folder has **no** folder digest and a member has **no** CRC (format-legal for
 store/copy), the system SHALL still return decoded bytes (best-effort, matching
 7-Zip) and SHALL emit `DIGEST_UNVERIFIABLE` with
 `DigestContext.reason="no_integrity_anchor"` — it MUST NOT imply the decryption was
-authenticated.
+authenticated. After decoding a header-encrypted `kEncodedHeader`, a parsed result
+with zero file records SHALL raise `EncryptionError` (legitimate writers never
+encrypt an empty header) so a wrong password cannot open as a silent empty listing.
 
 #### Scenario: encryption matrix
 
@@ -240,6 +242,7 @@ authenticated.
 | Header-encrypted archive, valid password + crypto | Header is decrypted natively; members list; `is_encrypted` true |
 | Encrypted folders with different passwords | Each folder uses its matching candidate in random access or one streaming pass |
 | Sole wrong password, integrity anchor present (folder digest and/or member CRC) or compressed codec rejects garbage | `EncryptionError`/`CorruptionError`; no incorrect data handed to the caller as success |
+| Header-encrypted archive, wrong password decodes to zero file records | `EncryptionError` (never a silent empty listing) |
 | Encrypted store/copy member, no folder digest, no member CRC, any password | Bytes returned; `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) emitted |
 | `NumCyclesPower` 25–62 | `UnsupportedFeatureError` (not remapped to wrong-password) |
 | Repeated salt/cycles/password | Derived key cache avoids repeated key derivation |

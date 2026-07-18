@@ -77,6 +77,8 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
   `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). See [Gotchas](gotchas.md#passwords-that-look-accepted).
+- **Header-encrypted wrong password:** a decoded header with zero file records is
+  rejected as `EncryptionError` (never a silent empty listing). See threat-model O8.
 - `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
   values 25–62 raise `UnsupportedFeatureError`.
 - Writing needs `[7z-write]` (`py7zr`).

@@ -707,30 +707,35 @@ class BaseArchiveReader(ArchiveReader):
             self._account_archive_comment(enforce=enforce_listing_limits)
             members = list(self._iter_members())
             by_name_lists: dict[str, list[ArchiveMember]] = {}
+            has_links = False
             for idx, member in enumerate(members):
                 self._register_member(
                     idx, member, enforce_listing_limits=enforce_listing_limits
                 )
                 self._index_member_name(by_name_lists, member)
+                if member.is_link:
+                    has_links = True
             # Link-data reads are a private child scope under an active root when one
             # exists; otherwise they only need the live-stream gate exemption.
-            root = self._state.current_root()
-            child = (
-                self._state.enter_child(root, "link_reads")
-                if root is not None
-                else None
-            )
-            try:
-                with self._internal_member_opens():
-                    for member in members:
-                        if member.is_link:
-                            self._ensure_link_target(member)
-                    for member in members:
-                        if member.is_link and member.link_target:
-                            self._resolve_link(member, by_name_lists)
-            finally:
-                if child is not None:
-                    self._state.release_child(child)
+            # Skip entirely when the archive has no link members (common for ZIP).
+            if has_links:
+                root = self._state.current_root()
+                child = (
+                    self._state.enter_child(root, "link_reads")
+                    if root is not None
+                    else None
+                )
+                try:
+                    with self._internal_member_opens():
+                        for member in members:
+                            if member.is_link:
+                                self._ensure_link_target(member)
+                        for member in members:
+                            if member.is_link and member.link_target:
+                                self._resolve_link(member, by_name_lists)
+                finally:
+                    if child is not None:
+                        self._state.release_child(child)
 
             # Publish the snapshot (the list and name map are never mutated after this
             # point; callers get copies). ORDER IS LOAD-BEARING: `_members_cache` is the

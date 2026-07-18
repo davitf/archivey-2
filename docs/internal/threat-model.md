@@ -208,6 +208,62 @@ write failure.
 Residual: a public un-escape helper is deferred (addable non-breakingly). User-facing
 notes: [Gotchas — Extraction](../gotchas.md#extraction), ADR 0013.
 
+### O8. 7z wrong header-decryption password can silently yield an *empty* archive — mitigated
+
+The 7z format has **no password check value** (unlike RAR5's `pswcheck` or WinZip
+AES's verifier bytes), so wrong-password detection on a header-encrypted archive
+(`-mhe=on`) is heuristic: decrypt with the derived key, LZMA-decode the garbage,
+and rely on the decode or the header parse failing. There are two lines of
+defense today:
+
+1. **Decoded-folder CRC** — `decode_folder_to_bytes` verifies the encoded-header
+   folder's `kCRC` digest when the writer stored one
+   (`sevenzip_pipeline.py`). Reference 7-Zip writes it → detection is
+   deterministic (2⁻³²) for those archives. **py7zr does not**
+   (`digest_defined: False` on the encoded-header folder), and our own `[7z-write]`
+   output goes through py7zr, so archives *we* write share the gap.
+2. **Structural parse failure** of the garbage — which usually works, but not
+   always.
+
+Measured (2026-07-18, loop of fresh py7zr header-encrypted archives, wrong
+password): **~0.3% of salts slip through both checks** (2/300, 3/1,110 across
+runs — the AES IV/salt is random per write, so the rate is per-archive, not
+per-attempt). Every observed slip-through decodes to a degenerate header that
+parses as **an archive with zero members**: `open_archive(...,
+password="wrong")` returns member_count=0 with no error. Hazard: not traversal
+or corruption, but *silent data invisibility* — a backup-verification or sweep
+tool concludes "empty archive" instead of "wrong password" and reports success.
+This is also the root cause of the flaky
+`test_header_encrypted_wrong_password_mentions_header` (seen on Windows
+py3.14 CI for PR #139; the flake predates that PR — same rate measured on
+`main`).
+
+*Mechanism (not a `num_files == 0` field):* wrong-key AES still feeds LZMA, which
+often emits the full claimed unpack size (e.g. 105 bytes) of garbage.
+`parse_header_block` only inspects the **leading property id** and stops:
+
+- `0x00` (`END`) → empty `PlainHeader` immediately; the remaining ~104 bytes are
+  **never read**.
+- `0x01 0x00` (`HEADER` + `END`) → `_parse_plain_header` exits on the next `END`
+  with empty streams/files; trailing garbage likewise ignored.
+
+Empirically (8 slips in ~2k py7zr writes): 7/8 were leading `END`, 1/8 was
+`HEADER`+`END`. Rate ≈ 1/256 matches “first garbage byte is `0x00`”. A real
+decoded header for the same fixture is a full 105-byte structure
+(`HEADER` → `MAIN_STREAMS_INFO` → `FILES_INFO` → `END`) with **no** trailing
+unread bytes — so the slip is an early terminator in random output, not a
+zeroed `FILES_INFO` count.
+
+*Mitigation:* after decoding a `kEncodedHeader`, a parsed result with **zero file
+records** is treated as a rejected password (`EncryptionError`). Legitimate writers
+never encrypt an empty header (empty archives use `nextHeaderSize == 0` or a plain
+header). Residual: garbage that parses into a *non-empty* plausible header survives
+in principle (inherent to the format absent a check value); requiring the parser to
+consume the entire decoded buffer (reject trailing bytes), stricter property
+bounds, and upstream py7zr writing `kCRC` for the encoded-header folder remain
+optional hardenings. See `format-7z` ("never a silent empty listing") and
+`test_header_encrypted_empty_decoded_header_rejected`.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed
