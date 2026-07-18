@@ -24,6 +24,12 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 > (MIT), trimmed for **archivey** (pure Python archive library). Non-Python guides,
 > web/SQL/ORM/CSS material, and upstream Simplified Chinese prose were removed or
 > rewritten.
+>
+> **Archivey-specific standards** live in a separate addendum (do not fold them into
+> the generic guides):
+> **[reference/archivey-review-addendum.md](reference/archivey-review-addendum.md)** —
+> VISION tie-breakers, CONTRIBUTING contracts, and `review/` deep-review norms.
+> **Read that addendum first** when reviewing changes in this repository.
 
 ## When to Use This Skill
 
@@ -100,11 +106,12 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 ### Phase 1: Context Gathering (2-3 minutes)
 
 Before diving into code, understand:
-1. Read PR description and linked issue
-2. Check PR size (>400 lines? Ask to split)
-3. Review CI/CD status (tests passing?)
-4. Understand the business requirement
-5. Note any relevant architectural decisions
+1. Read PR description and linked issue / OpenSpec change / `review/` finding ID
+2. Skim the **[Archivey Review Addendum](reference/archivey-review-addendum.md)** for
+   applicable VISION / contract / domain checklist rows
+3. Check PR size (>400 lines? Ask to split)
+4. Review CI/CD status (tests / ruff / type-check)
+5. Note any relevant architectural decisions or open `QUESTIONS.md` items
 
 > For large diffs, pipe the diff through [`scripts/pr-analyzer.py`](scripts/pr-analyzer.py) (`git diff main...HEAD | python scripts/pr-analyzer.py`) to triage complexity and get a suggested review approach before reading.
 
@@ -188,6 +195,12 @@ This install keeps only the Python guide (other languages omitted):
 | Language/Framework | Reference File | Key Topics |
 |-------------------|----------------|------------|
 | **Python** | [Python Guide](reference/python.md) | Mutable default args, exception handling, class attributes |
+
+## Archivey focus (addendum)
+
+| Doc | Role |
+|-----|------|
+| **[Archivey Review Addendum](reference/archivey-review-addendum.md)** | Repo-specific standards on top of this skill: VISION ranking, exception/zero-dep/typing contracts, testing, safety/streaming/API checklist, `review/` deep-review shape |
 
 ## Cross-Cutting Guides
 
