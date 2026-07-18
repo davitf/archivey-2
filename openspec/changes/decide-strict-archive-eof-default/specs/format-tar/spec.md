@@ -44,6 +44,15 @@ The system SHALL NOT claim the diagnostic distinguishes "missing trailer on a co
 listing" from "corrupt mid-archive header" for the `absent`/`short` cases until a native
 TAR header walker owns iteration.
 
+Truncation *inside* a member's data or across a partial header block is out of scope of
+this end-of-marker check: it already raises `TruncatedError` **during iteration** (stdlib
+`tarfile` raises `ReadError: unexpected end of data`, translated by the backend),
+independent of `strict_archive_eof`, in both random-access and streaming modes. The
+`absent`/`short` residual therefore denotes only a stream that ended cleanly on a member
+boundary without a valid two-block trailer — a case byte-identical between a deliberately
+trailer-less complete tar and a tar truncated exactly after a whole member, and thus not
+decidable from the archive alone.
+
 #### Scenario: TAR EOF matrix
 
 | Case | `observed_kind` | Default (`False`) | `strict_archive_eof=True` |

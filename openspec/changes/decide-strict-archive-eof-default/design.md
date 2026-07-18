@@ -95,8 +95,8 @@ pass ends, already captured as `ArchiveEofContext.observed_kind`:
 
 | `observed_kind` | what the trailer read sees | most likely cause |
 | --- | --- | --- |
-| `absent` (0 bytes) | true EOF | trailer-less-but-**complete** tar (common, legit) · truncation at a member boundary · truncation mid-data |
-| `short` (<512) | partial trailing block | truncation |
+| `absent` (0 bytes) | true EOF | trailer-less-but-**complete** tar (common, legit) · truncation exactly at a member boundary |
+| `short` (<512) | partial trailing block | rare damaged tail after a consumed block |
 | `nonzero` (512, not all-zero) | a block that is neither a trailer nor a parseable header, **with more data present** | `tarfile` bailed on a bad block early → genuine mid-archive corruption / silent shorten |
 
 Two facts make `nonzero` a trustworthy hard-fail trigger:
@@ -115,9 +115,23 @@ Two facts make `nonzero` a trustworthy hard-fail trigger:
    acceptable, no worse than today.)
 
 So `nonzero` ≈ "the tar iteration finished early on an invalid block" — exactly the case
-worth raising on by default. `absent`/`short` remain the irreducibly ambiguous bucket
-(complete-trailer-less vs. truncated) that must stay lenient by default to honor Phase 5 /
-GNU tar, and that the opt-in flag escalates for callers who need provable completeness.
+worth raising on by default. `absent`/`short` remain the irreducibly ambiguous bucket that
+must stay lenient by default to honor Phase 5 / GNU tar, and that the opt-in flag escalates
+for callers who need provable completeness.
+
+**What `absent`/`short` does *not* cover (verified against stdlib, both `r:` and `r|`):**
+truncation *inside* a member's data or a partial header block already hard-fails **during
+iteration**, independent of the flag — `tarfile`'s lazy seek-and-probe raises
+`ReadError: unexpected end of data`, which the backend translates to `TruncatedError`. So
+the residual is not "all truncation"; it is specifically **"the stream ended cleanly on a
+member boundary but the two-zero-block trailer is absent/incomplete."** That case is
+*byte-identical* between a deliberately trailer-less complete tar and a tar cut off exactly
+after a whole member — TAR stores no archive length, no member count, and no end sentinel
+other than the trailer whose absence is the question — so **no reader, seek, or rolling
+buffer can disambiguate it.** The ambiguity is intrinsic to the format, not an artifact of
+the stdlib backend; a native TAR walker (P3) improves precision and salvage on the
+*detectable* cases, but does not make this residual decidable, which is why the flag
+survives a native reader.
 
 ## Decisions
 
