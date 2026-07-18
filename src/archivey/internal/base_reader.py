@@ -6,6 +6,7 @@ import threading
 import uuid
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -23,13 +24,15 @@ if TYPE_CHECKING:
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
-from archivey.diagnostics import DiagnosticSummary, ExtractionReport
+from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
+    CorruptionError,
     EncryptionError,
     LinkTargetNotFoundError,
     ReadError,
+    TruncatedError,
     UnsupportedOperationError,
 )
 from archivey.internal.diagnostics_collector import (
@@ -100,6 +103,14 @@ def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
         else:
             member.is_current = True
             seen.add(member.name)
+
+
+@dataclass(frozen=True)
+class _Materialized:
+    """Published member materialization plus its private lookup index."""
+
+    report: MemberListReport
+    by_name_lists: Mapping[str, list[ArchiveMember]]
 
 
 class ReadBackend(ABC):
@@ -210,8 +221,8 @@ class BaseArchiveReader(ArchiveReader):
 
     - ``_MEMBER_LIST_UPFRONT``    — does the backend have a true upfront index (central
       directory, 7z header, filesystem listing) that yields the full member list
-      *without scanning*? This is the predicate behind :meth:`get_members_if_available`
-      (it returns the list when ``True``, else ``None``). It does **not** gate the
+      *without scanning*? This is the predicate behind :meth:`members_report_if_available`
+      (it returns a report when ``True``, else ``None``). It does **not** gate the
       access-mode-enforced methods — those key off the ``streaming`` flag alone.
     - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
       When ``False``, ``open``/``read`` raise ``UnsupportedOperationError``; sequential
@@ -223,7 +234,7 @@ class BaseArchiveReader(ArchiveReader):
     is forward-only, so ``members``/``get``/``open``/``read`` all raise
     ``UnsupportedOperationError`` — uniformly, not per-backend. Only a single pass of
     ``__iter__``/``stream_members``/``extract_all`` is allowed; ``scan_members()`` may
-    finish or return that pass. ``get_members_if_available()`` is a scan-free,
+    finish or return that pass. ``members_report_if_available()`` is a scan-free,
     index-only peek. ``member in reader`` is identity-based and scan-free, so it works in
     either mode; there is no ``__len__``/``__getitem__`` (name lookup is ``get()``).
 
@@ -246,7 +257,7 @@ class BaseArchiveReader(ArchiveReader):
     # UnsupportedOperationError and callers must use stream_members() instead.
     _SUPPORTS_RANDOM_ACCESS: bool = True
     # Is the full member list available without reading member data (e.g. a central
-    # directory)? Drives get_members_if_available(); does not gate the streaming methods.
+    # directory)? Drives members_report_if_available(); does not gate the streaming methods.
     _MEMBER_LIST_UPFRONT: bool = True
 
     def __init__(
@@ -290,8 +301,7 @@ class BaseArchiveReader(ArchiveReader):
         self._seek_counter: SeekCounter | None = (
             SeekCounter() if self._measure else None
         )
-        self._members_cache: list[ArchiveMember] | None = None
-        self._members_by_name_lists: dict[str, list[ArchiveMember]] | None = None
+        self._materialized: _Materialized | None = None
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
         # When true, progressive registration enforces ListingLimits (scan_members).
@@ -431,7 +441,7 @@ class BaseArchiveReader(ArchiveReader):
         **Order stability is load-bearing:** repeated calls MUST yield the same members
         in the same order. ``member_id`` is a stamp of enumeration position, and
         selection/extraction match members from *separate* enumerations by
-        ``(archive_id, member_id)`` (``get_members_if_available()`` re-enumerates for
+        ``(archive_id, member_id)`` (``members_report_if_available()`` re-enumerates for
         some backends while ``stream_members()`` serves the materialized cache) — an
         order that varies between calls would silently select the wrong members.
         """
@@ -462,11 +472,11 @@ class BaseArchiveReader(ArchiveReader):
         decompressor setup — and an open-time error (e.g. a wrong password) surfaces only
         if the member is actually read, not merely iterated past.
         """
-        members = (
-            self._begin_forward_pass()
-            if self._streaming
-            else self._get_members_registered(enforce_listing_limits=False)
-        )
+        report: MemberListReport | None = None
+        members = self._begin_forward_pass() if self._streaming else None
+        if members is None:
+            report = self._materialize_members(enforce_listing_limits=False).report
+            members = iter(report.members)
         previous: ArchiveStream | None = None
         for member in members:
             if previous is not None:
@@ -478,6 +488,8 @@ class BaseArchiveReader(ArchiveReader):
                 yield member, stream
             else:
                 yield member, None
+        if report is not None and report.error is not None:
+            raise report.error
         # The last yielded stream (``previous``) is intentionally left open: the caller
         # still holds it until they advance/close the generator (stream_members closes it
         # in its finally). Closing it here would invalidate a handle the caller may still read.
@@ -700,77 +712,99 @@ class BaseArchiveReader(ArchiveReader):
     @abstractmethod
     def _close_archive(self) -> None: ...
 
-    def _get_members_registered(
+    def _publish_materialized(
+        self,
+        members: list[ArchiveMember],
+        by_name_lists: dict[str, list[ArchiveMember]],
+        *,
+        error: ArchiveyError | None,
+    ) -> _Materialized:
+        if error is not None:
+            self._stamp_error_context(error)
+        holder = _Materialized(
+            report=MemberListReport(
+                members=tuple(members),
+                error=error,
+                diagnostics=self._diagnostics_collector.snapshot(),
+            ),
+            by_name_lists=by_name_lists,
+        )
+        self._materialized = holder
+        return holder
+
+    def _finalize_materialized_links(
+        self,
+        members: list[ArchiveMember],
+        by_name_lists: dict[str, list[ArchiveMember]],
+    ) -> None:
+        _apply_last_entry_wins_is_current(members)
+        if not any(member.is_link for member in members):
+            return
+        # Link-data reads are a private child scope under an active root when one
+        # exists; otherwise they only need the live-stream gate exemption.
+        root = self._state.current_root()
+        child = (
+            self._state.enter_child(root, "link_reads") if root is not None else None
+        )
+        try:
+            with self._internal_member_opens():
+                for member in members:
+                    if member.is_link:
+                        self._ensure_link_target(member)
+                for member in members:
+                    if member.is_link and member.link_target:
+                        self._resolve_link(member, by_name_lists)
+        finally:
+            if child is not None:
+                self._state.release_child(child)
+
+    def _materialize_members(
         self, *, enforce_listing_limits: bool = True
-    ) -> list[ArchiveMember]:
-        """Get all members, assigning member_id and resolving links.
+    ) -> _Materialized:
+        """Materialize members into one report plus name index.
 
-        Under ``MemberStreams.CONCURRENT``, overlapping first-touch callers block until
-        one owner publishes the snapshot (or a failed attempt returns to unmaterialized
-        and another caller re-elects). Heavy work runs outside the reader-state lock.
-
-        When ``enforce_listing_limits`` is true (``members`` / ``scan_members`` / ``get`` /
-        extract-prep materialization), :class:`~archivey.config.ListingLimits` are checked
-        as members are registered and before the cache is published. ``stream_members``
-        passes false so iteration remains the unguarded escape hatch; a later materializing
-        API still re-checks the accumulated totals.
+        ``CorruptionError`` / ``TruncatedError`` during listing publish an incomplete
+        report. Resource limits, interrupts, and all other failures leave the reader
+        unmaterialized and propagate unchanged.
         """
-        if self._members_cache is not None:
+        if self._materialized is not None:
             if enforce_listing_limits:
                 self._listing_tracker.assert_within_limits()
-            return self._members_cache
+            return self._materialized
 
         if not self._state.begin_materialization():
             # Another thread published while we waited (or cache was already ready).
-            assert self._members_cache is not None
+            assert self._materialized is not None
             if enforce_listing_limits:
                 self._listing_tracker.assert_within_limits()
-            return self._members_cache
+            return self._materialized
 
+        members: list[ArchiveMember] = []
+        by_name_lists: dict[str, list[ArchiveMember]] = {}
         try:
             self._listing_tracker.reset()
             self._account_archive_comment(enforce=enforce_listing_limits)
-            members = list(self._iter_members())
-            _apply_last_entry_wins_is_current(members)
-            by_name_lists: dict[str, list[ArchiveMember]] = {}
-            has_links = False
-            for idx, member in enumerate(members):
-                self._register_member(
-                    idx, member, enforce_listing_limits=enforce_listing_limits
+            try:
+                for idx, member in enumerate(self._iter_members()):
+                    self._register_member(
+                        idx, member, enforce_listing_limits=enforce_listing_limits
+                    )
+                    self._index_member_name(by_name_lists, member)
+                    members.append(member)
+            except (CorruptionError, TruncatedError) as exc:
+                self._finalize_materialized_links(members, by_name_lists)
+                holder = self._publish_materialized(
+                    members,
+                    by_name_lists,
+                    error=exc,
                 )
-                self._index_member_name(by_name_lists, member)
-                if member.is_link:
-                    has_links = True
-            # Link-data reads are a private child scope under an active root when one
-            # exists; otherwise they only need the live-stream gate exemption.
-            # Skip entirely when the archive has no link members (common for ZIP).
-            if has_links:
-                root = self._state.current_root()
-                child = (
-                    self._state.enter_child(root, "link_reads")
-                    if root is not None
-                    else None
-                )
-                try:
-                    with self._internal_member_opens():
-                        for member in members:
-                            if member.is_link:
-                                self._ensure_link_target(member)
-                        for member in members:
-                            if member.is_link and member.link_target:
-                                self._resolve_link(member, by_name_lists)
-                finally:
-                    if child is not None:
-                        self._state.release_child(child)
+                self._state.complete_materialization()
+                return holder
 
-            # Publish the snapshot (the list and name map are never mutated after this
-            # point; callers get copies). ORDER IS LOAD-BEARING: `_members_cache` is the
-            # sentinel the lock-free fast path above keys on, and `get()`/`open(name)`
-            # dereference `_members_by_name_lists` immediately after that check — so the
-            # name map must be visible before the sentinel, i.e. stored first.
-            self._members_by_name_lists = by_name_lists
-            self._members_cache = members
+            self._finalize_materialized_links(members, by_name_lists)
+            holder = self._publish_materialized(members, by_name_lists, error=None)
             self._state.complete_materialization()
+            return holder
         except BaseException:
             # MUST be BaseException, not Exception: a KeyboardInterrupt/MemoryError/
             # SystemExit raised mid-scan (7z folder decode, TAR header walk, a bomb) would
@@ -779,10 +813,21 @@ class BaseArchiveReader(ArchiveReader):
             # CONCURRENT waiter blocks on the CV with no owner left to notify it. We reset
             # the election state and re-raise so the interrupt still propagates unchanged.
             # (mark_reader_closed's drain path handles BaseException the same way.)
+            self._materialized = None
             self._listing_tracker.reset()
             self._state.fail_materialization()
             raise
-        return members
+
+    def _get_members_registered(
+        self, *, enforce_listing_limits: bool = True
+    ) -> list[ArchiveMember]:
+        """Return the complete member list, raising on incomplete reports."""
+        report = self._materialize_members(
+            enforce_listing_limits=enforce_listing_limits
+        ).report
+        if report.error is not None:
+            raise report.error
+        return list(report.members)
 
     def _get_members_index_only(self) -> list[ArchiveMember]:
         """Index-only member list: stamp ids, no link resolution, no member-data reads."""
@@ -964,11 +1009,11 @@ class BaseArchiveReader(ArchiveReader):
         if current is not member:
             member.link_target_member = current
 
-    def _finalize_pass_links(self) -> None:
-        """Resolve all links after a streaming forward pass reaches EOF."""
-        if self._members_cache is not None:
+    def _finalize_pass_links(self, *, error: ArchiveyError | None = None) -> None:
+        """Resolve all links after a streaming forward pass reaches EOF or terminal damage."""
+        if self._materialized is not None:
             return
-        # scan_members drains with enforcement: refuse to publish an over-limit cache.
+        # scan_members drains with enforcement: refuse to publish an over-limit report.
         if self._progressive_enforce_listing_limits:
             self._listing_tracker.assert_within_limits()
         for member in self._pass_scanned:
@@ -978,11 +1023,11 @@ class BaseArchiveReader(ArchiveReader):
             if member.is_link and member.link_target:
                 self._resolve_link(member, self._pass_by_name_lists)
         _apply_last_entry_wins_is_current(self._pass_scanned)
-        # Same publication order as _get_members_registered: name map before the
-        # `_members_cache` sentinel (streaming passes are single-owner, so this is
-        # consistency rather than a live race here).
-        self._members_by_name_lists = self._pass_by_name_lists
-        self._members_cache = self._pass_scanned
+        self._publish_materialized(
+            self._pass_scanned,
+            self._pass_by_name_lists,
+            error=error,
+        )
 
     def _stamp_progressive_member(self, idx: int, member: ArchiveMember) -> None:
         # stream_members: account without enforcing (O(1) escape hatch).
@@ -1023,7 +1068,7 @@ class BaseArchiveReader(ArchiveReader):
             raise UnsupportedOperationError(
                 f"{op} is not available after a streaming reader's forward pass has "
                 f"started. Call scan_members() for the resolved member list, or "
-                f"get_members_if_available() for an index-only peek.",
+                f"members_report_if_available() for an index-only peek.",
             )
 
     def _enter_forward_pass(self, op: str) -> None:
@@ -1040,14 +1085,14 @@ class BaseArchiveReader(ArchiveReader):
         ``__iter__``/``stream_members`` (or one ``extract_all``) is allowed. This is
         uniform and format-independent — it does **not** depend on whether a backend
         happens to have an index loaded (use :meth:`scan_members` or
-        :meth:`get_members_if_available` for member listing instead).
+        :meth:`members_report_if_available` for member listing instead).
         """
         self._state.require_open(op)
         if self._streaming:
             raise UnsupportedOperationError(
                 f"{op} is not available on a streaming (forward-only) reader. "
                 f"Iterate with stream_members(), call scan_members() for the resolved "
-                f"member list, or get_members_if_available() for an index-only peek.",
+                f"member list, or members_report_if_available() for an index-only peek.",
             )
 
     @property
@@ -1143,10 +1188,12 @@ class BaseArchiveReader(ArchiveReader):
         # snapshot with no pass held so open()/get() inside the loop are admitted.
         token = self._state.acquire_pass("__iter__")
         try:
-            snapshot = list(self._get_members_registered())
+            report = self._materialize_members().report
         finally:
             self._state.release_pass(token)
-        yield from snapshot
+        yield from report.members
+        if report.error is not None:
+            raise report.error
 
     def members(self) -> list[ArchiveMember]:
         self._require_random_access("members()")
@@ -1156,13 +1203,61 @@ class BaseArchiveReader(ArchiveReader):
         if self._state.concurrent:
             token = self._state.acquire_worker("members")
             try:
-                return list(self._get_members_registered())
+                report = self._materialize_members().report
+                if report.error is not None:
+                    raise report.error
+                return list(report.members)
             finally:
                 self._state.release_worker(token)
         token = self._state.acquire_pass("members")
         try:
             # Return a shallow copy so callers cannot mutate the published cache container.
-            return list(self._get_members_registered())
+            report = self._materialize_members().report
+            if report.error is not None:
+                raise report.error
+            return list(report.members)
+        finally:
+            self._state.release_pass(token)
+
+    def members_report(self) -> MemberListReport:
+        self._state.require_open("members_report()")
+        if not self._streaming:
+            if self._state.concurrent:
+                token = self._state.acquire_worker("members_report")
+                try:
+                    return self._materialize_members().report
+                finally:
+                    self._state.release_worker(token)
+            token = self._state.acquire_pass("members_report")
+            try:
+                return self._materialize_members().report
+            finally:
+                self._state.release_pass(token)
+
+        token = self._state.acquire_pass("members_report")
+        try:
+            if self._materialized is not None:
+                self._listing_tracker.assert_within_limits()
+                return self._materialized.report
+            # Enforce ListingLimits while draining; stream_members leaves this false.
+            self._progressive_enforce_listing_limits = True
+            try:
+                if not self._forward_pass_started:
+                    self._forward_pass_started = True
+                gen = self._begin_forward_pass()
+                while True:
+                    try:
+                        next(gen)
+                    except StopIteration:
+                        break
+                    except (CorruptionError, TruncatedError):
+                        assert self._materialized is not None
+                        break
+                assert self._materialized is not None
+                self._listing_tracker.assert_within_limits()
+                return self._materialized.report
+            finally:
+                self._progressive_enforce_listing_limits = False
         finally:
             self._state.release_pass(token)
 
@@ -1171,10 +1266,16 @@ class BaseArchiveReader(ArchiveReader):
         token = self._state.acquire_pass("scan_members")
         try:
             if not self._streaming:
-                return list(self._get_members_registered())
-            if self._members_cache is not None:
+                report = self._materialize_members().report
+                if report.error is not None:
+                    raise report.error
+                return list(report.members)
+            if self._materialized is not None:
                 self._listing_tracker.assert_within_limits()
-                return list(self._members_cache)
+                report = self._materialized.report
+                if report.error is not None:
+                    raise report.error
+                return list(report.members)
             # Enforce ListingLimits while draining; stream_members leaves this false.
             self._progressive_enforce_listing_limits = True
             try:
@@ -1183,30 +1284,37 @@ class BaseArchiveReader(ArchiveReader):
                 gen = self._begin_forward_pass()
                 for _ in gen:
                     pass
-                assert self._members_cache is not None
+                assert self._materialized is not None
                 self._listing_tracker.assert_within_limits()
-                return list(self._members_cache)
+                report = self._materialized.report
+                if report.error is not None:
+                    raise report.error
+                return list(report.members)
             finally:
                 self._progressive_enforce_listing_limits = False
         finally:
             self._state.release_pass(token)
 
-    def get_members_if_available(self) -> list[ArchiveMember] | None:
-        """Return the full member list if it is available **without scanning**, else
+    def members_report_if_available(self) -> MemberListReport | None:
+        """Return the member-list report if it is available **without scanning**, else
         ``None``. Safe to call on any reader (including a streaming one).
 
-        Index-only: returns a materialized cache after a completed forward pass, or the
+        Index-only: returns a materialized report after a completed forward pass, or the
         backend's upfront index when ``_MEMBER_LIST_UPFRONT`` is set. It never triggers
         a forward scan, never reads member data, and never consumes the forward pass.
         Link targets stored in member data (e.g. ZIP symlinks) may be unset; use
         :meth:`members` or :meth:`scan_members` for a fully-resolved list.
         """
-        self._state.require_open("get_members_if_available()")
-        if self._members_cache is not None:
+        self._state.require_open("members_report_if_available()")
+        if self._materialized is not None:
             self._listing_tracker.assert_within_limits()
-            return list(self._members_cache)
+            return self._materialized.report
         if self._MEMBER_LIST_UPFRONT:
-            return list(self._get_members_index_only())
+            return MemberListReport(
+                members=tuple(self._get_members_index_only()),
+                error=None,
+                diagnostics=self._diagnostics_collector.snapshot(),
+            )
         return None
 
     def __contains__(self, member: object) -> bool:
@@ -1229,10 +1337,13 @@ class BaseArchiveReader(ArchiveReader):
         self._require_random_access("get()")
         token = self._state.acquire_worker("get")
         try:
-            self._get_members_registered()
-            assert self._members_by_name_lists is not None
-            found = self._last_by_exact_name(name, self._members_by_name_lists)
-            return found if found is not None else default
+            materialized = self._materialize_members()
+            found = self._last_by_exact_name(name, materialized.by_name_lists)
+            if found is not None:
+                return found
+            if materialized.report.error is not None:
+                raise materialized.report.error
+            return default
         finally:
             self._state.release_worker(token)
 
@@ -1255,15 +1366,15 @@ class BaseArchiveReader(ArchiveReader):
             )
         token = self._state.acquire_worker("open")
         try:
+            materialized = self._materialize_members()
             if isinstance(member, str):
-                self._get_members_registered()
-                assert self._members_by_name_lists is not None
-                found = self._last_by_exact_name(member, self._members_by_name_lists)
+                found = self._last_by_exact_name(member, materialized.by_name_lists)
                 if found is None:
+                    if materialized.report.error is not None:
+                        raise materialized.report.error
                     raise KeyError(f"Member {member!r} not found")
                 member = found
             else:
-                self._get_members_registered()
                 # A member object must have been yielded by THIS reader (same identity rule
                 # as `member in reader`). Without this check, a member from another archive
                 # resolves against the wrong offsets/paths and can silently return the wrong
@@ -1307,7 +1418,10 @@ class BaseArchiveReader(ArchiveReader):
                     f"Link target for {member.name!r} is unknown",
                     member_name=member.name,
                 )
-            by_name_lists = self._members_by_name_lists
+            materialized = self._materialized
+            by_name_lists = (
+                materialized.by_name_lists if materialized is not None else None
+            )
             target = (
                 self._lookup_link_target_for_member(member, by_name_lists)
                 if by_name_lists is not None
@@ -1523,6 +1637,14 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
                 # Listing-limit refusal (or link finalize failure) must not leave a
                 # half-published cache retryable as success via a second StopIteration.
                 self._error = exc
+                raise
+            raise
+        except (CorruptionError, TruncatedError) as exc:
+            self._exhausted = True
+            try:
+                self._reader._finalize_pass_links(error=exc)
+            except BaseException as finalize_exc:
+                self._error = finalize_exc
                 raise
             raise
         except BaseException as exc:

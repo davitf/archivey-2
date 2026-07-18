@@ -38,6 +38,10 @@ def test_max_members_raises_on_members() -> None:
     with open_archive(io.BytesIO(data), config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_members"):
             reader.members()
+        assert reader._materialized is None
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            reader.members_report()
+        assert reader._materialized is None
 
 
 def test_max_metadata_bytes_raises_on_long_names() -> None:
@@ -142,8 +146,8 @@ def test_streaming_scan_members_enforces_listing_limits(tmp_path: Path) -> None:
         with pytest.raises(ResourceLimitError, match="max_members"):
             reader.scan_members()
         # Cache must stay unpublished after a limit trip.
-        assert reader._members_cache is None
-        assert reader.get_members_if_available() is None
+        assert reader._materialized is None
+        assert reader.members_report_if_available() is None
 
 
 def test_metadata_accounting_counts_name_and_raw_name() -> None:

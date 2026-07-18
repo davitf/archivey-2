@@ -13,9 +13,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 from archivey.internal.extraction_types import ExtractionResult
+
+if TYPE_CHECKING:
+    from archivey.exceptions import ArchiveyError
+    from archivey.types import ArchiveMember
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
@@ -377,6 +381,32 @@ class ExtractionReport:
         return self.results[index]
 
 
+@dataclass(frozen=True)
+class MemberListReport:
+    """Immutable member-list outcome: recovered members plus listing honesty.
+
+    ``error is None`` means ``members`` is a complete archive listing. A non-``None``
+    error means the tuple is the recovered prefix and the error is the terminal
+    archive-level damage that stopped listing.
+
+    Like :class:`ExtractionReport`, the report iterates, indexes, and sizes as its
+    primary sequence so common ``for member in report`` / ``len(report)`` idioms work.
+    """
+
+    members: tuple[ArchiveMember, ...]
+    error: ArchiveyError | None
+    diagnostics: DiagnosticSummary
+
+    def __iter__(self) -> Iterator[ArchiveMember]:
+        return iter(self.members)
+
+    def __len__(self) -> int:
+        return len(self.members)
+
+    def __getitem__(self, index: int) -> ArchiveMember:
+        return self.members[index]
+
+
 OnDiagnostic = Callable[[Diagnostic], None]
 """Optional synchronous callback invoked for COLLECT/RAISE diagnostics."""
 
@@ -408,6 +438,7 @@ __all__ = [
     "ExtractionOutcomeContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "MemberListReport",
     "MemberTimestampContext",
     "NameCollisionContext",
     "NameSanitizedContext",

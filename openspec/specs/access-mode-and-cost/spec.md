@@ -25,7 +25,7 @@ block count). This spec is the **canonical** access-mode × method table;
 | Mode | Meaning |
 | --- | --- |
 | `streaming=False` (default) | **Random access.** Load indexes when available. Fail fast at open if the source is non-seekable and the format cannot adapt — never silently degrade to forward-only. Seek points for single-stream formats are built **lazily** on first `seek()`. |
-| `streaming=True` | **Forward-only, single pass.** Disable index loading where possible; works on non-seekable sources. Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `get_members_if_available()` stays callable (never scans). |
+| `streaming=True` | **Forward-only, single pass.** Disable index loading where possible; works on non-seekable sources. Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `members_report_if_available()` stays callable (never scans). |
 
 Non-seekable sources are never given random access: with `streaming=False` the
 library fails fast at open when the format needs seek (it does not buffer the
@@ -54,7 +54,7 @@ Member selection for extraction is `extract_all(members=...)` (`safe-extraction`
 
 `scan_members()` MAY run before the pass (starts+finishes it), after an interrupted
 pass (drains remainder), or after completion (returns cache). Starting the pass
-consumes it. `get_members_if_available()` never begins/advances/consumes the pass.
+consumes it. `members_report_if_available()` never begins/advances/consumes the pass.
 
 #### Scenario: streaming enforcement matrix
 
@@ -66,11 +66,11 @@ consumes it. `get_members_if_available()` never begins/advances/consumes the pas
 | Early `break` then `scan_members()` | Drains remainder; fully-resolved list; later pass methods raise |
 | `scan_members()` then `stream_members()` on fresh streaming reader | List returned; subsequent pass raises (any index topology) |
 
-### Requirement: get_members_if_available() — an index-only member list
+### Requirement: members_report_if_available() — an index-only member report
 
-`get_members_if_available() -> list[ArchiveMember] | None` is **index-only**: no
-forward scan, no member-data reads, never consumes the pass. Returns the list from
-an upfront index or already-materialized cache; else `None`. Guaranteed
+`members_report_if_available() -> MemberListReport | None` is **index-only**: no
+forward scan, no member-data reads, never consumes the pass. Returns the report from
+an upfront index or already-materialized listing; else `None`. Guaranteed
 fully-resolved list → `members()` (RA) or `scan_members()` (either mode).
 
 | Index topology | Availability |
@@ -90,7 +90,7 @@ Index-only listings SHALL leave data-stored link targets unset (`link_target` /
 | Streaming ZIP (upfront index) | Full list; no scan/data read; forward pass still available |
 | No-index, not yet iterated | `None` |
 | No-index after completed pass / `scan_members` | Fully-resolved materialized list |
-| ZIP symlink via `get_members_if_available` | Link fields unset; `members`/`scan_members` resolve them |
+| ZIP symlink via `members_report_if_available` | Link fields unset; `members`/`scan_members` resolve them |
 
 ### Requirement: Access mode × method behaviour summary
 
@@ -103,7 +103,7 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | `stream_members` | ✅ | ✅ once |
 | `extract_all` | ✅ | ✅ once |
 | `scan_members` | ✅ (= `members`) | ✅ finishes/returns pass |
-| `get_members_if_available` | ✅ index-only (may be `None`) | ✅ index-only, no-consume |
+| `members_report_if_available` | ✅ index-only (may be `None`) | ✅ index-only, no-consume |
 | `members` / `get` / `open` / `read` | ✅ | ⛔ |
 | `in` (identity) | ✅ no scan | ✅ no scan |
 | `cost` / `info` / `format` / `close` / CM | ✅ | ✅ |

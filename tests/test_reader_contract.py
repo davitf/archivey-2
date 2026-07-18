@@ -2,7 +2,7 @@
 
 Exercised directly with minimal in-test readers (no real format backend), covering the
 two orthogonal gates — the access mode (``streaming=True`` is forward-only) and backend
-**capability** (``_SUPPORTS_RANDOM_ACCESS``) — plus ``get_members_if_available``.
+**capability** (``_SUPPORTS_RANDOM_ACCESS``) — plus ``members_report_if_available``.
 """
 
 from __future__ import annotations
@@ -195,29 +195,32 @@ def test_open_rejects_member_from_another_reader() -> None:
     assert reader.read("a.txt") == b"x"
 
 
-# --- get_members_if_available: never scans; safe on any reader ----------------------
+# --- members_report_if_available: never scans; safe on any reader -------------------
 
 
-def test_get_members_if_available_returns_list_for_indexed_backend() -> None:
+def test_members_report_if_available_returns_report_for_indexed_backend() -> None:
     # Even on a streaming reader: it is a no-scan peek, not random access.
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
-    members = reader.get_members_if_available()
-    assert members is not None
-    assert [m.name for m in members] == ["a.txt"]
+    report = reader.members_report_if_available()
+    assert report is not None
+    assert report.error is None
+    assert [m.name for m in report] == ["a.txt"]
 
 
-def test_get_members_if_available_is_none_without_index() -> None:
+def test_members_report_if_available_is_none_without_index() -> None:
     reader = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")  # streaming=True
-    assert reader.get_members_if_available() is None
+    assert reader.members_report_if_available() is None
 
 
-def test_get_members_if_available_returns_cache_once_materialized() -> None:
+def test_members_report_if_available_returns_cache_once_materialized() -> None:
     # No upfront index, but a non-streaming iteration materializes the cache, after
     # which the list is available without a fresh scan.
     reader = _ForwardOnlyReader(ArchiveFormat.TAR, False, "x.tar")  # streaming=False
-    assert reader.get_members_if_available() is None
+    assert reader.members_report_if_available() is None
     _ = list(reader)
-    assert reader.get_members_if_available() is not None
+    report = reader.members_report_if_available()
+    assert report is not None
+    assert report.error is None
 
 
 def test_streaming_iteration_registers_member_ids() -> None:
@@ -236,12 +239,13 @@ def test_streaming_second_iter_raises() -> None:
         list(reader)
 
 
-def test_get_members_if_available_after_streaming_pass() -> None:
+def test_members_report_if_available_after_streaming_pass() -> None:
     reader = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")
     list(reader)
-    members = reader.get_members_if_available()
-    assert members is not None
-    assert [m.name for m in members] == ["a.txt"]
+    report = reader.members_report_if_available()
+    assert report is not None
+    assert report.error is None
+    assert [m.name for m in report] == ["a.txt"]
 
 
 def test_scan_members_equals_members_in_random_mode() -> None:
@@ -309,29 +313,63 @@ class _FailingScanReader(BaseArchiveReader):
         pass
 
 
-def test_failed_streaming_pass_does_not_publish_partial_list() -> None:
-    # An exception escaping the forward pass leaves its generator closed; a plain
-    # retry would see StopIteration and finalize the PARTIAL scan as the complete
-    # resolved cache — scan_members() would then silently return a truncated listing.
+class _FailingRandomAccessReader(_IndexedReader):
+    """Random-access reader whose listing ends with terminal archive damage."""
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
+        raise archivey.CorruptionError("scan failed after prefix")
+
+
+def test_random_access_terminal_damage_report_and_yield_then_raise() -> None:
+    reader = _FailingRandomAccessReader(ArchiveFormat.ZIP, False, "x.zip")
+
+    report = reader.members_report()
+    assert [m.name for m in report] == ["a.txt"]
+    assert isinstance(report.error, archivey.CorruptionError)
+    assert reader.members_report() is report
+
+    with pytest.raises(archivey.CorruptionError):
+        reader.members()
+    with pytest.raises(archivey.CorruptionError):
+        reader.scan_members()
+
+    it = iter(reader)
+    member = next(it)
+    assert member.name == "a.txt"
+    assert reader.read(member) == b"x"
+    with pytest.raises(archivey.CorruptionError):
+        next(it)
+
+    assert reader.get("a.txt") is member
+    with pytest.raises(archivey.CorruptionError):
+        reader.get("missing.txt")
+
+
+def test_failed_streaming_pass_publishes_incomplete_report() -> None:
+    # Terminal archive damage publishes the recovered prefix as an incomplete report,
+    # never as a complete member list.
     reader = _FailingScanReader(ArchiveFormat.TAR, True, "x.tar")
     it = iter(reader)
     assert next(it).name == "a.txt"
     with pytest.raises(archivey.CorruptionError):
         next(it)
-    # The resolved-list methods must fail loud, not serve the partial scan as complete.
-    with pytest.raises(archivey.ReadError, match="previously failed"):
+    # Complete-list methods must fail loud, not serve the partial scan as complete.
+    with pytest.raises(archivey.CorruptionError):
         reader.scan_members()
-    # And the partial scan must never be published as an available cache.
-    assert reader.get_members_if_available() is None
+    report = reader.members_report_if_available()
+    assert report is not None
+    assert isinstance(report.error, archivey.CorruptionError)
+    assert [m.name for m in report] == ["a.txt"]
 
 
-def test_failed_streaming_pass_stays_poisoned_on_reiteration() -> None:
+def test_failed_streaming_pass_replays_incomplete_report() -> None:
     reader = _FailingScanReader(ArchiveFormat.TAR, True, "x.tar")
     with pytest.raises(archivey.CorruptionError):
         list(reader)
-    # scan_members() may finish an interrupted pass, so it reaches the poisoned
-    # iterator — and must keep failing loud on every retry, chained to the original.
     for _ in range(2):
-        with pytest.raises(archivey.ReadError, match="previously failed") as excinfo:
+        with pytest.raises(archivey.CorruptionError):
             reader.scan_members()
-        assert isinstance(excinfo.value.__cause__, archivey.CorruptionError)
+        report = reader.members_report()
+        assert [m.name for m in report] == ["a.txt"]
+        assert isinstance(report.error, archivey.CorruptionError)

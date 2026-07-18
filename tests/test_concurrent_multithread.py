@@ -328,7 +328,7 @@ def test_concurrent_first_touch_materialization_failure_wakes_waiters(
     for members in successes:
         assert len(members) == 4
         assert {m.name for m in members if m.is_file} == set(_expected(4))
-    assert reader._members_cache is None or len(reader._members_cache) == 4
+    assert reader._materialized is None or len(reader._materialized.report) == 4
     reader.close()
 
 

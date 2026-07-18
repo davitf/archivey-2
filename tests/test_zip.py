@@ -97,9 +97,10 @@ def test_members_listed(simple_zip: Path) -> None:
 def test_member_list_available_without_scan(simple_zip: Path) -> None:
     with open_archive(simple_zip) as ar:
         # The central directory is an upfront index, so the list is available with no scan.
-        members = ar.get_members_if_available()
-        assert members is not None
-        assert {m.name for m in members} == {"hello.txt", "dir/nested.txt"}
+        report = ar.members_report_if_available()
+        assert report is not None
+        assert report.error is None
+        assert {m.name for m in report} == {"hello.txt", "dir/nested.txt"}
 
 
 def test_random_access_read_by_name(simple_zip: Path) -> None:
@@ -252,9 +253,10 @@ def _symlink_zip(tmp_path: Path) -> Path:
 def test_zip_index_only_listing_leaves_symlink_unresolved(tmp_path: Path) -> None:
     path = _symlink_zip(tmp_path)
     with open_archive(path) as ar:
-        members = ar.get_members_if_available()
-        assert members is not None
-        link = next(m for m in members if m.name == "link")
+        report = ar.members_report_if_available()
+        assert report is not None
+        assert report.error is None
+        link = next(m for m in report if m.name == "link")
         assert link.link_target is None
         assert link.link_target_member is None
 

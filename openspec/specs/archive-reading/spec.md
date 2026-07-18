@@ -150,8 +150,9 @@ def format(self) -> ArchiveFormat: ...
 ```python
 def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
 def members(self) -> list[ArchiveMember]: ...          # materialize (RA only)
+def members_report(self) -> MemberListReport: ...       # members + terminal listing error
 def scan_members(self) -> list[ArchiveMember]: ...      # fully-resolved, either mode
-def get_members_if_available(self) -> list[ArchiveMember] | None: ...  # index peek
+def members_report_if_available(self) -> MemberListReport | None: ...  # index peek
 ```
 
 `__iter__` MUST yield in archive order without loading all members. In
@@ -170,7 +171,7 @@ method has started; running it consumes/finishes the pass.
 A live forward pass leaves forward-pointing symlinks unresolved at yield time.
 Completing a pass via `__iter__`, `stream_members`, `extract_all`, or
 `scan_members` SHALL finalize the cache in place on already-yielded objects and
-make `get_members_if_available()` return it. An abandoned pass (early `break`, no
+make `members_report_if_available()` return it. An abandoned pass (early `break`, no
 `scan_members()`) SHALL NOT finalize.
 
 No `__len__` / `__getitem__` (not a collection; protocols are probed implicitly —
@@ -178,15 +179,15 @@ No `__len__` / `__getitem__` (not a collection; protocols are probed implicitly 
 in every mode; use `len(ar.members())`, `ar.info.member_count`, or count while
 iterating. `list(ar)` just iterates.
 
-`get_members_if_available()` is index-only: returns the list only when available
-without scanning or reading member data, else `None`. Never scans or starts the
-forward pass. Returned members may have unresolved links when targets live in
-member data (see `access-mode-and-cost`).
+`members_report_if_available()` is index-only: returns a `MemberListReport` only
+when available without scanning or reading member data, else `None`. Never scans
+or starts the forward pass. Returned members may have unresolved links when
+targets live in member data (see `access-mode-and-cost`).
 
 With `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
 `UnsupportedOperationError` uniformly. Only one forward pass
 (`__iter__`/`stream_members` or one `extract_all`) is allowed, with
-`scan_members()` to finish/return it and `get_members_if_available()` anytime.
+`scan_members()` to finish/return it and `members_report_if_available()` anytime.
 Canonical access-mode × method table: `access-mode-and-cost`.
 
 #### Scenario: iteration / access-mode matrix
@@ -197,8 +198,8 @@ Canonical access-mode × method table: `access-mode-and-cost`.
 | `members()` | Full scan if needed; returns list | `UnsupportedOperationError` |
 | `scan_members()` | Same fully-resolved list as `members()`; reader stays RA-usable | Finishes/drains pass; returns fully-resolved list (incl. forward symlinks); pass consumed |
 | `scan_members()` after early `break` | n/a | Drains remainder; returns complete fully-resolved list |
-| `get_members_if_available()` after completed pass | List if indexed/cached | Fully-resolved list (not `None`); forward-link finalization visible on yielded objects |
-| `get_members_if_available()` after abandoned pass | — | `None` |
+| `members_report_if_available()` after completed pass | Report if indexed/cached | Fully-resolved report (not `None`); forward-link finalization visible on yielded objects |
+| `members_report_if_available()` after abandoned pass | — | `None` |
 | `len(ar)` | `TypeError` | `TypeError` |
 | `list(ar)` | Iterates | Iterates (consumes the single pass) |
 
@@ -281,7 +282,7 @@ def __contains__(self, member: ArchiveMember) -> bool: ...  # identity, O(1), an
 
 `get()` looks up by normalized name; duplicates → **last** (sequential extraction
 winner). On `streaming=True` SHALL raise `UnsupportedOperationError` regardless of
-loaded index. For a no-scan peek use `get_members_if_available()`.
+loaded index. For a no-scan peek use `members_report_if_available()`.
 
 `member in reader` is identity membership (yielded by this reader), O(1), any mode.
 Non-`ArchiveMember` (notably a name string) SHALL raise `TypeError` pointing to

@@ -155,11 +155,11 @@ def test_random_access_read_by_name(plain_tar: Path) -> None:
 
 
 def test_member_list_not_available_without_scan(plain_tar: Path) -> None:
-    # TAR has no upfront index: get_members_if_available is None until a scan materializes it.
+    # TAR has no upfront index: members_report_if_available is None until a scan materializes it.
     with open_archive(plain_tar) as ar:
-        assert ar.get_members_if_available() is None
+        assert ar.members_report_if_available() is None
         ar.members()  # forces the scan
-        assert ar.get_members_if_available() is not None
+        assert ar.members_report_if_available() is not None
 
 
 def test_stream_members(plain_tar: Path) -> None:
@@ -804,9 +804,9 @@ def test_streaming_iter_materializes_resolved_cache() -> None:
             if member.name == "forward_link":
                 collected.append(member)
                 assert member.link_target_member is None
-        members = ar.get_members_if_available()
-        assert members is not None
-        link = next(m for m in members if m.name == "forward_link")
+        report = ar.members_report_if_available()
+        assert report is not None
+        link = next(m for m in report if m.name == "forward_link")
         assert link.link_target_member is not None
         assert link.link_target_member.name == "target.txt"
         assert collected[0].link_target_member.name == "target.txt"
@@ -819,9 +819,9 @@ def test_streaming_stream_members_materializes_resolved_cache() -> None:
         for member, _stream in ar.stream_members():
             if member.name == "forward_link":
                 collected.append(member)
-        members = ar.get_members_if_available()
-        assert members is not None
-        link = next(m for m in members if m.name == "forward_link")
+        report = ar.members_report_if_available()
+        assert report is not None
+        link = next(m for m in report if m.name == "forward_link")
         assert link.link_target_member is not None
         assert collected[0].link_target_member.name == "target.txt"
 
@@ -851,7 +851,7 @@ def test_abandoned_partial_pass_leaves_get_members_none() -> None:
         for member in ar:
             if member.name == "forward_link":
                 break
-        assert ar.get_members_if_available() is None
+        assert ar.members_report_if_available() is None
 
 
 def test_streaming_second_pass_raises_tar_and_zip(
@@ -932,14 +932,14 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
         ) -> None:
             super().__init__(ArchiveFormat.TAR, streaming=False, archive_name=None)
             self._payloads = payloads
-            self._members_cache = members
             by_name_lists: dict[str, list[ArchiveMember]] = {}
             for m in members:
                 BaseArchiveReader._index_member_name(by_name_lists, m)
-            self._members_by_name_lists = by_name_lists
+            self._publish_materialized(members, by_name_lists, error=None)
 
         def _iter_members(self):
-            return iter(self._members_cache or [])
+            materialized = self._materialized
+            return iter(materialized.report.members if materialized is not None else ())
 
         def _open_member(self, member: ArchiveMember) -> BinaryIO:
             return io.BytesIO(self._payloads[member.name])
@@ -1019,4 +1019,4 @@ def test_error_mid_streaming_pass_poisons_scan_members() -> None:
         assert seen == ["a.bin", "b.bin"]
         with pytest.raises(ReadError, match="previously failed"):
             reader.scan_members()
-        assert reader.get_members_if_available() is None
+        assert reader.members_report_if_available() is None

@@ -269,9 +269,9 @@ def test_gzip_metadata_omits_crc_without_gzip_magic() -> None:
 def test_gzip_omits_crc32_on_nonseekable_source() -> None:
     data = gzip.compress(b"pipe-payload")
     with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
-        members = ar.get_members_if_available()
-        assert members is not None
-        assert HashAlgorithm.CRC32 not in members[0].hashes
+        report = ar.members_report_if_available()
+        assert report is not None
+        assert HashAlgorithm.CRC32 not in report[0].hashes
 
 
 def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:

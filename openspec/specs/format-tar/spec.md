@@ -81,7 +81,7 @@ collected/logged and may attach to the member; under `RAISE`, listing halts with
 
 The system SHALL support TAR hardlink extraction through the `safe-extraction`
 coordinator as a pull-based sink: it drives the reader forward, may inspect
-`get_members_if_available()` only when that list is free, and checks re-read
+`members_report_if_available()` only when that report is free, and checks re-read
 possibility only if an orphaned hardlink exists. It MUST NOT use a push-model
 deferred-state machine, force an upfront scan, or depend on the
 `SOLID`/`DIRECT` axis for correctness.

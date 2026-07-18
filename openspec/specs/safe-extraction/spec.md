@@ -289,7 +289,7 @@ gets the selected link's transformed metadata. An equivalent hidden temp inside
 `dest` is permitted.
 
 The coordinator SHALL avoid wasted passes: if a free member list exists
-(`get_members_if_available()`), recovery is planned in one forward pass; otherwise
+(`members_report_if_available()`), recovery is planned in one forward pass; otherwise
 a seekable source may use one conditional second pass; a forward-only source makes
 the orphaned link unrecoverable and therefore a per-member failure governed by
 `OnError`. A hardlink that merely precedes its selected source is linked after the

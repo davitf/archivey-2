@@ -51,6 +51,7 @@ from archivey.diagnostics import (
     ExtractionOutcomeContext,  # noqa: F401
     ExtractionReport,
     FormatConflictContext,  # noqa: F401
+    MemberListReport,
     MemberTimestampContext,  # noqa: F401
     NameCollisionContext,  # noqa: F401
     NameEncodingContext,  # noqa: F401
@@ -136,6 +137,7 @@ __all__ = [
     "ExtractionProgress",
     "ExtractionResult",
     "ExtractionReport",
+    "MemberListReport",
     "MemberSelector",
     "MemberFilter",
     "detect_format",
