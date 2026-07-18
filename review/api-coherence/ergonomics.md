@@ -87,10 +87,11 @@ Two lines of ceremony; stored-vs-computed fallback documented as a recipe in
 `usage.md` with the per-format matrix one link away. **Discoverability is good** —
 `hashes` is on the dataclass with a docstring naming the key convention. Two notes:
 
-- `hashes` values are `int | bytes` (crc32 int, blake2sp bytes) — every consumer
-  needs a formatting/normalizing branch (the CLI grew `format_hash_value`,
-  `cli/format.py:46-49`). **Decided (Q6): convert `crc32` to `str` (hex)**; prefer
-  aligning `blake2sp` to hex `str` in the same change so values are uniformly `str`.
+- `hashes` is `Mapping[str, int | bytes]` today (crc32 int, blake2sp bytes; string
+  keys, **no** algorithm enum) — every consumer needs a formatting/normalizing
+  branch (the CLI grew `format_hash_value`, `cli/format.py:46-49`). **Decided
+  (Q6): `Mapping[HashAlgorithm, bytes]`** — add the enum; crc32 becomes 4-byte
+  `bytes` like every other digest.
 - The recipe iterates *all* members — including superseded 7z revisions and RAR
   history rows, silently hashing dead content. After Q1/Q2, add one `is_current`
   line to the recipe (see `members-scope.md`).

@@ -41,7 +41,7 @@ or the finding is a clear proposed fix with no spec conflict).
 | **S2 / Q6** | `ArchiveFormat.display_name` **property** so the CLI stops parsing `repr()`. |
 | **E1** | Public measurement / IO-stats API so CLI `--track-io` leaves `internal/`. |
 | **E3 / Q6** | Split `ExtractionStatus.SKIPPED` into distinct statuses (overwrite vs non-current). |
-| **Q6 hashes** | Convert `crc32` hash values to hex `str`; prefer `blake2sp` → hex `str` too (`Mapping[str, str]`). |
+| **Q6 hashes** | Add `HashAlgorithm` enum; type becomes `Mapping[HashAlgorithm, bytes]` (crc32 `int` → 4-byte `bytes`; blake2sp already `bytes`). Keys are `str` today — no enum yet. |
 | **Q6 WriteError / `[7z-write]`** | Demote/unexport `WriteError` for read-only 0.2.0; remove or stop advertising `[7z-write]` until writing lands (py7zr remains a dev oracle). |
 
 ### Process
