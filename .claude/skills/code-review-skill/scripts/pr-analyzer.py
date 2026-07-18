@@ -9,13 +9,13 @@ Usage:
     git diff main...HEAD | python pr-analyzer.py
 """
 
-import os
-import sys
-import re
 import argparse
+import os
+import re
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import Dict, List
 
 RISK_NO_TESTS = "NO_TEST_CHANGES"
 
@@ -23,6 +23,7 @@ RISK_NO_TESTS = "NO_TEST_CHANGES"
 @dataclass
 class FileStats:
     """Statistics for a single file."""
+
     filename: str
     additions: int = 0
     deletions: int = 0
@@ -34,6 +35,7 @@ class FileStats:
 @dataclass
 class PRAnalysis:
     """Complete PR analysis results."""
+
     total_files: int
     total_additions: int
     total_deletions: int
@@ -49,59 +51,59 @@ def detect_language(filename: str) -> str:
     """Detect programming language from filename."""
     _, ext = os.path.splitext(filename)
     extensions = {
-        '.py': 'Python',
-        '.js': 'JavaScript',
-        '.ts': 'TypeScript',
-        '.tsx': 'TypeScript/React',
-        '.jsx': 'JavaScript/React',
-        '.rs': 'Rust',
-        '.go': 'Go',
-        '.c': 'C',
-        '.h': 'C/C++',
-        '.cpp': 'C++',
-        '.hpp': 'C++',
-        '.cc': 'C++',
-        '.cxx': 'C++',
-        '.hh': 'C++',
-        '.hxx': 'C++',
-        '.java': 'Java',
-        '.kt': 'Kotlin',
-        '.swift': 'Swift',
-        '.rb': 'Ruby',
-        '.php': 'PHP',
-        '.cs': 'C#',
-        '.vue': 'Vue',
-        '.svelte': 'Svelte',
-        '.sql': 'SQL',
-        '.md': 'Markdown',
-        '.json': 'JSON',
-        '.yaml': 'YAML',
-        '.yml': 'YAML',
-        '.toml': 'TOML',
-        '.css': 'CSS',
-        '.scss': 'SCSS',
-        '.less': 'Less',
-        '.html': 'HTML',
-        '.zig': 'Zig',
-        '.ex': 'Elixir',
-        '.exs': 'Elixir',
-        '.erl': 'Erlang',
-        '.scala': 'Scala',
-        '.lua': 'Lua',
+        ".py": "Python",
+        ".js": "JavaScript",
+        ".ts": "TypeScript",
+        ".tsx": "TypeScript/React",
+        ".jsx": "JavaScript/React",
+        ".rs": "Rust",
+        ".go": "Go",
+        ".c": "C",
+        ".h": "C/C++",
+        ".cpp": "C++",
+        ".hpp": "C++",
+        ".cc": "C++",
+        ".cxx": "C++",
+        ".hh": "C++",
+        ".hxx": "C++",
+        ".java": "Java",
+        ".kt": "Kotlin",
+        ".swift": "Swift",
+        ".rb": "Ruby",
+        ".php": "PHP",
+        ".cs": "C#",
+        ".vue": "Vue",
+        ".svelte": "Svelte",
+        ".sql": "SQL",
+        ".md": "Markdown",
+        ".json": "JSON",
+        ".yaml": "YAML",
+        ".yml": "YAML",
+        ".toml": "TOML",
+        ".css": "CSS",
+        ".scss": "SCSS",
+        ".less": "Less",
+        ".html": "HTML",
+        ".zig": "Zig",
+        ".ex": "Elixir",
+        ".exs": "Elixir",
+        ".erl": "Erlang",
+        ".scala": "Scala",
+        ".lua": "Lua",
     }
-    return extensions.get(ext.lower(), 'unknown')
+    return extensions.get(ext.lower(), "unknown")
 
 
 def is_test_file(filename: str) -> bool:
     """Check if file is a test file."""
     test_patterns = [
-        r'(?:^|/)test_[^/]+\.py$',   # Python: test_handler.py (anchored to path segment)
-        r'[^/]+_test\.',             # *_test.<ext> — Rust, Go, etc.
-        r'[^/]+\.test\.(js|ts|tsx|jsx)$',  # JS/TS: handler.test.ts
-        r'[^/]+\.spec\.(js|ts|tsx|jsx)$',  # JS/TS: handler.spec.ts
-        r'(?:^|/)tests?/',           # tests/ or test/ directory
-        r'(?:^|/)__tests__/',        # __tests__/ directory
-        r'(?:^|/)spec/',             # spec/ directory (Ruby, etc.)
+        r"(?:^|/)test_[^/]+\.py$",  # Python: test_handler.py (anchored to path segment)
+        r"[^/]+_test\.",  # *_test.<ext> — Rust, Go, etc.
+        r"[^/]+\.test\.(js|ts|tsx|jsx)$",  # JS/TS: handler.test.ts
+        r"[^/]+\.spec\.(js|ts|tsx|jsx)$",  # JS/TS: handler.spec.ts
+        r"(?:^|/)tests?/",  # tests/ or test/ directory
+        r"(?:^|/)__tests__/",  # __tests__/ directory
+        r"(?:^|/)spec/",  # spec/ directory (Ruby, etc.)
     ]
     return any(re.search(p, filename) for p in test_patterns)
 
@@ -115,54 +117,82 @@ def is_config_file(filename: str) -> bool:
     basename = os.path.basename(filename)
 
     # Env files (.env, .env.local, .env.production, …)
-    if basename.startswith('.env'):
+    if basename.startswith(".env"):
         return True
 
     # Known config filenames (exact match)
     known_config_names = {
-        'package.json', 'package-lock.json',
-        'tsconfig.json', 'jsconfig.json',
-        'babel.config.json', 'babel.config.js',
-        'webpack.config.js', 'webpack.config.ts',
-        'rollup.config.js', 'vite.config.ts', 'vite.config.js',
-        '.eslintrc.json', '.eslintrc.js', '.eslintrc.yml',
-        '.prettierrc.json', '.prettierrc.yml', '.prettierrc.js',
-        'jest.config.js', 'jest.config.ts',
-        'vitest.config.ts', 'vitest.config.js',
-        'tailwind.config.js', 'tailwind.config.ts',
-        'postcss.config.js',
-        'docker-compose.yml', 'docker-compose.yaml',
-        'Dockerfile',
-        'Makefile', 'CMakeLists.txt',
-        'pyproject.toml', 'poetry.toml', 'Pipfile',
-        'setup.cfg', 'setup.py', 'tox.ini',
-        'Cargo.toml', 'Cargo.lock',
-        'go.mod', 'go.sum',
-        'Gemfile', 'Gemfile.lock',
-        'composer.json', 'composer.lock',
-        'Podfile', 'Package.swift',
-        '.gitignore', '.gitattributes',
-        'gradle.properties', 'build.gradle', 'build.gradle.kts',
-        'settings.gradle', 'settings.gradle.kts',
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "jsconfig.json",
+        "babel.config.json",
+        "babel.config.js",
+        "webpack.config.js",
+        "webpack.config.ts",
+        "rollup.config.js",
+        "vite.config.ts",
+        "vite.config.js",
+        ".eslintrc.json",
+        ".eslintrc.js",
+        ".eslintrc.yml",
+        ".prettierrc.json",
+        ".prettierrc.yml",
+        ".prettierrc.js",
+        "jest.config.js",
+        "jest.config.ts",
+        "vitest.config.ts",
+        "vitest.config.js",
+        "tailwind.config.js",
+        "tailwind.config.ts",
+        "postcss.config.js",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "Dockerfile",
+        "Makefile",
+        "CMakeLists.txt",
+        "pyproject.toml",
+        "poetry.toml",
+        "Pipfile",
+        "setup.cfg",
+        "setup.py",
+        "tox.ini",
+        "Cargo.toml",
+        "Cargo.lock",
+        "go.mod",
+        "go.sum",
+        "Gemfile",
+        "Gemfile.lock",
+        "composer.json",
+        "composer.lock",
+        "Podfile",
+        "Package.swift",
+        ".gitignore",
+        ".gitattributes",
+        "gradle.properties",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
     }
     if basename in known_config_names:
         return True
 
     # Known config path patterns
     config_path_patterns = [
-        r'\.github/workflows/[^/]+\.ya?ml$',
-        r'\.vscode/',
-        r'\.idea/',
+        r"\.github/workflows/[^/]+\.ya?ml$",
+        r"\.vscode/",
+        r"\.idea/",
     ]
     if any(re.search(p, filename) for p in config_path_patterns):
         return True
 
     # Files with "config" in the name (e.g. app.config.ts, database_config.yml)
-    if re.search(r'config\.', basename):
+    if re.search(r"config\.", basename):
         return True
 
     # Files under a config/ directory
-    if re.search(r'(?:^|/)config/', filename):
+    if re.search(r"(?:^|/)config/", filename):
         return True
 
     return False
@@ -173,18 +203,18 @@ def parse_diff(diff_content: str) -> List[FileStats]:
     files = []
     current_file = None
 
-    for line in diff_content.split('\n'):
+    for line in diff_content.split("\n"):
         # New file header
-        if line.startswith('diff --git'):
+        if line.startswith("diff --git"):
             if current_file:
                 files.append(current_file)
             # "diff --git a/<path> b/<path>" — match the b/ side via a
             # backreference so a literal "b/" inside paths like lib/, web/ or
             # db/ can't be mistaken for the prefix. Renames have differing
             # paths, so fall back to the b/ side after the separating space.
-            match = re.match(r'diff --git a/(.+?) b/\1', line)
+            match = re.match(r"diff --git a/(.+?) b/\1", line)
             if not match:
-                match = re.search(r' b/(.+)$', line)
+                match = re.search(r" b/(.+)$", line)
             if match:
                 filename = match.group(1)
                 current_file = FileStats(
@@ -196,9 +226,9 @@ def parse_diff(diff_content: str) -> List[FileStats]:
             else:
                 current_file = None
         elif current_file:
-            if line.startswith('+') and not line.startswith('+++'):
+            if line.startswith("+") and not line.startswith("+++"):
                 current_file.additions += 1
-            elif line.startswith('-') and not line.startswith('---'):
+            elif line.startswith("-") and not line.startswith("---"):
                 current_file.deletions += 1
 
     if current_file:
@@ -225,14 +255,11 @@ def calculate_complexity(files: List[FileStats]) -> float:
     non_test_ratio = 1 - (test_lines / max(total_changes, 1))
 
     # Factor for language diversity
-    languages = set(f.language for f in files if f.language != 'unknown')
+    languages = {f.language for f in files if f.language != "unknown"}
     lang_factor = min(len(languages) / 5, 1.0)
 
     complexity = (
-        size_factor * 0.4 +
-        file_factor * 0.2 +
-        non_test_ratio * 0.2 +
-        lang_factor * 0.2
+        size_factor * 0.4 + file_factor * 0.2 + non_test_ratio * 0.2 + lang_factor * 0.2
     )
 
     return round(complexity, 2)
@@ -242,14 +269,13 @@ def categorize_size(total_changes: int) -> str:
     """Categorize PR size."""
     if total_changes < 50:
         return "XS (Extra Small)"
-    elif total_changes < 200:
+    if total_changes < 200:
         return "S (Small)"
-    elif total_changes < 400:
+    if total_changes < 400:
         return "M (Medium)"
-    elif total_changes < 800:
+    if total_changes < 800:
         return "L (Large)"
-    else:
-        return "XL (Extra Large) - Consider splitting"
+    return "XL (Extra Large) - Consider splitting"
 
 
 def estimate_review_time(files: List[FileStats], complexity: float) -> int:
@@ -282,17 +308,22 @@ def identify_risk_factors(files: List[FileStats]) -> List[str]:
     if total_changes > 100 and test_changes / max(total_changes, 1) < 0.2:
         risks.append("Low test ratio (<20%) - consider adding more tests")
 
-    # Security-sensitive files
-    security_patterns = ['.env', 'auth', 'security', 'password', 'token', 'secret']
+    # Security / extraction-safety sensitive paths
+    safety_patterns = [
+        ".env",
+        "auth",
+        "security",
+        "password",
+        "token",
+        "secret",
+        "extract",
+        "symlink",
+        "crypto",
+        "threat",
+    ]
     for f in files:
-        if any(p in f.filename.lower() for p in security_patterns):
-            risks.append(f"Security-sensitive file: {f.filename}")
-            break
-
-    # Database changes
-    for f in files:
-        if 'migration' in f.filename.lower() or f.language == 'SQL':
-            risks.append("Database changes detected - review carefully")
+        if any(p in f.filename.lower() for p in safety_patterns):
+            risks.append(f"Safety-sensitive file: {f.filename}")
             break
 
     # Config changes
@@ -303,7 +334,9 @@ def identify_risk_factors(files: List[FileStats]) -> List[str]:
     return risks
 
 
-def generate_suggestions(files: List[FileStats], complexity: float, risks: List[str]) -> List[str]:
+def generate_suggestions(
+    files: List[FileStats], complexity: float, risks: List[str]
+) -> List[str]:
     """Generate review suggestions."""
     suggestions = []
 
@@ -319,16 +352,14 @@ def generate_suggestions(files: List[FileStats], complexity: float, risks: List[
     if any(RISK_NO_TESTS in r for r in risks):
         suggestions.append("Request test additions before approval")
 
-    # Language-specific suggestions
-    languages = set(f.language for f in files)
-    if 'TypeScript' in languages or 'TypeScript/React' in languages:
-        suggestions.append("Check for proper type usage (avoid 'any')")
-    if 'Rust' in languages:
-        suggestions.append("Check for unwrap() usage and error handling")
-    if 'C' in languages or 'C++' in languages or 'C/C++' in languages:
-        suggestions.append("Check for memory safety, bounds checks, and UB risks")
-    if 'SQL' in languages:
-        suggestions.append("Review for SQL injection and query performance")
+    languages = {f.language for f in files}
+    if "Python" in languages:
+        suggestions.append(
+            "Check exception translation, streaming vs buffering, and extract path safety"
+        )
+        suggestions.append(
+            "Run ruff + pyrefly/ty + relevant pytest targets before approving"
+        )
 
     if not suggestions:
         suggestions.append("Standard review process should suffice")
@@ -367,7 +398,7 @@ def print_analysis(analysis: PRAnalysis, show_files: bool = False):
     print("PR ANALYSIS REPORT")
     print("=" * 60)
 
-    print(f"\n📊 SUMMARY")
+    print("\n📊 SUMMARY")
     print(f"   Files changed: {analysis.total_files}")
     print(f"   Additions: +{analysis.total_additions}")
     print(f"   Deletions: -{analysis.total_deletions}")
@@ -378,16 +409,16 @@ def print_analysis(analysis: PRAnalysis, show_files: bool = False):
     print(f"   Estimated review time: ~{analysis.estimated_review_time} minutes")
 
     if analysis.risk_factors:
-        print(f"\n⚠️  RISK FACTORS:")
+        print("\n⚠️  RISK FACTORS:")
         for risk in analysis.risk_factors:
             print(f"   • {risk}")
 
-    print(f"\n💡 SUGGESTIONS:")
+    print("\n💡 SUGGESTIONS:")
     for suggestion in analysis.suggestions:
         print(f"   • {suggestion}")
 
     if show_files:
-        print(f"\n📁 FILES:")
+        print("\n📁 FILES:")
         # Group by language
         by_lang: Dict[str, List[FileStats]] = defaultdict(list)
         for f in analysis.files:
@@ -403,18 +434,18 @@ def print_analysis(analysis: PRAnalysis, show_files: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Analyze PR complexity')
-    parser.add_argument('--diff-file', '-f', help='Path to diff file')
-    parser.add_argument('--stats', '-s', action='store_true', help='Show file details')
+    parser = argparse.ArgumentParser(description="Analyze PR complexity")
+    parser.add_argument("--diff-file", "-f", help="Path to diff file")
+    parser.add_argument("--stats", "-s", action="store_true", help="Show file details")
     args = parser.parse_args()
 
     # Read diff from file or stdin
     try:
         if args.diff_file:
-            with open(args.diff_file, 'r', encoding='utf-8', errors='replace') as f:
+            with open(args.diff_file, "r", encoding="utf-8", errors="replace") as f:
                 diff_content = f.read()
         elif not sys.stdin.isatty():
-            diff_content = sys.stdin.buffer.read().decode('utf-8', errors='replace')
+            diff_content = sys.stdin.buffer.read().decode("utf-8", errors="replace")
         else:
             print("Usage: git diff main...HEAD | python pr-analyzer.py")
             print("       python pr-analyzer.py -f diff.txt")
@@ -431,5 +462,5 @@ def main():
     print_analysis(analysis, show_files=args.stats)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

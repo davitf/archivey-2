@@ -25,28 +25,23 @@ Before accepting new code, search the existing codebase for reusable utilities.
 ### Search for Existing Utility Functions
 
 ```python
-# ❌ New path-joining logic—the project already has PathBuilder
-def get_config_path(name):
-    base = os.environ.get("APP_ROOT", ".")
-    return os.path.join(base, "config", name + ".json")
+# ❌ New path-joining logic—the project already has safe_join
+def member_dest(root: Path, name: str) -> Path:
+    return root / name.replace("..", "")
 
-# ✅ Use the existing PathBuilder
-def get_config_path(name):
-    return PathBuilder.config(f"{name}.json")
+# ✅ Use the existing path helper
+def member_dest(root: Path, name: str) -> Path:
+    return safe_join(root, name)
 ```
 
-```javascript
-// ❌ Hand-written debounce—the project already has lodash or utils/debounce.ts
-function debounce(fn, ms) {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
-}
+```python
+# ❌ Hand-rolled CRC32—the project already has archivey._util.crc32
+def zip_crc(data: bytes) -> int:
+    import zlib
+    return zlib.crc32(data) & 0xFFFFFFFF
 
-// ✅ Use the existing utility
-import { debounce } from "@/utils/debounce";
+# ✅ Use the existing utility
+from archivey._util import crc32
 ```
 
 **Review points:**
@@ -62,41 +57,20 @@ import { debounce } from "@/utils/debounce";
 
 ```python
 # ❌ Add a parameter for every new requirement
-def create_user(name, email, role, team, active, avatar_url, timezone):
+def extract_member(archive, name, dest, password, overwrite, preserve_mtime, strip_components):
     ...
 
 # ✅ Use a configuration object / dataclass
 @dataclass
-class CreateUserParams:
-    name: str
-    email: str
-    role: Role = Role.MEMBER
-    team: str | None = None
-    active: bool = True
-    avatar_url: str | None = None
-    timezone: str = "UTC"
+class ExtractOptions:
+    dest: Path
+    password: str | None = None
+    overwrite: bool = False
+    preserve_mtime: bool = True
+    strip_components: int = 0
 
-def create_user(params: CreateUserParams) -> User:
+def extract_member(archive: Archive, name: str, options: ExtractOptions) -> Path:
     ...
-```
-
-```typescript
-// ❌ 6+ positional parameters
-function renderWidget(
-  title: string, width: number, height: number,
-  theme: string, collapsible: boolean, icon: string
-) { ... }
-
-// ✅ Options object pattern
-interface WidgetOptions {
-  title: string;
-  width?: number;
-  height?: number;
-  theme?: "light" | "dark";
-  collapsible?: boolean;
-  icon?: string;
-}
-function renderWidget(options: WidgetOptions) { ... }
 ```
 
 **Review points:**
@@ -111,31 +85,20 @@ function renderWidget(options: WidgetOptions) { ... }
 ### Exposing Internal Implementation Details
 
 ```python
-# ❌ Returns internal ORM objects—callers are forced to know SQLAlchemy
-def get_users():
-    return session.query(User).filter(User.active == True).all()
+# ❌ Returns raw ZIP central-directory records—callers must know zipfile internals
+def list_members(archive_path: Path) -> list[zipfile.ZipInfo]:
+    with zipfile.ZipFile(archive_path) as zf:
+        return zf.infolist()
 
-# ✅ Return domain objects; hide the persistence layer
-def get_active_users() -> list[UserDTO]:
-    rows = user_repo.find_active()
-    return [UserDTO.from_row(r) for r in rows]
-```
-
-```typescript
-// ❌ Component receives raw API response structure
-<UserCard user={apiResponse.data.results[0]} />
-
-// ✅ Component receives a domain type; adapter handles mapping
-interface UserSummary {
-  displayName: string;
-  avatarUrl: string;
-}
-<UserCard user={adaptUser(apiResponse)} />
+# ✅ Return domain objects; hide the format backend
+def list_members(archive_path: Path) -> list[ArchiveMember]:
+    with open_archive(archive_path) as archive:
+        return list(archive.members())
 ```
 
 **Review points:**
-- Does the return type leak the underlying implementation (ORM, HTTP client, file format)?
-- Does the component/function depend on an external system's data structures?
+- Does the return type leak the underlying implementation (parser structs, codec handles, file format)?
+- Does the function depend on a backend's internal data structures?
 - Does it break existing abstraction boundaries?
 
 ---
@@ -146,37 +109,24 @@ interface UserSummary {
 
 ```python
 # ❌ Magic strings scattered everywhere
-if status == "active":
+if format_name == "zip":
     ...
-if role == "admin":
+if compression == "deflate":
     ...
 
 # ✅ Use enums
-class Status(StrEnum):
-    ACTIVE = "active"
-    SUSPENDED = "suspended"
-    ARCHIVED = "archived"
+class ArchiveFormat(StrEnum):
+    ZIP = "zip"
+    TAR = "tar"
+    SEVEN_Z = "7z"
 
-if user.status == Status.ACTIVE:
+if detected == ArchiveFormat.ZIP:
     ...
-```
-
-```typescript
-// ❌ Raw string event names—typos won't be caught
-emitter.emit("userCreated", data);
-emitter.on("usercreated", handler); // bug: typo
-
-// ✅ Constants or branded types
-const Events = {
-  USER_CREATED: "userCreated",
-  USER_SUSPENDED: "userSuspended",
-} as const;
-emitter.emit(Events.USER_CREATED, data);
 ```
 
 **Review points:**
 - Are strings used where an existing enum/union type should be?
-- Are event names, action types, and status values scattered across multiple files?
+- Are format names, member kinds, and codec IDs scattered across multiple files?
 - Are string comparisons case-sensitive without validation?
 
 ---
@@ -188,52 +138,36 @@ emitter.emit(Events.USER_CREATED, data);
 ```python
 # ❌ Ternary chain is hard to read
 label = (
-    "Admin" if role == "admin" else
-    "Manager" if role == "manager" else
-    "Viewer" if role == "viewer" else
+    "ZIP" if fmt == "zip" else
+    "TAR" if fmt == "tar" else
+    "7z" if fmt == "7z" else
     "Unknown"
 )
 
 # ✅ Lookup table or match
-ROLE_LABELS = {
-    "admin": "Admin",
-    "manager": "Manager",
-    "viewer": "Viewer",
+FORMAT_LABELS = {
+  ArchiveFormat.ZIP: "ZIP",
+  ArchiveFormat.TAR: "TAR",
+  ArchiveFormat.SEVEN_Z: "7z",
 }
-label = ROLE_LABELS.get(role, "Unknown")
-```
-
-```typescript
-// ❌ Nested ternary
-const bg = isHovered
-  ? isSelected ? "blue" : "gray"
-  : isSelected ? "navy" : "white";
-
-// ✅ Lookup map
-const bgMap: Record<string, string> = {
-  "true-true": "blue",
-  "true-false": "gray",
-  "false-true": "navy",
-  "false-false": "white",
-};
-const bg = bgMap[`${isHovered}-${isSelected}`];
+label = FORMAT_LABELS.get(fmt, "Unknown")
 ```
 
 ```python
 # ❌ Nested if 3+ levels deep
-def process(order):
-    if order is not None:
-        if order.items:
-            for item in order.items:
-                if item.price > 0:
+def extract_tree(archive, dest):
+    if archive is not None:
+        if archive.members:
+            for member in archive.members:
+                if member.is_file:
                     ...
 
 # ✅ Early return + guard clauses
-def process(order):
-    if not order or not order.items:
+def extract_tree(archive, dest):
+    if archive is None or not archive.members:
         return
-    for item in order.items:
-        if item.price <= 0:
+    for member in archive.members:
+        if not member.is_file:
             continue
         ...
 ```
@@ -250,38 +184,24 @@ def process(order):
 ### Nearly Identical Code Blocks
 
 ```python
-# ❌ Two functions are almost the same—only field names differ
-def format_user(user):
-    return f"{user.first_name} {user.last_name} ({user.email})"
+# ❌ Two parsers differ only in magic bytes and header layout
+def sniff_zip(path: Path) -> bool:
+    with path.open("rb") as f:
+        return f.read(4) == b"PK\x03\x04"
 
-def format_employee(emp):
-    return f"{emp.first_name} {emp.last_name} ({emp.work_email})"
+def sniff_tar(path: Path) -> bool:
+    with path.open("rb") as f:
+        return f.read(262)[257:262] == b"ustar"
 
-# ✅ Unified abstraction
-def format_person(first: str, last: str, email: str) -> str:
-    return f"{first} {last} ({email})"
-```
-
-```typescript
-// ❌ Copy-pasted handler with only the URL changed
-async function deletePost(id: string) {
-  await fetch(`/api/posts/${id}`, { method: "DELETE" });
-  router.push("/posts");
-}
-async function deleteComment(id: string) {
-  await fetch(`/api/comments/${id}`, { method: "DELETE" });
-  router.push("/comments");
-}
-
-// ✅ Parameterized
-async function deleteResource(resource: string, id: string) {
-  await fetch(`/api/${resource}/${id}`, { method: "DELETE" });
-  router.push(`/${resource}`);
-}
+# ✅ Unified signature check
+def matches_signature(path: Path, offset: int, magic: bytes) -> bool:
+    with path.open("rb") as f:
+        f.seek(offset)
+        return f.read(len(magic)) == magic
 ```
 
 **Review points:**
-- Are there ≥ 2 code blocks that differ only in variable names, URLs, or strings?
+- Are there ≥ 2 code blocks that differ only in variable names, offsets, or magic bytes?
 - Can a parameterized shared function be extracted?
 - Can template method or strategy eliminate the variants?
 
@@ -289,48 +209,26 @@ async function deleteResource(resource: string, id: string) {
 
 ## No-Op Updates
 
-### Unconditionally Triggering State Updates
-
-```typescript
-// ❌ Every poll triggers an update—even when data hasn't changed
-useEffect(() => {
-  const interval = setInterval(() => {
-    fetch("/api/status").then(r => r.json()).then(setStatus);
-  }, 5000);
-  return () => clearInterval(interval);
-}, []);
-
-// ✅ Update only when the value changes
-useEffect(() => {
-  const interval = setInterval(() => {
-    fetch("/api/status")
-      .then(r => r.json())
-      .then(data => {
-        setStatus(prev => isEqual(prev, data) ? prev : data);
-      });
-  }, 5000);
-  return () => clearInterval(interval);
-}, []);
-```
+### Unconditionally Triggering Updates
 
 ```python
-# ❌ Write to DB on every loop—even when the value hasn't changed
-for item in items:
-    item.status = compute_status(item)
-    session.commit()
+# ❌ Rewrite the index file on every member visit—even when metadata is unchanged
+for member in archive.members():
+    member.mtime = normalize_mtime(member.mtime)
+    index.write(member)
 
-# ✅ Write only on change
-for item in items:
-    new_status = compute_status(item)
-    if item.status != new_status:
-        item.status = new_status
-        session.commit()
+# ✅ Update only when the value changes
+for member in archive.members():
+    new_mtime = normalize_mtime(member.mtime)
+    if member.mtime != new_mtime:
+        member.mtime = new_mtime
+        index.write(member)
 ```
 
 **Review points:**
 - Do polling / interval / event handlers update unconditionally?
 - Does the wrapper function respect same-reference return?
-- Do DB writes check for actual changes?
+- Do filesystem or index writes check for actual changes?
 
 ---
 
@@ -353,30 +251,17 @@ except FileNotFoundError:
 ```
 
 ```python
-# ❌ Check balance → deduct is not atomic
-if account.balance >= amount:
-    account.balance -= amount
+# ❌ Check member exists → extract is not atomic if the archive changes
+if archive.has_member(name):
+    archive.extract(name, dest)
 
-# ✅ Atomic operation or lock
-with account.lock:
-    if account.balance < amount:
-        raise InsufficientFundsError()
-    account.balance -= amount
-```
-
-```typescript
-// ❌ Check-then-act is unsafe in async environments
-if (!fileExists(path)) {
-  await writeFile(path, content);
-}
-
-// ✅ Operate directly + catch
-try {
-  await writeFile(path, content, { flag: "wx" });
-} catch (e) {
-  if (e.code === "EEXIST") { /* handle */ }
-  else throw e;
-}
+# ✅ Extract directly + handle missing/changed members
+try:
+    archive.extract(name, dest)
+except MemberNotFoundError:
+    ...
+except ArchiveChangedError:
+    ...
 ```
 
 **Review points:**
@@ -391,39 +276,30 @@ try {
 ### Reading Too Much Data
 
 ```python
-# ❌ Read the entire file to get the first line
-content = Path("log.txt").read_text()
-first_line = content.split("\n")[0]
+# ❌ Read the entire archive to get one member's header
+data = path.read_bytes()
+offset = find_central_directory(data)
+member = parse_central_directory_record(data, offset)
 
-# ✅ Read only the first line; don't load the whole file
-with open("log.txt") as f:
-    first_line = f.readline()
-```
-
-```typescript
-// ❌ Load all items then filter
-const allItems = await db.query("SELECT * FROM orders");
-const pending = allItems.filter(o => o.status === "pending");
-
-// ✅ Filter at the database layer
-const pending = await db.query(
-  "SELECT * FROM orders WHERE status = ?", ["pending"]
-);
+# ✅ Seek to the header; don't load the whole file
+with path.open("rb") as f:
+    f.seek(central_dir_offset)
+    member = parse_central_directory_record(f)
 ```
 
 ```python
-# ❌ Read the entire list to find one record
-users = list(User.objects.all())
-user = next(u for u in users if u.id == user_id)
+# ❌ List every member to find one by name
+members = list(archive.members())
+target = next(m for m in members if m.name == name)
 
-# ✅ Precise query
-user = User.objects.get(id=user_id)
+# ✅ Indexed lookup
+target = archive.get_member(name)
 ```
 
 **Review points:**
 - Is an entire collection/file read when only a small part is used?
-- Can filtering be pushed to the database/storage layer?
-- Does the API call support pagination/limit parameters?
+- Can filtering be pushed to the parser/index layer?
+- Does the API support seek/limit instead of full enumeration?
 
 ---
 
@@ -431,40 +307,24 @@ user = User.objects.get(id=user_id)
 
 ### State That Can Be Derived
 
-```typescript
-// ❌ Store both fullName and firstName + lastName
-interface User {
-  firstName: string;
-  lastName: string;
-  fullName: string;  // redundant
-}
-
-// ✅ fullName is a derived value
-interface User {
-  firstName: string;
-  lastName: string;
-}
-const fullName = `${user.firstName} ${user.lastName}`;
-```
-
 ```python
 # ❌ Cached values can become stale when source data changes
-class Order:
-    total: float
-    item_count: int       # redundant if len(items) gives the same
-    items: list[Item]
+class ArchiveListing:
+    member_count: int       # redundant if len(members) gives the same
+    total_uncompressed: int # redundant if sum(m.size for m in members)
+    members: list[ArchiveMember]
 
 # ✅ Derive or use a property
-class Order:
-    items: list[Item]
+class ArchiveListing:
+    members: list[ArchiveMember]
 
     @property
-    def total(self) -> float:
-        return sum(item.price for item in self.items)
+    def member_count(self) -> int:
+        return len(self.members)
 
     @property
-    def item_count(self) -> int:
-        return len(self.items)
+    def total_uncompressed(self) -> int:
+        return sum(m.uncompressed_size for m in self.members)
 ```
 
 **Review points:**
@@ -478,7 +338,7 @@ class Order:
 
 - [ ] **Reuse review**: Searched for existing utilities/helpers—no reinventing the wheel?
 - [ ] **Parameter count**: Function has ≤ 3 parameters? If more, use an options object / dataclass?
-- [ ] **Abstraction boundaries**: Return types don't expose internal implementation details (ORM, HTTP client, file format)?
+- [ ] **Abstraction boundaries**: Return types don't expose internal implementation details (parser structs, codec handles, file format)?
 - [ ] **Type safety**: No magic strings where an existing enum/constant/union type should be used?
 - [ ] **Conditional depth**: Ternary nesting ≤ 1 level? if/else nesting ≤ 2 levels?
 - [ ] **DRY**: No copy-paste-with-variation (≥ 2 near-identical blocks)?

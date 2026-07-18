@@ -1,12 +1,12 @@
 # PR Review Template
 
-Copy and use this template for your code reviews.
+Copy and use this template for code reviews in this repo.
 
 ---
 
 ## Summary
 
-[Brief overview of what was reviewed - 1-2 sentences]
+[Brief overview of what was reviewed — 1-2 sentences]
 
 **PR Size:** [Small/Medium/Large] (~X lines)
 **Review Time:** [X minutes]
@@ -20,29 +20,25 @@ Copy and use this template for your code reviews.
 ## Architecture & Performance
 
 **Architecture Assessment**
-- [ ] Separation of concerns — are responsibilities clearly divided?
-- [ ] Module responsibilities — does each module have a single purpose?
-- [ ] Dependency direction — do dependencies flow toward stability?
-- [ ] Consistent with existing patterns and conventions
+- [ ] Separation of concerns — responsibilities clearly divided?
+- [ ] Fits existing reader/backend patterns?
+- [ ] Dependency direction toward stable abstractions?
+- [ ] Public API / exception contract preserved or intentionally changed?
 
-> See [Architecture Review Guide](../reference/architecture-review-guide.md) for detailed SOLID, anti-pattern, and coupling analysis.
+> See [Architecture Review Guide](../reference/architecture-review-guide.md).
 
 **Performance Assessment**
-- [ ] Algorithm complexity — any O(n²) or worse on large inputs?
-- [ ] Memory impact — large allocations, leaks, unbounded growth?
-- [ ] I/O impact — excessive API calls, unbatched writes, missing caching?
-- [ ] Database queries — N+1 risks, missing indexes, unoptimized joins?
+- [ ] Algorithm / member-loop complexity acceptable?
+- [ ] Memory — streaming vs full buffers; unbounded growth?
+- [ ] I/O — avoid silent re-decompression / redundant reads?
 
-> See [Performance Review Guide](../reference/performance-review-guide.md) for comprehensive Web Vitals, N+1, and caching guidance.
+> See [Performance Review Guide](../reference/performance-review-guide.md).
 
 ## Required Changes
 
 🔴 **[blocking]** [Issue description]
 > [Code location or example]
 > [Suggested fix or explanation]
-
-🔴 **[blocking]** [Issue description]
-> [Details]
 
 ## Important Suggestions
 
@@ -58,33 +54,30 @@ Copy and use this template for your code reviews.
 
 ## Learning Notes
 
-📚 [Educational context worth sharing about X]
-
-📚 [Background behind design decision Y]
+📚 [Educational context]
 
 ## Security Considerations
 
 - [ ] No hardcoded secrets
-- [ ] Input validation present
-- [ ] Authorization checks in place
-- [ ] No SQL/XSS injection risks
-- [ ] CSRF protection for state-changing operations
-- [ ] Sensitive data not leaked in logs/errors
-- [ ] Dependency vulnerabilities checked (npm audit / pip audit / cargo audit)
+- [ ] Extract path / symlink safety considered
+- [ ] Hostile size / bomb risks considered
+- [ ] Subprocess usage is safe (no shell interpolation)
+- [ ] Passwords / key material not leaked in logs/errors
+- [ ] Dependency / extra changes justified for zero-dep core
 
-> See [Security Review Guide](../reference/security-review-guide.md) for comprehensive injection, XSS, CSRF, secrets, and auth checklist.
+> See [Security Review Guide](../reference/security-review-guide.md).
 
 ## Test Coverage
 
-- [ ] Unit tests added/updated
-- [ ] Edge cases covered
-- [ ] Error cases tested
+- [ ] Unit / behavior tests added or updated
+- [ ] Edge, truncated, and error cases covered
+- [ ] Format fixtures / corpus used where appropriate
 
 ## Verdict
 
-**[ ] ✅ Approve** - Ready to merge
-**[ ] 💬 Comment** - Minor suggestions, can merge
-**[ ] 🔄 Request Changes** - Must address blocking issues
+**[ ] ✅ Approve** — Ready to merge
+**[ ] 💬 Comment** — Minor suggestions, can merge
+**[ ] 🔄 Request Changes** — Must address blocking issues
 
 ---
 
@@ -96,11 +89,11 @@ Copy and use this template for your code reviews.
 
 [Description of the issue]
 
-**Location:** `file.ts:123`
+**Location:** `path/to/file.py:123`
 
 **Suggested fix:**
-\`\`\`typescript
-// Your suggested code
+\`\`\`python
+# suggested code
 \`\`\`
 ```
 

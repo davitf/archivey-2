@@ -1,78 +1,56 @@
 # Common Bugs Checklist
 
-Quick-reference bug patterns organized by category. For detailed code examples, explanations, and comprehensive review checklists, see the dedicated language guides linked below.
-
-> **Repo note:** Non-Python language sections from the upstream skill were removed.
+Quick-reference bug patterns for this Python archive library. See also
+[python.md](python.md) and [security-review-guide.md](security-review-guide.md).
 
 ## Universal Issues
 
 ### Logic Errors
-- [ ] Off-by-one errors in loops and array access
+- [ ] Off-by-one errors in loops and buffer/slice bounds
 - [ ] Incorrect boolean logic (De Morgan's law violations)
-- [ ] Missing null/undefined checks
-- [ ] Race conditions in concurrent code
-- [ ] Incorrect comparison operators (`==` vs `===`, `=` vs `==`)
-- [ ] Integer overflow/underflow
-- [ ] Floating point comparison issues
+- [ ] Missing `None` checks on optional metadata fields
+- [ ] Race conditions if sharing archive objects across threads
+- [ ] Using `is` where value equality (`==`) is required
+- [ ] Integer overflow / huge lengths accepted from headers
+- [ ] Floating point comparison issues (rare here; watch ratios/budgets)
 
 ### Resource Management
-- [ ] Memory leaks (unclosed connections, listeners)
-- [ ] File handles not closed
-- [ ] Database connections not released
-- [ ] Event listeners not removed
-- [ ] Timers/intervals not cleared
+- [ ] File / archive handles not closed
+- [ ] Temp files/dirs not cleaned up
+- [ ] Decompressor / subprocess helpers left running
+- [ ] Unbounded buffers holding entire members
 
 ### Error Handling
-- [ ] Swallowed exceptions (empty catch blocks)
-- [ ] Generic exception handling hiding specific errors
-- [ ] Missing error propagation
-- [ ] Incorrect error types thrown
-- [ ] Missing finally/cleanup blocks
+- [ ] Swallowed exceptions (bare/`except Exception: pass`)
+- [ ] Generic catches hiding format-specific failures
+- [ ] Missing exception chaining (`raise … from exc`)
+- [ ] Wrong public exception type (breaks caller contracts)
+- [ ] Missing cleanup in `finally` / context managers
 
 ## Python
 
 - [ ] Mutable default arguments (`def f(x=[])`)
-- [ ] Bare `except:` catching `KeyboardInterrupt` and `SystemExit`
+- [ ] Bare `except:` catching `KeyboardInterrupt` / `SystemExit`
 - [ ] Shared mutable class attributes (`class C: items = []`)
-- [ ] Using `is` instead of `==` for value comparison
-- [ ] Forgetting `self` parameter in methods
-- [ ] Modifying list while iterating
-- [ ] String concatenation in loops (use `"".join()`)
-- [ ] Not closing files (use `with` statement)
-- [ ] Missing type annotations on public functions
+- [ ] Modifying a list while iterating
+- [ ] String concatenation in tight loops (prefer `bytearray` / `join`)
+- [ ] Not using `with` for files/archives
+- [ ] Missing type annotations on public APIs
 
 **Full guide:** [Python Review Guide](python.md)
 
-## SQL
+## Library / Archive Specific
 
-- [ ] String concatenation for queries (SQL injection risk) — use parameterized queries
-- [ ] Missing indexes on filtered/joined columns
-- [ ] `SELECT *` instead of specific columns
-- [ ] N+1 query patterns
-- [ ] Missing `LIMIT` on large tables
-- [ ] Not handling `NULL` comparisons correctly (`IS NULL` vs `= NULL`)
-- [ ] Missing transactions for related operations
-- [ ] Incorrect JOIN types
-- [ ] Collation / case sensitivity surprises across databases (MySQL vs Postgres defaults)
-- [ ] Date and timezone handling errors (naive timestamps, server-local `NOW()`, DST)
-
-**See also:** [Security Review Guide](security-review-guide.md) for SQL injection prevention
-
-## API Design
-
-- [ ] Inconsistent resource naming
-- [ ] Wrong HTTP methods (POST for idempotent operations)
-- [ ] Missing pagination for list endpoints
-- [ ] Incorrect status codes
-- [ ] Missing rate limiting
-- [ ] Missing input validation and sanitization
-- [ ] Trusting client-side validation only
+- [ ] Path traversal or symlink escape on extract
+- [ ] Silent re-decompression of solid blocks (cost-model surprise)
+- [ ] Assuming well-formed input — hostile/truncated archives must be handled
+- [ ] Breaking format parity (behavior differs silently across backends)
+- [ ] Optional extra imported at module import time when it should be lazy
 
 ## Testing
 
 - [ ] Testing implementation details instead of behavior
-- [ ] Missing edge case tests
-- [ ] Flaky tests (non-deterministic)
-- [ ] Tests with external dependencies (no mocks)
-- [ ] Missing negative tests (error cases)
-- [ ] Overly complex test setup
+- [ ] Missing edge / hostile / truncated fixtures
+- [ ] Flaky tests (time, ordering, leftover temp state)
+- [ ] Missing negative tests (corrupt input, wrong password, missing member)
+- [ ] Overly complex test setup when corpus fixtures exist

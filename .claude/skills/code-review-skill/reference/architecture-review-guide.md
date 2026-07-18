@@ -1,6 +1,6 @@
 # Architecture Review Guide
 
-A guide for architecture design reviews, helping you assess whether the code's architecture is sound and the design is appropriate.
+A guide for architecture design reviews on a pure Python archive library (no web UI, SQL DB, or HTTP API).
 
 ## SOLID Principles Checklist
 
@@ -8,95 +8,94 @@ A guide for architecture design reviews, helping you assess whether the code's a
 
 **What to check:**
 - Does this class/module have only one reason to change?
-- Do all methods in the class serve the same purpose?
-- If you had to describe this class to a non-technical person, could you do it in one sentence?
+- Do all methods serve the same purpose?
+- Can you describe it in one sentence?
 
-**Signals to spot during code review:**
+**Signals:**
 ```
-⚠️ Class names contain generic words like "And", "Manager", "Handler", "Processor"
-⚠️ A class exceeds 200–300 lines of code
-⚠️ A class has more than 5–7 public methods
-⚠️ Different methods operate on completely different data
+⚠️ Names contain "And", "Manager", "Handler", "Processor"
+⚠️ Class exceeds 200–300 lines
+⚠️ More than 5–7 public methods
+⚠️ Methods operate on unrelated data
 ```
 
 **Review questions:**
-- "What responsibilities does this class have? Can it be split?"
-- "If requirement X changes, which methods need to change? What about requirement Y?"
+- "What responsibilities does this have? Can it be split?"
+- "If format X changes, which methods change? What about codec Y?"
 
 ### O - Open/Closed Principle (OCP)
 
 **What to check:**
-- When adding new functionality, do you need to modify existing code?
-- Can new behavior be added through extension (inheritance, composition)?
-- Are there large if/else or switch statements handling different types?
+- Does adding a format/codec require editing core dispatch code?
+- Can new behavior be added via registry, subclass, or composition?
+- Are there large if/else or match chains over format types?
 
-**Signals to spot during code review:**
+**Signals:**
 ```
-⚠️ switch/if-else chains handling different types
-⚠️ Adding new functionality requires modifying core classes
-⚠️ Type checks (instanceof, typeof) scattered throughout the code
+⚠️ switch/match chains over format or codec types
+⚠️ New backend requires editing unrelated modules
+⚠️ isinstance checks scattered outside the registry
 ```
 
 **Review questions:**
-- "If we add a new X type, which files need to change?"
-- "Will this switch statement keep growing as new types are added?"
+- "If we add a new archive format, which files change?"
+- "Will this dispatch table keep growing?"
 
 ### L - Liskov Substitution Principle (LSP)
 
 **What to check:**
-- Can subclasses fully replace the parent class wherever it is used?
-- Do subclasses change the expected behavior of parent methods?
-- Do subclasses throw exceptions not declared by the parent?
+- Can subclasses replace the base wherever it is used?
+- Do subclasses weaken or change the base contract?
+- Do subclasses raise unexpected exception types?
 
-**Signals to spot during code review:**
+**Signals:**
 ```
-⚠️ Explicit type casting
-⚠️ Subclass methods throw NotImplementedException
-⚠️ Subclass methods are empty implementations or only return
-⚠️ Code using the base class needs to check the concrete type
+⚠️ Explicit downcasts to concrete reader types
+⚠️ Subclass methods raise NotImplementedError
+⚠️ Callers must isinstance-check the backend
 ```
 
 **Review questions:**
-- "If we substitute a subclass for the parent class, does calling code need to change?"
-- "Does this method's behavior in the subclass honor the parent's contract?"
+- "Can any ReadBackend substitute here without caller changes?"
+- "Does this override honor the base reader contract?"
 
 ### I - Interface Segregation Principle (ISP)
 
 **What to check:**
-- Is the interface small and focused enough?
-- Are implementers forced to implement methods they do not need?
-- Do clients depend on methods they do not use?
+- Are protocols/ABCs small and focused?
+- Are implementers forced to stub unused methods?
+- Do callers depend on methods they never use?
 
-**Signals to spot during code review:**
+**Signals:**
 ```
-⚠️ Interface has more than 5–7 methods
-⚠️ Implementing classes have empty methods or throw NotImplementedException
-⚠️ Interface name is too broad (IManager, IService)
-⚠️ Different clients use only a subset of the interface's methods
+⚠️ Backend ABC has more than 5–7 methods
+⚠️ Empty methods or NotImplementedError stubs
+⚠️ Broad names (IManager, IService)
+⚠️ Clients use only a subset of the interface
 ```
 
 **Review questions:**
-- "Are all methods in this interface used by every implementing class?"
-- "Can this large interface be split into smaller, purpose-specific interfaces?"
+- "Does every backend use every method on this ABC?"
+- "Can this be split (e.g. list vs stream vs write)?"
 
 ### D - Dependency Inversion Principle (DIP)
 
 **What to check:**
-- Do high-level modules depend on abstractions rather than concrete implementations?
-- Is dependency injection used instead of directly `new`-ing objects?
-- Are abstractions defined by high-level modules rather than low-level modules?
+- Do high-level modules depend on abstractions (protocols, registries)?
+- Are concrete parsers/codecs injected or resolved via registry, not hard-imported?
+- Are abstractions owned by the layer that uses them?
 
-**Signals to spot during code review:**
+**Signals:**
 ```
-⚠️ High-level modules directly new concrete classes from low-level modules
-⚠️ Imports concrete implementations instead of interfaces/abstract classes
-⚠️ Configuration and connection strings hardcoded in business logic
-⚠️ Difficult to write unit tests for a class
+⚠️ Public API imports internal parser modules directly
+⚠️ Backend hard-codes a codec instead of using the codec registry
+⚠️ Optional extras imported at module top level (breaks zero-dep core)
+⚠️ Hard to unit-test without real archive files
 ```
 
 **Review questions:**
-- "Can this class's dependencies be replaced with mocks in tests?"
-- "If we swap the database/API implementation, how many places need to change?"
+- "Can dependencies be replaced with fakes in tests?"
+- "If we swap a decompressor or optional extra, how many call sites change?"
 
 ---
 
@@ -106,26 +105,26 @@ A guide for architecture design reviews, helping you assess whether the code's a
 
 | Anti-pattern | Signals | Impact |
 |--------|----------|------|
-| **Big Ball of Mud** | No clear module boundaries; any code can call any other code | Hard to understand, modify, and test |
-| **God Object** | A single class takes on too many responsibilities; knows too much, does too much | High coupling; hard to reuse and test |
-| **Spaghetti Code** | Chaotic control flow, goto or deep nesting; hard to trace execution paths | Hard to understand and maintain |
-| **Lava Flow** | Ancient code nobody dares touch; lacks documentation and tests | Technical debt accumulates |
+| **Big Ball of Mud** | No module boundaries; any module imports any other | Hard to understand, modify, and test |
+| **God Object** | One class knows every format and every codec | High coupling; hard to reuse |
+| **Spaghetti Code** | Chaotic control flow, deep nesting | Hard to trace extraction paths |
+| **Lava Flow** | Ancient code nobody touches; no tests | Debt accumulates |
 
 ### Design Anti-Patterns
 
 | Anti-pattern | Signals | Recommendation |
 |--------|----------|------|
-| **Golden Hammer** | Using the same technology/pattern for every problem | Choose the right solution for each problem |
-| **Gas Factory (Over-engineering)** | Solving simple problems with complex solutions; design patterns abused | YAGNI—start simple, add complexity only when needed |
-| **Boat Anchor** | Unused code written for "we might need it later" | Delete unused code; write it when needed |
-| **Copy-Paste Programming** | The same logic appears in multiple places | Extract shared methods or modules |
+| **Golden Hammer** | Same pattern for every format | Match the solution to the format |
+| **Gas Factory** | Simple parse wrapped in layers of indirection | YAGNI—start simple |
+| **Boat Anchor** | Unused code for "later" | Delete; add when needed |
+| **Copy-Paste Programming** | Same header/codec logic in multiple backends | Extract shared helpers |
 
 ### Review Questions
 
 ```markdown
-🔴 [blocking] "This class has 2000 lines of code; consider splitting it into several focused classes"
-🟡 [important] "This logic is duplicated in 3 places—consider extracting a shared method?"
-💡 [suggestion] "This switch statement could be replaced with the Strategy pattern for easier extension"
+🔴 [blocking] "This module has 2000 lines; split by format or concern"
+🟡 [important] "This logic is duplicated in 3 backends—extract a shared helper?"
+💡 [suggestion] "This match chain could be a registry or Strategy for new formats"
 ```
 
 ---
@@ -136,113 +135,103 @@ A guide for architecture design reviews, helping you assess whether the code's a
 
 | Type | Description | Example |
 |------|------|------|
-| **Message coupling** ✅ | Data passed via parameters | `calculate(price, quantity)` |
-| **Data coupling** ✅ | Share simple data structures | `processOrder(orderDTO)` |
-| **Stamp coupling** ⚠️ | Share complex data structures but use only part | Pass entire User object but only use name |
-| **Control coupling** ⚠️ | Control flags passed in affect behavior | `process(data, isAdmin=true)` |
-| **Common coupling** ❌ | Share global variables | Multiple modules read/write the same global state |
-| **Content coupling** ❌ | Direct access to another module's internals | Directly manipulate another class's private fields |
+| **Message coupling** ✅ | Data via parameters | `decompress(data, method_id)` |
+| **Data coupling** ✅ | Share simple structures | `process_entry(ArchiveMember)` |
+| **Stamp coupling** ⚠️ | Pass large object, use one field | Pass full reader to read only `.path` |
+| **Control coupling** ⚠️ | Flags change behavior | `parse(header, strict=False)` |
+| **Common coupling** ❌ | Shared mutable globals | Module-level parser state |
+| **Content coupling** ❌ | Reach into another module's internals | Import `_private` from another backend |
 
 ### Cohesion Types (best to worst)
 
 | Type | Description | Quality |
 |------|------|------|
-| **Functional cohesion** | All elements complete a single task | ✅ Best |
-| **Sequential cohesion** | Output of one step is input to the next | ✅ Good |
-| **Communicational cohesion** | Operate on the same data | ⚠️ Acceptable |
-| **Temporal cohesion** | Tasks executed at the same time | ⚠️ Poor |
-| **Logical cohesion** | Logically related but functionally different | ❌ Bad |
-| **Coincidental cohesion** | No obvious relationship | ❌ Worst |
+| **Functional** | Single task | ✅ Best |
+| **Sequential** | Output feeds next step | ✅ Good |
+| **Communicational** | Same data | ⚠️ Acceptable |
+| **Temporal** | Done at same time | ⚠️ Poor |
+| **Logical** | Related but different jobs | ❌ Bad |
+| **Coincidental** | No clear link | ❌ Worst |
 
 ### Metric Reference
 
 ```yaml
-Coupling metrics:
-  CBO (Coupling Between Objects):
-    good: < 5
-    warning: 5-10
-    danger: > 10
+Coupling:
+  CBO (Coupling Between Objects): good < 5, warning 5–10, danger > 10
+  Ce (efferent): how many externals this depends on — good < 7
+  Ca (afferent): how many depend on this — high = large blast radius
 
-  Ce (Efferent coupling):
-    description: How many external classes this depends on
-    good: < 7
-
-  Ca (Afferent coupling):
-    description: How many classes depend on this
-    high value means: Large blast radius on change; needs stability
-
-Cohesion metrics:
-  LCOM4 (Lack of Cohesion of Methods):
-    1: Single responsibility ✅
-    2-3: May need splitting ⚠️
-    >3: Should split ❌
+Cohesion:
+  LCOM4: 1 ✅ | 2–3 ⚠️ | >3 split ❌
 ```
 
 ### Review Questions
 
-- "How many other modules does this module depend on? Can that be reduced?"
-- "How many other places are affected if we change this class?"
-- "Do all methods in this class operate on the same data?"
+- "How many modules does this depend on? Can that shrink?"
+- "If we change this backend, what else breaks?"
+- "Do all methods here operate on the same abstraction?"
 
 ---
 
 ## Layered Architecture Review
 
-### Clean Architecture Layer Check
+### Library Layer Model
 
 ```
 ┌─────────────────────────────────────┐
-│         Frameworks & Drivers        │ ← Outermost: Web, DB, UI
+│   Frameworks & Drivers (outer)      │  stdlib IO, pathlib, optional deps
+│   (unrar, py7zr, zstandard, …)      │  (lazy / extras-gated)
 ├─────────────────────────────────────┤
-│         Interface Adapters          │ ← Controllers, Gateways, Presenters
+│   Codecs & streams                  │  decompressors, crypto, counting IO
 ├─────────────────────────────────────┤
-│          Application Layer          │ ← Use Cases, Application Services
+│   Format backends & parsers         │  zip/tar/7z/rar readers, detection
 ├─────────────────────────────────────┤
-│            Domain Layer             │ ← Entities, Domain Services
+│   Orchestration                     │  extract, open_archive, registry
+├─────────────────────────────────────┤
+│   Public API (inner, stable)        │  types, exceptions, config, __init__
 └─────────────────────────────────────┘
-          ↑ Dependencies point inward only ↑
+          ↑ Dependencies point inward ↑
 ```
+
+Outer layers implement details; inner layers define contracts. Parsers and optional imports stay below the public surface.
 
 ### Dependency Rule Check
 
-**Core rule: source-code dependencies may only point inward**
+**Core rule: source dependencies point inward; `internal/` is not public.**
 
-```typescript
-// ❌ Violates dependency rule: Domain layer depends on Infrastructure
-// domain/User.ts
-import { MySQLConnection } from '../infrastructure/database';
+```python
+# ❌ Public module imports parser internals
+# archivey/core.py
+from archivey.internal.backends.sevenzip_parser import parse_header
 
-// ✅ Correct: Domain defines the interface; Infrastructure implements
-// domain/UserRepository.ts (interface)
-interface UserRepository {
-  findById(id: string): Promise<User>;
-}
+# ✅ Public API uses registry / backend ABC; parser stays internal
+# archivey/internal/registry.py
+def get_reader(fmt: ArchiveFormat) -> ReadBackend: ...
 
-// infrastructure/MySQLUserRepository.ts (implementation)
-class MySQLUserRepository implements UserRepository {
-  findById(id: string): Promise<User> { /* ... */ }
-}
+# archivey/internal/backends/sevenzip_reader.py
+class SevenZipReader(ReadBackend):
+    def list_members(self) -> Iterator[ArchiveMember]: ...
 ```
 
 ### Review Checklist
 
-**Layer boundary check:**
-- [ ] Does the Domain layer have external dependencies (database, HTTP, filesystem)?
-- [ ] Does the Application layer directly access the database or call external APIs?
-- [ ] Does the Controller contain business logic?
-- [ ] Are there cross-layer calls (e.g., UI calling Repository directly)?
+**Layer boundaries:**
+- [ ] Does the public API (`archivey/`, re-exports) import `internal/` parser details?
+- [ ] Do format backends leak parser types into `types.py` or exceptions?
+- [ ] Are optional extras imported only when needed (not at core import time)?
+- [ ] Does orchestration (`core`, `reader`, extraction) embed format-specific parse logic?
 
-**Separation of concerns check:**
-- [ ] Is business logic separated from presentation logic?
-- [ ] Is data access encapsulated in a dedicated layer?
-- [ ] Is configuration and environment-specific code centralized?
+**Separation of concerns:**
+- [ ] Is format detection separate from read/extract paths?
+- [ ] Are codecs registered, not duplicated per backend?
+- [ ] Is config/limits centralized (`config.py`), not scattered in parsers?
 
 ### Review Questions
 
 ```markdown
-🔴 [blocking] "Domain entity directly imports a database connection, violating the dependency rule"
-🟡 [important] "Controller contains business calculation logic; move it to the Service layer"
-💡 [suggestion] "Consider using dependency injection to decouple these components"
+🔴 [blocking] "Public API imports sevenzip_parser — move behind ReadBackend"
+🟡 [important] "Extract path contains ZIP-specific logic — move to zip_reader"
+💡 [suggestion] "Gate optional import behind registry availability check"
 ```
 
 ---
@@ -253,43 +242,33 @@ class MySQLUserRepository implements UserRepository {
 
 | Pattern | Good fit | Poor fit |
 |------|----------|------------|
-| **Factory** | Need to create different object types; type determined at runtime | Only one type, or type is fixed |
-| **Strategy** | Algorithm must switch at runtime; multiple interchangeable behaviors | Only one algorithm, or algorithm never changes |
-| **Observer** | One-to-many dependency; state changes must notify multiple objects | Simple direct calls are enough |
-| **Singleton** | Truly need a globally unique instance (e.g., config manager) | Object can be passed via dependency injection |
-| **Decorator** | Need to add responsibilities dynamically; avoid inheritance explosion | Fixed responsibilities; no dynamic composition needed |
+| **Factory / Registry** | Select reader or codec by format at runtime | Single format, fixed pipeline |
+| **Strategy** | Swappable decompressor or filter | One algorithm, never changes |
+| **Template method** | Shared extract flow, format-specific steps | No shared skeleton |
+| **Decorator** | Counting, verify, crypto wrapping streams | Fixed, non-composable IO |
+| **Singleton** | Rare; prefer explicit config objects | Anything injectable |
 
 ### Over-Design Warning Signals
 
 ```
-⚠️ Patternitis signals:
-
-1. Simple if/else replaced by Strategy + Factory + Registry
-2. Interface with only one implementation
-3. Abstraction layers added for "we might need it later"
-4. Line count grows sharply because of pattern application
-5. Newcomers take a long time to understand the structure
+⚠️ Simple match replaced by Strategy + Factory + Registry
+⚠️ Protocol with only one implementation
+⚠️ Abstraction "for later" with no second backend
+⚠️ Line count grows from pattern ceremony
 ```
 
 ### Review Principles
 
 ```markdown
-✅ Correct pattern use:
-- Solves a real extensibility problem
-- Code is easier to understand and test
-- Adding new features becomes simpler
-
-❌ Overuse of patterns:
-- Using patterns for their own sake
-- Adds unnecessary complexity
-- Violates YAGNI
+✅ Solves real extensibility (new format, new codec)
+❌ Pattern for its own sake; violates YAGNI
 ```
 
 ### Review Questions
 
-- "What specific problem does this pattern solve?"
-- "What would go wrong if we did not use this pattern?"
-- "Is the value of this abstraction worth its complexity?"
+- "What problem does this pattern solve?"
+- "What breaks if we inline it?"
+- "Is the abstraction worth the complexity?"
 
 ---
 
@@ -297,53 +276,42 @@ class MySQLUserRepository implements UserRepository {
 
 ### Extensibility Checklist
 
-**Functional extensibility:**
-- [ ] Does adding new features require changing core code?
-- [ ] Are extension points provided (hooks, plugins, events)?
-- [ ] Is configuration externalized (config files, environment variables)?
+**Functional:**
+- [ ] New format: register backend + detection, minimal core edits?
+- [ ] Extension points: registry, hooks, `Protocol` backends?
+- [ ] Limits and behavior driven by `ArchiveyConfig`, not hardcoded?
 
-**Data extensibility:**
-- [ ] Does the data model support new fields?
-- [ ] Have data-growth scenarios been considered?
-- [ ] Do queries have appropriate indexes?
+**Format & codec:**
+- [ ] New codec behind `internal/streams/codecs` (or equivalent)?
+- [ ] Optional deps reported via `FormatSupport` / `MissingComponent`?
+- [ ] Parser changes isolated to one backend module?
 
-**Load extensibility:**
-- [ ] Can the system scale horizontally (add more instances)?
-- [ ] Is there state affinity (session, local cache)?
-- [ ] Does the database use connection pooling?
+**Performance (library-scoped):**
+- [ ] Streaming path avoids loading whole archive into memory?
+- [ ] Solid blocks / large members handled incrementally?
+- [ ] Hot paths avoid redundant decompress or seek?
 
-### Extension Point Design Check
+### Extension Point Design
 
-```typescript
-// ✅ Good extension design: events/hooks
-class OrderService {
-  private hooks: OrderHooks;
+```python
+# ✅ Registry-backed extension
+def register_backend(fmt: ArchiveFormat, cls: type[ReadBackend]) -> None: ...
 
-  async createOrder(order: Order) {
-    await this.hooks.beforeCreate?.(order);
-    const result = await this.save(order);
-    await this.hooks.afterCreate?.(result);
-    return result;
-  }
-}
-
-// ❌ Poor extension design: all behavior hardcoded
-class OrderService {
-  async createOrder(order: Order) {
-    await this.sendEmail(order);        // hardcoded
-    await this.updateInventory(order);  // hardcoded
-    await this.notifyWarehouse(order);  // hardcoded
-    return await this.save(order);
-  }
-}
+# ❌ Hardcoded format dispatch in core
+def open_archive(path: Path):
+    if path.suffix == ".zip":
+        return ZipReader(path)
+    elif path.suffix == ".7z":
+        return SevenZipReader(path)
+    ...
 ```
 
 ### Review Questions
 
 ```markdown
-💡 [suggestion] "If we need to support new payment methods later, is this design easy to extend?"
-🟡 [important] "Logic here is hardcoded—consider configuration or the Strategy pattern?"
-📚 [learning] "Event-driven architecture could make this feature easier to extend"
+💡 [suggestion] "New format should register via registry, not edit core.py"
+🟡 [important] "Codec logic hardcoded in backend — use codec registry?"
+📚 [learning] "ReadBackend protocol keeps list/stream/extract consistent"
 ```
 
 ---
@@ -352,66 +320,65 @@ class OrderService {
 
 ### Directory Organization
 
-**Organize by feature/domain (recommended):**
+**By capability / format (recommended for archivey-style libs):**
 ```
-src/
-├── user/
-│   ├── User.ts           (entity)
-│   ├── UserService.ts    (service)
-│   ├── UserRepository.ts (data access)
-│   └── UserController.ts (API)
-├── order/
-│   ├── Order.ts
-│   ├── OrderService.ts
-│   └── ...
-└── shared/
-    ├── utils/
-    └── types/
+src/archivey/
+├── __init__.py          # stable public re-exports
+├── core.py              # open_archive, extract, detect_format
+├── types.py             # ArchiveFormat, ArchiveMember, …
+├── exceptions.py
+├── config.py
+├── reader.py            # ArchiveReader orchestration
+└── internal/
+    ├── registry.py      # backend + codec registration
+    ├── detection.py
+    ├── extraction.py
+    ├── backends/
+    │   ├── zip_reader.py
+    │   ├── tar_reader.py
+    │   └── sevenzip_reader.py
+    └── streams/
+        ├── codecs.py
+        └── decompress.py
 ```
 
-**Organize by technical layer (not recommended):**
+**By technical layer only (avoid as top-level split):**
 ```
-src/
-├── controllers/     ← different domains mixed together
-│   ├── UserController.ts
-│   └── OrderController.ts
-├── services/
-├── repositories/
-└── models/
+src/archivey/
+├── parsers/       # all formats mixed, hard to navigate
+├── codecs/
+├── readers/
+└── utils/
 ```
+
+Prefer `internal/` for non-public modules; keep `__init__.py` exports intentional.
 
 ### Naming Convention Check
 
 | Type | Convention | Example |
 |------|------|------|
-| Class names | PascalCase, nouns | `UserService`, `OrderRepository` |
-| Method names | camelCase, verbs | `createUser`, `findOrderById` |
-| Interface names | `I` prefix or no prefix | `IUserService` or `UserService` |
-| Constants | UPPER_SNAKE_CASE | `MAX_RETRY_COUNT` |
-| Private fields | Leading underscore or none | `_cache` or `#cache` |
+| Modules | snake_case | `zip_reader.py`, `sevenzip_parser.py` |
+| Classes | PascalCase | `ZipReader`, `ArchiveMember` |
+| Functions | snake_case | `open_archive`, `detect_format` |
+| Constants | UPPER_SNAKE_CASE | `MAX_HEADER_SIZE` |
+| Private | leading `_` | `_parse_local_header` |
 
 ### File Size Guidelines
 
 ```yaml
-Suggested limits:
-  single file: < 300 lines
-  single function: < 50 lines
-  single class: < 200 lines
-  function parameters: < 4
-  nesting depth: < 4 levels
-
-When limits are exceeded:
-  - Consider splitting into smaller units
-  - Prefer composition over inheritance
-  - Extract helper functions or classes
+single file: < 300 lines
+single function: < 50 lines
+single class: < 200 lines
+parameters: < 4
+nesting: < 4 levels
 ```
 
 ### Review Questions
 
 ```markdown
-🟢 [nit] "This 500-line file could be split by responsibility"
-🟡 [important] "Organize directories by feature domain rather than technical layer"
-💡 [suggestion] "Function name `process` is vague—consider `calculateOrderTotal`?"
+🟢 [nit] "500-line backend — split parser vs reader"
+🟡 [important] "Parser lives in public package — move under internal/backends"
+💡 [suggestion] "Rename process() to parse_central_directory()"
 ```
 
 ---
@@ -421,45 +388,44 @@ When limits are exceeded:
 ### 5-Minute Architecture Review
 
 ```markdown
-□ Is dependency direction correct? (outer layers depend on inner)
-□ Are there circular dependencies?
-□ Is core business logic decoupled from framework/UI/database?
-□ Are SOLID principles followed?
-□ Are obvious anti-patterns present?
+□ Dependencies point inward (public → orchestration → backends → codecs)?
+□ No circular imports (registry ↔ backends)?
+□ Public API free of parser/optional-dep imports?
+□ SOLID and obvious anti-patterns?
+□ New formats pluggable via registry, not core edits?
 ```
 
-### Red Flags (must address)
+### Red Flags
 
 ```markdown
-🔴 God Object — single class over 1000 lines
-🔴 Circular dependency — A → B → C → A
-🔴 Domain layer contains framework dependencies
-🔴 Hardcoded configuration and secrets
-🔴 External service calls with no interface
+🔴 God Object — single module > 1000 lines
+🔴 Circular import — A → B → C → A
+🔴 Public API imports internal parsers or optional deps at import time
+🔴 Hardcoded paths, limits, or secrets
+🔴 Backend-specific types in public exceptions or types
 ```
 
-### Yellow Flags (should address)
+### Yellow Flags
 
 ```markdown
-🟡 Coupling between objects (CBO) > 10
-🟡 More than 5 method parameters
-🟡 Nesting depth greater than 4
-🟡 Duplicated code block > 10 lines
-🟡 Interface with only one implementation
+🟡 CBO > 10
+🟡 More than 5 parameters
+🟡 Nesting > 4
+🟡 Duplicated block > 10 lines across backends
+🟡 Protocol with only one implementation
 ```
 
 ---
 
 ## Recommended Tools
 
-| Tool | Purpose | Language Support |
-|------|------|----------|
-| **SonarQube** | Code quality, coupling analysis | Multi-language |
-| **NDepend** | Dependency analysis, architecture rules | .NET |
-| **JDepend** | Package dependency analysis | Java |
-| **Madge** | Module dependency graph | JavaScript/TypeScript |
-| **ESLint** | Code style, complexity checks | JavaScript/TypeScript |
-| **CodeScene** | Technical debt, hotspot analysis | Multi-language |
+| Tool | Purpose |
+|------|------|
+| **vulture** | Dead code detection |
+| **import-linter** | Layer / import contracts |
+| **ruff** | Complexity, style |
+| **pyrefly / ty** | Type and dependency clarity |
+| **pytest + coverage** | Behaviour and hotspot gaps |
 
 ---
 
@@ -468,5 +434,5 @@ When limits are exceeded:
 - [Clean Architecture - Uncle Bob](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
 - [SOLID Principles in Code Review - JetBrains](https://blog.jetbrains.com/upsource/2015/08/31/what-to-look-for-in-a-code-review-solid-principles-2/)
 - [Software Architecture Anti-Patterns](https://medium.com/@christophnissle/anti-patterns-in-software-architecture-3c8970c9c4f5)
-- [Coupling and Cohesion in System Design](https://www.geeksforgeeks.org/system-design/coupling-and-cohesion-in-system-design/)
+- [Coupling and Cohesion](https://www.geeksforgeeks.org/system-design/coupling-and-cohesion-in-system-design/)
 - [Design Patterns - Refactoring Guru](https://refactoring.guru/design-patterns)

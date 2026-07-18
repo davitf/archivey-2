@@ -1,70 +1,65 @@
 # Code Review Quick Checklist
 
-Quick reference checklist for code reviews.
+Quick reference for reviewing changes in this Python archive library.
 
 ## Pre-Review (2 min)
 
-- [ ] Read PR description and linked issue
+- [ ] Read PR description and linked issue / OpenSpec change
 - [ ] Check PR size (<400 lines ideal)
-- [ ] Verify CI/CD status (tests passing?)
-- [ ] Understand the business requirement
+- [ ] Verify CI status (tests / ruff / type-check)
+- [ ] Understand the behavior under change (format? safety? API?)
 
 ## Architecture & Design (5 min)
 
 - [ ] Solution fits the problem
-- [ ] Consistent with existing patterns
+- [ ] Consistent with existing backends / patterns
 - [ ] No simpler approach exists
-- [ ] Will it scale?
-- [ ] Changes in right location
+- [ ] Public API impact is intentional and documented
+- [ ] Changes land in the right module layer
 
 ## Logic & Correctness (10 min)
 
-- [ ] Edge cases handled
-- [ ] Null/undefined checks present
-- [ ] Off-by-one errors checked
-- [ ] Race conditions considered
-- [ ] Error handling complete
-- [ ] Correct data types used
+- [ ] Edge cases / truncated / hostile input handled
+- [ ] `None` / optional metadata handled
+- [ ] Off-by-one / length-field checks
+- [ ] Error handling uses the library exception contract
+- [ ] Format parity preserved (or differences are explicit data)
 
 ## Security (5 min)
 
 - [ ] No hardcoded secrets
-- [ ] Input validated/sanitized
-- [ ] SQL injection prevented
-- [ ] XSS prevented
-- [ ] Authorization checks present
-- [ ] Sensitive data protected
+- [ ] Path traversal / symlink escape considered on extract paths
+- [ ] Resource limits / bomb risks considered
+- [ ] Subprocess args are lists (no `shell=True` footguns)
+- [ ] Passwords / key material not logged
 
 ## Performance (3 min)
 
-- [ ] No N+1 queries
-- [ ] Expensive operations optimized
-- [ ] Large lists paginated
-- [ ] No memory leaks
-- [ ] Caching considered where appropriate
+- [ ] No silent re-decompression / O(n²) member loops
+- [ ] Streaming preferred over full buffering where appropriate
+- [ ] Handles closed; no unbounded buffers
+- [ ] Hot-path copies justified
 
 ## Testing (5 min)
 
-- [ ] Tests exist for new code
-- [ ] Edge cases tested
-- [ ] Error cases tested
-- [ ] Tests are readable
-- [ ] Tests are deterministic
+- [ ] Tests exist for new behavior
+- [ ] Edge / error / hostile cases covered
+- [ ] Tests are readable and deterministic
+- [ ] Fixtures reused when possible
 
 ## Code Quality (3 min)
 
-- [ ] Clear variable/function names
-- [ ] No code duplication
+- [ ] Clear names
+- [ ] No unnecessary duplication
 - [ ] Functions do one thing
-- [ ] Complex code commented
-- [ ] No magic numbers
+- [ ] Complex parser logic explained where needed
+- [ ] No magic numbers (use named constants)
 
 ## Documentation (2 min)
 
 - [ ] Public APIs documented
-- [ ] README updated if needed
-- [ ] Breaking changes noted
-- [ ] Complex logic explained
+- [ ] Specs / ADRs updated if behavior contracts change
+- [ ] Breaking changes called out
 
 ---
 
@@ -76,48 +71,18 @@ Quick reference checklist for code reviews.
 | 🟡 `[important]` | Should fix | Discuss if disagree |
 | 🟢 `[nit]` | Nice to have | Non-blocking |
 | 💡 `[suggestion]` | Alternative | Consider |
-| 📚 `[learning]` | Educational comment | No action needed |
-| 🎉 `[praise]` | Good work | Celebrate! |
-
----
-
-## Decision Matrix
-
-| Situation | Decision |
-|-----------|----------|
-| Critical security issue | 🔴 Block, fix immediately |
-| Breaking change without migration | 🔴 Block |
-| Missing error handling | 🟡 Should fix |
-| No tests for new code | 🟡 Should fix |
-| Style preference | 🟢 Non-blocking |
-| Minor naming improvement | 🟢 Non-blocking |
-| Clever but working code | 💡 Suggest simpler |
-
----
-
-## Time Budget
-
-This checklist is designed for a **lightweight quick review**. For comprehensive reviews covering architecture and performance analysis, use the full four-phase process in [SKILL.md](../SKILL.md) (19–36 minutes). Smaller PRs trend toward the lower end of each phase; larger PRs toward the upper end.
-
-| PR Size | Quick Review | Full Review (4-phase) |
-|---------|-------------|----------------------|
-| < 100 lines | 10–15 min | ~19–28 min |
-| 100–400 lines | 20–40 min | ~28–36 min |
-| > 400 lines | Ask to split | Ask to split |
+| 📚 `[learning]` | Educational | No action needed |
+| 🎉 `[praise]` | Good work | Celebrate |
 
 ---
 
 ## Red Flags
 
-Watch for these patterns:
-
-- `// TODO` in production code
-- `console.log` left in code
-- Commented out code
-- `any` type in TypeScript
-- Empty catch blocks
-- `unwrap()` in Rust production code
-- Magic numbers/strings
-- Copy-pasted code blocks
-- Missing null checks
-- Hardcoded URLs/credentials
+- Empty `except:` / swallowed errors
+- `shell=True` with path interpolation
+- Ad-hoc path joins on extract destinations
+- TODO left in production paths without issue link
+- Commented-out code
+- Magic numbers in parsers
+- Copy-pasted codec/backend blocks that should share helpers
+- Hardcoded credentials

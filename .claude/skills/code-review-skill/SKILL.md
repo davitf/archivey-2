@@ -19,10 +19,11 @@ allowed-tools:
 
 Transform code reviews from gatekeeping to knowledge sharing through constructive feedback, systematic analysis, and collaborative improvement.
 
-> **Repo note:** This is a Python-only, English-translated subset of
+> **Repo note:** This is a Python-only, English subset of
 > [awesome-skills/code-review-skill](https://github.com/awesome-skills/code-review-skill)
-> (MIT). Non-Python language guides were omitted, and upstream Simplified Chinese
-> reference prose was translated to English for this library.
+> (MIT), trimmed for **archivey** (pure Python archive library). Non-Python guides,
+> web/SQL/ORM/CSS material, and upstream Simplified Chinese prose were removed or
+> rewritten.
 
 ## When to Use This Skill
 
@@ -114,16 +115,16 @@ Before diving into code, understand:
    - Check: SOLID principles, coupling/cohesion, anti-patterns
 2. **Performance Assessment** - Are there performance concerns?
    - For performance-critical code, consult [Performance Review Guide](reference/performance-review-guide.md)
-   - Check: Algorithm complexity, N+1 queries, memory usage
+   - Check: Algorithm complexity, streaming vs buffering, silent re-decompression, memory usage
 3. **File Organization** - Are new files in the right places?
 4. **Testing Strategy** - Are there tests covering edge cases?
 
 ### Phase 3: Line-by-Line Review (10-20 minutes)
 
 For each file, check:
-- **Logic & Correctness** - Edge cases, off-by-one, null checks, race conditions
-- **Security** - Input validation, injection risks, XSS, sensitive data
-- **Performance** - N+1 queries, unnecessary loops, memory leaks
+- **Logic & Correctness** - Edge cases, off-by-one, None checks, hostile/truncated input
+- **Security** - Path traversal, zip bombs, subprocess safety, secrets
+- **Performance** - Redundant decompression, unnecessary loops, unbounded buffers
 - **Maintainability** - Clear names, single responsibility, comments
 - **Reuse** - Before accepting new code, search for existing utilities/helpers that could replace it. Check adjacent files and shared modules for similar patterns. See [Universal Quality Guide](reference/code-quality-universal.md) for anti-patterns like parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU, and no-op updates.
 
@@ -190,21 +191,18 @@ This install keeps only the Python guide (other languages omitted):
 
 ## Cross-Cutting Guides
 
-Language-agnostic patterns applicable to all code reviews:
+Guides scoped to this Python archive library (web/SQL/ORM/CSS material removed):
 
 | Topic | Reference File | Key Topics |
 |-------|----------------|------------|
 | **Architecture Review** | [Architecture Review Guide](reference/architecture-review-guide.md) | SOLID, anti-patterns, coupling/cohesion, dependency direction |
-| **Performance Review** | [Performance Review Guide](reference/performance-review-guide.md) | Web Vitals, N+1, algorithm complexity, memory leaks, caching |
-| **Security Review** | [Security Review Guide](reference/security-review-guide.md) | SQLi, XSS, CSRF, SSRF, IDOR, command injection |
-| **Universal Quality** | [Universal Quality Guide](reference/code-quality-universal.md) | Reuse audit, parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU, no-op updates, redundant state |
-| **Common Bugs** | [Common Bugs Checklist](reference/common-bugs-checklist.md) | Python-focused bug patterns and common pitfalls |
-| **SQL Injection Prevention** | [SQL Injection Guide](reference/cross-cutting/sql-injection-prevention.md) | Parameterized queries, ORM safety, dynamic identifiers, detection |
-| **XSS Prevention** | [XSS Prevention Guide](reference/cross-cutting/xss-prevention.md) | Output encoding, CSP, input validation vs encoding, detection |
-| **N+1 Queries** | [N+1 Queries Guide](reference/cross-cutting/n-plus-one-queries.md) | Eager loading, batch fetching, DataLoader, detection |
-| **Error Handling** | [Error Handling Guide](reference/cross-cutting/error-handling-principles.md) | Fail fast, error hierarchy, anti-patterns, logging |
-| **Async & Concurrency** | [Concurrency Guide](reference/cross-cutting/async-concurrency-patterns.md) | async/await, structured concurrency |
-| **Review Best Practices** | [Code Review Best Practices](reference/code-review-best-practices.md) | Communication, reviewer mindset, giving feedback, severity labels |
+| **Performance Review** | [Performance Review Guide](reference/performance-review-guide.md) | Streaming, solid-archive costs, memory, algorithmic complexity |
+| **Security Review** | [Security Review Guide](reference/security-review-guide.md) | Path traversal, zip bombs, hostile parsers, subprocess, secrets |
+| **Universal Quality** | [Universal Quality Guide](reference/code-quality-universal.md) | Reuse audit, parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU |
+| **Common Bugs** | [Common Bugs Checklist](reference/common-bugs-checklist.md) | Python + archive-library bug patterns |
+| **Error Handling** | [Error Handling Guide](reference/cross-cutting/error-handling-principles.md) | Fail fast, exception hierarchy/translation, logging |
+| **Async & Concurrency** | [Concurrency Guide](reference/cross-cutting/async-concurrency-patterns.md) | Python races/deadlocks; sync-first API note |
+| **Review Best Practices** | [Code Review Best Practices](reference/code-review-best-practices.md) | Communication, reviewer mindset, severity labels |
 
 ## Additional Resources
 

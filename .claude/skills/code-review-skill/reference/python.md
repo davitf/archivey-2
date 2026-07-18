@@ -5,7 +5,7 @@
 ## Table of Contents
 
 - [Type Annotations](#type-annotations)
-- [Async Programming](#async-programming)
+- [Async and Concurrency](#async-and-concurrency)
 - [Exception Handling](#exception-handling)
 - [Common Pitfalls](#common-pitfalls)
 - [Testing Best Practices](#testing-best-practices)
@@ -31,9 +31,12 @@ def process_data(data: str, count: int) -> str:
 # ✅ Use the typing module for complex types
 from typing import Optional, Union
 
-def find_user(user_id: int) -> Optional[User]:
-    """Return the user or None."""
-    return db.get(user_id)
+def find_member(archive: Archive, name: str) -> Member | None:
+    """Return the member or None."""
+    for member in archive.list_members():
+        if member.name == name:
+            return member
+    return None
 
 def handle_input(value: Union[str, int]) -> str:
     """Accept a string or integer."""
@@ -108,6 +111,7 @@ class Cache(Generic[K, V]):
 ### Callable and Callbacks
 
 ```python
+from pathlib import Path
 from typing import Callable, Awaitable
 
 # ✅ Function type annotation
@@ -116,14 +120,14 @@ Handler = Callable[[str, int], bool]
 def register_handler(name: str, handler: Handler) -> None:
     handlers[name] = handler
 
-# ✅ Async callback
-AsyncHandler = Callable[[str], Awaitable[dict]]
+# ✅ Async callback (tests/tooling only — library API is sync-first)
+AsyncReader = Callable[[Path], Awaitable[bytes]]
 
-async def fetch_with_handler(
-    url: str,
-    handler: AsyncHandler
-) -> dict:
-    return await handler(url)
+async def read_with_handler(
+    path: Path,
+    handler: AsyncReader,
+) -> bytes:
+    return await handler(path)
 
 # ✅ Function that returns a function
 def create_multiplier(factor: int) -> Callable[[int], int]:
@@ -185,183 +189,76 @@ def render(obj: object) -> None:
 
 ---
 
-## Async Programming
+## Async and Concurrency
 
-> 📖 For general concurrency patterns and cross-language examples, see [Async and Concurrency Cross-Language Guide](cross-cutting/async-concurrency-patterns.md)
+> **Archivey is sync-first.** Public entry points (`open_archive`, `extract`, format
+> readers) are synchronous. Do not suggest turning core library code async unless an
+> explicit change proposal covers it.
 
-### async/await Basics
+> For deeper Python concurrency review (threading, pools, asyncio patterns, review
+> checklists), see [Async and Concurrency Cross-Language Guide](cross-cutting/async-concurrency-patterns.md).
 
-```python
-import asyncio
+When async or threads appear in **tests, benchmarks, or tooling**, watch for these
+high-value pitfalls:
 
-# ❌ Synchronous blocking calls
-def fetch_all_sync(urls: list[str]) -> list[str]:
-    results = []
-    for url in urls:
-        results.append(requests.get(url).text)  # Runs serially
-    return results
-
-# ✅ Async concurrent calls
-async def fetch_url(url: str) -> str:
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            return await response.text()
-
-async def fetch_all(urls: list[str]) -> list[str]:
-    tasks = [fetch_url(url) for url in urls]
-    return await asyncio.gather(*tasks)  # Runs concurrently
-```
-
-### Async Context Managers
-
-```python
-from contextlib import asynccontextmanager
-from typing import AsyncIterator
-
-# ✅ Async context manager class
-class AsyncDatabase:
-    async def __aenter__(self) -> 'AsyncDatabase':
-        await self.connect()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        await self.disconnect()
-
-# ✅ Using a decorator
-@asynccontextmanager
-async def get_connection() -> AsyncIterator[Connection]:
-    conn = await create_connection()
-    try:
-        yield conn
-    finally:
-        await conn.close()
-
-async def query_data():
-    async with get_connection() as conn:
-        return await conn.fetch("SELECT * FROM users")
-```
-
-### Async Iterators
-
-```python
-from typing import AsyncIterator
-
-# ✅ Async generator
-async def fetch_pages(url: str) -> AsyncIterator[dict]:
-    page = 1
-    while True:
-        data = await fetch_page(url, page)
-        if not data['items']:
-            break
-        yield data
-        page += 1
-
-# ✅ Using async iteration
-async def process_all_pages():
-    async for page in fetch_pages("https://api.example.com"):
-        await process_page(page)
-```
-
-### Task Management and Cancellation
+### Blocking the event loop
 
 ```python
 import asyncio
+import time
+import zipfile
+from pathlib import Path
 
-# ❌ Forgetting to handle cancellation
-async def bad_worker():
-    while True:
-        await do_work()  # Cannot be cancelled cleanly
+# ❌ Sync archive I/O inside async code blocks the loop
+async def bad_extract(archive: Path, dest: Path) -> None:
+    time.sleep(0.1)  # Blocks every other coroutine on this loop
+    with zipfile.ZipFile(archive) as zf:
+        zf.extractall(dest)
 
-# ✅ Handle cancellation correctly
-async def good_worker():
-    try:
-        while True:
-            await do_work()
-    except asyncio.CancelledError:
-        await cleanup()  # Clean up resources
-        raise  # Re-raise so the caller knows cancellation occurred
+# ✅ Offload blocking work to a thread (or keep the helper sync)
+async def good_extract(archive: Path, dest: Path) -> None:
+    def _extract() -> None:
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(dest)
 
-# ✅ Timeout control
-async def fetch_with_timeout(url: str) -> str:
-    try:
-        async with asyncio.timeout(10):  # Python 3.11+
-            return await fetch_url(url)
-    except asyncio.TimeoutError:
-        return ""
+    await asyncio.to_thread(_extract)
+```
 
-# ✅ Task groups (Python 3.11+)
-async def fetch_multiple():
+### Missing await
+
+```python
+from pathlib import Path
+
+async def list_member_names(archive: Path) -> list[str]:
+    ...
+
+# ❌ Returns a coroutine object — names are never collected
+async def bad_list(archive: Path) -> list[str]:
+    return list_member_names(archive)
+
+# ✅ Await the coroutine
+async def good_list(archive: Path) -> list[str]:
+    return await list_member_names(archive)
+```
+
+### TaskGroup basics (Python 3.11+)
+
+```python
+import asyncio
+from pathlib import Path
+
+async def checksum_member(root: Path, name: str) -> tuple[str, int]:
+    ...
+
+async def checksum_all(root: Path, names: list[str]) -> list[tuple[str, int]]:
     async with asyncio.TaskGroup() as tg:
-        task1 = tg.create_task(fetch_url("url1"))
-        task2 = tg.create_task(fetch_url("url2"))
-    # Automatically waits for all tasks; exceptions propagate
-    return task1.result(), task2.result()
+        tasks = [tg.create_task(checksum_member(root, n)) for n in names]
+    # All tasks finished; first failure cancels siblings and raises ExceptionGroup
+    return [t.result() for t in tasks]
 ```
 
-### Mixing Sync and Async
-
-```python
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
-# ✅ Run sync functions from async code
-async def run_sync_in_async():
-    loop = asyncio.get_event_loop()
-    # Use a thread pool for blocking operations
-    result = await loop.run_in_executor(
-        None,  # Default thread pool
-        blocking_io_function,
-        arg1, arg2
-    )
-    return result
-
-# ✅ Run async functions from sync code
-def run_async_in_sync():
-    return asyncio.run(async_function())
-
-# ❌ Do not use time.sleep in async code
-async def bad_delay():
-    time.sleep(1)  # Blocks the entire event loop!
-
-# ✅ Use asyncio.sleep
-async def good_delay():
-    await asyncio.sleep(1)
-```
-
-### Semaphores and Rate Limiting
-
-```python
-import asyncio
-
-# ✅ Use a semaphore to limit concurrency
-async def fetch_with_limit(urls: list[str], max_concurrent: int = 10):
-    semaphore = asyncio.Semaphore(max_concurrent)
-
-    async def fetch_one(url: str) -> str:
-        async with semaphore:
-            return await fetch_url(url)
-
-    return await asyncio.gather(*[fetch_one(url) for url in urls])
-
-# ✅ Use asyncio.Queue for producer-consumer
-async def producer_consumer():
-    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=100)
-
-    async def producer():
-        for item in items:
-            await queue.put(item)
-        await queue.put(None)  # Sentinel to signal completion
-
-    async def consumer():
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            await process(item)
-            queue.task_done()
-
-    await asyncio.gather(producer(), consumer())
-```
+For `asyncio.gather`, cancellation, semaphores, and sync/async boundaries, use the
+cross-cutting guide linked above.
 
 ---
 
@@ -407,21 +304,21 @@ except (ValueError, TypeError, KeyError) as e:
 ```python
 # ❌ Losing the original exception information
 try:
-    result = external_api.call()
-except APIError as e:
-    raise RuntimeError("API failed")  # Loses the cause
+    members = reader.list_members()
+except FormatError as e:
+    raise ArchiveError("read failed")  # Loses the cause
 
 # ✅ Use from to preserve the exception chain
 try:
-    result = external_api.call()
-except APIError as e:
-    raise RuntimeError("API failed") from e
+    members = reader.list_members()
+except FormatError as e:
+    raise ArchiveError("read failed") from e
 
 # ✅ Explicitly break the exception chain (rare)
 try:
-    result = external_api.call()
-except APIError:
-    raise RuntimeError("API failed") from None
+    members = reader.list_members()
+except FormatError:
+    raise ArchiveError("read failed") from None
 ```
 
 ### Custom Exceptions
@@ -447,11 +344,11 @@ class NotFoundError(AppError):
         super().__init__(f"{resource} with id {id} not found")
 
 # Usage
-def get_user(user_id: int) -> User:
-    user = db.get(user_id)
-    if not user:
-        raise NotFoundError("User", user_id)
-    return user
+def get_member(archive: Archive, name: str) -> Member:
+    member = find_member(archive, name)
+    if member is None:
+        raise NotFoundError("member", name)
+    return member
 ```
 
 ### Exceptions in Context Managers
@@ -461,16 +358,16 @@ from contextlib import contextmanager
 
 # ✅ Handle exceptions correctly in context managers
 @contextmanager
-def transaction():
-    conn = get_connection()
+def staged_extract(archive: Archive, dest: Path):
+    staging = dest / ".staging"
+    staging.mkdir(parents=True, exist_ok=True)
     try:
-        yield conn
-        conn.commit()
+        yield staging
+        archive.extract_all(staging)
+        staging.rename(dest)
     except Exception:
-        conn.rollback()
+        shutil.rmtree(staging, ignore_errors=True)
         raise
-    finally:
-        conn.close()
 
 # ✅ Use ExceptionGroup (Python 3.11+)
 def process_batch(items: list) -> None:
@@ -650,7 +547,8 @@ def test_division_by_zero():
 
 ```python
 import pytest
-from typing import Generator
+from pathlib import Path
+from typing import AsyncIterator, Generator
 
 # ✅ Basic fixture
 @pytest.fixture
@@ -662,29 +560,30 @@ def test_user_name(user: User):
 
 # ✅ Fixture with cleanup
 @pytest.fixture
-def database() -> Generator[Database, None, None]:
-    db = Database()
-    db.connect()
-    yield db
-    db.disconnect()  # Cleanup after the test
+def temp_workspace(tmp_path: Path) -> Generator[Path, None, None]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    yield workspace
+    # tmp_path teardown is automatic; add explicit cleanup only when needed
 
-# ✅ Async fixture
+# ✅ Async fixture (tests/tooling only — library API is sync-first)
 @pytest.fixture
-async def async_client() -> AsyncGenerator[AsyncClient, None]:
-    async with AsyncClient() as client:
-        yield client
+async def async_extract_dir(tmp_path: Path) -> AsyncIterator[Path]:
+    dest = tmp_path / "extracted"
+    dest.mkdir()
+    yield dest
 
 # ✅ Shared fixtures (conftest.py)
 # conftest.py
 @pytest.fixture(scope="session")
-def app():
-    """App instance shared across the entire test session."""
-    return create_app()
+def fixture_root() -> Path:
+    """Fixture directory shared across the entire test session."""
+    return Path("tests/fixtures")
 
 @pytest.fixture(scope="module")
-def db(app):
-    """Database connection shared per test module."""
-    return app.db
+def sample_zip(fixture_root: Path) -> Path:
+    """Sample archive path shared per test module."""
+    return fixture_root / "sample.zip"
 ```
 
 ### Mock and Patch
@@ -693,56 +592,54 @@ def db(app):
 from unittest.mock import Mock, patch, AsyncMock
 
 # ✅ Mock external dependencies
-def test_send_email():
-    mock_client = Mock()
-    mock_client.send.return_value = True
+def test_extract_member():
+    mock_reader = Mock()
+    mock_reader.read_member.return_value = b"payload"
 
-    service = EmailService(client=mock_client)
-    result = service.send_welcome_email("user@example.com")
+    result = extract_member(mock_reader, "data.txt")
 
-    assert result is True
-    mock_client.send.assert_called_once_with(
-        to="user@example.com",
-        subject="Welcome!",
-        body=ANY,
-    )
+    assert result == b"payload"
+    mock_reader.read_member.assert_called_once_with("data.txt")
 
 # ✅ Patch module-level functions
-@patch("myapp.services.external_api.call")
-def test_with_patched_api(mock_call):
-    mock_call.return_value = {"status": "ok"}
+@patch("archivey.formats.zip._read_central_directory")
+def test_with_patched_reader(mock_read):
+    mock_read.return_value = [Member(name="a.txt")]
 
-    result = process_data()
+    members = list_members(Path("fixture.zip"))
 
-    assert result["status"] == "ok"
+    assert [m.name for m in members] == ["a.txt"]
 
-# ✅ Async mock
-async def test_async_function():
-    mock_fetch = AsyncMock(return_value={"data": "test"})
+# ✅ Async mock (tests/tooling only)
+async def test_async_list_members():
+    mock_list = AsyncMock(return_value=["a.txt", "b.txt"])
 
-    with patch("myapp.client.fetch", mock_fetch):
-        result = await get_data()
+    with patch("tools.bench.async_list_members", mock_list):
+        result = await list_members_async(Path("fixture.zip"))
 
-    assert result == {"data": "test"}
+    assert result == ["a.txt", "b.txt"]
 ```
 
 ### Test Organization
 
 ```python
 # ✅ Use classes to organize related tests
-class TestUserAuthentication:
-    """Tests for user authentication."""
+class TestZipExtraction:
+    """Tests for ZIP extraction behaviour."""
 
-    def test_login_with_valid_credentials(self, user):
-        assert authenticate(user.email, "password") is True
+    def test_extracts_regular_file(self, sample_zip: Path, tmp_path: Path):
+        dest = tmp_path / "out"
+        extract(sample_zip, dest)
+        assert (dest / "hello.txt").read_text() == "hello\n"
 
-    def test_login_with_invalid_password(self, user):
-        assert authenticate(user.email, "wrong") is False
+    def test_rejects_path_traversal(self, malicious_zip: Path, tmp_path: Path):
+        with pytest.raises(SecurityError):
+            extract(malicious_zip, tmp_path / "out")
 
-    def test_login_locks_after_failed_attempts(self, user):
-        for _ in range(5):
-            authenticate(user.email, "wrong")
-        assert user.is_locked is True
+    def test_lists_members_without_extracting(self, sample_zip: Path):
+        with open_archive(sample_zip) as archive:
+            names = [m.name for m in archive.list_members()]
+        assert "hello.txt" in names
 
 # ✅ Use marks to tag tests
 @pytest.mark.slow
@@ -750,7 +647,7 @@ def test_large_data_processing():
     pass
 
 @pytest.mark.integration
-def test_database_connection():
+def test_round_trip_extract(tmp_path: Path, sample_zip: Path):
     pass
 
 # Run specific marks: pytest -m "not slow"
@@ -761,7 +658,7 @@ def test_database_connection():
 ```python
 # pytest.ini or pyproject.toml
 [tool.pytest.ini_options]
-addopts = "--cov=myapp --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov=archivey --cov-report=term-missing --cov-fail-under=80"
 testpaths = ["tests"]
 
 # ✅ Test edge cases
@@ -813,14 +710,18 @@ queue.appendleft(item)  # O(1) vs list.insert(0, item) O(n)
 ### Generators and Iterators
 
 ```python
-# ❌ Load all data at once
-def get_all_users():
-    return [User(row) for row in db.fetch_all()]  # High memory usage
+from pathlib import Path
 
-# ✅ Use a generator
-def get_all_users():
-    for row in db.fetch_all():
-        yield User(row)  # Lazy loading
+# ❌ Load all member metadata at once
+def get_all_member_names(archive: Path) -> list[str]:
+    with open_archive(archive) as ar:
+        return [m.name for m in ar.list_members()]  # High memory if huge
+
+# ✅ Stream members with a generator
+def iter_member_names(archive: Path):
+    with open_archive(archive) as ar:
+        for member in ar.list_members():
+            yield member.name  # Lazy iteration
 
 # ✅ Generator expression
 sum_of_squares = sum(x**2 for x in range(1000000))  # Does not create a list
@@ -877,30 +778,29 @@ class DataService:
 
 ```python
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from pathlib import Path
 
-# ✅ Use a thread pool for I/O-bound work
-def fetch_all_urls(urls: list[str]) -> list[str]:
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(fetch_url, urls))
-    return results
+# ✅ Use a thread pool for I/O-bound archive work
+def extract_all(archives: list[Path], dest: Path) -> list[Path]:
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        return list(executor.map(lambda p: extract_one(p, dest), archives))
 
 # ✅ Use a process pool for CPU-bound work
-def process_large_dataset(data: list) -> list:
+def checksum_members(data: list[bytes]) -> list[int]:
     with ProcessPoolExecutor() as executor:
-        results = list(executor.map(heavy_computation, data))
-    return results
+        return list(executor.map(hash_bytes, data))
 
-# ✅ Use as_completed to get results as they finish
+# ✅ Use as_completed to handle results as they finish
 from concurrent.futures import as_completed
 
 with ThreadPoolExecutor() as executor:
-    futures = {executor.submit(fetch, url): url for url in urls}
+    futures = {executor.submit(extract_one, path, dest): path for path in archives}
     for future in as_completed(futures):
-        url = futures[future]
+        path = futures[future]
         try:
             result = future.result()
         except Exception as e:
-            print(f"{url} failed: {e}")
+            print(f"{path} failed: {e}")
 ```
 
 ---
@@ -928,8 +828,8 @@ import numpy as np
 import pandas as pd
 
 # 3. Local modules
-from myapp import config
-from myapp.utils import helper
+from archivey import open_archive
+from archivey.extract import extract
 
 # ✅ Line length limit (79 or 88 characters)
 # Wrapping long expressions
@@ -1012,14 +912,14 @@ def greet(name, /, greeting="Hello", *, punctuation="!"):
     return f"{greeting}, {name}{punctuation}"
 
 # ✅ Pattern matching (Python 3.10+)
-def handle_response(response: dict):
-    match response:
-        case {"status": "ok", "data": data}:
-            return process_data(data)
-        case {"status": "error", "message": msg}:
-            raise APIError(msg)
-        case _:
-            raise ValueError("Unknown response format")
+def handle_member(member: Member):
+    match member:
+        case Member(name=name, is_dir=True):
+            return list_children(name)
+        case Member(name=name, compressed_size=0):
+            raise EmptyMemberError(name)
+        case Member(name=name):
+            return read_member(name)
 ```
 
 ---
@@ -1033,12 +933,12 @@ def handle_response(response: dict):
 - [ ] mypy checks pass (no errors)
 - [ ] Avoid `Any`; add comments when it is necessary
 
-### Async Code
-- [ ] async/await are paired correctly
-- [ ] No blocking calls in async code
-- [ ] `CancelledError` is handled correctly
-- [ ] Use `asyncio.gather` or `TaskGroup` for concurrency
-- [ ] Resources are cleaned up correctly (async context manager)
+### Async and Concurrency (when present)
+- [ ] Core library APIs stay sync; async belongs in tests/tooling unless explicitly scoped
+- [ ] `async`/`await` are paired; coroutines are awaited, not returned by mistake
+- [ ] No blocking sync I/O or `time.sleep` on the asyncio event loop
+- [ ] Structured concurrency uses `TaskGroup` or `asyncio.gather` with clear error propagation
+- [ ] Broader threading/pool guidance: `cross-cutting/async-concurrency-patterns.md`
 
 ### Exception Handling
 - [ ] Catch specific exception types; do not use bare `except:`
@@ -1057,7 +957,7 @@ def handle_response(response: dict):
 - [ ] Test names clearly describe the scenario
 - [ ] Edge cases are covered
 - [ ] Mocks correctly isolate external dependencies
-- [ ] Async code has corresponding async tests
+- [ ] Async test helpers have corresponding `pytest.mark.asyncio` (or equivalent) tests
 
 ### Code Style
 - [ ] Follow the PEP 8 style guide

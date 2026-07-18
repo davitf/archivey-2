@@ -1,492 +1,299 @@
-# Error Handling Principles — Cross-Language Guide
+# Error Handling Principles — Python Library Guide
 
-> This document covers core error-handling principles, common anti-patterns, error hierarchy design, and logging best practices. Each principle includes cross-language code examples.
+> Principles, anti-patterns, hierarchy design, and logging for a **pure Python library**.
+> Callers own logging and user-facing messages; the library surfaces typed exceptions
+> with enough context to act on them.
 
 ## Table of Contents
 
 - [Core Principles](#core-principles)
 - [Anti-Patterns](#anti-patterns)
 - [Error Hierarchy Design](#error-hierarchy-design)
-- [Logging Best Practices](#logging-best-practices)
-- [Cross-Language Code Examples](#cross-language-code-examples)
+- [Exception Translation](#exception-translation)
+- [Logging in a Library](#logging-in-a-library)
+- [Python Patterns](#python-patterns)
 - [Review Checklist](#review-checklist)
 
 ---
 
 ## Core Principles
 
-### Principle 1: Do Not Swallow Errors
+### 1. Do Not Swallow Errors
 
-Every error must be handled: propagate upward, log, or convert to a more meaningful error. **Never** ignore silently.
+Propagate, translate to a library type, or degrade with an explicit documented fallback.
+**Never** ignore silently. Bare `except:` and `except Exception: pass` are almost always
+wrong; if you catch broadly for cleanup, re-raise or chain.
 
-```
-// Pseudocode
-result = risky_operation()
-if error:
-    // You must do one of the following:
-    //   1. return error to caller (propagate)
-    //   2. log + return fallback (degrade)
-    //   3. panic/crash (when unrecoverable)
-```
+```python
+# ❌ Silent failure
+try:
+    header = read_header(stream)
+except OSError:
+    return None
 
-### Principle 2: Add Context
-
-Error messages should include an **operation description** and **key parameters** so a debugger can locate the problem without reading the call chain.
-
-```
-// ❌ No context
-"failed"
-
-// ✅ With context
-"failed to process order #12345: payment gateway timeout after 30s"
+# ✅ Translate and chain
+try:
+    header = read_header(stream)
+except OSError as exc:
+    raise TruncatedError("unexpected EOF while reading header") from exc
 ```
 
-### Principle 3: Use Specific Types
+### 2. Add Context
 
-Use error types to distinguish failure causes so callers can handle different failure scenarios precisely.
+Name the **operation** and include **key parameters** (path, member, offset, codec).
+Prefer structured attributes (`archive_name`, `member_name`) on the exception.
 
-```
-// ❌ Generic error
-throw new Error("something went wrong")
-
-// ✅ Specific types
-throw new OrderNotFoundError(orderId)
-throw new PaymentTimeoutException(gatewayName, timeoutMs)
-```
-
-### Principle 4: Fail Fast
-
-Validate preconditions before starting work and fail as early as possible. This avoids inconsistent state caused by discovering errors partway through execution.
-
-```
-// ❌ Invalid parameters discovered halfway through
-def process(data, config):
-    result = expensive_computation(data)  # Already spent 5 seconds
-    if not config.valid:
-        raise ValueError("invalid config")  # 5 seconds wasted
-
-// ✅ Validate first
-def process(data, config):
-    if not config.valid:
-        raise ValueError("invalid config")
-    result = expensive_computation(data)
+```python
+raise CorruptionError(
+    f"CRC32 mismatch for {name!r} (expected 0x{exp:08x}, got 0x{act:08x})",
+    archive_name=path, member_name=name,
+)
 ```
 
-### Principle 5: Handle Each Error Once
+### 3. Use Specific Types
 
-Do not handle the same error at every layer (log, return, and wrap). Pick one approach and let the caller decide how to handle it.
+Let callers branch (`except EncryptionError` vs `except CorruptionError`). One root for
+archive problems (`ArchiveyError`); a **separate** base for API misuse
+(`ArchiveyUsageError`) so `except ArchiveyError` does not mask caller bugs.
 
-```
-// ❌ Both log and return (duplicate handling)
-if err:
-    log.error("failed: %s", err)
-    return err
+### 4. Fail Fast
 
-// ✅ Only wrap and return; let the top level handle uniformly
-if err:
-    return wrap_error("operation failed", err)
-```
+Validate preconditions before expensive I/O or decompression — not after reading
+megabytes.
+
+### 5. Handle Each Error Once
+
+Translate at the format boundary; do not log, wrap, and re-raise at every layer. The
+application decides whether to log or retry.
 
 ---
 
 ## Anti-Patterns
 
-### Anti-Pattern 1: Empty catch Blocks
+### Empty `except` Blocks
 
 ```python
-# ❌ Python: empty except swallows all exceptions (including KeyboardInterrupt)
+# ❌ Swallows KeyboardInterrupt
 try:
-    result = risky()
+    result = parse_header(stream)
 except:
     pass
 
-# ❌ Java: empty catch swallows the exception
-try {
-    result = risky();
-} catch (Exception e) {
-    // Do nothing
-}
-
-# ❌ Go: ignore error
-result, _ := risky()
-
-# ❌ Rust: unwrap() in production code
-let result = risky().unwrap();  // panic on error
+# ✅ Specific mapping or propagate
+try:
+    result = parse_header(stream)
+except struct.error as exc:
+    raise CorruptionError("malformed header") from exc
 ```
 
-### Anti-Pattern 2: Overly Broad catch
+### Overly Broad `except`
 
 ```python
-# ❌ Catch all exceptions; cannot distinguish failure types
+# ❌ Masks bugs
 try:
-    result = risky()
-except Exception as e:
-    logger.error(f"failed: {e}")
+    member = reader.open_member(name)
+except Exception as exc:
+    raise ReadError(str(exc)) from exc
 
-# ✅ Catch specific exceptions
+# ✅ Known failures only
 try:
-    result = risky()
-except ConnectionError as e:
-    logger.warning(f"network issue, retrying: {e}")
-    result = retry(risky)
-except ValueError as e:
-    logger.error(f"bad input: {e}")
-    raise
+    member = reader.open_member(name)
+except KeyError as exc:
+    raise ReadError(f"member {name!r} not found") from exc
+except zlib.error as exc:
+    raise CorruptionError("decompression failed") from exc
 ```
 
-### Anti-Pattern 3: Losing the Original Exception
+Never convert *any* `Exception` to a library type.
+
+### Losing the Original Exception
 
 ```python
-# ❌ Loses the original exception's stack trace and details
-try:
-    result = external_api.call()
-except APIError as e:
-    raise RuntimeError("API failed")  # Cause is lost
+# ❌ Cause lost
+except OSError:
+    raise TruncatedError("unexpected EOF")
 
-# ✅ Preserve the exception chain
-try:
-    result = external_api.call()
-except APIError as e:
-    raise RuntimeError("API failed") from e
+# ✅ Chain preserved
+except OSError as exc:
+    raise TruncatedError("unexpected EOF while reading member data") from exc
 ```
 
-```java
-// ❌ Lose the original exception
-catch (IOException e) {
-    throw new ServiceException("IO failed");
-}
+Use `raise NewError("…") from exc`. Inside `except`, bare `raise` keeps the traceback.
 
-// ✅ Preserve the cause
-catch (IOException e) {
-    throw new ServiceException("IO failed", e);
-}
-```
-
-### Anti-Pattern 4: Using Exceptions for Control Flow
+### Exceptions for Control Flow
 
 ```python
-# ❌ Exceptions for normal control flow (slow and unclear)
-try:
-    user = users[name]
-except KeyError:
-    user = create_default_user(name)
+# ❌
+try: codec = CODECS[codec_id]
+except KeyError: codec = default_codec
 
-# ✅ Explicit check
-user = users.get(name) or create_default_user(name)
+# ✅
+codec = CODECS.get(codec_id, default_codec)
 ```
 
-```go
-// ❌ Go: panic for control flow
-func getUser(id int) User {
-    if id <= 0 {
-        panic("invalid id")
-    }
-}
+Reserve exceptions for corrupt data, missing members, wrong passwords — not routine
+lookups (except `StopIteration` in iterators).
 
-// ✅ Go: return error
-func getUser(id int) (User, error) {
-    if id <= 0 {
-        return User{}, fmt.Errorf("invalid user id: %d", id)
-    }
-}
+### Ignoring Return Values
+
+```python
+n = stream.readinto(buf)
+if n < len(buf):
+    raise TruncatedError(f"expected {len(buf)} bytes, got {n}")
 ```
 
-### Anti-Pattern 5: Ignoring Return Values
-
-```csharp
-// ❌ Ignore returned bool/Result
-dict.TryGetValue("key", out var value);
-// value may be the default, but code continues as if it succeeded
-
-// ✅ Check the return value
-if (!dict.TryGetValue("key", out var value))
-{
-    throw new KeyNotFoundException("key not found");
-}
-```
+Check `Optional` returns and partial reads explicitly.
 
 ---
 
 ## Error Hierarchy Design
 
-### Three-Layer Error Architecture
-
 ```
-┌─────────────────────────────────────────────────┐
-│ Application Errors (application layer)          │
-│   - AppError / ServiceError                      │
-│   - Caught by global handler; user-friendly resp │
-├─────────────────────────────────────────────────┤
-│ Module Errors (module layer)                     │
-│   - PaymentError, AuthError, ValidationError     │
-│   - Each business module defines its own types   │
-├─────────────────────────────────────────────────┤
-│ Infrastructure Errors (infrastructure layer)     │
-│   - IOError, NetworkError, DatabaseError         │
-│   - Low-level errors from OS, network, database  │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ Caller — catches ArchiveyError; owns logging / retries / UI   │
+├─────────────────────────────────────────────────────────────┤
+│ Public: ArchiveyError → OpenError, ReadError, ExtractionError│
+│         ArchiveyUsageError (misuse — NOT under ArchiveyError)│
+├─────────────────────────────────────────────────────────────┤
+│ Internal: OSError, struct.error, zlib.error — translate here  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Design Rules
+**Rules**
 
-1. **Module-level errors inherit from an application-level base class** for easy global catch
-2. **Infrastructure errors are converted to module-level errors at module boundaries** and not exposed upward
-3. **Each error type carries enough context for debugging** (ID, timestamp, operation name)
-
-### Example Hierarchy (Python)
+1. `except ArchiveyError` is the supported catch-all for archive failures.
+2. Usage errors (`ArchiveyUsageError`, or `TypeError`/`ValueError` for bad args) stay
+   outside that tree.
+3. Translate known stdlib/third-party exceptions at reader boundaries; never leak raw
+   `zlib.error` from public APIs.
+4. Carry context as attributes, not only in the message.
+5. Let `KeyboardInterrupt`, `SystemExit`, and usually bare caller `OSError` propagate
+   unless a spec says otherwise (e.g. per-member `OSError` under `OnError.CONTINUE`).
 
 ```python
-class AppError(Exception):
-    """Application base exception"""
-    pass
+class ArchiveyError(Exception):
+    def __init__(self, message: str, *, archive_name: str | None = None,
+                 member_name: str | None = None) -> None:
+        super().__init__(message)
+        self.archive_name = archive_name
+        self.member_name = member_name
 
-class PaymentError(AppError):
-    """Payment module error"""
-    def __init__(self, order_id: str, reason: str):
-        self.order_id = order_id
-        super().__init__(f"payment failed for order {order_id}: {reason}")
-
-class PaymentGatewayTimeout(PaymentError):
-    """Payment gateway timeout"""
-    def __init__(self, order_id: str, gateway: str, timeout_ms: int):
-        self.gateway = gateway
-        self.timeout_ms = timeout_ms
-        super().__init__(order_id, f"gateway {gateway} timed out after {timeout_ms}ms")
+class ReadError(ArchiveyError): ...
+class CorruptionError(ReadError): ...
+class EncryptionError(ReadError): ...
+class ArchiveyUsageError(Exception): ...
 ```
 
-### Example Hierarchy (Java)
-
-```java
-public class AppException extends RuntimeException {
-    private final String errorCode;
-    public AppException(String errorCode, String message, Throwable cause) {
-        super(message, cause);
-        this.errorCode = errorCode;
-    }
-}
-
-public class OrderNotFoundException extends AppException {
-    public OrderNotFoundException(Long orderId) {
-        super("ORDER_NOT_FOUND", "Order " + orderId + " not found", null);
-    }
-}
-```
+Subclass by **failure domain** (open / read / extract / limits), not by format.
 
 ---
 
-## Logging Best Practices
+## Exception Translation
 
-### Choosing Log Levels
+Map *known* failures; return `None` for anything unrecognized so it surfaces in tests.
 
-| Level | When to Use | Example |
-|------|---------|------|
-| **ERROR** | Failures requiring human intervention | Payment failure, data inconsistency |
-| **WARN** | Recoverable anomalies | Retry succeeded, degraded handling |
-| **INFO** | Normal business events | Order created, user login |
-| **DEBUG** | Debugging detail | Function arguments, intermediate state |
+```python
+def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+    if isinstance(exc, lzma.LZMAError):
+        return CorruptionError("invalid LZMA stream", archive_name=self.path)
+    if isinstance(exc, struct.error):
+        return CorruptionError("malformed structure", archive_name=self.path)
+    return None
 
-### Log Format
-
-```
-// ❌ No structured information
-log.error("failed to process")
-
-// ✅ Structured information + context
-log.error("payment_failed", {
-    "order_id": "12345",
-    "gateway": "stripe",
-    "error_code": "card_declined",
-    "amount": 99.99,
-    "duration_ms": 2340
-})
+def read_central_directory(self) -> list[MemberInfo]:
+    try:
+        return self._parse_central_directory()
+    except Exception as exc:
+        if (t := self._translate_exception(exc)) is not None:
+            raise t from exc
+        raise
 ```
 
-### Log Security
-
-- **Do not log sensitive information**: passwords, tokens, PII, full credit card numbers
-- **Redact sensitive fields**: `email: a***@example.com`
-- **Prevent log injection**: escape user input to avoid forged log lines
+- One `isinstance` branch per known mode — no blanket `except Exception: raise ArchiveyError`.
+- Always `raise translated from exc`.
+- Exercise every mapped path with corrupt, truncated, encrypted, and wrong-password fixtures.
 
 ---
 
-## Cross-Language Code Examples
+## Logging in a Library
 
-### Python
+**Quiet by default.** Use `logging` (never `print`); let callers log caught `ArchiveyError`.
+
+| Level | Library use |
+|-------|-------------|
+| DEBUG | Optional diagnostics (offsets, probes) |
+| WARNING | Recoverable anomaly caller might miss |
+| ERROR | Rare — prefer raising |
+| INFO | Leave to the application |
 
 ```python
-# ✅ Specific exception + context + exception chain
+logger = logging.getLogger(__name__)
 try:
-    response = http_client.post(url, data=payload)
-    response.raise_for_status()
-except requests.ConnectionError as e:
-    raise PaymentGatewayError(f"cannot reach {gateway_name}") from e
-except requests.HTTPError as e:
-    if response.status_code == 429:
-        raise RateLimitError(f"rate limited by {gateway_name}") from e
-    raise PaymentGatewayError(f"HTTP {response.status_code} from {gateway_name}") from e
+    return _read_trailing(stream)
+except OSError as exc:
+    logger.debug("trailing probe failed: %s", exc)
+    return 0  # only when the API contract defines this sentinel
 ```
 
-### Java
+- Never log passwords, keys, or member contents.
+- Parameterized messages: `logger.debug("offset %d", off)`.
+- **Raise, don't only log** — unless the API explicitly returns a sentinel.
 
-```java
-// ✅ Specific exception + context + cause chain
-try {
-    var response = httpClient.send(request, BodyHandlers.ofString());
-    if (response.statusCode() == 404) {
-        throw new OrderNotFoundException(orderId);
-    }
-} catch (IOException e) {
-    throw new PaymentGatewayException(
-        "gateway unreachable: " + gatewayUrl, e);
-}
+---
+
+## Python Patterns
+
+**Translate with context**
+
+```python
+def read_member_data(self, name: str) -> bytes:
+    try:
+        return self._decompress(self._read_raw(name))
+    except KeyError as exc:
+        raise ReadError(f"member {name!r} not found",
+                        archive_name=self.path, member_name=name) from exc
+    except zlib.error as exc:
+        raise CorruptionError(f"deflate error for {name!r}",
+                              archive_name=self.path, member_name=name) from exc
 ```
 
-### Go
+**Cleanup without swallowing** — `except BaseException` only when cleanup must run for
+`KeyboardInterrupt`; always bare `raise` afterward.
 
-```go
-// ✅ Error wrapping + context + %w preserves chain
-result, err := client.Do(req)
-if err != nil {
-    return fmt.Errorf("payment gateway %s request failed: %w", gatewayName, err)
-}
-defer result.Body.Close()
-
-if result.StatusCode == http.StatusNotFound {
-    return fmt.Errorf("order %d not found: %w", orderID, ErrNotFound)
-}
+```python
+try:
+    tmp = self._write_temp(dest); tmp.replace(dest)
+except BaseException:
+    if tmp is not None: tmp.unlink(missing_ok=True)
+    raise
 ```
 
-### Rust
+**`ExceptionGroup` (3.11+)** — when closing multiple streams, collect errors rather than
+dropping secondary failures.
 
-```rust
-// ✅ thiserror-defined error types + context
-#[derive(Debug, thiserror::Error)]
-enum PaymentError {
-    #[error("gateway {gateway} unreachable")]
-    GatewayUnreachable {
-        gateway: String,
-        #[source]
-        source: reqwest::Error,
-    },
-    #[error("order {order_id} not found")]
-    OrderNotFound { order_id: u64 },
-}
-
-async fn process_payment(gateway: &str, order_id: u64) -> Result<(), PaymentError> {
-    let response = client.post(url)
-        .send()
-        .await
-        .map_err(|e| PaymentError::GatewayUnreachable {
-            gateway: gateway.into(),
-            source: e,
-        })?;
-    Ok(())
-}
-```
-
-### C#
-
-```csharp
-// ✅ Specific exception + context
-try
-{
-    var response = await httpClient.PostAsync(url, content);
-    response.EnsureSuccessStatusCode();
-}
-catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-{
-    throw new OrderNotFoundException(orderId, ex);
-}
-catch (HttpRequestException ex)
-{
-    throw new PaymentGatewayException($"gateway unreachable: {url}", ex);
-}
-```
-
-### Swift
-
-```swift
-// ✅ Error enum + context
-enum PaymentError: Error {
-    case gatewayUnreachable(name: String, underlying: Error)
-    case orderNotFound(id: Int)
-    case declined(reason: String)
-}
-
-func processPayment(orderId: Int) throws -> Receipt {
-    guard orderId > 0 else {
-        throw PaymentError.orderNotFound(id: orderId)
-    }
-    do {
-        let response = try networkClient.post(url, body: payload)
-        return try Receipt(from: response)
-    } catch let error as NetworkError {
-        throw PaymentError.gatewayUnreachable(name: gateway, underlying: error)
-    }
-}
-```
-
-### TypeScript
-
-```typescript
-// ✅ Custom error class + context
-class PaymentError extends Error {
-    constructor(
-        message: string,
-        public readonly orderId: string,
-        public readonly gateway: string,
-        public readonly cause?: Error,
-    ) {
-        super(message);
-        this.name = 'PaymentError';
-    }
-}
-
-async function processPayment(orderId: string): Promise<Receipt> {
-    try {
-        const response = await fetch(url, { method: 'POST', body: payload });
-        if (!response.ok) {
-            throw new PaymentError(
-                `gateway returned ${response.status}`,
-                orderId,
-                gatewayName,
-            );
-        }
-        return await response.json();
-    } catch (err) {
-        if (err instanceof TypeError) {
-            throw new PaymentError('gateway unreachable', orderId, gatewayName, err);
-        }
-        throw err;
-    }
-}
-```
+**Context managers** — do not return `True` from `__exit__` to suppress unless documented.
+Document `raises` on public methods; translate before errors cross the public boundary.
 
 ---
 
 ## Review Checklist
 
-### Core Checks
-- [ ] No empty catch blocks or silent error ignoring
-- [ ] Error messages include operation description and key parameters
-- [ ] Specific error types are used (not generic Error/Exception)
-- [ ] Exception chains are preserved (from / cause / %w)
-- [ ] Preconditions are validated before work starts (fail fast)
+### Core
 
-### Architecture Checks
-- [ ] A clear error hierarchy is defined (application / module / infrastructure)
-- [ ] A global exception handler catches unhandled errors
-- [ ] API boundaries map internal errors to appropriate HTTP status codes
+- [ ] No empty `except:` / `except Exception: pass`
+- [ ] No catch-all mapping every `Exception` to a library type
+- [ ] Messages name operation + key parameters; specific types used
+- [ ] Chains preserved (`from exc` / bare `raise`); fail fast; one handler per layer
 
-### Logging Checks
-- [ ] Error logs include structured context
-- [ ] No sensitive information is logged (passwords, tokens, PII)
-- [ ] Log levels are used correctly (ERROR vs WARN vs INFO)
+### Hierarchy and Translation
 
-### Language-Specific
-- [ ] Go: errors are not ignored; use `%w` for wrapping
-- [ ] Python: catch specific exceptions; use `from` to preserve chains
-- [ ] Java: exceptions have a cause; use specific types
-- [ ] Rust: propagate with `?`; use custom Error types
-- [ ] C#: `when` filters; specific exception types
-- [ ] Swift: do-catch; use Result for deferred handling
+- [ ] `ArchiveyError` vs `ArchiveyUsageError` separation
+- [ ] Specific boundary translations; unrecognized exceptions propagate
+- [ ] `KeyboardInterrupt` / `SystemExit` not converted
+- [ ] Context attributes on exceptions; error-path tests present
+
+### Logging and Idioms
+
+- [ ] No `print`; sparse `logging`; no secrets in logs
+- [ ] Failures raised, not silently logged away
+- [ ] Specific `except` targets; no exception control flow; partial reads checked
