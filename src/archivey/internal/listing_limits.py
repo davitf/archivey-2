@@ -8,10 +8,11 @@ from archivey.config import ListingLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.types import ArchiveMember
 
-_STR_FIELDS = ("name", "comment", "link_target", "uname", "gname")
-
 
 def _utf8_len(value: str) -> int:
+    # ASCII is a pure length (no encode); listing accounts every member name.
+    if value.isascii():
+        return len(value)
     return len(value.encode("utf-8", "surrogateescape"))
 
 
@@ -34,14 +35,25 @@ def _extra_bytes(extra: dict[str, Any]) -> int:
 
 def member_metadata_bytes(member: ArchiveMember) -> int:
     """Byte length of retained string/bytes fields on one member (design accounting)."""
-    total = 0
-    for field_name in _STR_FIELDS:
-        value = getattr(member, field_name)
-        if isinstance(value, str):
-            total += _utf8_len(value)
+    # Hot path for ZIP/TAR listing: most optional string fields are None. Avoid the
+    # getattr/isinstance loop over a fixed field list (perf review H3/Q1).
+    total = _utf8_len(member.name)
     if member.raw_name is not None:
         total += len(member.raw_name)
-    total += _extra_bytes(member.extra)
+    comment = member.comment
+    if comment is not None:
+        total += _utf8_len(comment)
+    link_target = member.link_target
+    if link_target is not None:
+        total += _utf8_len(link_target)
+    uname = member.uname
+    if uname is not None:
+        total += _utf8_len(uname)
+    gname = member.gname
+    if gname is not None:
+        total += _utf8_len(gname)
+    if member.extra:
+        total += _extra_bytes(member.extra)
     return total
 
 

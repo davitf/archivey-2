@@ -8,7 +8,7 @@
       "bytes_decompressed": 0,
       "source_seek_count": 4,
       "unpacked_bytes": null,
-      "notes": ""
+      "notes": "vs zipfile; Q1 listing band 2\u20133\u00d7"
     },
     "zip_read_all": {
       "bytes_decompressed": 32768,
@@ -19,14 +19,14 @@
     "zip_extract": {
       "bytes_decompressed": 32768,
       "source_seek_count": 28,
-      "unpacked_bytes": null,
+      "unpacked_bytes": 32768,
       "notes": ""
     },
     "tar_open_list": {
       "bytes_decompressed": 0,
       "source_seek_count": 8,
       "unpacked_bytes": null,
-      "notes": ""
+      "notes": "vs tarfile.getmembers; Q1 listing band 2\u20133\u00d7"
     },
     "tar_read_all": {
       "bytes_decompressed": 32768,
@@ -36,7 +36,7 @@
     },
     "gzip_read_all": {
       "bytes_decompressed": 65536,
-      "source_seek_count": 1,
+      "source_seek_count": 3,
       "unpacked_bytes": 65536,
       "notes": ""
     },
@@ -50,7 +50,7 @@
       "bytes_decompressed": 32768,
       "source_seek_count": 0,
       "unpacked_bytes": 32768,
-      "notes": "rapidgzip accelerator ON; vs accel_off 0.77\u00d7"
+      "notes": "rapidgzip accelerator ON; vs accel_off 0.72\u00d7"
     },
     "tarbz2_read_all_accel_off": {
       "bytes_decompressed": 32768,
@@ -62,7 +62,13 @@
       "bytes_decompressed": 32768,
       "source_seek_count": 0,
       "unpacked_bytes": 32768,
-      "notes": "rapidgzip accelerator ON; vs accel_off 0.32\u00d7"
+      "notes": "rapidgzip accelerator ON; vs accel_off 0.25\u00d7"
+    },
+    "sevenzip_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 3,
+      "unpacked_bytes": null,
+      "notes": "vs py7zr.list; Q1 native listing target \u2248parity"
     },
     "sevenzip_solid_sequential": {
       "bytes_decompressed": 2097152,
@@ -74,7 +80,13 @@
       "bytes_decompressed": 34603008,
       "source_seek_count": 35,
       "unpacked_bytes": 2097152,
-      "notes": "re-decode recorded; gated vs baseline×SOLID_RANDOM_BYTES_FACTOR"
+      "notes": "re-decode recorded; gated vs baseline\u00d7SOLID_RANDOM_BYTES_FACTOR"
+    },
+    "rar_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 0,
+      "unpacked_bytes": null,
+      "notes": "vs rarfile.infolist; Q1 native listing target \u2248parity"
     }
   }
 }

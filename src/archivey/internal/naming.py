@@ -41,7 +41,12 @@ def _warn_for_bidirectional_controls(name: str) -> None:
     Called by ``BaseArchiveReader`` while assigning member identity, not by individual
     decoders, so directory and inferred single-file names receive the same warning and a
     backend that uses :func:`normalize_member_name` cannot emit a duplicate.
+
+    ASCII names cannot contain bidi controls — skip the per-character scan (listing
+    hot path; perf review H3 / Q1).
     """
+    if name.isascii():
+        return
     if any(char in _BIDI_CONTROLS for char in name):
         logger.warning(
             "Member name contains a bidirectional control character: %r", name
@@ -114,8 +119,25 @@ def normalize_member_name(
     name = decoded
 
     # 1. Backslashes -> forward slashes, only when the format/entry treats them as separators.
-    if backslash_is_separator:
+    if backslash_is_separator and "\\" in name:
         name = name.replace("\\", "/")
+
+    # Fast path: already a clean relative path — no absolute prefix, no empty/`.`
+    # segments to drop. ``..`` is retained as-is under the rules below, so a path
+    # that only contains ordinary segments (and optional ``..``) needs no rebuild.
+    # Listing hot path (ZIP/TAR open+list); keep behaviour identical to the full walk.
+    if (
+        name
+        and not name.startswith("/")
+        and "//" not in name
+        and not name.startswith("./")
+        and "/./" not in name
+        and not name.endswith("/.")
+        and name != "."
+    ):
+        if member_type == MemberType.DIRECTORY and not name.endswith("/"):
+            return name + "/"
+        return name
 
     # 2. Meaning-preserving segment clean-up. Preserve a leading "/" (absolute — rejected at
     #    extraction) and every ".." (retained faithfully); drop only "." and empty segments.
