@@ -140,7 +140,25 @@ a first-class API (CLI `test` can keep its hand-rolled loop for now). Park in
 |---|---|
 | **`WriteError`** | **Defer / remove from the read-only 0.2.0 surface.** v0.2.0 is read-only; writing is a later major release. Do not ship writing leftovers — demote/unexport `WriteError` for now. Same spirit: drop or stop advertising the `[7z-write]` extra/dep group until writing is real (py7zr stays a *dev* oracle as needed). |
 | **`ExtractionStatus.SKIPPED` split (E3)** | **Split into distinct statuses** (not a `reason` field). Overwrite-skip and non-current-skip are different caller concerns: most tools ignore superseded members but care that an expected extract hit a pre-existing path. Name at implement (`SUPERSEDED` / `NON_CURRENT` / …) — prefer a clear verb/noun over overloading `SKIPPED`. |
-| **`hashes` value convention** | **All values `bytes`; keys become a `HashAlgorithm` enum.** Today: `Mapping[str, int \| bytes]` with string keys `"crc32"` / `"blake2sp"` and **no** hash-algorithm enum (`types.py` — only `CompressionAlgorithm` et al.). Target: `Mapping[HashAlgorithm, bytes]` (crc32 as 4-byte digest, not `int`; blake2sp already `bytes`). Prefer `HashAlgorithm(str, Enum)` with values `"crc32"` / `"blake2sp"` so it sits next to other public enums and stringly access stays tolerable during migration. Endianness of the 4-byte crc32: fix at implement (document clearly — big-endian is the usual “digest bytes” convention). Not crc32c (Castagnoli) — we only surface archive-stored CRC-32. |
+| **`hashes` value convention** | **All values `bytes`; keys become a `HashAlgorithm` enum.** Today: `Mapping[str, int \| bytes]` with string keys `"crc32"` / `"blake2sp"` and **no** hash-algorithm enum (`types.py` — only `CompressionAlgorithm` et al.). Target: `Mapping[HashAlgorithm, bytes]` (crc32 as 4-byte digest, not `int`; blake2sp already `bytes`). Prefer `HashAlgorithm(str, Enum)` with at least `CRC32 = "crc32"`, `BLAKE2SP = "blake2sp"`, **`ADLER32 = "adler32"`**. Endianness of 4-byte crc32/adler32: fix at implement (document clearly — big-endian is the usual “digest bytes” convention; note zlib stores Adler-32 network-order on the wire). |
+
+### Q6 hashes — what formats store today / Adler-32 parity
+
+**Currently surfaced** (only these two algorithms):
+
+| Algorithm | Where |
+|---|---|
+| `crc32` | ZIP (CD), 7z (when present), RAR5 (when present), single-file `.gz` (single-member trailer), `.lz` (seekable trailer) |
+| `blake2sp` | RAR5 only (HASH extra) |
+
+Nothing else is exposed. Docs/specs explicitly say `.bz2` / `.xz` / **zlib** / brotli / `.Z` have no cheap whole-member digest — that line is **wrong for zlib**: RFC 1950 puts a 4-byte **Adler-32** of the uncompressed data at the end of every zlib stream (not CRC-32). Gzip uses CRC-32 in its trailer; raw ZIP deflate has neither (ZIP’s CRC lives in the directory).
+
+**Can we fill `adler32`?** Yes, for standalone zlib (`.zz` / detected zlib), same shape as the gzip crc probe: on a seekable/path single-stream source, peek the last 4 bytes without decompressing and set `hashes[HashAlgorithm.ADLER32]`. Wire order is already big-endian (RFC 1950). Caveats to document at implement: trailing junk or concatenated zlib streams make “last 4 bytes” unreliable (gzip already special-cases multi-member); omit on non-seekable sources. Wire verification already happens inside `zlib` decompress; surfacing is for cheap dedupe (VISION). Also teach `verify.py`’s hasher table `adler32` via `zlib.adler32` (today only `crc32` / `blake2sp`).
+
+**Out of scope unless demand shows up:** xz stream checks (CRC32/CRC64/SHA256), zstd content checksums (xxHash), etc. — different algorithms, harder “cheap without decompress” stories. `HashAlgorithm` should be easy to extend when those land.
+
+Fold Adler-32 zlib surfacing into the same hashes implementation change as the enum + crc32→bytes migration (parity fix, not a separate freeze question).
+
 | **`ArchiveFormat` display name (S2)** | **Add a `display_name` property** (not a method). CLI stops parsing `repr()`. |
 
 ---
@@ -169,6 +187,6 @@ next round / backlog (cross-link from EOF design remains fine).
 | Q5 | `IDEAS.md` park only |
 | Q6 WriteError / `[7z-write]` | Demote exception; remove or un-advertise extra |
 | Q6 SKIPPED split | New `ExtractionStatus` value + CLI/report call sites |
-| Q6 hashes → `Mapping[HashAlgorithm, bytes]` | Add enum; crc32 `int`→4-byte `bytes`; update backends, verify, specs, `docs/formats.md`, CLI formatter |
+| Q6 hashes → `Mapping[HashAlgorithm, bytes]` | Add enum (`CRC32` / `BLAKE2SP` / `ADLER32`); crc32 `int`→4-byte `bytes`; surface zlib trailer as `ADLER32`; update backends, verify, specs, `docs/formats.md`, CLI formatter |
 | Q6 `display_name` | Property on `ArchiveFormat` + CLI |
 | Q7 | Next round — see `../backlog.md` / STATUS future list |

@@ -41,7 +41,7 @@ or the finding is a clear proposed fix with no spec conflict).
 | **S2 / Q6** | `ArchiveFormat.display_name` **property** so the CLI stops parsing `repr()`. |
 | **E1** | Public measurement / IO-stats API so CLI `--track-io` leaves `internal/`. |
 | **E3 / Q6** | Split `ExtractionStatus.SKIPPED` into distinct statuses (overwrite vs non-current). |
-| **Q6 hashes** | Add `HashAlgorithm` enum; type becomes `Mapping[HashAlgorithm, bytes]` (crc32 `int` → 4-byte `bytes`; blake2sp already `bytes`). Keys are `str` today — no enum yet. |
+| **Q6 hashes** | Add `HashAlgorithm` enum (`CRC32` / `BLAKE2SP` / `ADLER32`); type `Mapping[HashAlgorithm, bytes]` (crc32 `int` → 4-byte `bytes`). **Also:** surface standalone zlib’s trailer Adler-32 (cheap peek; docs today wrongly say zlib has no stored digest). Keys are `str` today — no enum yet. |
 | **Q6 WriteError / `[7z-write]`** | Demote/unexport `WriteError` for read-only 0.2.0; remove or stop advertising `[7z-write]` until writing lands (py7zr remains a dev oracle). |
 
 ### Process
