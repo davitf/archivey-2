@@ -356,7 +356,8 @@ class ExtractionCoordinator:
                 # even if the filter returns the member.
                 transformed = self._transform(original, dest_root)
                 if transformed is None:
-                    # Filter-skipped: no result; still counts as processed for progress.
+                    # Filter returned None: caller-elected exclusion — no ExtractionResult
+                    # (same as a selector exclusion). Still counts as processed for progress.
                     pass
                 elif not original.is_current:
                     results.append(
@@ -444,7 +445,7 @@ class ExtractionCoordinator:
                     )
                     error.__cause__ = exc
                 status = (
-                    ExtractionStatus.REJECTED
+                    ExtractionStatus.BLOCKED
                     if isinstance(error, FilterRejectionError)
                     else ExtractionStatus.FAILED
                 )
@@ -456,12 +457,12 @@ class ExtractionCoordinator:
                 if self._on_error is OnError.STOP:
                     raise error
                 code = (
-                    DiagnosticCode.EXTRACTION_MEMBER_REJECTED
-                    if status is ExtractionStatus.REJECTED
+                    DiagnosticCode.EXTRACTION_MEMBER_BLOCKED
+                    if status is ExtractionStatus.BLOCKED
                     else DiagnosticCode.EXTRACTION_MEMBER_FAILED
                 )
-                outcome: Literal["rejected", "failed"] = (
-                    "rejected" if status is ExtractionStatus.REJECTED else "failed"
+                outcome: Literal["blocked", "failed"] = (
+                    "blocked" if status is ExtractionStatus.BLOCKED else "failed"
                 )
                 self._diagnostics_collector.emit(
                     code=code,
@@ -598,7 +599,9 @@ class ExtractionCoordinator:
         if transformed.type == MemberType.DIRECTORY:
             existed = os.path.lexists(dest_path)
             if not self._prepare_destination(transformed, dest_path):
-                return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
+                return ExtractionResult(
+                    original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+                )
             os.makedirs(dest_path, exist_ok=True)
             self._apply_metadata(dest_path, transformed)
             if not existed:
@@ -804,7 +807,9 @@ class ExtractionCoordinator:
         source_paths: dict[int, list[Path]],
     ) -> ExtractionResult:
         if not self._prepare_destination(transformed, dest_path, atomic=True):
-            return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
+            return ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+            )
 
         os.makedirs(dest_path.parent, exist_ok=True)
         self._write_file_atomic(stream, dest_path, transformed, tracker)
@@ -822,7 +827,9 @@ class ExtractionCoordinator:
         dest_path: Path,
     ) -> ExtractionResult:
         if not self._prepare_destination(transformed, dest_path):
-            return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
+            return ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+            )
 
         target = transformed.link_target
         if target is None:
@@ -893,7 +900,9 @@ class ExtractionCoordinator:
 
         if source.member_id in source_paths:
             if not self._prepare_destination(transformed, dest_path):
-                return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
+                return ExtractionResult(
+                    original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+                )
             os.makedirs(dest_path.parent, exist_ok=True)
             self._place_link(source_paths, source.member_id, dest_path, transformed)
             return ExtractionResult(
@@ -1053,7 +1062,7 @@ class ExtractionCoordinator:
                 results[orphan.result_index] = ExtractionResult(
                     orphan.original,
                     None,
-                    ExtractionStatus.SKIPPED,
+                    ExtractionStatus.NOT_OVERWRITTEN,
                     None,
                     requested_path=orphan.dest_path,
                 )
@@ -1107,7 +1116,7 @@ class ExtractionCoordinator:
                     results[orphan.result_index] = ExtractionResult(
                         orphan.original,
                         None,
-                        ExtractionStatus.SKIPPED,
+                        ExtractionStatus.NOT_OVERWRITTEN,
                         None,
                         requested_path=orphan.dest_path,
                     )

@@ -56,7 +56,7 @@ class DiagnosticCode(str, Enum):
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
-    EXTRACTION_MEMBER_REJECTED = "extraction_member_rejected"
+    EXTRACTION_MEMBER_BLOCKED = "extraction_member_blocked"
     EXTRACTION_MEMBER_FAILED = "extraction_member_failed"
     EXTRACTION_NAME_COLLISION = "extraction_name_collision"
     EXTRACTION_NAME_SANITIZED = "extraction_name_sanitized"
@@ -189,7 +189,7 @@ class ExtractionOutcomeContext(_JsonSafeContext):
     archive_name: str | None = None
     member_name: str = ""
     member_id: int | None = None
-    status: Literal["rejected", "failed"] = "failed"
+    status: Literal["blocked", "failed"] = "failed"
     error_type: str = ""
     failure_group_id: str | None = None
     failure_group_size: int | None = None
@@ -252,7 +252,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
-        DiagnosticCode.EXTRACTION_MEMBER_REJECTED: "extraction_outcome",
+        DiagnosticCode.EXTRACTION_MEMBER_BLOCKED: "extraction_outcome",
         DiagnosticCode.EXTRACTION_MEMBER_FAILED: "extraction_outcome",
         DiagnosticCode.EXTRACTION_NAME_COLLISION: "name_collision",
         DiagnosticCode.EXTRACTION_NAME_SANITIZED: "name_sanitized",
@@ -278,11 +278,10 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
         not isinstance(context, ScanRaceContext) or context.entry_kind != "entry"
     ):
         raise ValueError("SCAN_ENTRY_VANISHED requires entry_kind='entry'")
-    if code is DiagnosticCode.EXTRACTION_MEMBER_REJECTED and (
-        not isinstance(context, ExtractionOutcomeContext)
-        or context.status != "rejected"
+    if code is DiagnosticCode.EXTRACTION_MEMBER_BLOCKED and (
+        not isinstance(context, ExtractionOutcomeContext) or context.status != "blocked"
     ):
-        raise ValueError("EXTRACTION_MEMBER_REJECTED requires status='rejected'")
+        raise ValueError("EXTRACTION_MEMBER_BLOCKED requires status='blocked'")
     if code is DiagnosticCode.EXTRACTION_MEMBER_FAILED and (
         not isinstance(context, ExtractionOutcomeContext) or context.status != "failed"
     ):

@@ -209,7 +209,8 @@ is **hardwired coordinator behavior**, not the policy `filter` / `MemberFilter`
 pipeline: the skip happens after the optional user `filter` runs so callers can
 inspect or rewrite non-current members, then the coordinator still skips writing
 them unless a future explicit opt-in lands. `SUPERSEDED` is distinct from
-`ExtractionStatus.SKIPPED` (pre-existing destination under `OverwritePolicy.SKIP`).
+`ExtractionStatus.NOT_OVERWRITTEN` (an existing destination left in place under
+`OverwritePolicy.SKIP`).
 
 How surfaces interact:
 
@@ -283,10 +284,10 @@ When a selected HARDLINK's source was excluded by `members` or `filter`, the
 system MUST NOT materialize the excluded source at its own destination. It SHALL
 make the source content available only through selected link destinations: write
 the bytes to the first selected link path allowed by `OverwritePolicy`, record
-`SKIPPED` links under `SKIP`, link further selected links to the materialized
-path, and write nothing if every selected link is skipped. The materialized file
-gets the selected link's transformed metadata. An equivalent hidden temp inside
-`dest` is permitted.
+`NOT_OVERWRITTEN` links under `SKIP`, link further selected links to the
+materialized path, and write nothing if every selected link is skipped. The
+materialized file gets the selected link's transformed metadata. An equivalent
+hidden temp inside `dest` is permitted.
 
 The coordinator SHALL avoid wasted passes: if a free member list exists
 (`get_members_if_available()`), recovery is planned in one forward pass; otherwise
@@ -301,7 +302,7 @@ source is written, with one read and one bomb-limit count for the source bytes.
 | --- | --- |
 | HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` |
 | Selected hardlink source was excluded but recoverable | Source content appears at selected link path(s); excluded source path is never created |
-| First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `SKIPPED`; content moves to the next allowed link; all skipped means no write |
+| First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `NOT_OVERWRITTEN`; content moves to the next allowed link; all skipped means no write |
 | Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
 | HARDLINK appears before its also-selected source | After the pass it links to the extracted source inode; source bytes read and counted once |
 
@@ -356,7 +357,7 @@ class OverwritePolicy(Enum):
 ```
 
 `ERROR` raises a per-member `ExtractionError` governed by `OnError`; `SKIP`
-records a `SKIPPED` result and is not a failure. Existence checks SHALL use
+records a `NOT_OVERWRITTEN` result and is not a failure. Existence checks SHALL use
 `lstat` semantics so dangling symlinks count as existing entries. `REPLACE` SHALL
 be atomic and never write through a symlink: FILE data streams to a temp file in
 the destination directory, metadata is applied, and `os.replace()` moves it onto
@@ -372,7 +373,7 @@ name-safety requirement.
 | Case | Expected |
 | --- | --- |
 | Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
-| Existing path under `SKIP` | `ExtractionResult.status == SKIPPED`, `path=None`, no exception |
+| Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
 | Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
 | `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
@@ -514,8 +515,10 @@ frequency is bounded by the extraction copy chunk size; when `on_progress` is
 
 `ExtractionReport.results` SHALL contain one `ExtractionResult` for every
 selected member the coordinator processes when the operation completes, including
-members rejected by universal/policy checks before the user filter. Selector
-exclusions are outside the operation and have no result.
+members blocked by universal/policy checks before the user filter. Selector
+exclusions are outside the operation and have no result; a user `filter` that
+returns `None` likewise drops the member with **no** `ExtractionResult` (it is a
+caller-elected exclusion, not an extraction outcome).
 
 ```python
 @dataclass(frozen=True)
@@ -528,27 +531,27 @@ class ExtractionResult:
 
 class ExtractionStatus(str, Enum):
     EXTRACTED = "extracted"
-    SKIPPED = "skipped"
+    NOT_OVERWRITTEN = "not_overwritten"
     SUPERSEDED = "superseded"
-    REJECTED = "rejected"
+    BLOCKED = "blocked"
     FAILED = "failed"
 ```
 
 Statuses SHALL mean: `EXTRACTED` created an entry (`path` set, `error=None`);
-`SKIPPED` intentionally bypassed writing because the user filter returned `None`
-or `OverwritePolicy.SKIP` found an existing destination (`path=None`,
-`error=None`); `SUPERSEDED` is a non-current duplicate skipped by the hardwired
-last-entry-wins rule (`path=None`, `error=None`); `REJECTED` is a continued
-`FilterRejectionError`; `FAILED` is a continued non-rejection per-member
-`ArchiveyError` or permitted filesystem `OSError`. `SKIPPED` and `SUPERSEDED`
-are not failures and emit no diagnostic. `requested_path`
-carries the destination the coordinator intended before overwrite/rename
-resolution; it equals `path` for an ordinary write, and `requested_path != path
-and status == EXTRACTED` marks an `OverwritePolicy.RENAME` (see the cross-platform
-name-safety requirement).
+`NOT_OVERWRITTEN` left an existing destination in place because
+`OverwritePolicy.SKIP` found one (`path=None`, `error=None`); `SUPERSEDED` is a
+non-current duplicate skipped by the hardwired last-entry-wins rule (`path=None`,
+`error=None`); `BLOCKED` is a continued `FilterRejectionError` (a universal
+path-safety check or a policy filter blocked the member); `FAILED` is a continued
+non-rejection per-member `ArchiveyError` or permitted filesystem `OSError`.
+`NOT_OVERWRITTEN` and `SUPERSEDED` are not failures and emit no diagnostic.
+`requested_path` carries the destination the coordinator intended before
+overwrite/rename resolution; it equals `path` for an ordinary write, and
+`requested_path != path and status == EXTRACTED` marks an `OverwritePolicy.RENAME`
+(see the cross-platform name-safety requirement).
 
-Continued `REJECTED`/`FAILED` results SHALL emit exactly one matching
-`EXTRACTION_MEMBER_REJECTED` / `EXTRACTION_MEMBER_FAILED` occurrence per result.
+Continued `BLOCKED`/`FAILED` results SHALL emit exactly one matching
+`EXTRACTION_MEMBER_BLOCKED` / `EXTRACTION_MEMBER_FAILED` occurrence per result.
 `ExtractionResult` has no diagnostics field; `status` and `error` are the
 per-result outcome while diagnostics live in the report/reader aggregate. If one
 failed hardlink source causes `N` hardlink failures under `IGNORE` or `COLLECT`,
@@ -561,12 +564,12 @@ applies.
 
 | Case | Expected |
 | --- | --- |
-| User filter returns `None` | Result is `SKIPPED`, `path=None`, `error=None`, no skip diagnostic |
+| User filter returns `None` | No `ExtractionResult`; no result-count impact (like a selector exclusion) |
 | Selector excludes member | No `ExtractionResult`; no result-count impact |
-| Member blocked by `PathTraversalError` under `CONTINUE` | Result is `REJECTED` with matching error and diagnostic |
+| Member blocked by `PathTraversalError` under `CONTINUE` | Result is `BLOCKED` with matching error and diagnostic |
 | Member write raises `OSError` under `CONTINUE` | Result is `FAILED` with matching error and diagnostic |
 | Member written successfully | Result is `EXTRACTED`, `path` points to created entry |
-| Existing destination under `OverwritePolicy.SKIP` | Result is `SKIPPED`, `path=None` |
+| Existing destination under `OverwritePolicy.SKIP` | Result is `NOT_OVERWRITTEN`, `path=None` |
 | One failed source causes three hardlink results to fail | Failed count increases by three; retained contexts, if budget permits, share one failure group id/size |
 
 ### Requirement: Error Policy (OnError) for extraction failures
@@ -574,7 +577,7 @@ applies.
 `OnError.STOP` and `OnError.CONTINUE` SHALL govern per-member failures only.
 Under `CONTINUE`, a member-scoped `FilterRejectionError`, other member-scoped
 `ArchiveyError`, permitted read/write `OSError`, or per-member ratio violation
-records `REJECTED`/`FAILED`, removes partial output, emits the matching diagnostic
+records `BLOCKED`/`FAILED`, removes partial output, emits the matching diagnostic
 under the active diagnostic policy, and proceeds.
 
 Diagnostic disposition SHALL still be authoritative: `RAISE` emits
@@ -596,7 +599,7 @@ swallowed.
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result/diagnostic; extraction proceeds |
 | Cumulative bytes/live ratio/max entries exceed limit under `CONTINUE` | `ResourceLimitError` propagates and halts; no later member processed |
 | Default `STOP` member failure | Exception raises immediately; failing partial file removed; earlier outputs remain |
-| Mixed good/corrupt archive under `CONTINUE` | Extractable members are written; report includes `EXTRACTED` plus `FAILED`/`REJECTED`; no per-member exception escapes |
+| Mixed good/corrupt archive under `CONTINUE` | Extractable members are written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
 
 ### Requirement: ExtractionReport is an immutable operation result
 

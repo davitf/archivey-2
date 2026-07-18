@@ -63,7 +63,7 @@ class Member:
     password: str | None = None
     zip_method: int | None = None  # per-member ZIP compress_type (compression entry)
     comment: str | None = None
-    # Expected to be REJECTED by safe extraction (adversarial name/link). Listing must
+    # Expected to be BLOCKED by safe extraction (adversarial name/link). Listing must
     # still be faithful — the danger is visible on the name/target, never hidden.
     unsafe: bool = False
 

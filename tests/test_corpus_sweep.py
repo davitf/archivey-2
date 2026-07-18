@@ -209,11 +209,11 @@ def _check_extraction(tmp_path: Path, source, entry: CorpusEntry, key: str) -> N
     for r in results:
         by_member_name.setdefault(r.member.name, []).append(r)
 
-    # Every adversarial member must be REJECTED; nothing may have been written for it.
+    # Every adversarial member must be BLOCKED; nothing may have been written for it.
     for m in entry.members:
         if m.unsafe:
             statuses = {r.status for r in by_member_name.get(m.name, [])}
-            assert statuses == {ExtractionStatus.REJECTED}, f"{m.name!r} not rejected"
+            assert statuses == {ExtractionStatus.BLOCKED}, f"{m.name!r} not blocked"
 
     # Safe FILE members: last occurrence per name wins on disk, contents must match.
     last_safe_file: dict[str, Member] = {}

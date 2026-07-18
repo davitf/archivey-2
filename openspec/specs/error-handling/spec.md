@@ -159,7 +159,7 @@ central context mechanism. Escalation alone has no underlying exception, so
 | Case | Expected |
 | --- | --- |
 | Code resolves to `RAISE` and delivery succeeds | `DiagnosticRaisedError` carries the exact emitted diagnostic plus stamped context |
-| Member diagnostic escalates during `OnError.CONTINUE` | Error propagates immediately; extraction does not record `FAILED`/`REJECTED` or continue |
+| Member diagnostic escalates during `OnError.CONTINUE` | Error propagates immediately; extraction does not record `FAILED`/`BLOCKED` or continue |
 
 ### Requirement: Archive EOF strictness takes precedence
 

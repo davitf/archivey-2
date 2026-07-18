@@ -416,7 +416,7 @@ def test_directory_scan_race_diagnostic(
         assert DiagnosticCode.SCAN_ENTRY_VANISHED in reader.diagnostics.counts
 
 
-def test_extraction_rejected_emits_diagnostic(tmp_path: Path) -> None:
+def test_extraction_blocked_emits_diagnostic(tmp_path: Path) -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("../escape.txt", b"x")
@@ -427,8 +427,15 @@ def test_extraction_rejected_emits_diagnostic(tmp_path: Path) -> None:
         dest,
         on_error=OnError.CONTINUE,
     )
-    assert any(r.status is ExtractionStatus.REJECTED for r in report.results)
-    assert DiagnosticCode.EXTRACTION_MEMBER_REJECTED in report.diagnostics.counts
+    blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    assert blocked
+    assert DiagnosticCode.EXTRACTION_MEMBER_BLOCKED in report.diagnostics.counts
+    outcome = next(
+        d
+        for d in report.diagnostics.retained
+        if d.code is DiagnosticCode.EXTRACTION_MEMBER_BLOCKED
+    )
+    assert outcome.context.status == "blocked"
 
 
 def test_raise_disposition_stops_despite_continue(tmp_path: Path) -> None:
@@ -440,7 +447,7 @@ def test_raise_disposition_stops_despite_continue(tmp_path: Path) -> None:
     dest.mkdir()
     policy = DiagnosticPolicy(
         overrides={
-            DiagnosticCode.EXTRACTION_MEMBER_REJECTED: DiagnosticDisposition.RAISE
+            DiagnosticCode.EXTRACTION_MEMBER_BLOCKED: DiagnosticDisposition.RAISE
         }
     )
     with pytest.raises(DiagnosticRaisedError) as ei:
@@ -450,7 +457,7 @@ def test_raise_disposition_stops_despite_continue(tmp_path: Path) -> None:
             on_error=OnError.CONTINUE,
             config=ArchiveyConfig(diagnostic_policy=policy),
         )
-    assert ei.value.diagnostic.code is DiagnosticCode.EXTRACTION_MEMBER_REJECTED
+    assert ei.value.diagnostic.code is DiagnosticCode.EXTRACTION_MEMBER_BLOCKED
 
 
 def test_strict_eof_precedence_over_raise() -> None:

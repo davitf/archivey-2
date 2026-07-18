@@ -287,7 +287,7 @@ def _report_extraction(
     extracted = 0
     renamed = extra_renamed
     skipped = extra_skipped
-    rejected = 0
+    blocked = 0
     failed = 0
     for result in report:
         status = result.status
@@ -307,19 +307,19 @@ def _report_extraction(
                 )
             elif verbose:
                 print(f"extracted: {result.member.name}", file=err)
-        elif status is ExtractionStatus.SKIPPED:
+        elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
-            # Skips also change outcomes under --overwrite skip; always note.
+            # Overwrite-skips change outcomes under --overwrite skip; always note.
             where = result.requested_path or result.member.name
-            print(f"skipped: {where}", file=err)
+            print(f"not overwritten: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
             if verbose:
                 print(f"superseded: {result.member.name}", file=err)
-        elif status is ExtractionStatus.REJECTED:
-            rejected += 1
+        elif status is ExtractionStatus.BLOCKED:
+            blocked += 1
             detail = f": {result.error}" if result.error is not None else ""
-            print(f"rejected: {result.member.name}{detail}", file=err)
+            print(f"blocked: {result.member.name}{detail}", file=err)
         elif status is ExtractionStatus.FAILED:
             failed += 1
             detail = f": {result.error}" if result.error is not None else ""
@@ -333,7 +333,7 @@ def _report_extraction(
         dest_label = str(target)
     print(
         f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
-        f"{f', {rejected} rejected' if rejected else ''}"
+        f"{f', {blocked} blocked' if blocked else ''}"
         f"{f', {failed} failed' if failed else ''}"
         f" → {dest_label}",
         file=err,

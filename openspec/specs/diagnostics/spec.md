@@ -42,7 +42,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `DIGEST_UNVERIFIABLE` | `DigestContext`: `kind="digest"`, `archive_name`, `member_name`, `member_id`, `algorithm`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
 | `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext`: `kind="stream_rewind"`, `archive_name`, `member_name`, `member_id`, `codec`, `from_offset`, `to_offset`, `accelerator` |
-| `EXTRACTION_MEMBER_REJECTED` | `ExtractionOutcomeContext`: `kind="extraction_outcome"`, `…`, `status="rejected"`, `error_type`, `failure_group_id`, `failure_group_size` |
+| `EXTRACTION_MEMBER_BLOCKED` | `ExtractionOutcomeContext`: `kind="extraction_outcome"`, `…`, `status="blocked"`, `error_type`, `failure_group_id`, `failure_group_size` |
 | `EXTRACTION_MEMBER_FAILED` | `ExtractionOutcomeContext`: `kind="extraction_outcome"`, `…`, `status="failed"`, `error_type`, `failure_group_id`, `failure_group_size` |
 
 (`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is
@@ -50,7 +50,8 @@ exactly this union — no backend-defined variants. `observed_kind` ∈
 `{"absent","short","nonzero"}`. `expected_marker` is symbolic (e.g.
 `"two_zero_blocks"`). `member_id` MAY be `None` only before registration.
 `failure_group_id`/`failure_group_size` both set only when multiple hardlink
-results share one failed source; else both `None`.
+results share one failed source; else both `None`. `EXTRACTION_MEMBER_BLOCKED`
+pairs with `ExtractionStatus.BLOCKED`; the two share the `"blocked"` vocabulary.
 
 No diagnostic surface SHALL contain passwords, candidates, provider returns, keys,
 KDF material, or decrypted secrets.
@@ -65,6 +66,7 @@ and cross-run id stability are not promised.
 | Name normalization | `MEMBER_NAME_NORMALIZED` + typed JSON-safe context; no backend/mutable mapping |
 | Same occurrence on aggregate + member | Same `occurrence_id`; value equality; no object-identity promise |
 | Encrypted symlink unavailable | May use reason `"password_required"` + member name; no secret material |
+| Member blocked by a universal/policy check | `EXTRACTION_MEMBER_BLOCKED` with `status="blocked"`; pairs with a `BLOCKED` result |
 
 ### Requirement: Exact bounded diagnostic summaries
 
