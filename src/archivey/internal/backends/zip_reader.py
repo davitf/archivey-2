@@ -625,24 +625,32 @@ class ZipReader(BaseArchiveReader):
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
             extra["zip.aes_actual_method"] = aes_info.actual_method
+        # Skip defaulted None/False kwargs on the listing hot path (perf review L2).
         member = ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
             size=info.file_size,
             compressed_size=info.compress_size,
-            modified=modified,
-            accessed=accessed,
-            created=created,
-            mode=mode,
             compression=compression,
-            is_encrypted=bool(info.flag_bits & 0x1),
-            comment=_decode_with_fallback(info.comment) if info.comment else None,
-            create_system=create_system,
             hashes=hashes,
             extra=extra,
             _raw=info,  # carry the ZipInfo so _open_member needs no name/id lookup table
         )
+        if modified is not None:
+            member.modified = modified
+        if accessed is not None:
+            member.accessed = accessed
+        if created is not None:
+            member.created = created
+        if mode is not None:
+            member.mode = mode
+        if info.flag_bits & 0x1:
+            member.is_encrypted = True
+        if info.comment:
+            member.comment = _decode_with_fallback(info.comment)
+        if create_system is not None:
+            member.create_system = create_system
         if inferred_encoding is not None:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,

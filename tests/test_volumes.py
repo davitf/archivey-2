@@ -18,6 +18,14 @@ _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
 
 
+def test_discover_skips_stat_for_non_volume_names(tmp_path: Path) -> None:
+    """Non-volume-shaped names return None without requiring the path to exist."""
+    missing = tmp_path / "common.zip"
+    assert discover_volume_siblings(missing) is None
+    (tmp_path / "plain.7z").write_bytes(b"x")
+    assert discover_volume_siblings(tmp_path / "plain.7z") is None
+
+
 def test_discover_7z_volume_siblings_natural_order(tmp_path: Path) -> None:
     for name in ("set.7z.010", "set.7z.002", "set.7z.001"):
         (tmp_path / name).write_bytes(b"")

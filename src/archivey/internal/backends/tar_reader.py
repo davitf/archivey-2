@@ -455,22 +455,29 @@ class TarReader(BaseArchiveReader):
             name=name,
             raw_name=raw_name,
             size=info.size if member_type == MemberType.FILE else None,
-            compressed_size=None,  # tar stores members uncompressed; no per-member figure
             modified=modified,
-            accessed=_pax_time(info, "atime"),
-            created=_pax_time(info, "ctime"),
             mode=stat.S_IMODE(info.mode),
             uid=info.uid,
             gid=info.gid,
-            uname=info.uname or None,
-            gname=info.gname or None,
-            link_target=link_target,
             compression=compression,
-            is_encrypted=False,  # TAR has no encryption
-            is_sparse=info.type == tarfile.GNUTYPE_SPARSE,
             extra=extra,
             _raw=info,  # carry the TarInfo so _open_member needs no name/id lookup table
         )
+        # Skip defaulted None/False fields on the listing hot path (perf review L2).
+        accessed = _pax_time(info, "atime")
+        if accessed is not None:
+            member.accessed = accessed
+        created = _pax_time(info, "ctime")
+        if created is not None:
+            member.created = created
+        if info.uname:
+            member.uname = info.uname
+        if info.gname:
+            member.gname = info.gname
+        if link_target is not None:
+            member.link_target = link_target
+        if info.type == tarfile.GNUTYPE_SPARSE:
+            member.is_sparse = True
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,

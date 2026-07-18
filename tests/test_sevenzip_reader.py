@@ -1082,6 +1082,27 @@ def test_lz4_7z_fixture_reads_members() -> None:
             # Header CRC (when present) is checked by VerifyingStream on read.
 
 
+def test_decode_utf16_names_bulk() -> None:
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import _decode_utf16_names
+
+    blob = _names_payload(["a.txt", "dir/b"])
+    # _names_payload includes the external flag byte; strip it for the decoder.
+    assert blob[0] == 0
+    names = _decode_utf16_names(blob[1:], expected_count=2)
+    assert names == ["a.txt", "dir/b"]
+    # Zero files: empty blob is the legitimate encoding (old loop was a no-op).
+    assert _decode_utf16_names(b"", expected_count=0) == []
+    with pytest.raises(CorruptionError, match="non-empty for zero files"):
+        _decode_utf16_names(b"\x00\x00", expected_count=0)
+    with pytest.raises(CorruptionError, match="odd byte length"):
+        _decode_utf16_names(b"abc", expected_count=1)
+    with pytest.raises(CorruptionError, match="not null-terminated"):
+        _decode_utf16_names(b"a\x00", expected_count=1)
+    with pytest.raises(CorruptionError, match="name count"):
+        _decode_utf16_names(blob[1:], expected_count=3)
+
+
 def test_lz4_without_lz4_package_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = _reader_for_unit_tests()
     monkeypatch.setattr(codecs, "_lz4_frame", None)

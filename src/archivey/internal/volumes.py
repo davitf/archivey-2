@@ -36,10 +36,21 @@ def _rnn_part_number(name: str) -> int:
 
 def discover_volume_siblings(path: Path) -> list[Path] | None:
     """Return ordered sibling paths when ``path`` is part of a volume set, else ``None``."""
+    name = path.name
+    lower = name.lower()
+    # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
+    # not volume-shaped. Saves a ``stat`` per open_archive (perf review L3).
+    maybe_volume = (
+        _7Z_VOLUME_RE.match(name) is not None
+        or _RAR_PART_RE.match(name) is not None
+        or _RAR_RNN_RE.match(name) is not None
+        or lower.endswith(".rar")
+    )
+    if not maybe_volume:
+        return None
     if not path.is_file():
         return None
     parent = path.parent
-    name = path.name
 
     match = _7Z_VOLUME_RE.match(name)
     if match is not None:
@@ -73,7 +84,7 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
         )
         return siblings if len(siblings) > 1 else None
 
-    if name.lower().endswith(".rar") and _RAR_PART_RE.match(name) is None:
+    if lower.endswith(".rar") and _RAR_PART_RE.match(name) is None:
         base = name[:-4]
         r00 = parent / f"{base}.r00"
         if r00.is_file():
