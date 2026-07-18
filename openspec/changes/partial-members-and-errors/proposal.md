@@ -17,6 +17,11 @@ side and without publishing a partial cache as a complete listing.
   rejected as ambiguous).
 - Keep `members()` / `scan_members()` as **complete-or-raise** (no kwargs; no
   soft incomplete list from those names).
+- Change `get_members_if_available()` to `-> MemberListReport | None` so a
+  **known-incomplete** listing surfaces its prefix + `error` (a floor count for
+  progress/size) instead of collapsing to `None`; `None` now means only
+  "nothing materialized and a scan would be required," not "cheap index absent
+  **or** damaged." Still a peek — never scans/consumes.
 - **Align RA progressive iteration with streaming (option 7):** on a terminal
   archive-level error after a recoverable prefix, RA `__iter__` /
   `stream_members` yield the prefix then raise (same caller-visible contract as
@@ -52,10 +57,13 @@ side and without publishing a partial cache as a complete listing.
 - Modules: `reader.py` ABC, `base_reader.py` materialization / progressive pass,
   `diagnostics.py` (or types) for `MemberListReport`, TAR EOF path as the first
   consumer, CLI `list_cmd`.
-- Public API: additive `MemberListReport` + `members_report()`; **behavioral**
-  change for RA `__iter__` / `stream_members` on terminal archive errors
-  (yield-then-raise instead of fail-closed before any yield). `members()` /
-  `scan_members()` semantics unchanged (still raise, no incomplete return).
+- Public API: additive `MemberListReport` + `members_report()`; **signature**
+  change for `get_members_if_available()` (`list[ArchiveMember] | None` →
+  `MemberListReport | None`; `len`/iterate/index callers unaffected via the
+  report's sequence ergonomics); **behavioral** change for RA `__iter__` /
+  `stream_members` on terminal archive errors (yield-then-raise instead of
+  fail-closed before any yield). `members()` / `scan_members()` semantics
+  unchanged (still raise, no incomplete return).
 - Extras/deps: none.
 - Tests: TAR rejected-header / strict-absent fixtures for report + RA
   yield-then-raise; cache-not-published assertions; CLI list exit + printed

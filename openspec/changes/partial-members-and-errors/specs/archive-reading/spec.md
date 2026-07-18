@@ -33,8 +33,13 @@ reader`) so `open(member)` works for recovered `FILE` members. The system SHALL
 NOT publish them as a successful complete `_members_cache`: subsequent
 `members()` / `scan_members()` / `get(name)` MUST still raise the terminal error
 (or re-drive and raise) rather than return a silent partial list.
-`get_members_if_available()` SHALL return `None` until a complete successful
-materialization exists.
+`get_members_if_available()` SHALL return a `MemberListReport | None`: the stored
+report when one exists without scanning — complete (`error is None`) **or**
+incomplete (`error` set) from a prior pass — or the upfront index as a complete
+report for backends that carry one; `None` only when nothing is materialized and a
+scan would be required. Returning an incomplete report to a caller MUST NOT change
+the complete-or-raise behaviour of `members()` / `scan_members()` / `get(name)`;
+the report self-labels via `error` and those methods still raise.
 
 On `streaming=True`, `members_report()` MAY start or finish the single forward
 pass (like `scan_members`) and thereby consume it; it still returns a report
@@ -50,7 +55,8 @@ instead of raising on terminal archive-level listing errors.
 | `members_report()` then `members()` on same RA reader after incomplete | `members()` raises the terminal error (not a partial list) |
 | `open(report.members[i])` for a recovered FILE after incomplete | Succeeds by identity |
 | `get(name)` after incomplete | Raises terminal error / does not pretend completeness |
-| `get_members_if_available()` after incomplete only | `None` |
+| `get_members_if_available()` after incomplete pass already ran | Returns the incomplete report (prefix + `error`); count is a floor |
+| `get_members_if_available()` with no materialization and no upfront index | `None` |
 | `ListingLimits.max_members` exceeded during `members_report` | `ResourceLimitError` raised (not soft-returned on `error`) |
 | Streaming `members_report` after recoverable prefix + terminal error | Report with prefix + error; pass consumed |
 
@@ -63,7 +69,7 @@ def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
 def members(self) -> list[ArchiveMember]: ...          # materialize (RA only)
 def scan_members(self) -> list[ArchiveMember]: ...      # fully-resolved, either mode
 def members_report(self) -> MemberListReport: ...         # prefix + error report
-def get_members_if_available(self) -> list[ArchiveMember] | None: ...  # index peek
+def get_members_if_available(self) -> MemberListReport | None: ...  # report peek
 ```
 
 `__iter__` MUST yield in archive order without loading all members into a
@@ -104,10 +110,14 @@ No `__len__` / `__getitem__` (not a collection; protocols are probed implicitly 
 in every mode; use `len(ar.members())`, `ar.info.member_count`, or count while
 iterating. `list(ar)` just iterates (and may raise after yielding a prefix).
 
-`get_members_if_available()` is index-only: returns the list only when available
-without scanning or reading member data, else `None`. Never scans or starts the
-forward pass. Returned members may have unresolved links when targets live in
-member data (see `access-mode-and-cost`).
+`get_members_if_available()` is a report peek: it returns the stored
+`MemberListReport` (complete or incomplete) when one exists without scanning, or
+the upfront index as a complete report for backends that carry one, else `None`.
+It never scans, reads member data, or starts/consumes the forward pass — an
+incomplete report is only returned when a prior pass already stored it, so the
+never-scan promise holds. Report members may have unresolved links when targets
+live in member data (see `access-mode-and-cost`); link resolution is independent
+of `error` (completeness).
 
 With `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
 `UnsupportedOperationError` uniformly. Only one forward pass
@@ -125,7 +135,8 @@ With `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
 | `scan_members()` | Same fully-resolved list as `members()` when complete; raise on terminal archive error | Finishes/drains pass; complete list or raise; pass consumed |
 | `members_report()` | Always returns `MemberListReport` (prefix + `error`) | Always returns report; may consume the pass |
 | `scan_members()` after early `break` | n/a | Drains remainder; complete list or raise on terminal error |
-| `get_members_if_available()` after completed **successful** pass | List if indexed/cached | Fully-resolved list (not `None`); forward-link finalization visible on yielded objects |
-| `get_members_if_available()` after abandoned or incomplete (error) pass | — / `None` | `None` |
+| `get_members_if_available()` after completed **successful** pass | Complete report (`error is None`) if indexed/cached | Complete report (not `None`); forward-link finalization visible on yielded objects |
+| `get_members_if_available()` after incomplete (error) pass already ran | Incomplete report (prefix + `error`) | Incomplete report (prefix + `error`) |
+| `get_members_if_available()` after abandoned pass / before any materialization | `None` (unless upfront index) | `None` |
 | `len(ar)` | `TypeError` | `TypeError` |
 | `list(ar)` | Iterates (may raise after prefix) | Iterates (consumes the single pass; may raise after prefix) |

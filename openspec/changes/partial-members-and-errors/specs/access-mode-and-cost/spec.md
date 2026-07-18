@@ -47,7 +47,7 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | `extract_all` | ✅; RA extract-prep fail-closed on terminal listing error | ✅ once; streaming write-then-raise |
 | `scan_members` | ✅ (= `members`); complete-or-raise | ✅ finishes/returns pass; complete-or-raise |
 | `members_report` | ✅ always returns `MemberListReport` | ✅ may consume pass; always returns report |
-| `get_members_if_available` | ✅ index-only (may be `None`); `None` if only incomplete | ✅ index-only, no-consume |
+| `get_members_if_available` | ✅ report peek: stored report (complete or incomplete) / upfront index / `None`; never scans | ✅ report peek, no-consume |
 | `members` / `get` / `open` / `read` | ✅; `members`/`get` complete-or-raise | ⛔ |
 | `in` (identity) | ✅ no scan (incl. recovered report members) | ✅ no scan |
 | `cost` / `info` / `format` / `close` / CM | ✅ | ✅ |

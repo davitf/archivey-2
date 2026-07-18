@@ -5,16 +5,22 @@
 - [ ] 1.2 Add `ArchiveReader.members_report() -> MemberListReport` to the ABC and
       `BaseArchiveReader` skeleton
 
-## 2. Materialization: incomplete vs complete (N1)
+## 2. Materialization: one stored report (N1)
 
-- [ ] 2.1 Teach RA materialization to retain a recoverable prefix on terminal
-      archive-level listing errors without publishing `_members_cache` as complete
+- [ ] 2.1 Store materialization as a single `MemberListReport` (completeness is
+      `error is None`) behind an internal holder that carries the name index, so
+      publication is one immutable-reference store (drop the two-write
+      `_members_cache` order discipline); terminal archive-level damage populates
+      `error`, while `ResourceLimitError` / interrupt-class exceptions propagate
+      and leave the reader unmaterialized
 - [ ] 2.2 Identity-stamp recovered members (`member in reader`); allow
-      `open(member)` by identity; keep `members()` / `scan_members()` /
-      `get(name)` complete-or-raise; `get_members_if_available()` stays `None`
-      until a successful complete materialization
-- [ ] 2.3 Implement `members_report()` to always return `MemberListReport` for
-      terminal archive listing errors; keep `ResourceLimitError` raise-only
+      `open(member)` by identity; derive `members()` / `scan_members()` /
+      `get(name)` from the stored report (raise `error` if set) so they stay
+      complete-or-raise
+- [ ] 2.3 Implement `members_report()` (return the stored report; replay on
+      repeat calls) and change `get_members_if_available()` to
+      `-> MemberListReport | None` (stored report complete-or-incomplete / upfront
+      index / `None`, never scanning); keep `ResourceLimitError` raise-only
 
 ## 3. Yield-then-raise alignment (option 7)
 

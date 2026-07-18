@@ -128,25 +128,83 @@ name “members” never means “maybe incomplete.”
 `streaming=True` just to see a prefix); publish `_members_cache` then raise
 (false-complete — N1).
 
-### 3. Incomplete materialization state (N1)
+### 3. Materialization state: one stored report (N1)
 
-When a terminal archive error occurs after a prefix:
+Materialization produces **one** stored, immutable `MemberListReport` rather than
+a separate complete `_members_cache` plus an incomplete side-table. Completeness
+is a field on that report, not a matter of which slot is populated:
 
-- Do **not** set `_members_cache` / complete name-index as a successful
-  materialization.
-- `get_members_if_available()` SHALL return `None` (or the prior *complete*
-  cache if one existed from an earlier successful pass — should not apply on
-  first failed TAR scan).
-- Stamped `ArchiveMember` objects returned from `members_report()` or yielded
-  before raise SHALL satisfy `member in reader` (identity) so `open(member)` can
-  work for recovered FILE members without pretending `members()` succeeded.
-- `get(name)` / `members()` after a failed incomplete scan SHALL still raise the
-  terminal error (or re-drive the scan and raise) — they MUST NOT return a
-  silent partial list.
+- `_report is None` — not materialized (no scan has run, no upfront index built).
+- `_report.error is None` — complete, fully-resolved listing.
+- `_report.error is not None` — recovered prefix + terminal archive-level error.
 
-Implementation sketch: hold an optional `_incomplete_members` / generation
-token for identity + open-by-member only; never promote it to `_members_cache`
-until a clean complete pass.
+Every accessor derives from this one field, so N1 ("never publish a partial list
+as a successful complete cache") becomes a **type invariant** instead of a rule
+enforced by hand:
+
+- `members()` / `scan_members()` → materialize, then `raise _report.error` if set,
+  else return `list(_report.members)`.
+- `__iter__` / `stream_members` → yield `_report.members`, then raise
+  `_report.error` if set (yield-then-raise falls out for free).
+- `get(name)` → *found → return; not-found and `error` set → raise the terminal
+  error; not-found and complete → default*. Absence is only a definite "no" once
+  the listing is complete.
+- `get_members_if_available()` → the stored report if one exists (complete or
+  incomplete) without scanning, else the upfront index as a complete report for
+  `_MEMBER_LIST_UPFRONT` backends, else `None` (Decision 3a).
+- `members_report()` → return `_report`.
+
+Two guard rails keep the "everyone reads the report" model honest:
+
+- **`_report.error` holds only terminal archive-level damage** (Option F
+  `CorruptionError` / strict `TruncatedError` and analogous format checks).
+  `ResourceLimitError` and interrupt-class exceptions
+  (`KeyboardInterrupt` / `MemoryError` / `SystemExit`) MUST NOT be captured onto
+  the report: they propagate and leave the reader **unmaterialized** (`_report`
+  stays `None`, so a later call re-drives and re-raises). This is the same split
+  the current `except BaseException: fail_materialization(); raise` already draws
+  — the damage branch is routed into a stored report instead of re-raised.
+- **Keep the public type clean.** `MemberListReport` is the public frozen result;
+  the private name index (`_members_by_name_lists`) rides alongside it in an
+  internal holder (e.g. `_Materialized(report, by_name_lists)`) so publication
+  stays a **single immutable-reference store**. That removes the current
+  "ORDER IS LOAD-BEARING" two-write publish discipline (name map before the
+  `_members_cache` sentinel): a lock-free reader now sees either `None` or a
+  fully-built holder.
+
+Recovered `ArchiveMember` objects on the report are identity-stamped
+(`member in reader`) so `open(member)` works for recovered `FILE` members without
+pretending `members()` succeeded. Because the report is stored, a repeated
+`members_report()` on the same reader **replays** it (cheap, deterministic; no
+re-scan of a damaged source) — see Open Question 2.
+
+Completeness (`error`) is orthogonal to link resolution: an upfront index or an
+incomplete prefix may carry unresolved links; `error is None` means "the listing
+is complete," not "links are resolved."
+
+### 3a. `get_members_if_available()` returns a report, not just a complete list
+
+Signature changes from `-> list[ArchiveMember] | None` to
+`-> MemberListReport | None`. Rationale: on a **known-incomplete** listing the old
+`None` return conflates "no cheap index for this archive" with "I have a prefix and
+I know it is damaged," so a caller sizing a member count / progress bar before
+iteration loses information it could use. Returning the report exposes both states:
+
+- complete listing cheaply available (`_members_cache`, or an `_MEMBER_LIST_UPFRONT`
+  index build) → report with `error is None`;
+- incomplete listing **already materialized** by a prior pass → report with `error`
+  set (the count is a *floor*, not the true total — the true total is unknowable
+  past the damage);
+- nothing materialized and a scan would be required → `None`.
+
+It stays a peek: the incomplete case only returns a report if a prior pass already
+stored it. `get_members_if_available()` still never triggers the scan that would
+discover the damage, never reads member data, and never consumes the forward pass.
+Because `MemberListReport` mirrors `ExtractionReport` sequence ergonomics
+(iterate / `len` / index), the common progress-sizing callers (`len(report)`,
+iterating) are unaffected; only list-specific ops / annotations change. N1 is
+preserved because the report self-labels via `error` — handing it to a caller does
+not make `members()` / `get()` return a partial list; those still raise.
 
 ### 4. What counts as a “terminal archive-level” listing error
 
@@ -214,5 +272,7 @@ yield-then-raise).
 1. **Should `MemberListReport` iterate as its members tuple?** Lean yes
    (ExtractionReport precedent). Confirm in specs.
 2. **After incomplete RA scan, re-call `members_report` on the same seekable
-   reader:** re-scan or replay the incomplete snapshot? Lean **re-scan**;
-   document.
+   reader:** re-scan or replay the incomplete snapshot? **Decided: replay.** The
+   single stored report (Decision 3) *is* the memo — repeated calls return it
+   without re-doing I/O on a source the reader already assumes is stable (the
+   complete-cache path assumes the same). A fresh scan only happens on reopen.
