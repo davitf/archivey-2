@@ -133,6 +133,37 @@ the stdlib backend; a native TAR walker (P3) improves precision and salvage on t
 *detectable* cases, but does not make this residual decidable, which is why the flag
 survives a native reader.
 
+### Where the flag and the reader actually change the outcome
+
+`{stdlib tarfile, native P3}` × `{strict_archive_eof False, True}`, across end conditions.
+Cells verified against stdlib in-tree; native = the P3 walker's expected behavior. Only the
+**bold** rows contain any variation across the four cells.
+
+| End condition | tarfile · False | tarfile · True | native · False | native · True |
+| --- | --- | --- | --- | --- |
+| Valid two-block trailer | OK | OK | OK | OK |
+| **Trailer-less complete / truncated exactly at member boundary** (byte-identical) | warn | **`TruncatedError`** | warn | **`TruncatedError`** |
+| Truncated mid-member-data | `TruncatedError` | `TruncatedError` | `TruncatedError` | `TruncatedError` |
+| Truncated mid-header (partial block) | `TruncatedError` | `TruncatedError` | `TruncatedError` | `TruncatedError` |
+| Corrupt non-first header, data follows (`nonzero`) | `CorruptionError` | `CorruptionError` | `CorruptionError` | `CorruptionError` |
+| **Corrupt header in the _final_ block** (nothing after) | **warn** | **`TruncatedError`** | **`CorruptionError`** | **`CorruptionError`** |
+
+Two facts fall out, and they are nearly orthogonal — each knob is load-bearing in exactly
+one narrow spot:
+
+- **`strict_archive_eof` changes the outcome only for the `absent`/`short` bucket** — a
+  stream that ended cleanly on a member boundary with no valid trailer (trailer-less-complete
+  *or* truncated-at-boundary, indistinguishable). `False` → warn, `True` → `TruncatedError`.
+  In every other row — valid trailer, any mid-stream truncation, `nonzero` corruption — the
+  verdict is fixed and the flag is inert.
+- **stdlib vs native change the pass/fail verdict only for corruption that evades the
+  `nonzero` proxy** — chiefly a corrupt header in the archive's *final* block, which stdlib
+  reads past into EOF and so misclassifies as `absent` (verified: it lands in the `absent`
+  bucket, not `nonzero`). A native walker validates the header at its offset and raises
+  `CorruptionError`. For all truncation and for corruption that leaves trailing data both
+  readers agree; native's extra value there is precision (exact offset) and salvage, not a
+  different pass/fail.
+
 ## Decisions
 
 ### 1. Options under consideration (maintainer picks one)

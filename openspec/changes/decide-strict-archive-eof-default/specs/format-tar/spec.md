@@ -53,6 +53,21 @@ boundary without a valid two-block trailer — a case byte-identical between a d
 trailer-less complete tar and a tar truncated exactly after a whole member, and thus not
 decidable from the archive alone.
 
+Known limitation of the stdlib backend: corruption located in the archive's *final* block
+(a bad header with no data following) is misclassified as `observed_kind="absent"` rather
+than `"nonzero"`, because the marker check inspects the block *after* the one that stopped
+`tarfile` and finds EOF. Such an archive is treated as a missing trailer (warn by default,
+`TruncatedError` under strict) rather than `CorruptionError`. A native TAR walker
+(post-v1) that validates each header at its offset would resolve this to `CorruptionError`;
+the two readers otherwise agree on the pass/fail verdict for all truncation and for
+corruption that leaves trailing data.
+
+Two dimensions govern the outcome, and each is load-bearing in exactly one narrow case:
+`strict_archive_eof` changes the result *only* for the `absent`/`short` bucket (warn vs
+`TruncatedError`); the stdlib-vs-native reader choice changes the pass/fail verdict *only*
+for the final-block-corruption case above. Every other end condition — valid trailer,
+mid-stream truncation, `nonzero` corruption — is fixed across both dimensions.
+
 #### Scenario: TAR EOF matrix
 
 | Case | `observed_kind` | Default (`False`) | `strict_archive_eof=True` |
