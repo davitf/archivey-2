@@ -20,12 +20,15 @@ completed changes out of `changes/`.
 Round commissioned 2026-07-17 — the **non-security** pass toward the first public
 `0.2.0`, after the three security-adjacent reviews archived below. See each `brief.md`:
 
-| Dir | Review |
-|-----|--------|
-| `api-coherence/` | Public API & member-model coherence / ergonomics (incl. cross-backend parity) |
-| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) |
-| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps |
-| `stream-layering/` | Stream wrapper stack — are the checks correct, and can slicing+verification collapse into one stream under `ArchiveStream`? |
+| Dir | Review | Status (2026-07-18) |
+|-----|--------|---------------------|
+| `api-coherence/` | Public API & member-model coherence / ergonomics (incl. cross-backend parity) | Findings in (#133); **no fixes yet** — Q1–Q6 open |
+| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | **Brief only** — review not run |
+| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Findings + partial fixes (#134/#136/#137/#139/#140/#141); P1/P2/P6/P7 + Q2/Q4 remain |
+| `stream-layering/` | Stream wrapper stack — are the checks correct, and can slicing+verification collapse into one stream under `ArchiveStream`? | **Essentially done** (#137); park Q4 then archive |
+
+**Live triage of remaining action items / decisions / future copy-targets:**
+[`STATUS.md`](STATUS.md).
 
 The first three run against `main` with the CLI (PR #120) merged in — the CLI is the
 library's first real second consumer, so it sharpens all three: `api-coherence` reads
@@ -37,7 +40,8 @@ part of the missed budget to the per-member wrapper stack; it pairs a correctnes
 of the slice/verify/outer wrappers with a collapse-for-performance design question.
 
 `backlog.md` holds two more (test-strategy; structural-cleanliness / zero-tech-debt)
-deferred to a lighter follow-on pass.
+deferred to a lighter follow-on pass, plus Topics 6–7 (decode-engine perf; outside-in
+adoption capstone).
 
 ## Archive (complete & addressed)
 

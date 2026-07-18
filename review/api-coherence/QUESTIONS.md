@@ -1,5 +1,8 @@
 # QUESTIONS — maintainer decisions
 
+> **Status (2026-07-18):** all six questions still open — no decisions recorded
+> since findings landed in #133. Triage: `../STATUS.md`.
+
 Per the pause-and-ask rule (`CLAUDE.md`, `CONTRIBUTING.md`): discrepancies and
 judgement calls surfaced, not silently resolved. Ordered by weight.
 
