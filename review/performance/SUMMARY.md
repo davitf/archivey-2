@@ -114,13 +114,13 @@ parses as a *non-empty* plausible header.
 | # | Status |
 |---|--------|
 | P1 | open — needs **Q2** (enforcement venue) |
-| P2 | **partial** — large-member ZIP read in budget; many-small / open+list improved toward Q1 2–3× (ZIP many-small ~4.4×→~3.7×) but not yet inside band; extract realistic in ~2× band |
+| P2 | **partial** — large-member ZIP read in budget; many-small / open+list improved (ZIP many-small ~3.7× after L2; 7z open+list ~2.0× after L1) but not yet inside Q1 bands; extract realistic in ~2× band |
 | P3 | **fixed** (#136) |
 | P4 / P5 | **fixed** (#139) |
-| P6 | **partial** — ZIP peers in #139; **py7zr/rarfile + TAR open_list peers added** (this change); RAR/encrypted/accel data cases still missing |
-| P7 | **partial** — model-build fast paths landed (ASCII bidi/utf8, normalize, compression tuples, no-link short-circuit, cheaper metadata accounting); still above 2–3× on ZIP open+list |
+| P6 | **partial** — ZIP peers in #139; **py7zr/rarfile + TAR open_list peers added** (#143); RAR/encrypted/accel data cases still missing |
+| P7 | **partial** — #143 model-build fast paths + L1/L2 listing fixes (`listing-attribution.md`); ZIP open+list still above 2–3×; 7z closer to native band |
 | P8 / P9 | **follow-up** (future / archive-copy) |
-| Q1 | **direction recorded** (#140) — listing peers + ZIP model-build pass implemented; residual band miss remains |
+| Q1 | **direction recorded** (#140) — listing peers + ZIP model-build (#143) + L1/L2 from attribution worklist; residual band miss remains |
 | Q2 / Q4 | **need decision** |
 | Q3 / Q5 / Q6 | **resolved** |
 
@@ -159,4 +159,8 @@ parses as a *non-empty* plausible header.
   threshold, verify-skip knob).
 - `residual-gap.md` — post-#136/#137 attribution of the remaining ZIP gap +
   next investigation areas and methodology.
-- `repro.py`, `measurements.py`, `attrib.py` — runnable evidence.
+- `listing-attribution.md` — post-#143 per-format listing decomposition
+  (ZIP derivation / 7z parser byte-loop / RAR fixture artifact) with the
+  **L0–L5 worklist**; L0 (#143), L1/L2 (implemented), L3 partial, L4/L5 deferred.
+- `repro.py`, `measurements.py`, `attrib.py`, `listing_probe.py` — runnable
+  evidence.

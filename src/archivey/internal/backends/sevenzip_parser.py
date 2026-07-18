@@ -634,10 +634,24 @@ def _read_substreams_info(
 
 
 def _buffer_len(buffer: BinaryIO) -> int:
+    # Header payloads are BytesIO — ``getbuffer().nbytes`` is O(1). The seek/tell
+    # triple is only for real file objects (signature / next-header reads).
+    if isinstance(buffer, io.BytesIO):
+        return buffer.getbuffer().nbytes
     pos = buffer.tell()
     end = buffer.seek(0, io.SEEK_END)
     buffer.seek(pos)
     return end
+
+
+def _buffer_remaining(buffer: BinaryIO) -> int | None:
+    """Bytes left in ``buffer``, or ``None`` when length cannot be determined."""
+    try:
+        if isinstance(buffer, io.BytesIO):
+            return buffer.getbuffer().nbytes - buffer.tell()
+        return _buffer_len(buffer) - buffer.tell()
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 def _read_files_info(buffer: BinaryIO) -> tuple[list[SevenZipFileRecord], str | None]:
@@ -713,8 +727,39 @@ def _handle_name(
     external = _read_byte(payload)
     if external != 0:
         raise UnsupportedFeatureError("External 7z filename data is not supported")
-    for file_props in files:
-        file_props.filename = _read_utf16(payload).replace("\\", "/")
+    # Bulk-decode the whole names blob (known size, null-terminated UTF-16LE
+    # strings). Per-character ``_read_exact`` was ~22 calls/member and dominated
+    # listing (perf review L1 / listing-attribution.md).
+    blob = payload.read()
+    names = _decode_utf16_names(blob, expected_count=len(files))
+    for file_props, name in zip(files, names, strict=True):
+        file_props.filename = name.replace("\\", "/")
+
+
+def _decode_utf16_names(blob: bytes, *, expected_count: int) -> list[str]:
+    """Decode a 7z ``kName`` property payload into ``expected_count`` filenames."""
+    if len(blob) % 2 != 0:
+        raise CorruptionError("7z UTF-16 name payload has an odd byte length")
+    if not blob.endswith(b"\x00\x00"):
+        raise CorruptionError("7z UTF-16 name list is not null-terminated")
+    try:
+        text = blob.decode("utf-16le")
+    except UnicodeDecodeError as exc:
+        raise CorruptionError(f"Could not decode 7z UTF-16 names: {exc!r}") from exc
+    # Final NUL from the last terminator → trailing empty from split; drop it.
+    if not text.endswith("\x00"):
+        raise CorruptionError("7z UTF-16 name list is not null-terminated")
+    names = text[:-1].split("\x00")
+    if len(names) != expected_count:
+        raise CorruptionError(
+            f"7z name count {len(names)} does not match file count {expected_count}"
+        )
+    for name in names:
+        if len(name) > _MAX_UTF16_CHARS:
+            raise CorruptionError(
+                f"7z UTF-16 name exceeds {_MAX_UTF16_CHARS} characters"
+            )
+    return names
 
 
 def _handle_time(
@@ -918,6 +963,10 @@ def _read_boolean(
 
 
 def _read_utf16(buffer: BinaryIO) -> str:
+    """Read one null-terminated UTF-16LE string (legacy / single-name helper).
+
+    Prefer :func:`_decode_utf16_names` for the ``kName`` property (bulk path).
+    """
     chunks = bytearray()
     for _ in range(_MAX_UTF16_CHARS):
         unit = _read_exact(buffer, 2, "7z UTF-16 name")
@@ -988,10 +1037,7 @@ def _read_exact(buffer: BinaryIO, length: int, context: str) -> bytes:
             f"Claimed {context} length {length} exceeds the "
             f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
         )
-    try:
-        remaining = _buffer_len(buffer) - buffer.tell()
-    except (OSError, OverflowError, ValueError):
-        remaining = None
+    remaining = _buffer_remaining(buffer)
     if remaining is not None and length > remaining:
         raise CorruptionError(
             f"Truncated {context}: claimed {length} bytes, only {remaining} remain"

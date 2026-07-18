@@ -259,7 +259,7 @@ class CreateSystem(Enum):
 EXTRA_IS_JUNCTION = "is_junction"
 
 
-@dataclass
+@dataclass(slots=True)
 class ArchiveMember:
     """Represents a single archive entry. Mutable; callers must treat as read-only."""
 

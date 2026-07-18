@@ -37,11 +37,13 @@ Consequences to implement:
    `zipfile`/`tarfile` peers + `py7zr`/`rarfile` listing peers in the harness;
    report labels use Q1 bands (ZIP/TAR ≤3×, native ≈1.25×). Still asserted the
    same way the wall budget ends up asserted (Q2 — informational only today).
-2. ZIP open+list: measured **~4.1–6.1×** after model-build fast paths (was
-   4.6–6.6× on this host) — still above 2–3×. Remaining cost is mostly fixed
-   per-`open()` overhead (detection + ZipReader/ZipFile setup) on small
-   archives, plus residual per-member `ArchiveMember` construction. 7z/RAR vs
-   peers measured **~2.2–3.0×** (above parity; not optimized this pass).
+2. ZIP open+list: measured **~3.7–4×** after #143 model-build + L2
+   (`slots=True` / trimmed kwargs) — still above 2–3×. Remaining cost is
+   `_to_member` derivation (~3.3 µs/member) + registration (~1.3 µs); further
+   gains need L5 lazy derivation (OpenSpec). 7z open+list after L1 bulk name
+   decode: probe **~2.0×** / harness ~**2.2×** vs py7zr (was ~3.4×); still
+   above the 1.25× native band. RAR harness ratio remains a small-fixture
+   artifact until a larger listing fixture exists (L3).
 3. Read/extract regimes stay as previously framed: decompression-dominated
    ≤1.3× (met for large-member ZIP after #139), extract inside the ~2× safety
    band (met at realistic scale), many-small read_all follows the listing
