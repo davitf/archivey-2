@@ -69,10 +69,15 @@ class _AesStage:
 
 @dataclass
 class _CodecStage:
-    """A single self-contained codec (Deflate, BZip2, Zstd, PPMd, …)."""
+    """A single self-contained codec (Deflate, BZip2, Zstd, PPMd, …).
+
+    ``unpack_size`` is the coder's output length from the folder header. It is passed
+    through for codecs that need a bound (PPMd7 has no end mark); other codecs ignore it.
+    """
 
     codec: Codec
     properties: bytes | None
+    unpack_size: int | None = None
 
 
 @dataclass
@@ -133,7 +138,13 @@ def plan_folder(folder: SevenZipFolder) -> list[_Stage]:
             continue
         if method.kind is MethodKind.SINGLE:
             assert method.codec is not None
-            stages.append(_CodecStage(method.codec, coders[index].properties))
+            stages.append(
+                _CodecStage(
+                    method.codec,
+                    coders[index].properties,
+                    unpack_size=folder.unpack_sizes[index],
+                )
+            )
             index += 1
             continue
         # LZMA_FAMILY (LZMA1/LZMA2/Delta/BCJ): batch the contiguous run, then plan it.
@@ -300,7 +311,9 @@ def _execute_stage(
             stage.codec,
             stream,
             config=stream_config,
-            params=CodecParams(properties=stage.properties),
+            params=CodecParams(
+                properties=stage.properties, unpack_size=stage.unpack_size
+            ),
             collector=collector,
             seekable=seekable,
         )

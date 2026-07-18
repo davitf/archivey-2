@@ -22,6 +22,7 @@ from archivey.internal.streams.decompressor_stream import (
 )
 
 _INITIAL_CODE_WIDTH = 9
+_MAX_CODE_WIDTH = 16  # classic compress / ncompress format ceiling
 _INITIAL_MASK = 2**_INITIAL_CODE_WIDTH - 1
 _CLEAR_CODE = 256
 _MAGIC_BYTE0 = 0x1F
@@ -53,6 +54,11 @@ def _parse_header(header: bytes) -> tuple[int, bool]:
         raise CorruptionError(
             f"unix-compress (.Z) max code width {max_width} is below the minimum "
             f"of {_INITIAL_CODE_WIDTH}"
+        )
+    if max_width > _MAX_CODE_WIDTH:
+        raise CorruptionError(
+            f"unix-compress (.Z) max code width {max_width} exceeds the format "
+            f"ceiling of {_MAX_CODE_WIDTH}"
         )
     block_mode = bool(flag_byte & _BLOCK_MODE_FLAG)
     return max_width, block_mode
@@ -100,14 +106,16 @@ class LzwState:
         """True after ``flush`` when leftover bits after the last code were nonzero."""
         return self._truncated
 
-    def feed(self, data: bytes) -> tuple[bytes, list[tuple[int, int]]]:
+    def feed(
+        self, data: bytes, max_length: int = -1
+    ) -> tuple[bytes, list[tuple[int, int]]]:
         if self._finished:
             return b"", []
         self._buf.extend(data)
-        return self._process(eof=False)
+        return self._process(eof=False, max_length=max_length)
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
-        out, units = self._process(eof=True)
+        out, units = self._process(eof=True, max_length=-1)
         # Finished compressors zero-pad the last incomplete code slot. Nonzero leftover
         # bits are a best-effort truncation / corrupt-padding signal (exact mid-code
         # cuts that leave only zero bits remain undetectable — no length trailer).
@@ -122,6 +130,13 @@ class LzwState:
 
     def is_finished(self) -> bool:
         return self._finished
+
+    @property
+    def needs_input(self) -> bool:
+        """False while retained compressed bytes (or CLEAR padding) remain to drain."""
+        if self._finished:
+            return True
+        return not self._buf and not self._pending_skip
 
     def _init_dictionary(self, max_width: int, block_mode: bool) -> None:
         self._max_width = max_width
@@ -140,7 +155,9 @@ class LzwState:
         self._codes_in_era = 0
         self._pending_skip = 0
 
-    def _process(self, *, eof: bool) -> tuple[bytes, list[tuple[int, int]]]:
+    def _process(
+        self, *, eof: bool, max_length: int = -1
+    ) -> tuple[bytes, list[tuple[int, int]]]:
         output = bytearray()
         units: list[tuple[int, int]] = []
 
@@ -186,6 +203,7 @@ class LzwState:
         codes_per_era = 1 << (code_width - 1)
 
         buf_i = 0
+        budget_hit = False
         while buf_i < len(self._buf):
             cur_byte = self._buf[buf_i]
             buf_i += 1
@@ -279,8 +297,14 @@ class LzwState:
                     # uncompresspy clearing the bit buffer at a width bump).
                     break
 
+                if max_length >= 0 and len(output) >= max_length:
+                    budget_hit = True
+                    break
+
             if cleared:
                 continue
+            if budget_hit:
+                break
 
         del self._buf[:buf_i]
 
@@ -334,8 +358,8 @@ class UnixCompressDecoder(BaseDecoder):
             header_committed=header_committed,
         )
 
-    def feed(self, chunk: bytes) -> DecodeOut:
-        data, units = self._state.feed(chunk)
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        data, units = self._state.feed(chunk, max_length=max_length)
         points = self._commit_header_points()
         points.extend(self._points_for_units(units))
         return DecodeOut(data, points)
@@ -354,6 +378,10 @@ class UnixCompressDecoder(BaseDecoder):
     @property
     def finished(self) -> bool:
         return self._state.is_finished()
+
+    @property
+    def needs_input(self) -> bool:
+        return self._state.needs_input
 
     def _commit_header_points(self) -> list[SeekPoint]:
         if self._header_committed:

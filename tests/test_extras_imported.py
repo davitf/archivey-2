@@ -36,7 +36,6 @@ _IMPORT_NAME = {
 # packaging surface, but the feature's ``src/`` code lands later. Keep this list short and
 # justified; remove an entry once the feature is implemented and imports its package.
 _PENDING_IMPLEMENTATION = {
-    "tqdm": "the [cli] command-line interface is a later phase",
     "py7zr": "7z writing ([7z-write]) lands with the native 7z reader work (Phase 7)",
 }
 

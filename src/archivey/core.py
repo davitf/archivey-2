@@ -211,9 +211,11 @@ def open_archive(
     registry = get_registry()
     backend_cls = registry.reader_for_format(format)
 
-    # A password for a format that has no encryption is API misuse, rejected centrally
-    # (backends declare SUPPORTS_PASSWORD as data and never see the argument otherwise).
-    if passwords.has_passwords() and not backend_cls.SUPPORTS_PASSWORD:
+    # A concrete password for a format that has no encryption is API misuse, rejected
+    # centrally (backends declare SUPPORTS_PASSWORD as data and never see the argument
+    # otherwise). A PasswordProvider alone is fine — backends that never need a password
+    # never call it (CLI registers a TTY getpass provider by default).
+    if passwords.has_static_candidates() and not backend_cls.SUPPORTS_PASSWORD:
         raise UnsupportedOperationError(
             f"Format {format!r} does not support passwords (it carries no encryption).",
             source_format=format,

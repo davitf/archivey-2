@@ -336,6 +336,16 @@ class ExtractionCoordinator:
         collision_map: dict[str, Path] = {}
         orphans: list[_Orphan] = []
         members_done = 0
+        # Explicit selection with a free member list: once every selected member has
+        # been seen, stop the forward pass. Solid backends otherwise keep walking the
+        # rest of the archive (and would skip-decode unread tails if positioning were
+        # eager). Predicate selectors and streaming backends have no finite remaining
+        # count, so they still drain.
+        selected_total = (
+            members_total
+            if selector is not None and members_total is not None
+            else None
+        )
 
         for original, stream in reader.stream_members(stream_selector):
             member_started = False
@@ -478,6 +488,8 @@ class ExtractionCoordinator:
                 members_total,
                 member_bytes_written=(tracker.member_bytes if member_started else 0),
             )
+            if selected_total is not None and members_done >= selected_total:
+                break
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already

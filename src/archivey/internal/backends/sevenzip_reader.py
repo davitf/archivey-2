@@ -14,11 +14,12 @@ from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
+from archivey.diagnostics import DiagnosticCode, DigestContext, MemberTimestampContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
+    PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -49,6 +50,7 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
+from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     infer_member_name_from_archive,
@@ -71,7 +73,6 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     skip_forward,
 )
-from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.types import (
     ArchiveFormat,
@@ -202,8 +203,17 @@ class SevenZipReader(BaseArchiveReader):
         header_encrypted = False
         while isinstance(block, EncodedHeader):
             header_encrypted = header_encrypted or encoded_header_needs_password(block)
-            decoded = self._decode_encoded_header_block(fp, block)
-            block = parse_header_block(decoded)
+            try:
+                decoded = self._decode_encoded_header_block(fp, block)
+                block = parse_header_block(decoded)
+            except (UnsupportedFeatureError, CorruptionError) as exc:
+                # AES header decrypt has no MAC: a wrong password yields garbage that
+                # fails property parsing rather than raising EncryptionError in decrypt.
+                if header_encrypted and self._passwords.has_static_candidates():
+                    raise EncryptionError(
+                        "Password(s) rejected for the 7z header"
+                    ) from exc
+                raise
         assert isinstance(block, PlainHeader)
         return materialize_archive(
             signature, block, is_header_encrypted=header_encrypted
@@ -231,7 +241,13 @@ class SevenZipReader(BaseArchiveReader):
                 )
             return decode(None)
         except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError("Password required to decrypt the 7z header") from exc
+            # Keep required-vs-rejected (D8) but restore the header surface (R1): listing
+            # needs a password is different UX from a wrong password on the header.
+            if exc.message.startswith("Password required"):
+                raise EncryptionError(
+                    "Password required to decrypt the 7z header"
+                ) from exc
+            raise EncryptionError("Password(s) rejected for the 7z header") from exc
 
     @staticmethod
     def _folder_pack_start_indices(archive: SevenZipArchive) -> list[int]:
@@ -393,6 +409,34 @@ class SevenZipReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=logger,
             )
+        # Encrypted folder with no folder digest and no per-member CRC: 7zAES has no
+        # password check of its own, so a wrong password cannot be detected (matches
+        # 7-Zip). Surface that as DIGEST_UNVERIFIABLE rather than silently implying
+        # the decryption was authenticated.
+        if (
+            record.is_encrypted
+            and record.crc32 is None
+            and record.folder_index is not None
+            and not self._archive.folders[record.folder_index].digest_defined
+        ):
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                message=(
+                    "Encrypted 7z member has no folder digest and no member CRC; "
+                    "decryption cannot be authenticated (wrong passwords may go "
+                    "undetected on store/copy streams)."
+                ),
+                context=DigestContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    algorithm="",
+                    reason="no_integrity_anchor",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
         return member
 
     def _member_type(self, record: SevenZipFileRecord) -> MemberType:
@@ -519,6 +563,9 @@ class SevenZipReader(BaseArchiveReader):
                     raise EncryptionError("Wrong password or corrupt 7z folder")
                 _verify_decoded_folder(folder, decoded, member_digests=member_digests)
                 return kdf_password
+            except (UnsupportedFeatureError, PackageNotInstalledError):
+                # Hostile NumCyclesPower / missing [crypto] must not look like a wrong password.
+                raise
             except ArchiveyError as exc:
                 raise EncryptionError("Wrong password or corrupt 7z folder") from exc
             finally:
@@ -527,9 +574,7 @@ class SevenZipReader(BaseArchiveReader):
         try:
             password = self._passwords.attempt(member, confirm)
         except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError(
-                "Password required to decrypt this 7z member"
-            ) from exc
+            raise EncryptionError(exc.message) from exc
         self._folder_passwords[folder_index] = password
         return password
 
@@ -544,28 +589,48 @@ class SevenZipReader(BaseArchiveReader):
     def _wrap_folder_member(
         self, inner: BinaryIO, member: ArchiveMember
     ) -> ArchiveStream:
-        if member.hashes:
-            inner = VerifyingStream(
-                inner,
-                member.hashes,
-                collector=self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
-            )
+        verify = member.size is not None or bool(member.hashes)
         return self._wrap_member_stream(
-            inner, member.name, size=member.size, track_output=False
+            inner,
+            member.name,
+            size=member.size,
+            track_output=False,
+            expected_hashes=member.hashes if verify else None,
+            expected_size=member.size if verify else None,
+            verify_member=member if verify else None,
         )
 
     def _member_stream_from_solid(
         self, solid: SolidBlockReader, member: ArchiveMember
     ) -> ArchiveStream:
-        try:
-            inner = solid.open_member(
-                self._member_prefix(member), _member_stream_size(member)
-            )
-        except EOFError as exc:
-            raise TruncatedError("7z folder ended before the requested member") from exc
-        return self._wrap_folder_member(inner, member)
+        """Hand out a stream whose solid positioning runs on first read.
+
+        Uses ``solid.open_member(..., lazy=True)`` so an unselected handle can be
+        closed without skip-decoding. Verification is fused into the outer
+        ``ArchiveStream``: a never-opened lazy handle skips verify on close, so
+        unread members do not force solid positioning.
+        """
+        prefix = self._member_prefix(member)
+        size = _member_stream_size(member)
+        lazy_solid = solid.open_member(prefix, size, lazy=True)
+        verify = member.size is not None or bool(member.hashes)
+
+        return self._wrap_member_stream(
+            None,
+            member.name,
+            open_fn=lambda: lazy_solid,
+            size=member.size,
+            track_output=False,
+            seekable=False,
+            expected_hashes=member.hashes if verify else None,
+            expected_size=member.size if verify else None,
+            verify_member=member if verify else None,
+        )
+
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, EOFError):
+            return TruncatedError("7z folder ended before the requested member")
+        return None
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:

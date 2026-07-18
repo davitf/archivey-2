@@ -289,9 +289,11 @@ class _XzState:
         self._finished = False
         self._stream_decomp_bytes = 0
 
-    def feed(self, data: bytes) -> tuple[bytes, list[tuple[int, int]]]:
+    def feed(
+        self, data: bytes, max_length: int = -1
+    ) -> tuple[bytes, list[tuple[int, int]]]:
         self._buf.extend(data)
-        return self._process()
+        return self._process(max_length=max_length)
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         if self._state == self._NEED_HEADER:
@@ -306,10 +308,20 @@ class _XzState:
     def is_finished(self) -> bool:
         return self._finished
 
-    def _process(self) -> tuple[bytes, list[tuple[int, int]]]:
+    @property
+    def needs_input(self) -> bool:
+        if self._finished:
+            return True
+        if self._dec is not None and not self._dec.needs_input:
+            return False
+        return not self._buf
+
+    def _process(self, max_length: int = -1) -> tuple[bytes, list[tuple[int, int]]]:
         output = bytearray()
         new_streams: list[tuple[int, int]] = []
         while True:
+            if max_length >= 0 and len(output) >= max_length:
+                break
             if self._state == self._NEED_HEADER:
                 # XZ spec §2.2 "Stream Padding": concatenated streams may be separated by
                 # null bytes whose length is a multiple of four (to keep streams 4-byte
@@ -338,21 +350,24 @@ class _XzState:
                 del self._buf[:_STREAM_HEADER_SIZE]
                 try:
                     self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
-                    output.extend(self._dec.decompress(header))
+                    remaining = max_length - len(output) if max_length >= 0 else -1
+                    plain = self._dec.decompress(header, remaining)
                 except lzma.LZMAError as e:
                     raise CorruptionError(f"XZ stream header error: {e}") from e
                 self._bytes_fed = _STREAM_HEADER_SIZE
-                self._stream_decomp_bytes = 0
+                self._stream_decomp_bytes = len(plain)
+                output.extend(plain)
                 self._state = self._IN_STREAM
 
             elif self._state == self._IN_STREAM:
-                if not self._buf:
+                assert self._dec is not None
+                if not self._buf and self._dec.needs_input:
                     break
                 chunk = bytes(self._buf)
                 self._buf.clear()
                 try:
-                    assert self._dec is not None
-                    plain = self._dec.decompress(chunk)
+                    remaining = max_length - len(output) if max_length >= 0 else -1
+                    plain = self._dec.decompress(chunk, remaining)
                 except lzma.LZMAError as e:
                     raise CorruptionError(f"XZ decompression error: {e}") from e
                 self._bytes_fed += len(chunk)
@@ -366,6 +381,15 @@ class _XzState:
                     self._dec = None
                     self._buf[0:0] = unused
                     self._state = self._NEED_HEADER
+                elif not self._dec.needs_input:
+                    # More output available under the budget; loop to drain with b"".
+                    # If a drain produced nothing, stop — avoid spinning on a stuck
+                    # decompressor that reports needs_input=False with empty output.
+                    if not plain and not chunk:
+                        break
+                    continue
+                else:
+                    break
         return bytes(output), new_streams
 
 
@@ -383,6 +407,7 @@ class _XzBlockChain:
         self._block_idx = 0
         self._dec: lzma.LZMADecompressor | None = None
         self._block_bytes_fed = 0
+        self._pending = b""
         self._finished = len(blocks) == 0
         if not self._finished:
             self._start_block(0)
@@ -420,25 +445,43 @@ class _XzBlockChain:
         footer = struct.pack("<I", footer_crc) + footer_body + _XZ_FOOTER_MAGIC
         return index_bytes + footer
 
-    def feed(self, data: bytes) -> tuple[bytes, list[tuple[int, int]]]:
+    def feed(
+        self, data: bytes, max_length: int = -1
+    ) -> tuple[bytes, list[tuple[int, int]]]:
         output = bytearray()
         new_streams: list[tuple[int, int]] = []
+        # Retain unfed input across budget-limited calls.
+        data = self._pending + data
+        self._pending = b""
         pos = 0
         while pos < len(data) and not self._finished:
+            if max_length >= 0 and len(output) >= max_length:
+                self._pending = data[pos:]
+                break
             block = self._blocks[self._block_idx]
-            remaining = _round_up_4(block.unpadded_size) - self._block_bytes_fed
-            chunk = data[pos : pos + remaining]
+            remaining_comp = _round_up_4(block.unpadded_size) - self._block_bytes_fed
+            chunk = data[pos : pos + remaining_comp]
             pos += len(chunk)
             self._block_bytes_fed += len(chunk)
             try:
                 assert self._dec is not None
-                output.extend(self._dec.decompress(chunk))
+                remaining_out = max_length - len(output) if max_length >= 0 else -1
+                plain = self._dec.decompress(chunk, remaining_out)
             except lzma.LZMAError as e:
                 raise CorruptionError(f"XZ block decompression error: {e}") from e
+            output.extend(plain)
             if self._block_bytes_fed >= _round_up_4(block.unpadded_size):
+                # Drain any retained output before the synthetic footer.
+                while self._dec is not None and not self._dec.needs_input:
+                    if max_length >= 0 and len(output) >= max_length:
+                        self._pending = data[pos:]
+                        return bytes(output), new_streams
+                    remaining_out = max_length - len(output) if max_length >= 0 else -1
+                    output.extend(self._dec.decompress(b"", remaining_out))
                 synthetic_footer = self._build_synthetic_footer(block)
                 try:
-                    output.extend(self._dec.decompress(synthetic_footer))
+                    remaining_out = max_length - len(output) if max_length >= 0 else -1
+                    output.extend(self._dec.decompress(synthetic_footer, remaining_out))
                 except lzma.LZMAError as e:
                     raise CorruptionError(f"XZ synthetic footer error: {e}") from e
                 new_streams.append(
@@ -453,6 +496,26 @@ class _XzBlockChain:
                     self._start_block(next_idx)
                     if self._blocks[next_idx].compressed_start != prev_end:
                         break
+            elif self._dec is not None and not self._dec.needs_input:
+                if not plain:
+                    break
+                continue
+            else:
+                break
+        else:
+            # Loop ended without an early break; if the decompressor can still produce
+            # under the budget, drain without new input.
+            while (
+                not self._finished
+                and self._dec is not None
+                and not self._dec.needs_input
+                and (max_length < 0 or len(output) < max_length)
+            ):
+                remaining_out = max_length - len(output) if max_length >= 0 else -1
+                plain = self._dec.decompress(b"", remaining_out)
+                if not plain:
+                    break
+                output.extend(plain)
         return bytes(output), new_streams
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
@@ -462,6 +525,16 @@ class _XzBlockChain:
 
     def is_finished(self) -> bool:
         return self._finished
+
+    @property
+    def needs_input(self) -> bool:
+        if self._finished:
+            return True
+        if self._pending:
+            return False
+        if self._dec is not None and not self._dec.needs_input:
+            return False
+        return True
 
 
 class XzDecoder(BaseDecoder):
@@ -531,8 +604,8 @@ class XzDecoder(BaseDecoder):
             index_built=self._index_built,
         )
 
-    def feed(self, chunk: bytes) -> DecodeOut:
-        data, units = self._engine.feed(chunk)
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        data, units = self._engine.feed(chunk, max_length=max_length)
         return DecodeOut(data, self._points_for_units(units))
 
     def flush(self) -> DecodeOut:
@@ -542,6 +615,10 @@ class XzDecoder(BaseDecoder):
     @property
     def finished(self) -> bool:
         return self._engine.is_finished()
+
+    @property
+    def needs_input(self) -> bool:
+        return self._engine.needs_input
 
     def _points_for_units(self, units: list[tuple[int, int]]) -> list[SeekPoint]:
         if not units:
@@ -560,12 +637,8 @@ class XzDecoder(BaseDecoder):
         for decompressed_size, compressed_size in new_streams:
             stream_comp_start = self._comp_cursor
             stream_decomp_start = self._decomp_cursor
-            # Before-placement: stream-start point at current cursors (skip origin).
-            if stream_decomp_start > 0:
-                points.append(
-                    SeekPoint(stream_decomp_start, stream_comp_start, state=None)
-                )
             stream_comp_end = stream_comp_start + compressed_size
+            emitted_stream_start = False
             if (
                 self._index_enabled
                 and not self._index_built()
@@ -579,11 +652,28 @@ class XzDecoder(BaseDecoder):
                         stop_at=stream_comp_start,
                         start_decompressed_offset=stream_decomp_start,
                     )
-                    points.extend(
-                        SeekPoint(b.decompressed_start, b.compressed_start, state=b)
-                        for b in blocks
-                        if b.decompressed_start > stream_decomp_start
-                    )
+                    # Prefer block-bounds (with resume state) for the stream start
+                    # over a state=None placeholder — avoids colliding with a prior
+                    # build_index point at the same decompressed offset.
+                    for b in blocks:
+                        if b.uncompressed_size == 0:
+                            continue  # zero-length span is never a useful seek target
+                        if b.decompressed_start < stream_decomp_start:
+                            continue
+                        if b.decompressed_start == stream_decomp_start:
+                            if stream_decomp_start > 0:
+                                points.append(
+                                    SeekPoint(
+                                        b.decompressed_start,
+                                        b.compressed_start,
+                                        state=b,
+                                    )
+                                )
+                                emitted_stream_start = True
+                            continue
+                        points.append(
+                            SeekPoint(b.decompressed_start, b.compressed_start, state=b)
+                        )
                 except CorruptionError as e:
                     message = (
                         "XZ per-stream backward scan failed; block-level seek points for "
@@ -601,6 +691,17 @@ class XzDecoder(BaseDecoder):
                     )
                 finally:
                     self._inner.seek(saved_pos)
+            # Only emit a state=None stream-start placeholder when we have no block
+            # info yet *and* the index is not already populated (a prior SEEK_END /
+            # try_get_size build_index would already hold the richer block point).
+            if (
+                stream_decomp_start > 0
+                and not emitted_stream_start
+                and not self._index_built()
+            ):
+                points.append(
+                    SeekPoint(stream_decomp_start, stream_comp_start, state=None)
+                )
             self._comp_cursor = stream_comp_end
             self._decomp_cursor += decompressed_size
         return points
@@ -617,6 +718,9 @@ class XzDecoder(BaseDecoder):
             "Reason: %s",
             codec_name="xz",
             collector=self._collector,
+            # Zero-uncompressed_size blocks share a decompressed_start with the next
+            # real block; they are never useful seek targets and must not collide.
+            include_block=lambda b: b.uncompressed_size > 0,
         )
 
 

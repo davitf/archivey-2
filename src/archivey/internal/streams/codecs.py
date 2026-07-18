@@ -39,7 +39,11 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
 )
-from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
+from archivey.internal.config import (
+    DEFAULT_STREAM_CONFIG,
+    AcceleratorMode,
+    StreamConfig,
+)
 from archivey.internal.streams.archive_stream import (
     ArchiveStream,
     ExceptionTranslator,
@@ -214,6 +218,8 @@ class CodecParams:
     - ``properties`` — raw coder properties blob (e.g. 7z PPMd var.H parameters).
     - ``ppmd_order`` / ``ppmd_mem_size`` / ``ppmd_restore_method`` — ZIP method-98 PPMd8
       parameters (mutually exclusive with 7z ``properties`` for :class:`PpmdCodec`).
+    - ``unpack_size`` — known uncompressed output length (7z folder unpack size). Passed
+      to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark.
     """
 
     filters: list[dict] | None = None
@@ -221,6 +227,7 @@ class CodecParams:
     ppmd_order: int | None = None
     ppmd_mem_size: int | None = None
     ppmd_restore_method: int = 0
+    unpack_size: int | None = None
 
 
 _DEFAULT_PARAMS = CodecParams()
@@ -230,13 +237,87 @@ _DEFAULT_PARAMS = CodecParams()
 
 
 def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
-    """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate."""
+    """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate.
+
+    AUTO also requires truncation to be verifiable: a container-declared
+    ``expected_decompressed_size``, or (gzip only) a readable ISIZE trailer flagged
+    via ``gzip_isize_backstop``. Without one of those, AUTO falls back to the stdlib
+    backend that raises ``TruncatedError``. ``ON`` ignores this — the caller asked for
+    the accelerator explicitly.
+    """
+    if config.use_rapidgzip is AcceleratorMode.AUTO:
+        if config.expected_decompressed_size is None and not config.gzip_isize_backstop:
+            return False
     return config.use_rapidgzip.enabled_for(
         seekable=config.seekable,
         available=available,
         input_size=config.compressed_input_size,
         min_size=RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     )
+
+
+def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO:
+    """Bound accelerated output to ``expected_decompressed_size`` when known.
+
+    rapidgzip may return a silent short prefix on truncation; ``VerifyingStream``
+    turns that into ``TruncatedError`` at close (and caps over-long output).
+    """
+    size = config.expected_decompressed_size
+    if size is None:
+        return stream
+    from archivey.internal.streams.verify import VerifyingStream
+
+    return VerifyingStream(stream, {}, expected_size=size)
+
+
+def _gzip_isize_from_source(source: CodecSource) -> int | None:
+    """Read the gzip ISIZE trailer (uncompressed size mod 2**32) when cheaply available.
+
+    Returns ``None`` for non-seekable sources, short files, or I/O errors. Multi-member
+    gzip's trailer is only the *last* member's size — callers that need a hard bound
+    should still prefer a container-declared size when available.
+    """
+    try:
+        if isinstance(source, (str, os.PathLike)):
+            with open(os.fspath(source), "rb") as f:
+                size = f.seek(0, io.SEEK_END)
+                if size < 18:
+                    return None
+                f.seek(-4, io.SEEK_END)
+                return int.from_bytes(f.read(4), "little")
+        seek = getattr(source, "seek", None)
+        tell = getattr(source, "tell", None)
+        read = getattr(source, "read", None)
+        seekable = getattr(source, "seekable", None)
+        if seek is None or tell is None or read is None:
+            return None
+        if seekable is not None and not seekable():
+            return None
+        pos = tell()
+        try:
+            end = seek(0, io.SEEK_END)
+            if end < 18:
+                return None
+            seek(-4, io.SEEK_END)
+            return int.from_bytes(read(4), "little")
+        finally:
+            seek(pos)
+    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+        return None
+
+
+def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> StreamConfig:
+    """Mark gzip ISIZE as available for AUTO / the ISIZE truncation backstop.
+
+    Does **not** set ``expected_decompressed_size`` from ISIZE: that field is an exact
+    bound for ``VerifyingStream``, but ISIZE is mod 2**32 and multi-member gzip's
+    trailer covers only the last member.
+    """
+    if config.gzip_isize_backstop or config.expected_decompressed_size is not None:
+        return config
+    if _gzip_isize_from_source(source) is None:
+        return config
+    return replace(config, gzip_isize_backstop=True)
 
 
 def _deflate_family_uses_accelerator(config: StreamConfig) -> bool:
@@ -593,6 +674,9 @@ class GzipCodec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        # Prefer a container-declared size; otherwise note a readable ISIZE so AUTO can
+        # still select rapidgzip with the dedicated ISIZE backstop (not VerifyingStream).
+        config = _config_with_gzip_isize(source, config)
         if _rapidgzip_enabled(config, available=_rapidgzip is not None):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(
@@ -600,8 +684,10 @@ class GzipCodec(StreamCodec):
                     "(install the 'seekable' extra)."
                 )
             stream = _open_rapidgzip(source)
-            # rapidgzip does not reliably surface truncation; add the ISIZE backstop when we
-            # have a seekable path to read the trailer / scan for extra members.
+            if config.expected_decompressed_size is not None:
+                return _wrap_accelerated_length(stream, config)
+            # ISIZE backstop for path sources (handles multi-member; defeatable by a
+            # chance 1f8b08 in huge truncated payloads — container size is preferred).
             if isinstance(source, (str, os.PathLike)):
                 return _GzipTruncationCheckStream(stream, os.fspath(source))
             return stream
@@ -950,7 +1036,7 @@ class DeflateCodec(_ZlibErrorCodec):
             # rapidgzip auto-detects raw DEFLATE; pass the source unwrapped. Callers MUST
             # bound the input (container SlicingStream / exact file) — rapidgzip over-reads
             # past EOS looking for a concatenated member.
-            return _open_rapidgzip(source)
+            return _wrap_accelerated_length(_open_rapidgzip(source), config)
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
 
@@ -984,7 +1070,7 @@ class ZlibCodec(_ZlibErrorCodec):
                     "(install the 'seekable' extra)."
                 )
             # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
-            return _open_rapidgzip(source)
+            return _wrap_accelerated_length(_open_rapidgzip(source), config)
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS)
 
@@ -1166,9 +1252,15 @@ class PpmdCodec(StreamCodec):
                 mem_size=params.ppmd_mem_size,
                 variant=8,
                 restore_method=params.ppmd_restore_method,
+                unpack_size=params.unpack_size,
             )
         order, mem_size = _parse_ppmd_var_h_properties(params.properties)
-        return PpmdDecompressorStream(source, order=order, mem_size=mem_size)
+        return PpmdDecompressorStream(
+            source,
+            order=order,
+            mem_size=mem_size,
+            unpack_size=params.unpack_size,
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
@@ -1359,6 +1451,11 @@ def open_codec_stream(
         size = source_byte_size(source)
         if size is not None:
             config = replace(config, compressed_input_size=size)
+    # gzip ISIZE makes truncation checkable → allows rapidgzip AUTO with the ISIZE
+    # backstop; fill before resolve_codec so translator / rewind_warning agree.
+    # Do not promote ISIZE into expected_decompressed_size (mod 2**32 / multi-member).
+    if codec is Codec.GZIP:
+        config = _config_with_gzip_isize(source, config)
     backend = resolve_codec(codec, config)
     # Default True: internal/format callers may need to seek the codec stream even when
     # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes

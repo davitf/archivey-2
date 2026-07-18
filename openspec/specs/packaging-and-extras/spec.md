@@ -233,3 +233,18 @@ public extraction types and `extract()` live on the public surface.
 | Application uses documented API (`open_archive`, `ArchiveMember`, etc.) | `import archivey` or public re-exports suffice; no `archivey.internal` import required |
 | Caller imports `archivey.internal.backends.zip` or old `archivey.formats.zip_reader` | Not documented, not in `__all__`, and not a stability promise |
 | `import archivey` in a core-only environment | `list_supported_formats()` returns bundled formats without a prior `open_archive()` call |
+
+### Requirement: archivey console entry points ship with the base package
+
+The system SHALL install an `archivey` console script and support
+`python -m archivey` from a base (no-extra) install. The `[cli]` extra SHALL
+continue to pull `tqdm` for progress output only; absence of `[cli]` MUST NOT
+remove the command entry points.
+
+#### Scenario: entry points vs progress extra
+
+| Case | Expected |
+| --- | --- |
+| `pip install archivey` then `archivey --version` / `python -m archivey --version` | Command runs; version prints |
+| `[cli]` / `tqdm` not installed | Command runs; progress bars suppressed |
+| `pip install archivey[cli]` | Progress available when the CLI would show a bar |

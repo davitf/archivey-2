@@ -12,6 +12,7 @@ Marko Kreen, used under the ISC License (see the notice at the bottom of this fi
 from __future__ import annotations
 
 import hashlib
+import hmac
 import struct
 import zlib
 from collections.abc import Sequence
@@ -699,6 +700,35 @@ def _rar5_s2k(password: str | bytes, salt: bytes, iterations: int) -> bytes:
     """PBKDF2-HMAC-SHA256 for RAR5 (returns 32-byte AES-256 key material)."""
     ustr = _normalize_password_utf8(password)
     return pbkdf2_hmac("sha256", ustr, salt, iterations, dklen=32)
+
+
+def rar5_hash_key(password: str | bytes, salt: bytes, kdf_count_shift: int) -> bytes:
+    """Derive the RAR5 HashKey used by ``ConvertHashToMAC`` (PBKDF2 at ``(1<<kdf)+16``).
+
+    The AES key is at ``1 << kdf_count``, HashKey at ``+16``, and PswCheck at ``+32``
+    (UnRAR ``crypt5.cpp``).
+    """
+    if kdf_count_shift > _RAR_MAX_KDF_SHIFT:
+        raise CorruptionError(f"RAR5 kdf_count too large: {kdf_count_shift}")
+    return _rar5_s2k(password, salt, (1 << kdf_count_shift) + 16)
+
+
+def convert_crc_to_mac(crc: int, hash_key: bytes) -> int:
+    """RAR5 ``ConvertHashToMAC`` for CRC32: XOR-fold of ``HMAC-SHA256(HashKey, crc_le4)``."""
+    digest = hmac.new(
+        hash_key, (crc & 0xFFFFFFFF).to_bytes(4, "little"), hashlib.sha256
+    ).digest()
+    result = 0
+    for (word,) in struct.iter_unpack("<I", digest):
+        result ^= word
+    return result & 0xFFFFFFFF
+
+
+def convert_blake2sp_to_mac(digest: bytes, hash_key: bytes) -> bytes:
+    """RAR5 ``ConvertHashToMAC`` for BLAKE2sp: ``HMAC-SHA256(HashKey, digest32)``."""
+    if len(digest) != 32:
+        raise ValueError(f"BLAKE2sp digest must be 32 bytes, got {len(digest)}")
+    return hmac.new(hash_key, digest, hashlib.sha256).digest()
 
 
 # ---------------------------------------------------------------------------
@@ -1476,14 +1506,14 @@ def _check_rar5_password(
         raise CorruptionError(f"RAR5 kdf_count too large: {kdf_count_shift}")
     hdr_check = check_value[:8]
     hdr_sum = check_value[8:]
-    if hashlib.sha256(hdr_check).digest()[:4] != hdr_sum:
+    if not hmac.compare_digest(hashlib.sha256(hdr_check).digest()[:4], hdr_sum):
         return False
     kdf_count = (1 << kdf_count_shift) + 32
     pwd_hash = _rar5_s2k(password, salt, kdf_count)
     pwd_check = bytearray(8)
     for i, v in enumerate(pwd_hash):
         pwd_check[i & 7] ^= v
-    if bytes(pwd_check) != hdr_check:
+    if not hmac.compare_digest(bytes(pwd_check), hdr_check):
         raise EncryptionError("Wrong password for RAR5 header encryption")
     return True
 

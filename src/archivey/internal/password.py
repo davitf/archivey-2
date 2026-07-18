@@ -90,6 +90,16 @@ class _PasswordCandidates:
                 self._known_good or self._candidates or self._provider is not None
             )
 
+    def has_static_candidates(self) -> bool:
+        """True when the caller supplied concrete password bytes (not merely a provider).
+
+        Used by ``open_archive`` to reject passwords on formats with no encryption.
+        A bare :data:`~archivey.config.PasswordProvider` is not "supplying a password"
+        until a backend asks for one — formats that never ask must not fail open.
+        """
+        with self._state_lock:
+            return bool(self._known_good or self._candidates)
+
     def is_ambiguous(self) -> bool:
         """Whether a weak password check needs confirmation before accepting a result.
 
@@ -207,9 +217,18 @@ class _PasswordCandidates:
             attempt += 1
 
         message = (
-            last_error.message
-            if last_error is not None
-            else "Password required to read this encrypted member"
+            (
+                last_error.message
+                if last_error is not None
+                and "wrong password" in last_error.message.lower()
+                else "Password(s) rejected for this encrypted member"
+            )
+            if tried
+            else (
+                last_error.message
+                if last_error is not None
+                else "Password required to read this encrypted member"
+            )
         )
         exhausted = _PasswordCandidatesExhausted(message, last_error=last_error)
         if last_error is not None:

@@ -18,6 +18,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, NoReturn, cast
@@ -73,7 +74,6 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     read_exact,
 )
-from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.zip_aes import (
     open_winzip_aes_member,
@@ -509,9 +509,11 @@ class ZipReader(BaseArchiveReader):
         only when it overrode the cp437 APPNOTE default (for the diagnostic), else ``None``.
         UTF-8 is self-validating, so a clean decode is strong evidence the bytes are UTF-8;
         legacy bytes that are coincidentally valid UTF-8 are the documented residual risk.
+        Pure ASCII (and any other bytes that decode identically under UTF-8 and cp437) is
+        not an override — both encodings agree, so no diagnostic.
         """
         try:
-            return raw_name.decode("utf-8"), "utf-8"
+            utf8_decoded = raw_name.decode("utf-8")
         except UnicodeDecodeError:
             fallback = self._config.zip_unflagged_fallback_encoding
             if fallback.lower().replace("-", "").replace("_", "") in {
@@ -525,6 +527,9 @@ class ZipReader(BaseArchiveReader):
             except LookupError:
                 # An unknown fallback encoding name: keep the cp437 decode rather than fail.
                 return cp437_decoded, None
+        if utf8_decoded == cp437_decoded:
+            return utf8_decoded, None
+        return utf8_decoded, "utf-8"
 
     def _to_member(self, info: zipfile.ZipInfo) -> ArchiveMember:
         full_mode = info.external_attr >> 16
@@ -785,7 +790,12 @@ class ZipReader(BaseArchiveReader):
             return open_codec_stream(
                 codec,
                 body,
-                config=self._stream_config,
+                config=replace(
+                    self._stream_config,
+                    expected_decompressed_size=(
+                        member.size if member is not None else info.file_size
+                    ),
+                ),
                 params=params,
                 seekable=self._stream_config.seekable,
                 collector=self._diagnostics_collector,
@@ -801,15 +811,16 @@ class ZipReader(BaseArchiveReader):
             self._reraise_member_error(exc, member_name)
 
         hashes = member.hashes if member is not None else {}
-        if hashes:
-            decoded = VerifyingStream(
-                decoded,
-                hashes,
-                collector=self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
-            )
         size = member.size if member is not None else info.file_size
+        if hashes or size is not None:
+            return self._wrap_member_stream(
+                decoded,
+                member_name,
+                size=size,
+                expected_hashes=hashes,
+                expected_size=size,
+                verify_member=member,
+            )
         return self._wrap_member_stream(decoded, member_name, size=size)
 
     def _open_zip_entry(
@@ -991,11 +1002,21 @@ class ZipReader(BaseArchiveReader):
                 params = self._zip_lzma_params(raw)
             elif info.compress_type == 98:  # ZIP PPMd8
                 params = self._zip_ppmd_params(raw)
+                # Bound PPMd decode to the member size when known (defensive; PPMd8
+                # usually has an end mark, but max_length still matches py7zr practice).
+                size = member.size if member is not None else info.file_size
+                if size is not None and size >= 0:
+                    params = replace(params, unpack_size=size)
 
             decoded: BinaryIO = open_codec_stream(
                 codec,
                 raw,
-                config=self._stream_config,
+                config=replace(
+                    self._stream_config,
+                    expected_decompressed_size=(
+                        member.size if member is not None else info.file_size
+                    ),
+                ),
                 params=params,
                 seekable=self._stream_config.seekable,
                 collector=self._diagnostics_collector,
@@ -1005,16 +1026,17 @@ class ZipReader(BaseArchiveReader):
         except _ZIP_MEMBER_READ_ERRORS as exc:
             self._reraise_member_error(exc, member_name)
 
-        hashes = member.hashes if member is not None else None
-        if hashes:
-            decoded = VerifyingStream(
-                decoded,
-                hashes,
-                collector=self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
-            )
+        hashes = member.hashes if member is not None else {}
         size = member.size if member is not None else info.file_size
+        if hashes or size is not None:
+            return self._wrap_member_stream(
+                decoded,
+                member_name,
+                size=size,
+                expected_hashes=hashes,
+                expected_size=size,
+                verify_member=member,
+            )
         return self._wrap_member_stream(decoded, member_name, size=size)
 
     def _open_zipfile_member(
@@ -1297,7 +1319,7 @@ class ZipReader(BaseArchiveReader):
             # Traditional ZipCrypto stays on the stdlib zipfile decryption path.
             raw = self._open_zip_entry(info, member, member_name=member.name)
             return self._wrap_member_stream(raw, member.name, size=member.size)
-        # Unencrypted: codec layer already wrapped (+ VerifyingStream) in _open_codec_member.
+        # Unencrypted: codec layer + fused verify in _open_codec_member.
         return self._open_codec_member(info, member, member_name=member.name)
 
     def _get_archive_info(self) -> ArchiveInfo:

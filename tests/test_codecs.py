@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import zlib
+from pathlib import Path
 
 import pytest
 
@@ -33,7 +34,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import StreamFormat
-from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.streams_util import (
     NonSeekableBytesIO,
     compress_lzma2_raw,
@@ -193,6 +194,17 @@ def test_sevenzip_kdf_cache_reuses_derived_keys() -> None:
     assert special == bytes(bytearray(salt + password + bytes(32))[:32])
 
 
+def test_sevenzip_kdf_rejects_cycles_above_24() -> None:
+    """Match 7-Zip's ``k_NumCyclesPower_Supported_MAX = 24`` (PR #115 F3).
+
+    The cap raises before any ``cryptography`` import, so this runs in core-only too.
+    """
+    from archivey.exceptions import UnsupportedFeatureError
+
+    with pytest.raises(UnsupportedFeatureError, match="NumCyclesPower"):
+        crypto.derive_sevenzip_aes_key(b"pw", salt=b"s", cycles=25)
+
+
 # --- exception translation -------------------------------------------------------------
 
 
@@ -311,13 +323,127 @@ def test_unix_compress_non_seekable_source_streams() -> None:
 
 @requires("ncompress")
 def test_unix_compress_truncated_raises_on_next_read() -> None:
+    """Chunked reads: deferred TruncatedError surfaces on the empty follow-up read."""
     compressed = make_unix_compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
-        data = stream.read()
-        assert len(data) < len(CONTENT)
+        # Bounded chunked idiom: return available bytes, raise on the next empty read.
+        chunk = stream.read(256)
+        assert chunk  # got a prefix
+        buf = bytearray(chunk)
+        with pytest.raises(TruncatedError, match="leftover bits"):
+            while True:
+                c = stream.read(256)
+                if not c:
+                    break
+                buf.extend(c)
+
+
+@requires("ncompress")
+def test_unix_compress_truncated_readall_raises() -> None:
+    """Single-shot read()/readall() must raise TruncatedError (not swallow it)."""
+    compressed = make_unix_compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
         with pytest.raises(TruncatedError, match="leftover bits"):
             stream.read()
+
+
+@requires("ncompress")
+def test_unix_compress_maxbits_above_16_rejected() -> None:
+    """Format ceiling is 16; 17–31 must raise CorruptionError (not grow the dict)."""
+    for maxbits in (17, 24, 31):
+        header = bytes([0x1F, 0x9D, 0x80 | maxbits])
+        with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream:
+            with pytest.raises(CorruptionError, match="ceiling of 16"):
+                stream.read()
+
+
+@requires("ncompress")
+def test_unix_compress_maxbits_16_accepted() -> None:
+    compressed = make_unix_compress(CONTENT)
+    # ncompress emits a legal maxbits ≤ 16; a full decode must succeed.
+    assert (compressed[2] & 0x1F) <= 16
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
+        assert stream.read() == CONTENT
+
+
+def test_decompressor_read_one_bounds_internal_buffer() -> None:
+    """Bounded read(1) must not buffer megabytes of highly compressible output (F3a)."""
+    import lzma
+
+    from archivey.internal.streams.decompress import ZlibDecompressorStream
+    from archivey.internal.streams.xz import XzDecompressorStream
+
+    payload = b"A" * 2_000_000
+    # deflate
+    co = zlib.compressobj(wbits=-15)
+    deflate = co.compress(payload) + co.flush()
+    with ZlibDecompressorStream(io.BytesIO(deflate)) as stream:
+        assert stream.read(1) == b"A"
+        assert len(stream._buffer) < 64_000
+        assert stream.read(1000) == b"A" * 1000
+
+    # xz
+    xz = lzma.compress(payload, format=lzma.FORMAT_XZ)
+    with XzDecompressorStream(io.BytesIO(xz)) as stream:
+        assert stream.read(1) == b"A"
+        assert len(stream._buffer) < 64_000
+
+
+@requires("ncompress")
+def test_unix_compress_read_one_bounds_internal_buffer() -> None:
+    payload = b"A" * 2_000_000
+    compressed = make_unix_compress(payload)
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
+        assert stream.read(1) == b"A"
+        # DecompressorStream buffer after a budgeted feed.
+        assert len(getattr(stream, "_inner")._buffer) < 64_000
+
+
+@requires("brotli")
+def test_brotli_read_one_bounds_internal_buffer() -> None:
+    """Brotli process(output_buffer_limit) must bound read(1) peak buffer (CVE-2025-6176)."""
+    import brotli
+
+    from archivey.internal.streams.decompress import BrotliDecompressorStream
+
+    payload = b"A" * 2_000_000
+    compressed = brotli.compress(payload)
+    with BrotliDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read(1) == b"A"
+        # Block-granular floor is ~32 KiB; still far below a multi-MB bomb.
+        assert len(stream._buffer) < 128_000
+        assert stream.read(1000) == b"A" * 1000
+
+
+@requires("inflate64")
+@requires_binary("7z")
+def test_deflate64_read_one_bounds_internal_buffer(tmp_path: Path) -> None:
+    """Small compressed feeds under max_length must bound Deflate64 read(1) buffers."""
+    import struct
+    import subprocess
+
+    from archivey.internal.streams.decompress import Deflate64DecompressorStream
+
+    payload = b"A" * 500_000
+    src = tmp_path / "a.bin"
+    src.write_bytes(payload)
+    archive = tmp_path / "d.zip"
+    subprocess.check_call(
+        ["7z", "a", "-tzip", "-mm=Deflate64", str(archive), str(src)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    data = archive.read_bytes()
+    hdr = struct.unpack_from("<HHHHHIIIHH", data, 4)
+    method, csize, nlen, elen = hdr[2], hdr[6], hdr[8], hdr[9]
+    assert method == 9
+    comp = data[30 + nlen + elen : 30 + nlen + elen + csize]
+    with Deflate64DecompressorStream(io.BytesIO(comp)) as stream:
+        assert stream.read(1) == b"A"
+        assert len(stream._buffer) < 64_000
+        assert stream.read(1000) == b"A" * 1000
 
 
 @requires("ncompress")
@@ -490,6 +616,25 @@ def test_verify_expected_size_overlong_stops_at_declared_size() -> None:
     assert inner.tell() <= declared + 1
 
 
+def test_verify_hashed_overlong_with_matching_crc_still_capped() -> None:
+    """F6: a CRC matching the bloated payload must not defeat the declared-size cap."""
+    declared = 10
+    bloated = b"A" * 200
+    stream = VerifyingStream(
+        io.BytesIO(bloated),
+        {"crc32": _crc32(bloated)},
+        expected_size=declared,
+    )
+    out = bytearray()
+    with pytest.raises(CorruptionError, match="exceeds"):
+        while True:
+            chunk = stream.read(64)
+            if not chunk:
+                break
+            out.extend(chunk)
+    assert len(out) == declared
+
+
 def test_verify_expected_size_short_with_hash_is_digest_mismatch() -> None:
     """A hashed short read surfaces as the digest mismatch, not a truncation error."""
     stream = VerifyingStream(
@@ -507,6 +652,51 @@ def test_verify_expected_size_partial_read_then_close_is_ok() -> None:
     stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT))
     assert stream.read(10) == CONTENT[:10]
     stream.close()  # must not raise
+
+
+def test_verify_read0_is_not_eof() -> None:
+    """F1: read(0) must not run end-of-stream verification (BytesIO / file contract)."""
+    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT)})
+    assert stream.read(0) == b""
+    assert stream.read(5) == CONTENT[:5]
+    assert stream.read(0) == b""  # mid-stream
+    assert stream.read() == CONTENT[5:]
+    assert stream.read() == b""
+
+
+def test_verify_read0_hashless_does_not_truncate_on_close() -> None:
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT))
+    assert stream.read(0) == b""
+    stream.close()  # must not raise TruncatedError
+
+
+def test_verify_close_closes_inner_on_typed_probe_error() -> None:
+    """F2: a typed probe error must still close the wrapper and inner."""
+    from archivey.exceptions import EncryptionError
+
+    class Boom(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"ab")
+            self.close_called = False
+
+        def read(self, n: int = -1) -> bytes:
+            data = super().read(n)
+            if not data:
+                raise EncryptionError("boom")
+            return data
+
+        def close(self) -> None:
+            self.close_called = True
+            super().close()
+
+    inner = Boom()
+    stream = VerifyingStream(inner, {}, expected_size=3)
+    assert stream.read(2) == b"ab"
+    with pytest.raises(EncryptionError, match="boom"):
+        stream.close()
+    assert stream.closed
+    assert inner.closed
+    assert inner.close_called
 
 
 def test_verify_unverifiable_algorithm_skipped_with_warning(

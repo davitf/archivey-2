@@ -1,0 +1,223 @@
+# Silent-acceptance & verification analysis (Brief §A)
+
+This is the headline surface: for every native path, does authentication actually run and
+gate output, or can wrong/tampered data reach the caller without an honest error?
+
+---
+
+## F1 (High) — RAR5 tweaked-checksum BLAKE2sp raises a spurious `CorruptionError` on *correct* data
+
+> **Fixed in #127.** `_member_hashes` drops blake2sp when HASHMAC is set; with a password,
+> `VerifyingStream` verifies via `ConvertHashToMAC` (`digest_transforms`). See SUMMARY
+> "Applied fixes" and `tests/test_crypto_findings.py` / `encryption_blake2sp.rar`.
+
+### What the code does (pre-fix)
+
+`rar_reader.py:119`:
+
+```python
+def _crc_is_tweaked(info: RarMemberInfo) -> bool:
+    enc = info.file_encryption
+    if enc is None:
+        return False
+    return bool(enc.flags & _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS)  # 0x02
+
+def _member_hashes(info: RarMemberInfo) -> dict[str, int | bytes]:
+    hashes: dict[str, int | bytes] = {}
+    if info.crc32 is not None and not _crc_is_tweaked(info):   # crc32 guarded
+        hashes["crc32"] = info.crc32
+    if info.blake2sp_hash is not None:                          # blake2sp NOT guarded
+        hashes["blake2sp"] = info.blake2sp_hash
+    return hashes
+```
+
+When a RAR5 member is encrypted with the "tweaked checksums" option
+(`RAR5_XENC_TWEAKED = 0x02`, set by WinRAR whenever file *data* is encrypted), WinRAR stores
+`checksum XOR key_derived_tweak` rather than the raw checksum, so identical plaintext under
+different passwords produces different stored checksums. The correct handling is to **not**
+verify the stored value against the plaintext hash unless you reproduce the inverse tweak.
+
+`_member_hashes` does this correctly for **crc32** (drops it when tweaked) but **not for
+blake2sp** — the BLAKE2sp hash is surfaced unconditionally. It then flows to
+`VerifyingStream` in `rar_reader.py:509` (`_wrap_payload_stream`), which recomputes BLAKE2sp
+over the plaintext `unrar` emits and compares it to the *tweaked* stored value → guaranteed
+mismatch → `CorruptionError` on a member that decrypted perfectly.
+
+### Oracle: rarfile does the opposite
+
+`rarfile 4.3` only arms BLAKE2sp verification when the member is **not** tweaked:
+
+```python
+# rarfile.py, RAR5 file-hash parse
+if (h.file_encryption[1] & RAR5_XENC_TWEAKED) == 0:
+    h._md_class = Blake2SP
+    h._md_expect = h.blake2sp_hash
+```
+
+i.e. rarfile treats a tweaked BLAKE2sp as unverifiable and skips it. archivey should do the
+same (it already does for crc32).
+
+### Why this bites `-htb` archives specifically
+
+RAR5 stores *either* CRC32 *or* BLAKE2sp per file, not both. WinRAR uses BLAKE2sp only with
+`-htb`. So for a `-htb`-encrypted member: `crc32 is None` (dropped anyway) and
+`blake2sp_hash` is present-but-tweaked → `hashes == {"blake2sp": <tweaked>}` → false
+corruption. There is no crc32 fallback. The existing `encryption__.rar` fixture happens to
+use CRC32 (not `-htb`), so it stores `crc32` + tweaked flag and dodges the bug — which is
+exactly why the suite is green.
+
+### Reproductions
+
+**(a) reader-level asymmetry** — a tweaked member keeps blake2sp, drops crc32:
+
+```
+tweaked? True
+surfaced hashes keys: ['blake2sp']
+crc32 present: False   blake2sp present: True
+```
+(constructed a `RarMemberInfo` with `RarEncryptionInfo(flags=0x02)`, `crc32=…`,
+`blake2sp_hash=…`; called `_member_hashes`.)
+
+**(b) mechanism end-to-end at the stream level** — `VerifyingStream` raises on *correct*
+plaintext when the stored blake2sp is tweaked:
+
+```python
+plaintext = b"stored payload"
+real = blake2sp(plaintext)
+tweaked_stored = bytes(b ^ 0x5A for b in real)          # WinRAR stores real XOR tweak
+vs = VerifyingStream(io.BytesIO(plaintext), {"blake2sp": tweaked_stored})
+vs.read(); vs.read()          # -> CorruptionError: Digest mismatch for 'blake2sp'
+# control: {"blake2sp": real} verifies cleanly
+```
+
+A full archive→`unrar`→VerifyingStream repro needs the `unrar` binary (absent here) and a
+`-htb`-encrypted RAR5 fixture; the two units above pin the exact defect and the oracle pins
+the intended behaviour.
+
+### Fix (resolved with maintainer — see QUESTIONS Q1)
+
+The DEV reference (`archivey-dev/src/archivey/formats/rar_reader.py`) shows the tweak is RAR's
+`ConvertHashToMAC` — a **one-way forward transform**
+(`tweaked = HMAC-based(HashKey, real_hash)`), so the real checksum is *not* recoverable from
+the stored tweaked value. **Both steps applied in #127:**
+
+1. **Interim correctness fix:** `_member_hashes` is symmetric — blake2sp is guarded with the
+   same predicate as crc32. Tweaked values live in `member.extra`
+   (`rar.tweaked_crc32` / `rar.tweaked_blake2sp`).
+2. **Full fix:** with a password, verify by forward-transform via
+   `VerifyingStream(digest_transforms=…)` and `rar5_hash_key` / `convert_crc_to_mac` /
+   `convert_blake2sp_to_mac`. `member.hashes` stays empty when tweaked (and when no password
+   is known); without a password, emit `DIGEST_UNVERIFIABLE` (`reason="tweaked_checksum"`).
+
+**Gate (source-confirmed):** the tweak applies **iff** the per-file `FHEXTRA_CRYPT_HASHMAC`
+(0x02) flag is set (`arcread.cpp:1080`, `extract.cpp:934`) — exactly the flag `_crc_is_tweaked`
+already reads. Encrypted-header (`-hp`) archives do **not** auto-skip the tweak in the reader;
+unrar keys only off 0x02 (untweaked checksums under `-hp` are a writer choice to omit the
+flag). So no header-encryption special-case is needed.
+
+---
+
+## F2 (Medium) — 7z confirms *any* password when the folder carries no integrity anchor
+
+> **Fixed in #127 (diagnostic only; severity Low).** Best-effort accept kept (matches
+> 7-Zip). Encrypted CRC-less members in a digest-less folder emit `DIGEST_UNVERIFIABLE`
+> with `reason="no_integrity_anchor"`.
+
+### What the code does
+
+`sevenzip_reader.py:119`:
+
+```python
+def _verify_decoded_folder(folder, decoded, *, member_digests=None):
+    if folder.digest_defined:
+        expected = (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
+        if zlib.crc32(decoded) & 0xFFFFFFFF != expected:
+            raise EncryptionError("Wrong password or corrupt 7z folder")
+        return
+    if not member_digests:
+        return                      # <-- no folder digest AND no member digests: accept
+    offset = 0
+    for size, raw_expected in member_digests:
+        chunk = decoded[offset:offset+size]; offset += size
+        if raw_expected is None:
+            continue                # <-- CRC-less member: skipped
+        ...
+```
+
+This is the wrong-password oracle for 7z: `_password_for_folder` (`sevenzip_reader.py:505`)
+decodes the whole folder with a candidate key and calls `_verify_decoded_folder`. If the
+folder has **no folder-level digest** *and* **every member is CRC-less** (`raw_expected is
+None`), the function returns without raising, so `confirm()` returns the candidate as the
+accepted password. The member read then goes through `_wrap_folder_member`
+(`sevenzip_reader.py:544`), which only wraps `VerifyingStream` `if member.hashes:` — empty
+here — so there is **no second gate either**. Result: a wrong password yields garbage
+plaintext returned with no error.
+
+### Why it is reachable but narrow
+
+The normal 7z coder chain is AES→LZMA2, and a wrong AES-CBC key feeds garbage to the LZMA2
+decoder, which raises `LZMAError` (→ translated). So a *compressed* encrypted folder is
+gated by the codec even without CRC. The gap is a folder whose chain is **AES + COPY**
+(stored, no compressing codec) — `plan_folder` accepts it (COPY is skipped, AES stage runs;
+`sevenzip_pipeline.py:122`) — combined with **no folder digest and CRC-less members**. All of
+`digest_defined = False`, absent member CRCs, and AES-only coders are legal in the 7z
+container; `py7zr` never emits them (it always writes CRCs and defaults to LZMA2), so this is
+a *hostile/crafted-archive* finding, squarely in the brief's threat model ("an archive with
+CRC absent doesn't silently accept any password").
+
+### Reproduction
+
+```python
+folder = SevenZipFolder(coders=[], bind_pairs=[], packed_indices=[0],
+                        unpack_sizes=[16], crc=None, digest_defined=False)
+garbage = b"\x00"*16                      # AES(wrong key) over a COPY folder
+_verify_decoded_folder(folder, garbage, member_digests=[(16, None)])
+# -> returns, no exception  == wrong password accepted, garbage handed back
+# control: digest_defined=True, crc=0x12345678 -> EncryptionError (correctly rejected)
+```
+
+### Fix (applied in #127 — see QUESTIONS Q2) — best-effort + diagnostic
+
+Maintainer call: do **not** hard-error (error detection is best-effort, and the data might be
+correct). This matches 7-Zip, which also cannot detect a wrong password when no CRC is present
+— **source-confirmed:** 7zAES has no password check of its own; the only gate is the
+extraction CRC and only when `fi.CrcDefined` (`7zExtract.cpp:95,128`), so a CRC-less store
+member returns garbage as `kOK` (`7zExtract.cpp:397-411` maps a codec failure to `kDataError`,
+but a copy coder never fails). "Matching 7-Zip on CRC-less streams means accepting when decode
+succeeds, not inventing a password check 7-Zip doesn't have."
+Note ZIP is **not** exposed the same way — WinZip AE-2 authenticates with a mandatory HMAC and
+ZipCrypto STORED is disambiguated by the central-directory CRC — so 7z is the only format here
+where an encrypted member can carry zero integrity anchor. **#127** keeps accept-and-return
+and emits `DIGEST_UNVERIFIABLE` with `reason="no_integrity_anchor"` (reused existing code
+rather than adding `DECRYPTION_UNVERIFIED`). **Downgraded to Low.**
+
+---
+
+## What is actually fine (verified good — do not "fix")
+
+- **WinZip AES HMAC genuinely gates output.** `WinZipAesDecryptStream.close()`
+  (`zip_aes.py:194`) drains the remaining ciphertext + MAC and verifies, so even a caller
+  that does a single `read(member.size)` (which returns all plaintext without pulling the
+  MAC in `read`) still gets a `CorruptionError` on the `with`-block close. Verified with a
+  *correctly* constructed tamper (valid MAC over the original ciphertext, then one ciphertext
+  byte flipped) for both AE-2 STORED and AE-2 deflate — both raised
+  `CorruptionError: WinZip AES HMAC mismatch`. (An earlier "silent acceptance" reading was a
+  flawed test that recomputed the MAC over the already-tampered ciphertext.) Bytes are
+  delivered before the terminal raise, which is the same documented AE/`VerifyingStream`
+  streaming trade-off, not a new bug. Both the 2-byte pw-verify and the HMAC use
+  `hmac.compare_digest`.
+- **WinZip AES members are non-seekable.** `WinZipAesDecryptStream` extends
+  `ReadOnlyIOStream` (not `DelegatingStream`), so `seekable()` is `False` and `seek` raises
+  `io.UnsupportedOperation`; the STORED-over-AES member likewise reports `seekable() == False`
+  and refuses `seek(500)` / `seek(0)` cleanly. The hand-rolled sequential `_AesCtrLe` counter
+  is therefore never asked to reposition, so there is no wrong-plaintext-after-seek.
+- **`_AesCtrLe` counter is correct across the 32/128-bit boundary** — it is a Python
+  arbitrary-precision `int` serialized with `to_bytes(16, "little")` and `+= 1`, so no 32-bit
+  wrap bug is possible (and 2³² blocks = 64 GiB is unreachable anyway).
+- **BLAKE2sp is bit-exact** — `test_blake2sp.py` already checks official KATs at lengths
+  0/1/63/64/65/127/128/255, i.e. across the 64-byte block boundary and the 512-byte
+  8-lane-stride boundary (the classic blake2sp bug locations), plus an odd-7-byte incremental
+  feed. All pass on the baseline.
+- **7z folder CRC gates wrong passwords on the normal path** (`digest_defined = True`,
+  `sevenzip_reader.py:127`) — a wrong key over a compressed folder is rejected by both the
+  codec and the CRC.

@@ -13,12 +13,20 @@ authors = [
     { name = "Davi Figueiredo", email = "gh@davitf.com" }
 ]
 
+[project.scripts]
+archivey = "archivey.cli.main:main"
+
 [project.optional-dependencies]
 7z = [
-    "pyppmd>=1.1.0",
+    # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
+    # decodes (premature eof mid-stream); 1.3.1 fixes that but needs bounded
+    # max_length to avoid native heap corruption — archivey always bounds.
+    # See docs/internal/known-issues.md and docs/internal/pyppmd-upstream-report.md.
+    "pyppmd>=1.3.1",
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
-    "brotli>=1.1.0",
+    # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
+    "brotli>=1.2.0",
     "lz4>=4.4.5",
     "cryptography>=45.0.0",
     # LZMA1+BCJ: liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
@@ -92,7 +100,7 @@ dev = [
     # Stdlib compression.zstd on 3.14+; backports only needed below that.
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
-    "brotli>=1.1.0",
+    "brotli>=1.2.0",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
@@ -110,6 +118,11 @@ dev = [
     # Property-based tests for the safety logic (tests/test_property_safety.py); mirrors
     # the mutation harness as the second pre-Phase-6 fuzzing-scaffold gate.
     "hypothesis>=6.100.0",
+    # tqdm ([cli] extra) — listed here like pycdlib so a local `uv sync --group dev`
+    # can type-check the CLI progress helper. CI lint uses `--extra all` (see
+    # .github/workflows/ci.yml) so every optional dep is resolved for pyrefly/ty.
+    # Runtime still degrades cleanly when tqdm is absent (ImportError → no bar).
+    "tqdm>=4.67.0",
 ]
 # Documentation toolchain. Kept out of `dev` so the common lint/test loop stays light;
 # build the site with `uv run --group docs mkdocs build --strict`.
@@ -170,9 +183,10 @@ testpaths = ["tests"]
 # the whole job until the CI hard limit. pytest-timeout picks the platform default method
 # (SIGALRM on POSIX — suite continues; a process-killing thread dump on Windows). 60s is far
 # above any real test here (all run in milliseconds), so only a genuine hang trips it.
-addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60"
+addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
     "concurrent_reader: post-materialization MemberStreams.CONCURRENT seam (also run under free-threaded CI)",
+    "ppmd_native_stress: intermittent pyppmd native-abort stress (non-blocking PPMd native stress workflow only)",
 ]
