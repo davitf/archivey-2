@@ -140,7 +140,7 @@ a first-class API (CLI `test` can keep its hand-rolled loop for now). Park in
 |---|---|
 | **`WriteError`** | **Defer / remove from the read-only 0.2.0 surface.** v0.2.0 is read-only; writing is a later major release. Do not ship writing leftovers — demote/unexport `WriteError` for now. Same spirit: drop or stop advertising the `[7z-write]` extra/dep group until writing is real (py7zr stays a *dev* oracle as needed). |
 | **`ExtractionStatus.SKIPPED` split (E3)** | **Split into distinct statuses** (not a `reason` field). Overwrite-skip and non-current-skip are different caller concerns: most tools ignore superseded members but care that an expected extract hit a pre-existing path. Name at implement (`SUPERSEDED` / `NON_CURRENT` / …) — prefer a clear verb/noun over overloading `SKIPPED`. |
-| **`hashes` value convention** | **All values `bytes`; keys become a `HashAlgorithm` enum.** Today: `Mapping[str, int \| bytes]` with string keys `"crc32"` / `"blake2sp"` and **no** hash-algorithm enum (`types.py` — only `CompressionAlgorithm` et al.). Target: `Mapping[HashAlgorithm, bytes]` (crc32 as 4-byte digest, not `int`; blake2sp already `bytes`). Prefer `HashAlgorithm(str, Enum)` with at least `CRC32 = "crc32"`, `BLAKE2SP = "blake2sp"`, **`ADLER32 = "adler32"`**. Endianness of 4-byte crc32/adler32: fix at implement (document clearly — big-endian is the usual “digest bytes” convention; note zlib stores Adler-32 network-order on the wire). |
+| **`hashes` value convention** | **Type cleanup (immediate review fix):** all values `bytes`; keys become `HashAlgorithm` (`CRC32` / `BLAKE2SP` / `ADLER32` stub OK). Today: `Mapping[str, int \| bytes]`. Target: `Mapping[HashAlgorithm, bytes]` (crc32 as 4-byte digest). Prefer `HashAlgorithm(str, Enum)`. Endianness of 4-byte digests: fix at implement (big-endian usual). **Filling missing digests (zlib Adler-32, lzip multi-member combine, …):** **out of this review’s code follow-ups** — tracked as OpenSpec change `surface-stored-stream-digests` (depends on the typing fix). |
 
 ### Q6 hashes — what formats store today / Adler-32 parity
 
@@ -148,60 +148,23 @@ a first-class API (CLI `test` can keep its hand-rolled loop for now). Park in
 
 | Algorithm | Where |
 |---|---|
-| `crc32` | ZIP (CD), 7z (when present), RAR5 (when present), single-file `.gz` (single-member trailer), `.lz` (seekable trailer) |
+| `crc32` | ZIP (CD), 7z (when present), RAR5 (when present), single-file `.gz` (single-member trailer), `.lz` (seekable trailer, single-member only today) |
 | `blake2sp` | RAR5 only (HASH extra) |
 
 Nothing else is exposed. Docs/specs explicitly say `.bz2` / `.xz` / **zlib** / brotli / `.Z` have no cheap whole-member digest — that line is **wrong for zlib**: RFC 1950 puts a 4-byte **Adler-32** of the uncompressed data at the end of every zlib stream (not CRC-32). Gzip uses CRC-32 in its trailer; raw ZIP deflate has neither (ZIP’s CRC lives in the directory).
 
-**Can we fill `adler32`?** Yes, for standalone zlib (`.zz` / detected zlib), same shape as the gzip crc probe: on a seekable/path single-stream source, peek the last 4 bytes without decompressing and set `hashes[HashAlgorithm.ADLER32]`. Wire order is already big-endian (RFC 1950). Caveats to document at implement: trailing junk or concatenated zlib streams make “last 4 bytes” unreliable (gzip already special-cases multi-member); omit on non-seekable sources. Wire verification already happens inside `zlib` decompress; surfacing is for cheap dedupe (VISION). Also teach `verify.py`’s hasher table `adler32` via `zlib.adler32` (today only `crc32` / `blake2sp`).
-
-**Out of scope unless demand shows up:** xz stream checks (CRC32/CRC64/SHA256), zstd content checksums (xxHash), etc. — different algorithms, harder “cheap without decompress” stories. `HashAlgorithm` should be easy to extend when those land.
-
-Fold Adler-32 zlib surfacing into the same hashes implementation change as the enum + crc32→bytes migration (parity fix, not a separate freeze question).
+**Can we fill `adler32` / multi-member lzip?** Yes — see OpenSpec change
+**`surface-stored-stream-digests`** (separate from the type migration). Short
+version: zlib peek last 4 bytes; lzip index already has per-member CRC+size and
+can `crc32_combine`; gzip/xz multi-unit deferred.
 
 ### Q6 hashes — multi-member streams: single-only vs combine math
 
-Multi-member/framed streams (gzip, lzip, xz, zstd, rare concatenated zlib) are
-common — that’s why we omit digests when we can’t attribute a trailer to the
-*whole* synthetic member. Two strategies:
-
-**A. Single-member only (after index / detection).** Already the gzip/lzip rule.
-Once the index (or `gzip_has_additional_member`) says “one unit,” peek the one
-trailer. Extends cleanly to zlib Adler-32 and to xz when the backward index
-shows a single block (and check type is one we understand). Cheap; no new math.
-
-**B. Combine per-unit digests into a whole-stream digest.** For **CRC-32** and
-**Adler-32**, yes — if you have each unit’s digest *and* the uncompressed length
-of every unit after the first:
-
-- `CRC(A‖B) = crc32_combine(CRC(A), CRC(B), len(B))` (GF(2) polynomial; zlib)
-- `Adler(A‖B) = adler32_combine(Adler(A), Adler(B), len(B))` (mod 65521; simpler)
-
-Same idea for CRC32c / CRC64 with the right polynomial; **not** for SHA-256 /
-full cryptographic hashes (and zstd’s stored value is only the low 32 bits of
-XXH64). CPython exposes `zlib.crc32_combine` / `adler32_combine` only from
-**3.15**; we are on 3.11 → small pure-Python (or vendored) combine helpers if we
-want this before then. Verified Adler combine against `zlib.adler32` on 3.11.
-
-| Format | What we already know | Combine feasible? |
-|---|---|---|
-| **lzip** | Backward index walks *every* trailer: CRC32 + full `data_size` u64 (exact). Today the index **discards** the CRC (`lzip.py` `_read_index_backwards`). | **Best win.** Fold CRCs with `crc32_combine` → one `CRC32` for the synthetic member even when multi-member. |
-| **gzip** | Last trailer only is at EOF; earlier members need decompress or magic scan to find trailers. `ISIZE` is **mod 2³²** (wrong `len2` if a member ≥ 4 GiB). | Math works *if* you have all CRCs + exact lengths; **getting** mid-member trailers without a decompress pass is the blocker. Keep single-member-only unless we grow a real member walker. |
-| **zlib** | One Adler-32 at EOF for a single stream. Concatenated zlib is uncommon. | Single-stream peek; combine only if we ever detect/split concatenated streams. |
-| **xz** | Backward index: per-block uncompressed sizes (full ints) + check *type*; **does not read** check field bytes. Payload check is **per block** (CRC32 / CRC64 default / SHA-256 / none). | Combine only when check type is **CRC32** (or we implement CRC64 combine) *and* we seek-read each block’s check bytes. SHA-256 → no. Default CRC64 → need a CRC64 combine helper. Multi-stream files: combine across streams only if check types match. |
-| **zstd** | No frame parser today; optional content checksum = low 32 of XXH64; sizes optional. | Not practical until we parse frames; XXH64 combine is a different animal and we only have 32 bits stored. |
-
-**Recommendation for the hashes implementation change:**
-
-1. Enum + all values `bytes` + zlib `ADLER32` single-stream peek (as above).
-2. **lzip: surface combined `CRC32` for multi-member** via index CRCs + combine
-   (high value, data already in hand).
-3. gzip/xz: keep **single-unit-only** for v0.2.0; optionally xz single-block
-   CRC32 peek. Document combine as the path if we later want multi-gzip/xz
-   without decompress.
-4. Do not pretend a combined digest is “stored by the format” in docs — it’s
-   **derived** from stored per-unit digests; still valid for cheap dedupe and
-   matches `hash(concat(parts))`.
+Full investigation lives in `openspec/changes/surface-stored-stream-digests/design.md`
+(and was drafted here during api-coherence). **CRC-32 and Adler-32 are
+combinable** given `(d1, d2, len2)`; SHA-256 is not. Best immediate win: **lzip
+multi-member**. gzip mid-trailer acquisition and xz CRC64/SHA-256 remain the
+hard parts — deferred in that change.
 
 | **`ArchiveFormat` display name (S2)** | **Add a `display_name` property** (not a method). CLI stops parsing `repr()`. |
 
