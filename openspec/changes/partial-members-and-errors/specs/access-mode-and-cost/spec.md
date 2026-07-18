@@ -14,7 +14,7 @@ Member selection for extraction is `extract_all(members=...)` (`safe-extraction`
 
 `scan_members()` MAY run before the pass (starts+finishes it), after an interrupted
 pass (drains remainder), or after completion (returns cache). Starting the pass
-consumes it. `list_members()` MAY likewise start or finish the pass and consumes
+consumes it. `members_report()` MAY likewise start or finish the pass and consumes
 it; it returns `MemberListReport` instead of raising on terminal archive-level
 listing errors (`archive-reading`). `get_members_if_available()` never
 begins/advances/consumes the pass.
@@ -33,7 +33,7 @@ recovered member before propagating a terminal archive-level listing error
 | Second forward-pass method after begin/complete | `UnsupportedOperationError` (all formats) |
 | Early `break` then `scan_members()` | Drains remainder; fully-resolved list or raise; later pass methods raise |
 | `scan_members()` then `stream_members()` on fresh streaming reader | List returned when complete; subsequent pass raises (any index topology) |
-| `list_members()` on streaming with terminal archive error after prefix | Report with prefix + `error`; pass consumed; no raise from `list_members` |
+| `members_report()` on streaming with terminal archive error after prefix | Report with prefix + `error`; pass consumed; no raise from `members_report` |
 
 ### Requirement: Access mode × method behaviour summary
 
@@ -46,7 +46,7 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | `stream_members` | ✅; yield-then-raise on terminal archive error | ✅ once; yield-then-raise |
 | `extract_all` | ✅; RA extract-prep fail-closed on terminal listing error | ✅ once; streaming write-then-raise |
 | `scan_members` | ✅ (= `members`); complete-or-raise | ✅ finishes/returns pass; complete-or-raise |
-| `list_members` | ✅ always returns `MemberListReport` | ✅ may consume pass; always returns report |
+| `members_report` | ✅ always returns `MemberListReport` | ✅ may consume pass; always returns report |
 | `get_members_if_available` | ✅ index-only (may be `None`); `None` if only incomplete | ✅ index-only, no-consume |
 | `members` / `get` / `open` / `read` | ✅; `members`/`get` complete-or-raise | ⛔ |
 | `in` (identity) | ✅ no scan (incl. recovered report members) | ✅ no scan |
@@ -64,4 +64,4 @@ composes with — does not replace — these rules.
 | `scan_members()` either mode on clean archive | Fully-resolved list (RA ≡ `members()`; streaming finishes pass) |
 | Full streaming `__iter__`, then iterate again | Second → `UnsupportedOperationError` |
 | RA `__iter__` on TAR rejected-header after prefix | Yields prefix members, then `CorruptionError` |
-| `list_members()` row present either mode | ✅ returns report |
+| `members_report()` row present either mode | ✅ returns report |

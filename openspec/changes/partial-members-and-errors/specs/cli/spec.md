@@ -47,7 +47,7 @@ written to **stderr**.
 measurement hook (decode/seek counters), without patching `builtins.open`. It is
 a maintainer/debug affordance and MUST NOT add a public library performance API.
 
-`list` SHALL obtain its member set via `ArchiveReader.list_members()` (or an
+`list` SHALL obtain its member set via `ArchiveReader.members_report()` (or an
 equivalent report path). It SHALL print a human layer-1 member view by default
 (type, size, mtime, mode, encrypted flag, name; link target for links) for every
 recovered member in the report and MUST NOT show digests unless `--digests` is

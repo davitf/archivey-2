@@ -2,7 +2,7 @@
 
 - [ ] 1.1 Add frozen `MemberListReport` (`members`, `error`, `diagnostics`) with
       sequence ergonomics mirroring `ExtractionReport`; export from public surface
-- [ ] 1.2 Add `ArchiveReader.list_members() -> MemberListReport` to the ABC and
+- [ ] 1.2 Add `ArchiveReader.members_report() -> MemberListReport` to the ABC and
       `BaseArchiveReader` skeleton
 
 ## 2. Materialization: incomplete vs complete (N1)
@@ -13,7 +13,7 @@
       `open(member)` by identity; keep `members()` / `scan_members()` /
       `get(name)` complete-or-raise; `get_members_if_available()` stays `None`
       until a successful complete materialization
-- [ ] 2.3 Implement `list_members()` to always return `MemberListReport` for
+- [ ] 2.3 Implement `members_report()` to always return `MemberListReport` for
       terminal archive listing errors; keep `ResourceLimitError` raise-only
 
 ## 3. Yield-then-raise alignment (option 7)
@@ -22,20 +22,20 @@
       listing errors yield the recovered prefix then raise (match streaming)
 - [ ] 3.2 Confirm RA `extract_all` extract-prep remains fail-closed (no partial
       writes) on those errors
-- [ ] 3.3 Confirm streaming `__iter__` / `stream_members` / `list_members` /
+- [ ] 3.3 Confirm streaming `__iter__` / `stream_members` / `members_report` /
       `scan_members` contracts match the delta specs (report vs raise)
 
 ## 4. TAR / Option F first consumer
 
 - [ ] 4.1 Wire TAR rejected-header / strict absent-short trailer paths through
       the shared incomplete + report + yield-then-raise machinery
-- [ ] 4.2 Add/adjust unit tests for TAR RA and streaming: `list_members` report,
-      `members()` raise, `__iter__` yield-then-raise, no complete cache publish,
-      `open` on recovered member
+- [ ] 4.2 Add/adjust unit tests for TAR RA and streaming: `members_report()`
+      fields, `members()` raise, `__iter__` yield-then-raise, no complete cache
+      publish, `open` on recovered member
 
 ## 5. CLI and docs
 
-- [ ] 5.1 Switch CLI `list` to `list_members()`: print recovered members; stderr
+- [ ] 5.1 Switch CLI `list` to `members_report()`: print recovered members; stderr
       + exit `1` when `error` is set
 - [ ] 5.2 Document dual listing contract in `docs/usage.md` / Gotchas / API notes
       per documentation delta

@@ -10,10 +10,11 @@ side and without publishing a partial cache as a complete listing.
 
 ## What Changes
 
-- Add a report-shaped listing accessor (working name `list_members()` →
-  `MemberListReport`) that **always returns** recovered members plus
-  `error: ArchiveyError | None` and a diagnostic snapshot — the materializing
-  dual of streaming yield-then-raise.
+- Add `members_report() -> MemberListReport` that **always returns** recovered
+  members plus `error: ArchiveyError | None` and a diagnostic snapshot — the
+  materializing dual of streaming yield-then-raise. Named to contrast with
+  `members()` (list / complete-or-raise), not as a synonym (`list_members`
+  rejected as ambiguous).
 - Keep `members()` / `scan_members()` as **complete-or-raise** (no kwargs; no
   soft incomplete list from those names).
 - **Align RA progressive iteration with streaming (option 7):** on a terminal
@@ -34,14 +35,14 @@ side and without publishing a partial cache as a complete listing.
 
 ### Modified Capabilities
 
-- `archive-reading` — `MemberListReport` + `list_members()`; complete-or-raise
+- `archive-reading` — `MemberListReport` + `members_report()`; complete-or-raise
   vs report dual; RA yield-then-raise on terminal archive errors; incomplete
   materialization must not publish as complete
 - `access-mode-and-cost` — streaming vs RA listing matrix rows for the report
   accessor and RA iter failure mode
 - `error-handling` — terminal archive errors may carry recovered members only
   via the report / yield-then-raise path (not a silent diagnostic-only path)
-- `documentation` — usage/gotchas/api: when to use `members()` vs `list_members()`;
+- `documentation` — usage/gotchas/api: when to use `members()` vs `members_report()`;
   Q7 / VISION (3) recipe
 - `cli` — `list` (and optionally `test`) consume the report so prefix + nonzero
   exit are visible at the shell
@@ -51,7 +52,7 @@ side and without publishing a partial cache as a complete listing.
 - Modules: `reader.py` ABC, `base_reader.py` materialization / progressive pass,
   `diagnostics.py` (or types) for `MemberListReport`, TAR EOF path as the first
   consumer, CLI `list_cmd`.
-- Public API: additive `MemberListReport` + `list_members()`; **behavioral**
+- Public API: additive `MemberListReport` + `members_report()`; **behavioral**
   change for RA `__iter__` / `stream_members` on terminal archive errors
   (yield-then-raise instead of fail-closed before any yield). `members()` /
   `scan_members()` semantics unchanged (still raise, no incomplete return).

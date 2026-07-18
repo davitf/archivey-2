@@ -92,9 +92,11 @@ Streaming already does (1).
 
 - `members()` / `scan_members()` → `list[ArchiveMember]`; on terminal archive
   error, **raise** and do not return a partial list.
-- New `list_members() -> MemberListReport` (name locked in specs) **always
-  returns**; `error is None` means the listing is complete; non-`None` means
-  prefix + honest error.
+- New `members_report() -> MemberListReport` **always returns**; `error is None`
+  means the listing is complete; non-`None` means prefix + honest error. The
+  name is deliberate: `members()` returns a list (complete-or-raise);
+  `members_report()` returns a report (prefix + error) — same family as
+  `ExtractionReport`, not a synonym of `members()`.
 
 ```python
 @dataclass(frozen=True)
@@ -109,13 +111,14 @@ ergonomics (optional; specs can require or leave as convenience — prefer yes f
 CLI/parity).
 
 **Rejected:** diagnostics-only; `members(raise_on_error=…)`; making `members()`
-always return a report; exception `.recovered_members` as the *only* surface.
+always return a report; exception `.recovered_members` as the *only* surface;
+`list_members()` (reads as a synonym of `members()`).
 
 ### 2. RA yield-then-raise for iteration (option 7)
 
 On terminal archive-level errors after a recoverable prefix, RA `__iter__` and
 RA `stream_members` SHALL yield every recovered member (in order), then raise the
-same error `list_members()` would put on the report. This matches streaming’s
+same error `members_report()` would put on the report. This matches streaming’s
 caller-visible contract.
 
 `members()` / `scan_members()` remain fail-closed (raise with no return) so the
@@ -134,7 +137,7 @@ When a terminal archive error occurs after a prefix:
 - `get_members_if_available()` SHALL return `None` (or the prior *complete*
   cache if one existed from an earlier successful pass — should not apply on
   first failed TAR scan).
-- Stamped `ArchiveMember` objects returned from `list_members()` or yielded
+- Stamped `ArchiveMember` objects returned from `members_report()` or yielded
   before raise SHALL satisfy `member in reader` (identity) so `open(member)` can
   work for recovered FILE members without pretending `members()` succeeded.
 - `get(name)` / `members()` after a failed incomplete scan SHALL still raise the
@@ -164,7 +167,7 @@ Out of scope / unchanged:
   without advertising a complete list — report MAY include the prefix under the
   cap policy; prefer raise-only for limits to avoid conflating bomb guards with
   damage). **Decision:** `ResourceLimitError` stays raise-only on
-  `members()`/`list_members()`/`scan_members()`; do not soft-return a report with
+  `members()`/`members_report()`/`scan_members()`; do not soft-return a report with
   a limit error for v1 (limits ≠ VISION damage story).
 
 ### 5. Extract stays fail-closed on RA
@@ -174,18 +177,18 @@ error during that materialization SHALL still abort before writing (Option F).
 Streaming extract keeps write-then-raise. Soft-extract archive-level status
 remains deferred with salvage / Option E.
 
-### 6. Streaming `list_members` / `scan_members` interaction
+### 6. Streaming `members_report` / `scan_members` interaction
 
-- `list_members()` on streaming: may run/finish the forward pass like
+- `members_report()` on streaming: may run/finish the forward pass like
   `scan_members()`, return the report, and consume the pass. If the pass ends
   with a terminal error after a prefix, return prefix + error (do not raise out
-  of `list_members()`).
+  of `members_report()`).
 - `scan_members()` on the same situation: **raise** (complete-or-raise), after
-  the same prefix work — callers that need both use `list_members()`.
+  the same prefix work — callers that need both use `members_report()`.
 
 ### 7. CLI
 
-`archivey list` SHALL use `list_members()` (or equivalent): print recovered
+`archivey list` SHALL use `members_report()` (or equivalent): print recovered
 members to stdout; if `error` is set, print a short stderr message and exit `1`.
 `-v` still surfaces diagnostics. `test` may keep its hand-rolled loop for now
 (Q5); optional follow-up to consume the report for open/list-phase failures only.
@@ -200,19 +203,16 @@ yield-then-raise).
 
 | Risk | Mitigation |
 | --- | --- |
-| Callers treat `list_members().members` as complete without checking `error` | Docs + docstring; CLI shows the failure; type/docs stress `error is None` ⇒ complete |
+| Callers treat `members_report().members` as complete without checking `error` | Docs + docstring; CLI shows the failure; type/docs stress `error is None` ⇒ complete |
 | RA `__iter__` behavior change surprises code that expected fail-closed before any yield | Release note; rare path (only damaged archives); matches streaming / VISION |
 | Identity/`open(member)` without complete cache creates a half-state | Spec the incomplete identity set explicitly; `get`/`members` stay loud |
-| Two listing APIs to teach | Recipe: `members()` for assert-complete; `list_members()` for inventory/damage |
+| Two listing APIs to teach | Recipe: `members()` for assert-complete; `members_report()` for inventory/damage |
 | Conflating limits with damage | Keep `ResourceLimitError` raise-only on listing APIs |
 
 ## Open Questions
 
-1. **Exact public name:** `list_members` vs `member_list` vs `members_report` —
-   proposal uses `list_members`; confirm at apply if a better rhyme with
-   `scan_members` is preferred (`scan_members_report` is worse).
-2. **Should `MemberListReport` iterate as its members tuple?** Lean yes
+1. **Should `MemberListReport` iterate as its members tuple?** Lean yes
    (ExtractionReport precedent). Confirm in specs.
-3. **After incomplete RA scan, does a later successful `list_members` on a
-   repaired…** n/a (immutable file). Re-call on same reader: re-scan or replay
-   incomplete snapshot? Lean **re-scan** when source is seekable RA; document.
+2. **After incomplete RA scan, re-call `members_report` on the same seekable
+   reader:** re-scan or replay the incomplete snapshot? Lean **re-scan**;
+   document.
