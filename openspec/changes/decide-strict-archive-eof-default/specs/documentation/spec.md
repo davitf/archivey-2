@@ -6,12 +6,19 @@ End-user documentation SHALL state that:
 
 - Stdlib-backed TAR may silently shorten a listing when a member header after the
   first is corrupt; archivey’s backstop is `ARCHIVE_EOF_MARKER_MISSING`.
-- The library default is `ArchiveyConfig.strict_archive_eof=False` (warn / collect);
-  inventory and dedupe sweeps that need a provably complete listing SHALL be shown
-  the opt-in `strict_archive_eof=True` (escalates to `TruncatedError`).
-- A future native TAR reader may make mid-archive corruption archivey’s own
-  decision (post-v1); until then the docs MAY say the limitation “may improve later”
-  without promising a release.
+- **By default (`ArchiveyConfig.strict_archive_eof=False`)** archivey already raises
+  `CorruptionError` for the *detectable* form of this — where the truncated pass lands
+  on a stray non-null block (`observed_kind="nonzero"`), which a well-formed tar never
+  produces. A merely trailer-less or `cat`-joined tar (`observed_kind="absent"`/`"short"`)
+  is warned about, not raised, because it is indistinguishable from a tar truncated at a
+  member boundary.
+- `strict_archive_eof=True` narrows to one added job: escalate that ambiguous
+  `absent`/`short` residual to `TruncatedError` too, for inventory / dedupe / validators
+  that need a provably complete listing. Docs SHALL NOT describe the flag as "the only
+  way archivey catches corruption" — `nonzero` is caught by default.
+- A future native TAR reader may make the ambiguous residual archivey’s own decision
+  (post-v1); until then the docs MAY say the limitation “may improve later” without
+  promising a release.
 
 This SHALL appear in the formats guide and in any user-facing Gotchas page once
 that page exists. Internal threat-model / open-issues material MUST NOT be the only
@@ -21,9 +28,9 @@ place this is written.
 
 | Case | Expected |
 | --- | --- |
-| Reader opens formats / Gotchas for TAR quirks | Finds silent-shorten + diagnostic + `strict_archive_eof` opt-in |
-| Inventory / dedupe guidance | Shows `ArchiveyConfig(strict_archive_eof=True)` (or equivalent) |
-| Post-v1 native TAR | Mentioned as possible future improvement, not a v1 promise |
+| Reader opens formats / Gotchas for TAR quirks | Finds silent-shorten + diagnostic + the `nonzero`-raises-by-default vs `absent`/`short`-warns split |
+| Inventory / dedupe guidance | Shows `ArchiveyConfig(strict_archive_eof=True)` as the escalation for the ambiguous residual, not as the only corruption backstop |
+| Post-v1 native TAR | Mentioned as possible future improvement for the ambiguous residual, not a v1 promise |
 
 ### Requirement: Gotchas page covers post-v1-fixable limitations as current behavior
 
@@ -39,5 +46,5 @@ and not as a roadmap commitment.
 | Case | Expected |
 | --- | --- |
 | Multi-volume ZIP | Documented as rejected today; optional “may improve later” |
-| TAR silent shorten | Documented with diagnostic + strict opt-in; optional native TAR note |
+| TAR silent shorten | Documented with diagnostic; `nonzero` raises by default, ambiguous `absent`/`short` residual warns unless strict; optional native TAR note |
 | Contributor-only open-issues list | Not required reading for end users |

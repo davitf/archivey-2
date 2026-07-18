@@ -31,19 +31,24 @@ same change when relevant.
 
 ## Product — candidates to fix
 
-### P1. Default `strict_archive_eof` to True (at least for random-access)
+### P1. TAR end-of-archive strictness — DECIDED (Option F, signal-aware default)
 
-- **Status:** parked in OpenSpec change
+- **Status:** decided in OpenSpec change
   [`decide-strict-archive-eof-default`](../../openspec/changes/decide-strict-archive-eof-default/)
-  (options A–E + provisional Option D). Do not flip the default ad hoc.
-- **Today:** `ArchiveyConfig.strict_archive_eof=False` → mid-archive TAR corruption
-  that stdlib treats as clean EOF surfaces only as `ARCHIVE_EOF_MARKER_MISSING`
-  (WARNING). Inventory/dedupe sweeps can get a silently shortened listing.
-- **Why not trivial:** Phase 5 defaulted False for trailer-less / `cat`-joined tars
-  (GNU-tar-like); a raise at end-of-pass is awkward after successful extract. Same
-  knob cannot yet distinguish missing trailer vs corrupt-shortened listing.
-- **Refs:** change `design.md`; `review/deep-unknown-unknowns.md` W1; `config.py`;
-  `format-tar`.
+  — **Option F**, ready to apply. `config.py` default stays `False`; do not flip it ad hoc.
+- **Decision:** split the EOF diagnostic on `ArchiveEofContext.observed_kind` (the signal the
+  check already computes) instead of on one bool. `observed_kind="nonzero"` (a stray non-null
+  block where a trailer/header was expected — which a conformant tar never produces) raises
+  `CorruptionError` **by default**, catching the *detectable* slice of stdlib's "corrupt
+  non-first header = clean EOF." The ambiguous `absent`/`short` residual (complete-trailer-less
+  vs. truncated-at-boundary) warns by default and escalates to `TruncatedError` only under
+  `strict_archive_eof=True`. Extract raises at end after salvageable writes.
+- **Why Option F:** honors Phase 5 warn-by-default for trailer-less / `cat`-joined tars (those
+  are `absent`) while still hard-failing the corruption we *can* detect, without a native TAR
+  walker and without breaking the common corpus. The `absent`/`short` residual is the piece
+  that is genuinely undecidable until P3.
+- **Refs:** change `design.md` (option survey + `observed_kind` analysis);
+  `review/deep-unknown-unknowns.md` W1; `config.py`; `format-tar`.
 
 ### P2. Multi-volume / split ZIP (`.z01`…`.zip`)
 
@@ -171,8 +176,9 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 
 ## Suggested first cuts
 
-1. **`strict_archive_eof` (P1):** locked only via
-   `openspec/changes/decide-strict-archive-eof-default/` — do not flip ad hoc.
+1. **TAR EOF strictness (P1):** decided (Option F) in
+   `openspec/changes/decide-strict-archive-eof-default/` — apply it; `config.py` default
+   stays `False`, do not flip ad hoc.
 2. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”
 3. Optional polish: `usage.md` duplicate-name / hardlink pointers; fuller nested-archive
    recipe; one line in `safe-extraction.md` on symlink-hostile FS.

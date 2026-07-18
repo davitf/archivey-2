@@ -1,13 +1,13 @@
 # decide-strict-archive-eof-default — pick the TAR end-of-archive strictness stance
 
-**Status:** Blocked on a decision. Depends on nothing. Blocks honest user Gotchas copy for TAR silent-shorten, and any default flip in config. Breaking only if Options B, C, or E win. Effort: small for Option D docs and cross-links; medium if the library default or extract semantics change.
+**Status:** Decided — **Option F (signal-aware default)**. Depends on nothing. Ready to apply (`tar_reader._verify_tar_eof` + docs). Minor breaking: `nonzero` tars change from warn to raise. Effort: small — one backend method, docs, tests.
 
-**Why it matters:** The founding inventory use case needs honest listings, but stdlib tarfile can treat a corrupt mid-archive header as a clean end. Archivey’s trailer check is the only backstop, and today it warns by default. Flipping that default is a product stance, not a drive-by fix — Phase 5 already chose warn-by-default for trailer-less real-world tars.
+**Why it matters:** The founding inventory use case needs honest listings, but stdlib tarfile can treat a corrupt mid-archive header as a clean end. Archivey’s trailer check is the only backstop, and today it warns by default. Flipping that default wholesale is a product stance, not a drive-by fix — Phase 5 already chose warn-by-default for trailer-less real-world tars.
 
-**What it does:** Parks Options A through E with trade-offs, provisionally specs the recommended path (keep default false, teach the opt-in, CLI strict wedge via cli-v1), and lists apply tasks once the maintainer locks a choice.
+**What it does:** Surveys Options A–F with trade-offs and locks **Option F**: split the EOF diagnostic on the `observed_kind` signal the check already computes. `nonzero` (a stray non-null block where a trailer/header was expected — which a conformant tar never produces) raises `CorruptionError` by default; the ambiguous `absent`/`short` residual (complete-trailer-less vs. truncated-at-boundary) warns by default and escalates to `TruncatedError` only under `strict_archive_eof=True`. Extract raises at end after salvageable writes.
 
-**Decided:** Native TAR is out of scope here; one bool cannot yet separate missing trailers from corrupt-shortened listings. Options B and E are rejected for v1 unless the maintainer overrides. Provisional specs and docs assume Option D.
+**Decided:** Option F over A/D (leave `nonzero` silent — fails inventory honesty), B/C (break the wild trailer-less corpus), and E (soft-extract report — more surface than v1 needs). `config.py` default stays `False`; no `archive-reading` delta. Native TAR (P3) still owns the `absent`/`short` structural fix; a salvage mode (`IDEAS.md`) is the future escape for reading a `nonzero` tar without an exception.
 
-**Your call later:** Which option, A through E? If D, should archivey test default to strict end-of-file or only expose a flag? If C, split on the streaming flag or on source seekability? If E, how does extract report archive-level end-of-file?
+**Cross-notes for later:** CLI (`cli-v1`) — `archivey test` should default to strict EOF (validator = maximally paranoid). Open-issues P1 reworded to "decided — Option F".
 
-**Bottom line:** Read design.md, pick an option when ready; until then leave the library default alone and do not invent Gotchas wording that assumes a flip.
+**Bottom line:** Apply per `tasks.md`: change `_verify_tar_eof` to raise `CorruptionError` on `nonzero` unconditionally, keep `absent`/`short` on the existing warn/strict path, update docs, add the regression fixtures.
