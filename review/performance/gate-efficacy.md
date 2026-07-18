@@ -11,6 +11,15 @@ sequential solid path collapsing to per-member re-decode. Everything else VISION
 names is either unasserted (wall ratios), structurally invisible (non-solid
 re-decompression), or inside the slack (a clean 2× solid re-decode).**
 
+> **Status update (#139 merged, verified):** G3, G4, and G5 are closed —
+> `SOLID_DECODE_FACTOR` 2.0 → 1.25, a non-solid over-decode bound (×1.1) on
+> `read_all`, seek slack `baseline×2+8` → `baseline+8`, and
+> `sevenzip_solid_random` bounded vs its committed baseline ×1.5 (ci scale).
+> All three `repro.py` probes now report CAUGHT. G1 (wall enforcement) remains
+> the open blocker; G6/G7 are partial — #139 added ZIP `open_list`/`extract`
+> stdlib peers, and the Q1 direction (2026-07-18) adds listing-ratio peers
+> (`zipfile`/`tarfile` bands, `py7zr`/`rarfile` parity) to the missing list.
+
 ## G1 — The wall budget is enforced nowhere (blocker)
 
 - PR gate: `--mode structural` computes wall ratios but never checks them
