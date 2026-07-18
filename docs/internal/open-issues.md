@@ -92,16 +92,6 @@ same change when relevant.
 - **Refs:** PR #101 (still open) / `docs/internal/rar-unrar-piping-investigation.md`
   (when merged); `format-rar`.
 
-### P7. Spec drift: encrypted 7z with no integrity anchor
-
-- **Status:** **code done** (#127) — best-effort accept (matches 7-Zip) +
-  `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). User Gotchas documents it.
-- **Still open:** `openspec/specs/format-7z` still says wrong password → “never
-  silent bytes” / no incorrect data. Align the requirement with the maintainer
-  decision (diagnostic, not hard-error).
-- **Refs:** `review/archive/2026-07-16-crypto/` F2 / Q2; PR #127;
-  `sevenzip_reader.py`.
-
 ---
 
 ## Docs / specs — drift and missing prose
@@ -110,15 +100,15 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 
 | Item | Code | Doc / spec action |
 | --- | --- | --- |
-| Gzip multi-member: omit trailer CRC from `member.hashes` | Done | **Closed** — `formats.md` + Gotchas already accurate |
-| 7z CRC-less encrypted store → diagnostic | #127 | Gotchas done; still fix `format-7z` wording (P7); optional `formats.md` 7z line |
-| RAR5 HASHMAC / tweaked digests | #127 | Optional `formats.md` RAR integrity note |
-| 7z `NumCyclesPower` ≤24 / `0x3F` | #127 | Optional packaging / formats note |
-| RAR password via stdin (`-p` + stdin) | #127 | **Closed** for Gotchas (no argv warning) |
-| Cross-platform name safety (O2/O3/O4/O7 + RENAME) | #109 / #123 | Gotchas extraction section done; **threat-model.md still says O2/O4/O7 awaiting** — mark implemented |
-| RAR5 `-ver` history rows in `members()` | Specced + implemented | Gotchas done; **still missing from `formats.md`** |
-| Duplicate names / `get` last-wins / str vs `ArchiveMember` selectors | Specced | Gotchas done; optional `usage.md` pointer |
-| Hardlink target = earlier same name by `member_id` | Specced | Gotchas done; optional `usage.md` pointer |
+| Gzip multi-member: omit trailer CRC from `member.hashes` | Done | **Closed** — `formats.md` + Gotchas accurate |
+| 7z CRC-less encrypted store → diagnostic | #127 | **Closed** — Gotchas + `formats.md` + `format-7z` (P7) |
+| RAR5 HASHMAC / tweaked digests | #127 | **Closed** — noted in `formats.md` RAR section |
+| 7z `NumCyclesPower` ≤24 / `0x3F` | #127 | **Closed** — `formats.md` + `format-7z` |
+| RAR password via stdin (`-p` + stdin) | #127 | **Closed** — `formats.md` |
+| Cross-platform name safety (O2/O3/O4/O7 + RENAME) | #109 / #123 | **Closed** — Gotchas + threat-model marked implemented |
+| RAR5 `-ver` history rows in `members()` | Specced + implemented | **Closed** — Gotchas + `formats.md` |
+| Duplicate names / `get` last-wins / str vs `ArchiveMember` selectors | Specced | Gotchas done; optional `usage.md` pointer remains nice-to-have |
+| Hardlink target = earlier same name by `member_id` | Specced | Gotchas done; optional `usage.md` pointer remains nice-to-have |
 | Nested-archive stance + bounded recursion recipe | Behavior OK | Gotchas one-liner done; fuller recipe still nice for usage/O6 |
 | Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `safe-extraction.md` |
 | Accelerator opt-out for untrusted + latency budget | Mitigations in tree | Gotchas + costs cover it; P5 residual remains |
@@ -173,14 +163,16 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 | Stream-decoder F1–F6 (seek-point collision, rapidgzip size/verify, feed budgets, `readall` pending_error, …) | #128 |
 | PPMd `max_length` / after-eof / version pin product work | #124 / #130 (residual abort → Irreducible) |
 | Gzip multi-member CRC omission from `hashes` | Earlier + tests; docs accurate |
-| Cross-platform name safety implementation | #109 / #123 (threat-model prose still stale) |
+| Cross-platform name safety implementation + threat-model prose sync | #109 / #123 + docs sweep |
+| `format-7z` “never silent bytes” vs F2 diagnostic (P7) | docs sweep |
+| `formats.md` RAR `-ver` / crypto notes | docs sweep |
 
 ---
 
 ## Suggested first cuts
 
-1. **Docs sweep (cheap):** threat-model O2/O4/O7 status; `formats.md` RAR `-ver`;
-   `format-7z` vs F2 diagnostic (P7).
-2. **`strict_archive_eof` (P1):** locked only via
+1. **`strict_archive_eof` (P1):** locked only via
    `openspec/changes/decide-strict-archive-eof-default/` — do not flip ad hoc.
-3. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”
+2. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”
+3. Optional polish: `usage.md` duplicate-name / hardlink pointers; fuller nested-archive
+   recipe; one line in `safe-extraction.md` on symlink-hostile FS.

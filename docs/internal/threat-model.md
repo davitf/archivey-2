@@ -48,6 +48,9 @@
   count cap — the global guards halt even under `OnError.CONTINUE`.
 - **Permission hygiene:** setuid/setgid/sticky stripped except under `TRUSTED`;
   ownership applied only under `TRUSTED` as root.
+- **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
+  reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
+  percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
 - **Error honesty:** codec/library exceptions are translated to typed `ArchiveyError`s
   with context; genuine I/O errors propagate unchanged; no catch-all handlers.
 - **Accelerator lifecycle:** C++-threaded accelerators are close-guarded
@@ -72,49 +75,45 @@ Indexed formats (7z/RAR) may still allocate up to those parser ceilings during
 `read()` / `open()` stream sizes remain unbounded (follow-on); prefer chunked
 reads for untrusted member payloads.
 
-### O2. Case-insensitivity and Unicode-normalization collisions at extraction
+### O2. Case-insensitivity and Unicode-normalization collisions at extraction — implemented
 
 Two members whose names differ only by case (`README` / `readme`) or Unicode
 normalization form (NFC vs NFD `café`) are distinct in the archive but the **same file**
-on default Windows/macOS filesystems. Today: under `OverwritePolicy.ERROR` the second
-member fails with a confusing "already exists"; under `REPLACE` it **silently merges**
-— a crafted archive can use this to make content clobber other content on
-case-insensitive systems only (behavior differs by platform: a "surprise" squared).
+on default Windows/macOS filesystems. Pre-fix behavior under `OverwritePolicy.ERROR`
+was a confusing "already exists"; under `REPLACE`, a silent merge on case-insensitive
+systems only.
 
-*Direction (decided — `cross-platform-name-safety` / ADR 0013):* the coordinator tracks a
-casefolded+NFC key per written path and, under `STRICT`/`STANDARD`, treats a collision as a
-first-class event on **all platforms** (`TRUSTED` keys on the exact path and defers to the
-local OS): apply the `OverwritePolicy` deliberately, record `requested_path` on the
-`ExtractionResult` plus an `EXTRACTION_NAME_COLLISION` diagnostic, and add
-`OverwritePolicy.RENAME` (extract as `photo (1).jpg`, counter before the suffix) for the
-archives-with-intentional-duplicates case. Only content-bearing members (file/symlink/
-hardlink, including the deferred orphan-hardlink pass) are tracked; **directories are
-intentionally untracked** (they merge structurally), so a *file* `Foo` vs a *directory*
-`foo/` collision stays OS-dependent — a known, deferred residual (ADR 0013). Awaiting
-implementation of the `safe-extraction` delta.
+**Implemented** (`cross-platform-name-safety` / ADR 0013 / PR #109): the coordinator
+tracks a casefolded+NFC key per written path and, under `STRICT`/`STANDARD`, treats a
+collision as a first-class event on **all platforms** (`TRUSTED` keys on the exact path
+and defers to the local OS): apply the `OverwritePolicy` deliberately, record
+`requested_path` on the `ExtractionResult` plus an `EXTRACTION_NAME_COLLISION`
+diagnostic, and support `OverwritePolicy.RENAME` (extract as `photo (1).jpg`, counter
+before the suffix). Only content-bearing members (file/symlink/hardlink, including the
+deferred orphan-hardlink pass) are tracked; **directories are intentionally untracked**
+(they merge structurally), so a *file* `Foo` vs a *directory* `foo/` collision stays
+OS-dependent — a known, deferred residual (ADR 0013).
 
-### O3. Windows name mangling: reserved names, trailing dots/spaces
+### O3. Windows name mangling: reserved names, trailing dots/spaces — implemented
 
 `CON`, `NUL`, `COM1`… are device names; `foo.` and `foo ` are silently stripped by
-Win32 to `foo` (silent clobber / mismatch between reported and actual path). None of
-this is currently checked; behavior is platform-dependent.
+Win32 to `foo` (silent clobber / mismatch between reported and actual path).
 
-*Direction (decided — `cross-platform-name-safety` / ADR 0013, revised 2026-07):* reserved
-device names and `:` are *unsafe* (device capture / NTFS ADS) → rejected under `STRICT` and
-`STANDARD` on every platform. A trailing dot/space is a *legitimate* macOS/Linux name Win32
-merely trims, so rejecting it wrongly halts real archives (a macOS `stuff_etc.` folder) or,
-under `CONTINUE`, silently drops the whole subtree → `STRICT` now **strips** it to the
-portable spelling (`stuff_etc.` → `stuff_etc`), deterministic per-OS, collision-tracked, and
-surfaced as an `EXTRACTION_NAME_SANITIZED` diagnostic (an all-dots segment like `...` has no
-portable spelling and is still rejected); `STANDARD`/`TRUSTED` keep it faithful. Implemented.
+**Implemented** (ADR 0013, revised 2026-07 / PR #109 + #123): reserved device names and
+`:` are *unsafe* (device capture / NTFS ADS) → rejected under `STRICT` and `STANDARD` on
+every platform. A trailing dot/space is a *legitimate* macOS/Linux name Win32 merely
+trims → `STRICT` **strips** it to the portable spelling (`stuff_etc.` → `stuff_etc`),
+deterministic per-OS, collision-tracked, and surfaced as an `EXTRACTION_NAME_SANITIZED`
+diagnostic (an all-dots segment like `...` has no portable spelling and is still
+rejected); `STANDARD`/`TRUSTED` keep it faithful.
 
-### O4. NTFS alternate data streams
+### O4. NTFS alternate data streams — implemented (folded into O3)
 
-A member name containing `:` (`file.txt:hidden`) writes an invisible alternate data
-stream on NTFS. Not currently rejected.
+A member name containing `:` (`file.txt:hidden`) would write an invisible alternate data
+stream on NTFS.
 
-*Direction:* fold into the O3 policy work (reject `:` in names under `STRICT` on all
-platforms; it is never a portable filename character).
+**Implemented** as part of O3: `:` in names is rejected under `STRICT` and `STANDARD` on
+all platforms (it is never a portable filename character).
 
 ### O5. Fuzzing — mutation + Hypothesis + Atheris gate landed; OSS-Fuzz / SECURITY.md later
 
@@ -188,35 +187,26 @@ caller loops. Still worth an explicit documented stance + a recipe for bounded
 recursive processing, since "index my backups" — the founding use case — does exactly
 this.
 
-### O7. Names representable as bytes but not by the target filesystem
+### O7. Names representable as bytes but not by the target filesystem — implemented
 
 `check_universal` rejects names that cannot be `os.fsencode`d at all (a lone surrogate
-outside the surrogateescape range — see `internal/filters.py`). It does **not** reject a
-name that *is* fsencodable but that the destination filesystem refuses at `write()`: a
-non-UTF-8 byte sequence carried via surrogateescape (`caf\udce9.txt`) is transparent on
-ext4/most Linux but raises `OSError` (`EILSEQ`, "Illegal byte sequence") on APFS/macOS
-and other UTF-8-enforcing filesystems. Today that surfaces as an ordinary per-member
-write failure (a `FAILED` `ExtractionResult`, or a re-raised `OSError` under
-`OnError.STOP`) — safe (no traversal, no abort) but **platform-dependent** and *not* a
-faithful round-trip. On Windows the mirror hazard is the O3 one: a name the OS silently
-mangles or that becomes hard to delete/rename. Covered by
-`test_surrogateescape_name_extracts_safely_or_is_cleanly_refused` (asserts the
-safety-or-clean-refusal invariant, not round-trip).
+outside the surrogateescape range — see `internal/filters.py`). Names that *are*
+fsencodable but that some filesystems refuse at `write()` (e.g. surrogateescape
+`caf\udce9.txt` → `EILSEQ` on APFS) used to surface as a platform-dependent per-member
+write failure.
 
-**Landed (error honesty):** the write-time `OSError` (`EILSEQ`) for a filter-accepted
-but unrepresentable name is now translated by the extraction coordinator to a typed
-`ExtractionError` naming the member ("Member name cannot be represented on the
-destination filesystem"), so callers get a typed signal instead of a bare `OSError`
-(`internal/extraction.py`; `test_unrepresentable_name_oserror_is_translated`).
+**Implemented** (ADR 0013 / PR #109):
 
-**Follow-up (portable-name normalization) — decided, not yet implemented:** the
-`cross-platform-name-safety` change settles this as the "cross-platform portable name"
-dimension shared with O2/O3/O4. Decision (design + ADR 0013): `STRICT`/`STANDARD` **sanitize**
-to a deterministic reversible spelling — each non-UTF-8 byte percent-escaped as `%XX` (`%` as
-`%25`), non-decodable bytes only, applied on every platform and collision-tracked like O2,
-still rejecting only names that cannot be `os.fsencode`d at all; `TRUSTED` attempts the
-faithful bytes and lets the local OS decide (today's behavior). Awaiting implementation of
-that `safe-extraction` delta.
+- Write-time `OSError` (`EILSEQ`) for a filter-accepted but unrepresentable name is
+  translated to a typed `ExtractionError` naming the member
+  (`test_unrepresentable_name_oserror_is_translated`).
+- Under `STRICT`/`STANDARD`, non-UTF-8 bytes are **percent-escaped** to a deterministic
+  reversible portable spelling (`%XX`; literal `%` → `%25`), applied on every platform
+  and collision-tracked like O2; only names that cannot be `os.fsencode`d at all are
+  still rejected. `TRUSTED` attempts the faithful bytes and lets the local OS decide.
+
+Residual: a public un-escape helper is deferred (addable non-breakingly). User-facing
+notes: [Gotchas — Extraction](../gotchas.md#extraction), ADR 0013.
 
 ## OPEN gaps — compatibility
 

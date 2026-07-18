@@ -215,11 +215,22 @@ requests use `member is None`; folder/member requests identify the member being
 decrypted where possible. Members in different encrypted folders MAY use different
 passwords in one open or one `stream_members()` pass. Key derivation SHALL use the
 7z SHA-256 scheme (UTF-16LE password, salt, `1 << NumCyclesPower` rounds with the
-documented `0x3f` special case) via a 7z-local helper that feeds `AesParams` into
-the shared crypto stage — not a generic crypto-surface KDF. Because 7z has no
-password check value, the reader SHALL cache derived keys by
-`(password, salt, cycles)`, try known-good passwords first, and surface wrong
-passwords as `EncryptionError`/`CorruptionError`, never silent bytes.
+documented `0x3F` no-hash sentinel) via a 7z-local helper that feeds `AesParams` into
+the shared crypto stage — not a generic crypto-surface KDF. `NumCyclesPower` values
+other than `0x3F` SHALL be accepted only when `≤ 24`; values 25–62 SHALL raise
+`UnsupportedFeatureError` (matching 7-Zip’s decoder clamp), not
+`EncryptionError`.
+
+Because 7zAES has no password check value, wrong-password detection relies on
+integrity anchors and codec rejection. The reader SHALL cache derived keys by
+`(password, salt, cycles)` and try known-good passwords first. When a folder digest
+and/or member CRC is present, or when a compressed codec rejects garbage, a wrong
+password SHALL surface as `EncryptionError`/`CorruptionError`. When an encrypted
+folder has **no** folder digest and a member has **no** CRC (format-legal for
+store/copy), the system SHALL still return decoded bytes (best-effort, matching
+7-Zip) and SHALL emit `DIGEST_UNVERIFIABLE` with
+`DigestContext.reason="no_integrity_anchor"` — it MUST NOT imply the decryption was
+authenticated.
 
 #### Scenario: encryption matrix
 
@@ -228,7 +239,9 @@ passwords as `EncryptionError`/`CorruptionError`, never silent bytes.
 | Header-encrypted archive, no password/provider result | `EncryptionError` before listing |
 | Header-encrypted archive, valid password + crypto | Header is decrypted natively; members list; `is_encrypted` true |
 | Encrypted folders with different passwords | Each folder uses its matching candidate in random access or one streaming pass |
-| Sole wrong password | `EncryptionError`/`CorruptionError`; no incorrect data |
+| Sole wrong password, integrity anchor present (folder digest and/or member CRC) or compressed codec rejects garbage | `EncryptionError`/`CorruptionError`; no incorrect data handed to the caller as success |
+| Encrypted store/copy member, no folder digest, no member CRC, any password | Bytes returned; `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) emitted |
+| `NumCyclesPower` 25–62 | `UnsupportedFeatureError` (not remapped to wrong-password) |
 | Repeated salt/cycles/password | Derived key cache avoids repeated key derivation |
 
 ### Requirement: Stream solid folders with bounded memory

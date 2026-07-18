@@ -74,13 +74,24 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - **BCJ2** is detected and rejected (`UnsupportedFeatureError`) — never garbage output.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
+- **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
+  value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
+  `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). See [Gotchas](gotchas.md#passwords-that-look-accepted).
+- `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
+  values 25–62 raise `UnsupportedFeatureError`.
 - Writing needs `[7z-write]` (`py7zr`).
 
 ## RAR
 
 - Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
-- Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free` / `unar`).
-- `[rar]` / `[crypto]`: header-encrypted RAR5 and Blake2sp verification.
+- Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free` / `unar`). Passwords are
+  passed as bare `-p` with the secret on stdin (not in argv).
+- `[rar]` / `[crypto]`: header-encrypted RAR5 and Blake2sp verification. RAR5 members
+  with the HASHMAC flag verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a
+  password is available; tweaked values are not exposed as plain `member.hashes`.
+- **File-version history (`-ver`):** revision rows appear in `members()` as names like
+  `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
+  `is_current=True`. Default extract **skips** non-current rows.
 - Solid archives: one `unrar p` pipe for `stream_members()`; random solid opens may use
   explicit temp materialization.
 - Read-only — no RAR writer.

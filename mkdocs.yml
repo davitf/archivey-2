@@ -26,6 +26,7 @@ nav:
       - No silent buffer: decisions/0010-no-silent-buffer-nonseekable.md
       - Zero-dep core: decisions/0011-zero-dependency-core.md
       - Usage errors: decisions/0012-usage-errors-outside-archiveyerror.md
+      - Cross-platform name safety: decisions/0013-cross-platform-name-safety-policies.md
   - Internal:
       - Overview: internal/index.md
       - Threat model: internal/threat-model.md
