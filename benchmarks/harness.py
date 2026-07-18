@@ -9,10 +9,10 @@ Run::
 
 Modes:
 
-- ``structural`` (default for CI/PR): **the automated gate** — seek-count baselines
-  and solid decode-once bounds only. Common-path ``bytes_decompressed == unpacked``
-  is tautological (counted at member output); the seek axis is what catches
-  silent re-open churn.
+- ``structural`` (default for CI/PR): **the automated gate** — seek-count baselines,
+  solid decode-once bounds, and a non-solid over-decode bound on ``read_all``.
+  Under-decode remains an integrity check; over-decode catches silent re-open churn
+  that the old seek slack (baseline×2+8) used to absorb.
 - ``full``: also report wall-time ratios vs stdlib peers. Ratios are noisy on
   shared runners, so full mode is a **manual / nightly drift tool**, not the PR
   gate. Sanity ceiling only (no committed wall-time baseline).
@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import shutil
 import sys
 import tarfile
 import time
@@ -48,7 +49,20 @@ STRUCTURAL_BASELINE = BASELINES_DIR / "structural.json"
 
 # Sequential solid read may decode a little padding / skip; keep a small slack factor.
 # (Unit tests use a tighter bound on controlled fixtures — see test_measurement.py.)
-SOLID_DECODE_FACTOR = 2.0
+# Was 2.0: that let a clean "decode every solid folder exactly twice" regression
+# pass (perf review G3 / VISION "re-reads a solid block fails the benchmark").
+SOLID_DECODE_FACTOR = 1.25
+# Non-solid read_all over-decode guard. Output-counting makes under-decode the
+# only previous check; without an upper bound, a decode-twice-deliver-once ZIP
+# regression doubles bytes_decompressed and still passes (perf review G4).
+NONSOLID_DECODE_FACTOR = 1.1
+# Random-access solid cost is inherent, but bound it against the committed
+# baseline so a folder-cache regression cannot silently double the work (G5).
+SOLID_RANDOM_BYTES_FACTOR = 1.5
+# Seek-count slack against the committed ci baseline. Was baseline×2+8, which
+# absorbed a full ZIP decode-twice seek doubling (28→52). Fixtures are
+# deterministic; baseline+8 still covers observed host jitter (e.g. gzip 1→3).
+SEEK_BASELINE_SLACK = 8
 # Wall-time sanity ceiling for --mode full. No committed wall_time.json: cold-pass
 # ci ratios were misleading, and shared-runner noise makes ratio regression gates
 # flake. VISION ≤1.3× / ~2× is informational on realistic full runs / nightly.
@@ -201,6 +215,18 @@ def _interleaved_pair_times(
     return ay_samples[mid], last_ay, std_samples[mid]
 
 
+def _stdlib_zip_open_list(path: Path) -> None:
+    with zipfile.ZipFile(path) as zf:
+        zf.namelist()
+        zf.infolist()
+
+
+def _stdlib_zip_extract(path: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path) as zf:
+        zf.extractall(dest)
+
+
 def _stdlib_zip_read_all(path: Path) -> None:
     with zipfile.ZipFile(path) as zf:
         for name in zf.namelist():
@@ -293,10 +319,39 @@ def run_cases(
         return wall, std_wall
 
     # --- ZIP ---
-    wall, (bdec, seeks) = timed_with_optional_warmup(
+    # open_list wall vs zipfile (structural bytes from the measured pass).
+    _m_wall, (bdec, seeks) = timed_with_optional_warmup(
         lambda: _op_open_list(fixtures.zip_path)
     )
-    results.append(CaseResult("zip_open_list", "zip", "open_list", wall, bdec, seeks))
+
+    def _ay_open_list() -> None:
+        with open_archive(fixtures.zip_path) as reader:
+            _ = reader.info
+            list(reader.members())
+
+    if warmup:
+        wall, _ignored, std_wall = _interleaved_pair_times(
+            _ay_open_list,
+            lambda: _stdlib_zip_open_list(fixtures.zip_path),
+            rounds=7,
+        )
+    else:
+        wall, _ = timed_with_optional_warmup(_ay_open_list)
+        std_wall, _ = timed_with_optional_warmup(
+            lambda: _stdlib_zip_open_list(fixtures.zip_path)
+        )
+    results.append(
+        CaseResult(
+            "zip_open_list",
+            "zip",
+            "open_list",
+            wall,
+            bdec,
+            seeks,
+            stdlib_wall_s=std_wall,
+            wall_ratio=(wall / std_wall) if std_wall > 0 else None,
+        )
+    )
     # Structural bytes from a measured pass; wall ratio from an unmeasured peer race.
     _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
         lambda: _op_read_all(fixtures.zip_path)
@@ -318,10 +373,49 @@ def run_cases(
             wall_ratio=(wall / std_wall) if std_wall > 0 else None,
         )
     )
-    wall, (bdec, seeks) = timed_with_optional_warmup(
+    _m_wall, (bdec, seeks) = timed_with_optional_warmup(
         lambda: _op_extract(fixtures.zip_path, work / "extract-zip")
     )
-    results.append(CaseResult("zip_extract", "zip", "extract", wall, bdec, seeks))
+    _ext_i = 0
+
+    def _ay_extract_clean() -> None:
+        nonlocal _ext_i
+        _ext_i += 1
+        dest = work / "extract-zip-wall" / f"ay-{_ext_i}"
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        with open_archive(fixtures.zip_path) as reader:
+            reader.extract_all(dest)
+
+    def _std_extract_clean() -> None:
+        nonlocal _ext_i
+        _ext_i += 1
+        dest = work / "extract-zip-wall" / f"std-{_ext_i}"
+        if dest.exists():
+            shutil.rmtree(dest)
+        _stdlib_zip_extract(fixtures.zip_path, dest)
+
+    if warmup:
+        wall, _ignored, std_wall = _interleaved_pair_times(
+            _ay_extract_clean, _std_extract_clean, rounds=7
+        )
+    else:
+        wall, _ = timed_with_optional_warmup(_ay_extract_clean)
+        std_wall, _ = timed_with_optional_warmup(_std_extract_clean)
+    results.append(
+        CaseResult(
+            "zip_extract",
+            "zip",
+            "extract",
+            wall,
+            bdec,
+            seeks,
+            unpacked_bytes=unpacked,  # same fixture as zip_read_all
+            stdlib_wall_s=std_wall,
+            wall_ratio=(wall / std_wall) if std_wall > 0 else None,
+        )
+    )
 
     # --- TAR (plain / uncompressed — harness peer is tarfile r:) ---
     wall, (bdec, seeks) = timed_with_optional_warmup(
@@ -474,7 +568,7 @@ def run_cases(
                 bdec,
                 seeks,
                 unpacked_bytes=fixtures.unpacked_solid_7z,
-                notes="re-decode recorded; not gated",
+                notes="re-decode recorded; gated vs baseline×SOLID_RANDOM_BYTES_FACTOR",
             )
         )
 
@@ -507,7 +601,7 @@ def run_cases(
                 bdec,
                 seeks,
                 unpacked_bytes=fixtures.unpacked_solid_rar,
-                notes="re-decode recorded; not gated",
+                notes="re-decode recorded; gated vs baseline×SOLID_RANDOM_BYTES_FACTOR",
             )
         )
 
@@ -530,25 +624,47 @@ def _structural_checks(
                     f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
                     f"> unpacked×{SOLID_DECODE_FACTOR}={limit} (solid re-decode?)"
                 )
+        if (
+            check_seek_baselines
+            and r.case.endswith("_random")
+            and r.unpacked_bytes
+            and r.format in ("7z", "rar")
+        ):
+            # Absolute re-decode cost is inherent for solid random access; gate
+            # against the committed ci baseline so "got worse" is still visible.
+            # Skipped on non-ci scales (baseline is ci-only), same as seek checks.
+            ref = cases.get(r.case)
+            if ref is not None and ref.get("bytes_decompressed") is not None:
+                limit = int(ref["bytes_decompressed"] * SOLID_RANDOM_BYTES_FACTOR)
+                if r.bytes_decompressed > limit:
+                    failures.append(
+                        f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
+                        f"> baseline×{SOLID_RANDOM_BYTES_FACTOR}={limit}"
+                    )
         if r.operation == "read_all" and r.unpacked_bytes is not None:
-            # Under-decode guard only. For zip/tar/gzip this equals unpacked by
-            # construction (counted at member output) — silent *re*-decode of the
-            # source is caught by the seek-count baseline below, not this axis.
-            # Solid sequential (above) is where the byte axis does real work.
-            if (
-                r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2")
-                and r.bytes_decompressed < r.unpacked_bytes
-            ):
-                failures.append(
-                    f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
-                    f"< unpacked={r.unpacked_bytes}"
-                )
-        # Seek counts: ≤ recorded baseline × 2 (host/path variance); missing baseline = skip.
+            # zip/tar/gzip count at member output. Under-decode is a silent short
+            # read; over-decode catches decode-twice-deliver-once (each open still
+            # increments the shared ByteCounter even when only the second handle
+            # is delivered to the caller).
+            if r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2"):
+                if r.bytes_decompressed < r.unpacked_bytes:
+                    failures.append(
+                        f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
+                        f"< unpacked={r.unpacked_bytes}"
+                    )
+                over_limit = int(r.unpacked_bytes * NONSOLID_DECODE_FACTOR)
+                if r.bytes_decompressed > over_limit:
+                    failures.append(
+                        f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
+                        f"> unpacked×{NONSOLID_DECODE_FACTOR}={over_limit} "
+                        f"(non-solid re-decode?)"
+                    )
+        # Seek counts: ≤ recorded baseline + slack. Missing baseline = skip.
         # Only meaningful against the same fixture scale as the committed baseline (ci).
         if check_seek_baselines:
             ref = cases.get(r.case)
             if ref is not None and "source_seek_count" in ref:
-                limit = int(ref["source_seek_count"]) * 2 + 8
+                limit = int(ref["source_seek_count"]) + SEEK_BASELINE_SLACK
                 if r.source_seek_count > limit:
                     failures.append(
                         f"{r.case}: source_seek_count={r.source_seek_count} > bound {limit}"
@@ -583,6 +699,9 @@ def write_baselines(results: list[CaseResult]) -> None:
     BASELINES_DIR.mkdir(parents=True, exist_ok=True)
     structural: dict[str, Any] = {
         "solid_decode_factor": SOLID_DECODE_FACTOR,
+        "nonsolid_decode_factor": NONSOLID_DECODE_FACTOR,
+        "solid_random_bytes_factor": SOLID_RANDOM_BYTES_FACTOR,
+        "seek_baseline_slack": SEEK_BASELINE_SLACK,
         "cases": {},
     }
     for r in results:

@@ -111,13 +111,35 @@ class BaseDecoder:
         return [], None
 
 
-# Compressed bytes read per fill when the decoder needs more input. Matches CPython
-# gzip / _compression.DecompressReader (io.DEFAULT_BUFFER_SIZE), not a full 64 KiB —
-# keeping the feed small works with max_length to bound peak buffer on read(n).
-_COMPRESSED_READ_SIZE = 8192
+# Compressed bytes read per fill when the decoder needs more input.
+#
+# Historically matched CPython gzip / ``_compression.DecompressReader``
+# (``io.DEFAULT_BUFFER_SIZE`` = 8 KiB). That feed forces ~17 Python trips through
+# the decode loop for a typical 256 KiB ZIP member while ``zipfile`` decompresses
+# each member in one C call — the dominant residual ZIP read-all gap after the
+# stream-layering work in #136/#137 (see ``review/performance/residual-gap.md``).
+# 64 KiB reaches the measured plateau for those members; ``max_length`` still
+# bounds peak *output* buffer on ``read(n)`` (the #128 / F3a contract), and ZIP
+# members are additionally capped by their ``SlicingStream`` compressed extent.
+_COMPRESSED_READ_SIZE = 65536
+# Ceiling when a large bounded ``read(n)`` (whole-member via fused verify) asks
+# for more output than the default feed — one compressed read ≈ one C inflate.
+_COMPRESSED_READ_SIZE_MAX = 1 << 20
 # Output budget when skipping forward during seek (unbounded skip would reintroduce
 # the per-read amplification bomb on highly compressible spans).
 _SEEK_OUTPUT_CHUNK = 65536
+
+
+def _compressed_feed_size(max_length: int) -> int:
+    """How many compressed bytes to pull for one decoder feed.
+
+    Large bounded requests scale up toward ``max_length`` (capped) so a known-size
+    whole-member read collapses to one inflate call. Small / unbounded requests
+    keep the default feed; output amplification remains gated by ``max_length``.
+    """
+    if max_length < 0 or max_length <= _COMPRESSED_READ_SIZE:
+        return _COMPRESSED_READ_SIZE
+    return min(max_length, _COMPRESSED_READ_SIZE_MAX)
 
 
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
@@ -327,7 +349,7 @@ class DecompressorStream(ReadOnlyIOStream):
             # Decoder claimed retained input but produced nothing (e.g. a stuck
             # lzma needs_input=False under a budget). Fall through to reading more
             # compressed bytes — or EOF — so the caller cannot spin forever.
-        chunk = self._inner.read(_COMPRESSED_READ_SIZE)
+        chunk = self._inner.read(_compressed_feed_size(max_length))
         if not chunk:
             self._eof = True
             leftover = self._ingest_decode(self._decoder.flush())

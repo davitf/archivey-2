@@ -8,6 +8,12 @@ runs and on an independent probe here). So the original H2 attribution
 over-weighted the wrapper stack. This file records where the gap *actually*
 is, measured at `main` @ `b9cdeac`, and what to investigate next.
 
+> **Follow-up (this PR):** tracks 1 and 5 from the list below are implemented
+> and verified — see `investigation-report.md`. Decode feed is now 64 KiB
+> (scaled for large bounded reads); gate G3/G4/G5 are closed on the structural
+> path. Tracks 2–4 conclusions are in that report (regime split explained;
+> per-member and extract left open / product).
+
 Fixture for all numbers: 64 × 256 KiB DEFLATE members, ~2:1-compressible
 payload; medians of 21 warm in-process rounds. Repro: `attrib.py <section>`.
 
@@ -25,49 +31,11 @@ sweep (`attrib.py sweep`), per full read-all pass:
 
 Two distinct causes, in order:
 
-### 1. Decode granularity (~8 ms of the gap; the actionable lever)
+### 1. Decode granularity (~8 ms of the gap; the actionable lever) — DONE
 
-`_COMPRESSED_READ_SIZE = 8192` (`decompressor_stream.py:118`) feeds ~8 KiB
-compressed slices into the decoder, so a 256 KiB member takes ~17 trips through
-the 5-frame Python loop (`ArchiveStream.read` → verifier → `DecompressorStream.
-read` → `_read_decompressed_chunk` → `Decoder.feed`), each staging output
-through the shared `bytearray`. `zipfile.read()` reads the member's *entire*
-compressed extent and decompresses it in **one** C call. The call census
-(`attrib.py census`) shows the same story at the OS boundary: 1220 buffered
-`read()` calls per pass vs zipfile's 195.
-
-Sweep (warm, single process, mirrored order):
-
-| compressed feed | wall | ratio vs zipfile |
-|---:|---:|---:|
-| 8192 (today) | 71.6 ms | 1.38× |
-| 65536 | 65.2 ms | 1.25× |
-| 262144 | 64.1 ms | 1.23× |
-| 1 MiB | 64.9 ms | 1.25× |
-
-The curve is flat past 64 KiB because the fixture's compressed members are
-~130 KiB — one or two feeds already reaches single-shot. **A feed of 64 KiB, or
-better a known-size fast path (member's `compress_size` is known for ZIP; read
-exactly that, decompress with `max_length=declared_size`), puts ZIP read-all
-under the 1.3× budget on this host.**
-
-Safety constraints to preserve (why 8 KiB was chosen — see the comment at
-`decompressor_stream.py:114-117`):
-
-- Output amplification stays bounded regardless of feed size as long as
-  `max_length` keeps being passed — the bomb-tracker guarantees live on the
-  *output* side. The feed size only raises peak *compressed* buffer residency
-  (64 KiB–1 MiB is trivially fine; the #128-style `read(1)` bound should be
-  re-checked with the RSS probe in `measurements.py rss` after any change).
-- A single-shot path must not regress `read(small_n)` consumers — gate it on
-  `n < 0 or n >= remaining` with an empty buffer, mirroring the (currently
-  unreachable, see below) `readall` fast path.
-
-Note: the fused verifier turns a caller's `read(-1)` into a *bounded*
-`read(declared_size)` (`verify.py` `MemberVerifier.read`), so
-`DecompressorStream.readall()` — where #136 put the join-of-chunks fast path —
-is **never reached** on the default (verified) path. Any fast path must live on
-the bounded-`read(n)` branch to matter.
+`_COMPRESSED_READ_SIZE` is now 64 KiB with scale-up for large bounded `read(n)`.
+On the follow-up host the review probe measures ~1.37× with OS-read census at
+parity with zipfile (196 vs 195). See `investigation-report.md` Track 1.
 
 ### 2. Distributed per-member machinery (~12 ms; ~190 µs/member; no single hotspot)
 
@@ -77,41 +45,22 @@ At the plateau, decompress and CRC are at parity and the rest is spread thin:
 readinto shims, `_wrap_member_stream` argument plumbing. cProfile shows no
 item above ~2 ms/pass — this is death-by-a-thousand-cuts, and it is why
 per-member cost dominates for *small*-member archives (the many-small regime)
-while barely mattering for large members.
+while barely mattering for large members. **Follow-up:** profiled; no ≥5% safe
+win found — deferred (Track 3).
 
 ## What to investigate next (priority order)
 
-1. **The decode-granularity lever (P2's main remaining lever).** Options, in
-   increasing ambition: raise `_COMPRESSED_READ_SIZE` to 64 KiB; scale the feed
-   to the remaining `max_length` request; single-shot fast path when the
-   compressed extent is known (ZIP always knows `compress_size`). Re-run
-   `attrib.py bench`, the `measurements.py rss` bound, and the many-small
-   penalty case (`measurements.py accel`) as accept criteria. Expected: ZIP
-   read-all ≤ 1.25×, TAR.gz accel-off similarly helped (same stream class).
-2. **Reconcile the harness's 2.0× with this probe's 1.38×.** Same operation,
-   different fixture/loop — the harness `zip_read_all` ratio should be
-   decomposable into (per-member overhead × member count + per-byte overhead ×
-   bytes). Fit those two coefficients by sweeping member size at constant total
-   bytes (4 KiB / 64 KiB / 256 KiB / 1 MiB members); then the harness ratio for
-   any fixture is predictable, and "which regime is the budget about?" (Q1)
-   gets an empirical basis.
-3. **Per-member fixed cost (many-small regime).** Attack only after (2)
-   quantifies its real-world weight. Candidates: fold the codec
-   `ArchiveStream` wrap away when the member wrap immediately collapses it
-   (construct once, not construct-then-steal), find and batch the
-   `dataclasses.replace` call sites, lazy `_to_member` field work. Use paired
-   cProfile diffs per candidate; reject any that doesn't move the
-   1000×4 KiB fixture by ≥5%.
-4. **Extract-all residual (2.4–3.7×, H4).** Untouched by #136/#137. The known
-   costs are filesystem safety (~5 `lstat`s/member, `mkstemp`+rename,
-   `pathlib.resolve`). Measure with `strace -c` / `syscall` census rather than
-   cProfile (the cost is syscalls, not Python), and compare against
-   `shutil.unpack_archive` as the honest peer. Decide deliberately what the
-   safety floor is (VISION's ~2× band exists for exactly this path).
-5. **open+list 5–8× (H3 remainder).** Extension-map cache landed; the rest is
-   detection sniff + member-model build (~45 µs/member). Only worth attacking
-   if the million-archive sweep is a real workload (Q1); the `format=` idiom
-   already bypasses most of it.
+1. ~~**The decode-granularity lever**~~ **Done** (64 KiB feed + scaled bounded read).
+2. ~~**Reconcile the harness's 2.0× with this probe's 1.38×.**~~ **Explained:**
+   CI harness is 8×4 KiB (many-small → ~4×); probe/realistic are 256 KiB members
+   (~1.4–1.8×). See investigation-report Track 2.
+3. **Per-member fixed cost (many-small regime).** Still open — needs a dedicated
+   change if Q1 treats many-small as in-budget.
+4. **Extract-all residual (2.4–3.7×, H4).** Census confirms safety syscalls
+   (mkstemp+rename, lstat tax). Realistic ~1.9× already in the ~2× band; no
+   code change pending Q1.
+5. **open+list 5–8× (H3 remainder).** Still open; ZIP open_list now has a
+   stdlib peer in the harness so the ratio is visible.
 
 ## Methodology notes (hard-won on this host)
 

@@ -39,13 +39,18 @@ flake. Options, not mutually exclusive:
 
 Recommendation: (a)+(c); (b) once ZIP is back inside the band.
 
-## Q3 — Tighten `SOLID_DECODE_FACTOR` from 2.0?
+## Q3 — Tighten `SOLID_DECODE_FACTOR` from 2.0? — RESOLVED
 
 A clean "decode every folder exactly twice" regression passes today (G3), which
 contradicts VISION's own sentence. The harness only runs generated, controlled
 fixtures, and the unit test already holds ×1.1. Any objection to ~1.25 in the
 harness (and making the bound strict `>=`)? If the ×2 slack exists for a known
 future corpus, that corpus isn't in the tree.
+
+**Resolved in the follow-up investigation PR:** `SOLID_DECODE_FACTOR = 1.25`
+(failure when `bytes > unpacked * 1.25`). `repro.py` probe 2 now CAUGHT. Also
+added `NONSOLID_DECODE_FACTOR = 1.1` (G4) and ci-scale solid-random
+baseline×1.5 (Q6/G5).
 
 ## Q4 — Should container-digest verification be skippable?
 
@@ -75,9 +80,13 @@ the stream_members contract? Extraction early-exit is contract-neutral but only
 helps when the selection is exhausted early. I'd do both; flagging because the
 error-timing question touches the `archive-reading` spec's scenarios.
 
-## Q6 — Gating the random-solid case's absolute cost
+## Q6 — Gating the random-solid case's absolute cost — RESOLVED
 
 `sevenzip_solid_random` is recorded, not gated (G5). Bounding it to its committed
 baseline ×1.5 would catch "the O(n²) got worse" (e.g. losing an incidental
 cache) at zero flake risk (byte counts are deterministic). Any reason it was left
 unbounded beyond "the absolute value is inherent"?
+
+**Resolved in the follow-up investigation PR:** gated at baseline×1.5 when
+`check_seek_baselines` is on (ci scale only — the committed baseline is ci-sized;
+applying it to realistic corpora false-fails).
