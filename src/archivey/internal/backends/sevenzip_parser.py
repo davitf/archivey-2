@@ -738,6 +738,12 @@ def _handle_name(
 
 def _decode_utf16_names(blob: bytes, *, expected_count: int) -> list[str]:
     """Decode a 7z ``kName`` property payload into ``expected_count`` filenames."""
+    # Zero names: the payload is empty (no terminators). Match the old per-file
+    # loop's no-op; ``endswith(b"\\x00\\x00")`` below would mis-reject ``b""``.
+    if expected_count == 0:
+        if blob:
+            raise CorruptionError("7z name payload is non-empty for zero files")
+        return []
     if len(blob) % 2 != 0:
         raise CorruptionError("7z UTF-16 name payload has an odd byte length")
     if not blob.endswith(b"\x00\x00"):

@@ -1091,6 +1091,10 @@ def test_decode_utf16_names_bulk() -> None:
     assert blob[0] == 0
     names = _decode_utf16_names(blob[1:], expected_count=2)
     assert names == ["a.txt", "dir/b"]
+    # Zero files: empty blob is the legitimate encoding (old loop was a no-op).
+    assert _decode_utf16_names(b"", expected_count=0) == []
+    with pytest.raises(CorruptionError, match="non-empty for zero files"):
+        _decode_utf16_names(b"\x00\x00", expected_count=0)
     with pytest.raises(CorruptionError, match="odd byte length"):
         _decode_utf16_names(b"abc", expected_count=1)
     with pytest.raises(CorruptionError, match="not null-terminated"):
