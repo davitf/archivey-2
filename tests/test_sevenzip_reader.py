@@ -879,12 +879,55 @@ def test_files_info_count_is_bounded_against_header_size() -> None:
     # file and OOM-ing the process (threat-model O1 / review L1). Encode num_files = 2**40
     # in the 7z uint64 form (0xFF marker + 8 LE bytes) and feed it straight to the reader.
     from archivey.exceptions import CorruptionError
-    from archivey.internal.backends.sevenzip_parser import _read_files_info
+    from archivey.internal.backends.sevenzip_parser import _Cursor, _read_files_info
 
     huge = (1 << 40).to_bytes(8, "little")
-    buffer = io.BytesIO(b"\xff" + huge)  # a 9-byte "header" claiming 2**40 files
+    cur = _Cursor(b"\xff" + huge)  # a 9-byte "header" claiming 2**40 files
     with pytest.raises(CorruptionError, match="exceeds the .* header"):
-        _read_files_info(buffer)
+        _read_files_info(cur)
+
+
+def test_cursor_truncated_property_payload_raises() -> None:
+    """A property size larger than remaining header bytes must raise CorruptionError."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import _Cursor, _read_files_info
+
+    # FILES_INFO: num_files=1, then NAME property (0x11) claiming 100-byte payload
+    # with only a few bytes left → truncated at slice().
+    cur = _Cursor(bytes([1, 0x11, 100]))
+    with pytest.raises(CorruptionError, match="Truncated"):
+        _read_files_info(cur)
+
+
+def test_cursor_fixed_width_field_at_eof_raises() -> None:
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import _Cursor
+
+    cur = _Cursor(b"\x01\x02")  # only 2 bytes; uint32 needs 4
+    with pytest.raises(CorruptionError, match="Truncated 7z UINT32"):
+        cur.uint32()
+
+
+def test_cursor_parse_matches_open_archive_fixture(tmp_path: Path) -> None:
+    """Representative fixture: names, sizes, times, attrs, CRCs survive the cursor port."""
+    path = tmp_path / "cursor-roundtrip.7z"
+    files = {
+        "readme.txt": b"hello cursor\n",
+        "dir/data.bin": bytes(range(32)),
+    }
+    _write_py7zr_archive(path, files, filters=_filters("COPY"))
+
+    with open_archive(path) as archive:
+        members = {m.name: m for m in archive.members() if m.is_file}
+        assert set(members) == set(files)
+        for name, data in files.items():
+            m = members[name]
+            assert m.size == len(data)
+            assert "crc32" in m.hashes
+            assert m.modified is not None
+            assert archive.read(m) == data
+        # Archive-level comment is optional; presence must not break listing.
+        _ = archive.info.comment
 
 
 def test_next_header_offset_overflow_is_typed_corruption() -> None:

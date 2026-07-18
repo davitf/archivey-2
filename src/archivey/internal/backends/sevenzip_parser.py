@@ -2,11 +2,13 @@
 
 Reads the signature/end header and turns header blocks into small data objects.
 Encoded headers are returned as descriptors; the reader/pipeline materializes them.
+
+In-memory header walking uses a byte cursor over ``memoryview`` (not ``BytesIO``);
+``read_signature_and_next_header`` stays on the real file stream.
 """
 
 from __future__ import annotations
 
-import io
 import struct
 import zlib
 from collections.abc import Callable
@@ -171,10 +173,167 @@ class _FileProps:
     last_write_time: int | None = None
 
 
+# ---------------------------------------------------------------------------
+# Byte-cursor primitives (format-agnostic loads + 7z varint)
+# ---------------------------------------------------------------------------
+
+
+def _check_length(length: int, context: str) -> None:
+    if length < 0:
+        raise CorruptionError(f"Negative length for {context}: {length}")
+    if length > _MAX_NEXT_HEADER_SIZE:
+        raise CorruptionError(
+            f"Claimed {context} length {length} exceeds the "
+            f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
+        )
+
+
+def _load_bytes(
+    buf: memoryview, pos: int, length: int, context: str
+) -> tuple[bytes, int]:
+    """Read ``length`` bytes from ``buf`` at ``pos``; return ``(data, new_pos)``."""
+    _check_length(length, context)
+    end = pos + length
+    if end > len(buf):
+        raise CorruptionError(
+            f"Truncated {context}: claimed {length} bytes, only {len(buf) - pos} remain"
+        )
+    return bytes(buf[pos:end]), end
+
+
+def _load_byte(buf: memoryview, pos: int) -> tuple[int, int]:
+    end = pos + 1
+    if end > len(buf):
+        raise CorruptionError(
+            f"Truncated 7z byte: claimed 1 bytes, only {len(buf) - pos} remain"
+        )
+    return buf[pos], end
+
+
+def _load_u32(buf: memoryview, pos: int) -> tuple[int, int]:
+    end = pos + 4
+    if end > len(buf):
+        raise CorruptionError(
+            f"Truncated 7z UINT32: claimed 4 bytes, only {len(buf) - pos} remain"
+        )
+    return int.from_bytes(buf[pos:end], "little"), end
+
+
+def _load_u64(buf: memoryview, pos: int) -> tuple[int, int]:
+    end = pos + 8
+    if end > len(buf):
+        raise CorruptionError(
+            f"Truncated 7z real UINT64: claimed 8 bytes, only {len(buf) - pos} remain"
+        )
+    return int.from_bytes(buf[pos:end], "little"), end
+
+
+def _load_uint64(buf: memoryview, pos: int) -> tuple[int, int]:
+    """7z variable-length UINT64 (first-byte mask scheme)."""
+    first, pos = _load_byte(buf, pos)
+    if first == 0xFF:
+        return _load_u64(buf, pos)
+
+    mask = 0x80
+    extra_bytes = _MAX_UINT64_ENCODING
+    for limit, length in (
+        (0b01111111, 0),
+        (0b10111111, 1),
+        (0b11011111, 2),
+        (0b11101111, 3),
+        (0b11110111, 4),
+        (0b11111011, 5),
+        (0b11111101, 6),
+        (0b11111110, 7),
+    ):
+        if first <= limit:
+            extra_bytes = length
+            break
+        mask >>= 1
+
+    if extra_bytes == 0:
+        return first & (mask - 1), pos
+    data, pos = _load_bytes(buf, pos, extra_bytes, "7z UINT64")
+    low = int.from_bytes(data, "little")
+    high = first & (mask - 1)
+    return low + (high << (extra_bytes * 8)), pos
+
+
+def _load_boolean(
+    buf: memoryview, pos: int, count: int, *, check_all: bool = False
+) -> tuple[list[bool], int]:
+    if check_all:
+        all_defined, pos = _load_byte(buf, pos)
+        if all_defined != 0:
+            return [True] * count, pos
+
+    result: list[bool] = []
+    current = 0
+    mask = 0
+    for _ in range(count):
+        if mask == 0:
+            current, pos = _load_byte(buf, pos)
+            mask = 0x80
+        result.append((current & mask) != 0)
+        mask >>= 1
+    return result, pos
+
+
+class _Cursor:
+    """Mutable byte cursor over an in-memory 7z header ``memoryview``.
+
+    Structural / cold paths use the methods; hot per-member field loops prefer
+    the free ``_load_*`` functions with ``pos`` as a local (see design Decision 4).
+    """
+
+    __slots__ = ("buf", "pos")
+
+    def __init__(self, data: bytes | memoryview) -> None:
+        self.buf: memoryview = (
+            data if isinstance(data, memoryview) else memoryview(data)
+        )
+        self.pos = 0
+
+    def remaining(self) -> int:
+        return len(self.buf) - self.pos
+
+    def read(self, n: int, context: str = "7z bytes") -> bytes:
+        data, self.pos = _load_bytes(self.buf, self.pos, n, context)
+        return data
+
+    def byte(self) -> int:
+        value, self.pos = _load_byte(self.buf, self.pos)
+        return value
+
+    def uint32(self) -> int:
+        value, self.pos = _load_u32(self.buf, self.pos)
+        return value
+
+    def real_uint64(self) -> int:
+        value, self.pos = _load_u64(self.buf, self.pos)
+        return value
+
+    def uint64(self) -> int:
+        value, self.pos = _load_uint64(self.buf, self.pos)
+        return value
+
+    def slice(self, n: int, context: str = "7z slice") -> _Cursor:
+        """Advance by ``n`` bytes and return a sub-cursor over that window."""
+        _check_length(n, context)
+        end = self.pos + n
+        if end > len(self.buf):
+            raise CorruptionError(
+                f"Truncated {context}: claimed {n} bytes, only {self.remaining()} remain"
+            )
+        sub = _Cursor(self.buf[self.pos : end])
+        self.pos = end
+        return sub
+
+
 def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
     """Read signature header, verify CRCs, return next-header bytes (possibly empty)."""
     fp.seek(0)
-    signature = _read_exact(fp, _SIGNATURE_HEADER_SIZE, "7z signature header")
+    signature = _read_stream_exact(fp, _SIGNATURE_HEADER_SIZE, "7z signature header")
     if signature[: len(MAGIC_7Z)] != MAGIC_7Z:
         raise CorruptionError("Not a 7z archive: bad magic bytes")
 
@@ -209,7 +368,7 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
         raise CorruptionError(
             f"7z next-header seek failed at offset {next_header_offset}"
         ) from exc
-    header_data = _read_exact(fp, next_header_size, "7z next header")
+    header_data = _read_stream_exact(fp, next_header_size, "7z next header")
     if _crc32(header_data) != next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")
     return SignatureInfo(major_version, minor_version, header_data)
@@ -220,15 +379,15 @@ def parse_header_block(header_data: bytes) -> HeaderBlock:
     if not header_data:
         return PlainHeader(_StreamsInfo(), [], None)
 
-    buffer = io.BytesIO(header_data)
-    prop = _read_property(buffer, "7z header")
+    cur = _Cursor(header_data)
+    prop = _read_property(cur, "7z header")
     if prop == _Property.END:
         return PlainHeader(_StreamsInfo(), [], None)
     if prop == _Property.HEADER:
-        return _parse_plain_header(buffer)
+        return _parse_plain_header(cur)
     if prop != _Property.ENCODED_HEADER:
         raise CorruptionError(f"Expected 7z HEADER or ENCODED_HEADER, got 0x{prop:02x}")
-    return EncodedHeader(_read_streams_info(buffer))
+    return EncodedHeader(_read_streams_info(cur))
 
 
 def materialize_archive(
@@ -389,23 +548,23 @@ __all__ = [
 ]
 
 
-def _parse_plain_header(buffer: BinaryIO) -> PlainHeader:
+def _parse_plain_header(cur: _Cursor) -> PlainHeader:
     streams = _StreamsInfo()
     files: list[SevenZipFileRecord] = []
     comment: str | None = None
 
     while True:
-        prop = _read_property(buffer, "7z plain header")
+        prop = _read_property(cur, "7z plain header")
         if prop == _Property.END:
             return PlainHeader(streams, files, comment)
         if prop == _Property.ARCHIVE_PROPERTIES:
-            _skip_archive_properties(buffer)
+            _skip_archive_properties(cur)
         elif prop == _Property.ADDITIONAL_STREAMS_INFO:
-            _read_streams_info(buffer)  # skip by consuming
+            _read_streams_info(cur)  # skip by consuming
         elif prop == _Property.MAIN_STREAMS_INFO:
-            streams = _read_streams_info(buffer)
+            streams = _read_streams_info(cur)
         elif prop == _Property.FILES_INFO:
-            files, file_comment = _read_files_info(buffer)
+            files, file_comment = _read_files_info(cur)
             if file_comment is not None:
                 comment = file_comment
         else:
@@ -414,34 +573,34 @@ def _parse_plain_header(buffer: BinaryIO) -> PlainHeader:
             )
 
 
-def _read_streams_info(buffer: BinaryIO) -> _StreamsInfo:
+def _read_streams_info(cur: _Cursor) -> _StreamsInfo:
     streams = _StreamsInfo()
-    prop = _read_property(buffer, "7z streams info")
+    prop = _read_property(cur, "7z streams info")
 
     if prop == _Property.PACK_INFO:
-        pack_pos = _read_uint64(buffer)
-        num_streams = _read_uint64(buffer)
+        pack_pos = cur.uint64()
+        num_streams = cur.uint64()
         if num_streams > _MAX_NUM_STREAMS:
             raise CorruptionError(f"7z pack stream count is too large: {num_streams}")
         pack_sizes: list[int] | None = None
-        prop = _read_property(buffer, "7z PACK_INFO")
+        prop = _read_property(cur, "7z PACK_INFO")
         if prop == _Property.SIZE:
-            pack_sizes = [_read_uint64(buffer) for _ in range(num_streams)]
-            prop = _read_property(buffer, "7z PACK_INFO")
+            pack_sizes = [cur.uint64() for _ in range(num_streams)]
+            prop = _read_property(cur, "7z PACK_INFO")
         if prop == _Property.CRC:
-            _read_digests(buffer, num_streams)
-            prop = _read_property(buffer, "7z PACK_INFO")
+            _read_digests(cur, num_streams)
+            prop = _read_property(cur, "7z PACK_INFO")
         if prop != _Property.END:
             raise CorruptionError(f"Expected END in 7z PACK_INFO, got 0x{prop:02x}")
         pack_sizes = pack_sizes or []
         streams.pack_pos = pack_pos
         streams.pack_sizes = pack_sizes
         streams.pack_positions = _pack_positions(pack_sizes)
-        prop = _read_property(buffer, "7z streams info")
+        prop = _read_property(cur, "7z streams info")
 
     if prop == _Property.UNPACK_INFO:
-        streams.folders = _read_unpack_info(buffer)
-        prop = _read_property(buffer, "7z streams info")
+        streams.folders = _read_unpack_info(cur)
+        prop = _read_property(cur, "7z streams info")
 
     if prop == _Property.SUBSTREAMS_INFO:
         if streams.folders is None:
@@ -450,8 +609,8 @@ def _read_streams_info(buffer: BinaryIO) -> _StreamsInfo:
             streams.num_unpackstreams_folders,
             streams.unpack_sizes,
             streams.digests,
-        ) = _read_substreams_info(buffer, streams.folders)
-        prop = _read_property(buffer, "7z streams info")
+        ) = _read_substreams_info(cur, streams.folders)
+        prop = _read_property(cur, "7z streams info")
     elif streams.folders is not None:
         streams.num_unpackstreams_folders = [1] * len(streams.folders)
         streams.unpack_sizes = [
@@ -466,20 +625,20 @@ def _read_streams_info(buffer: BinaryIO) -> _StreamsInfo:
     return streams
 
 
-def _read_unpack_info(buffer: BinaryIO) -> list[SevenZipFolder]:
-    prop = _read_property(buffer, "7z UNPACK_INFO")
+def _read_unpack_info(cur: _Cursor) -> list[SevenZipFolder]:
+    prop = _read_property(cur, "7z UNPACK_INFO")
     if prop != _Property.FOLDER:
         raise CorruptionError(f"Expected FOLDER in 7z UNPACK_INFO, got 0x{prop:02x}")
 
-    num_folders = _read_uint64(buffer)
-    external = _read_byte(buffer)
+    num_folders = cur.uint64()
+    external = cur.byte()
     if external != 0:
         raise UnsupportedFeatureError(
             "External 7z folder definitions are not supported"
         )
 
-    folders = [_read_folder(buffer) for _ in range(num_folders)]
-    prop = _read_property(buffer, "7z UNPACK_INFO")
+    folders = [_read_folder(cur) for _ in range(num_folders)]
+    prop = _read_property(cur, "7z UNPACK_INFO")
     if prop != _Property.CODERS_UNPACK_SIZE:
         raise CorruptionError(
             f"Expected CODERS_UNPACK_SIZE in 7z UNPACK_INFO, got 0x{prop:02x}"
@@ -487,51 +646,51 @@ def _read_unpack_info(buffer: BinaryIO) -> list[SevenZipFolder]:
 
     for folder in folders:
         folder.unpack_sizes = [
-            _read_uint64(buffer)
+            cur.uint64()
             for coder in folder.coders
             for _ in range(coder.num_out_streams)
         ]
 
-    prop = _read_property(buffer, "7z UNPACK_INFO")
+    prop = _read_property(cur, "7z UNPACK_INFO")
     if prop == _Property.CRC:
-        defined, crcs = _read_digests(buffer, len(folders))
+        defined, crcs = _read_digests(cur, len(folders))
         for index, folder in enumerate(folders):
             folder.digest_defined = defined[index]
             folder.crc = crcs[index]
-        prop = _read_property(buffer, "7z UNPACK_INFO")
+        prop = _read_property(cur, "7z UNPACK_INFO")
 
     if prop != _Property.END:
         raise CorruptionError(f"Expected END in 7z UNPACK_INFO, got 0x{prop:02x}")
     return folders
 
 
-def _read_folder(buffer: BinaryIO) -> SevenZipFolder:
-    num_coders = _read_uint64(buffer)
+def _read_folder(cur: _Cursor) -> SevenZipFolder:
+    num_coders = cur.uint64()
     coders: list[SevenZipCoder] = []
     total_in = 0
     total_out = 0
 
     for _ in range(num_coders):
-        flags = _read_byte(buffer)
+        flags = cur.byte()
         method_size = flags & 0x0F
         if flags & 0x80:
             raise UnsupportedFeatureError(
                 "Alternative 7z coder methods are not supported"
             )
-        method = _read_exact(buffer, method_size, "7z coder method id")
+        method = cur.read(method_size, "7z coder method id")
         if method_size == 0:
             method = METHOD_COPY.method_id
 
         if flags & 0x10:
-            num_in_streams = _read_uint64(buffer)
-            num_out_streams = _read_uint64(buffer)
+            num_in_streams = cur.uint64()
+            num_out_streams = cur.uint64()
         else:
             num_in_streams = 1
             num_out_streams = 1
         properties = None
         if flags & 0x20:
-            prop_size = _read_uint64(buffer)
-            properties = _read_exact(buffer, prop_size, "7z coder properties")
+            prop_size = cur.uint64()
+            properties = cur.read(prop_size, "7z coder properties")
 
         total_in += num_in_streams
         total_out += num_out_streams
@@ -545,9 +704,7 @@ def _read_folder(buffer: BinaryIO) -> SevenZipFolder:
         )
 
     num_bind_pairs = total_out - 1
-    bind_pairs = [
-        (_read_uint64(buffer), _read_uint64(buffer)) for _ in range(num_bind_pairs)
-    ]
+    bind_pairs = [(cur.uint64(), cur.uint64()) for _ in range(num_bind_pairs)]
     num_packed_streams = total_in - num_bind_pairs
     if num_packed_streams == 1:
         bound_in_streams = {in_stream for in_stream, _ in bind_pairs}
@@ -555,7 +712,7 @@ def _read_folder(buffer: BinaryIO) -> SevenZipFolder:
             index for index in range(total_in) if index not in bound_in_streams
         ]
     else:
-        packed_indices = [_read_uint64(buffer) for _ in range(num_packed_streams)]
+        packed_indices = [cur.uint64() for _ in range(num_packed_streams)]
 
     return SevenZipFolder(
         coders=coders,
@@ -568,12 +725,12 @@ def _read_folder(buffer: BinaryIO) -> SevenZipFolder:
 
 
 def _read_substreams_info(
-    buffer: BinaryIO, folders: list[SevenZipFolder]
+    cur: _Cursor, folders: list[SevenZipFolder]
 ) -> tuple[list[int], list[int], list[int | None]]:
-    prop = _read_property(buffer, "7z SUBSTREAMS_INFO")
+    prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     if prop == _Property.NUM_UNPACK_STREAM:
-        num_unpackstreams_folders = [_read_uint64(buffer) for _ in folders]
-        prop = _read_property(buffer, "7z SUBSTREAMS_INFO")
+        num_unpackstreams_folders = [cur.uint64() for _ in folders]
+        prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     else:
         num_unpackstreams_folders = [1] * len(folders)
 
@@ -583,7 +740,7 @@ def _read_substreams_info(
             total = 0
             count = num_unpackstreams_folders[folder_index]
             for _ in range(max(count - 1, 0)):
-                size = _read_uint64(buffer)
+                size = cur.uint64()
                 unpack_sizes.append(size)
                 total += size
             if count:
@@ -593,7 +750,7 @@ def _read_substreams_info(
                         "7z substream sizes exceed folder unpack size"
                     )
                 unpack_sizes.append(last_size)
-        prop = _read_property(buffer, "7z SUBSTREAMS_INFO")
+        prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     else:
         for folder_index, folder in enumerate(folders):
             count = num_unpackstreams_folders[folder_index]
@@ -607,7 +764,7 @@ def _read_substreams_info(
 
     digests: list[int | None] = []
     if prop == _Property.CRC:
-        defined, crcs = _read_digests(buffer, digest_slots)
+        defined, crcs = _read_digests(cur, digest_slots)
         digest_index = 0
         for folder_index, folder in enumerate(folders):
             count = num_unpackstreams_folders[folder_index]
@@ -619,7 +776,7 @@ def _read_substreams_info(
                         crcs[digest_index] if defined[digest_index] else None
                     )
                     digest_index += 1
-        prop = _read_property(buffer, "7z SUBSTREAMS_INFO")
+        prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     else:
         for folder_index, folder in enumerate(folders):
             count = num_unpackstreams_folders[folder_index]
@@ -633,33 +790,12 @@ def _read_substreams_info(
     return num_unpackstreams_folders, unpack_sizes, digests
 
 
-def _buffer_len(buffer: BinaryIO) -> int:
-    # Header payloads are BytesIO — ``getbuffer().nbytes`` is O(1). The seek/tell
-    # triple is only for real file objects (signature / next-header reads).
-    if isinstance(buffer, io.BytesIO):
-        return buffer.getbuffer().nbytes
-    pos = buffer.tell()
-    end = buffer.seek(0, io.SEEK_END)
-    buffer.seek(pos)
-    return end
-
-
-def _buffer_remaining(buffer: BinaryIO) -> int | None:
-    """Bytes left in ``buffer``, or ``None`` when length cannot be determined."""
-    try:
-        if isinstance(buffer, io.BytesIO):
-            return buffer.getbuffer().nbytes - buffer.tell()
-        return _buffer_len(buffer) - buffer.tell()
-    except (OSError, OverflowError, ValueError):
-        return None
-
-
-def _read_files_info(buffer: BinaryIO) -> tuple[list[SevenZipFileRecord], str | None]:
-    num_files = _read_uint64(buffer)
+def _read_files_info(cur: _Cursor) -> tuple[list[SevenZipFileRecord], str | None]:
+    num_files = cur.uint64()
     # Bound the file count against the header size before pre-allocating one object per
     # claimed file. See threat-model O1 / review L1. CRC does NOT make the header
     # trustworthy: an attacker crafting the archive computes a matching CRC.
-    header_size = _buffer_len(buffer)
+    header_size = len(cur.buf)
     if num_files > header_size:
         raise CorruptionError(
             f"7z file count {num_files} exceeds the {header_size}-byte header "
@@ -671,12 +807,12 @@ def _read_files_info(buffer: BinaryIO) -> tuple[list[SevenZipFileRecord], str | 
     handlers = _FILES_INFO_HANDLERS
 
     while True:
-        prop = _read_property(buffer, "7z FILES_INFO")
+        prop = _read_property(cur, "7z FILES_INFO")
         if prop == _Property.END:
             return [_file_record_from_props(props) for props in files], comment
 
-        size = _read_uint64(buffer)
-        payload = io.BytesIO(_read_exact(buffer, size, "7z file property payload"))
+        size = cur.uint64()
+        payload = cur.slice(size, "7z file property payload")
         if prop == _Property.DUMMY:
             continue
         if prop == _Property.EMPTY_STREAM:
@@ -710,28 +846,28 @@ def _apply_empty_stream_bool(
 
 
 def _handle_empty_file(
-    payload: BinaryIO, files: list[_FileProps], num_empty: int, _n: int
+    payload: _Cursor, files: list[_FileProps], num_empty: int, _n: int
 ) -> None:
     _apply_empty_stream_bool(files, _read_boolean(payload, num_empty), "is_empty_file")
 
 
 def _handle_anti(
-    payload: BinaryIO, files: list[_FileProps], num_empty: int, _n: int
+    payload: _Cursor, files: list[_FileProps], num_empty: int, _n: int
 ) -> None:
     _apply_empty_stream_bool(files, _read_boolean(payload, num_empty), "is_anti")
 
 
 def _handle_name(
-    payload: BinaryIO, files: list[_FileProps], _num_empty: int, _n: int
+    payload: _Cursor, files: list[_FileProps], _num_empty: int, _n: int
 ) -> None:
-    external = _read_byte(payload)
+    external = payload.byte()
     if external != 0:
         raise UnsupportedFeatureError("External 7z filename data is not supported")
     # Bulk-decode the whole names blob (known size, null-terminated UTF-16LE
-    # strings). Per-character ``_read_exact`` was ~22 calls/member and dominated
-    # listing (perf review L1 / listing-attribution.md).
-    blob = payload.read()
-    names = _decode_utf16_names(blob, expected_count=len(files))
+    # strings). Per-character reads dominated listing before L1.
+    view = payload.buf[payload.pos :]
+    payload.pos = len(payload.buf)
+    names = _decode_utf16_names(bytes(view), expected_count=len(files))
     for file_props, name in zip(files, names, strict=True):
         file_props.filename = name.replace("\\", "/")
 
@@ -770,49 +906,61 @@ def _decode_utf16_names(blob: bytes, *, expected_count: int) -> list[str]:
 
 def _handle_time(
     field_name: str,
-) -> Callable[[BinaryIO, list[_FileProps], int, int], None]:
+) -> Callable[[_Cursor, list[_FileProps], int, int], None]:
     def _handler(
-        payload: BinaryIO, files: list[_FileProps], _num_empty: int, _n: int
+        payload: _Cursor, files: list[_FileProps], _num_empty: int, _n: int
     ) -> None:
-        defined = _read_boolean(payload, len(files), check_all=True)
-        external = _read_byte(payload)
+        # Hot per-member loop: free functions keep ``pos`` in a local (Decision 4).
+        buf = payload.buf
+        pos = payload.pos
+        defined, pos = _load_boolean(buf, pos, len(files), check_all=True)
+        external, pos = _load_byte(buf, pos)
         if external != 0:
             raise UnsupportedFeatureError("External 7z timestamp data is not supported")
         for file_props, is_defined in zip(files, defined, strict=True):
             if is_defined:
-                setattr(file_props, field_name, _read_real_uint64(payload))
+                value, pos = _load_u64(buf, pos)
+                setattr(file_props, field_name, value)
+        payload.pos = pos
 
     return _handler
 
 
 def _handle_attributes(
-    payload: BinaryIO, files: list[_FileProps], _num_empty: int, _n: int
+    payload: _Cursor, files: list[_FileProps], _num_empty: int, _n: int
 ) -> None:
-    defined = _read_boolean(payload, len(files), check_all=True)
-    external = _read_byte(payload)
+    buf = payload.buf
+    pos = payload.pos
+    defined, pos = _load_boolean(buf, pos, len(files), check_all=True)
+    external, pos = _load_byte(buf, pos)
     if external != 0:
         raise UnsupportedFeatureError("External 7z attribute data is not supported")
     for file_props, is_defined in zip(files, defined, strict=True):
         if is_defined:
-            file_props.attributes = _read_uint32(payload)
+            value, pos = _load_u32(buf, pos)
+            file_props.attributes = value
+    payload.pos = pos
 
 
 def _handle_start_pos(
-    payload: BinaryIO, _files: list[_FileProps], _num_empty: int, num_files: int
+    payload: _Cursor, _files: list[_FileProps], _num_empty: int, num_files: int
 ) -> None:
-    defined = _read_boolean(payload, num_files, check_all=True)
-    external = _read_byte(payload)
+    buf = payload.buf
+    pos = payload.pos
+    defined, pos = _load_boolean(buf, pos, num_files, check_all=True)
+    external, pos = _load_byte(buf, pos)
     if external != 0:
         raise UnsupportedFeatureError(
             "External 7z start-position data is not supported"
         )
     for is_defined in defined:
         if is_defined:
-            _read_real_uint64(payload)
+            _, pos = _load_u64(buf, pos)
+    payload.pos = pos
 
 
 _FILES_INFO_HANDLERS: dict[
-    _Property, Callable[[BinaryIO, list[_FileProps], int, int], None]
+    _Property, Callable[[_Cursor, list[_FileProps], int, int], None]
 ] = {
     _Property.EMPTY_FILE: _handle_empty_file,
     _Property.ANTI: _handle_anti,
@@ -916,17 +1064,18 @@ def _pack_positions(pack_sizes: list[int]) -> list[int]:
     return positions
 
 
-def _skip_archive_properties(buffer: BinaryIO) -> None:
+def _skip_archive_properties(cur: _Cursor) -> None:
     while True:
-        prop = _read_property(buffer, "7z archive properties")
+        prop = _read_property(cur, "7z archive properties")
         if prop == _Property.END:
             return
-        size = _read_uint64(buffer)
-        _read_exact(buffer, size, "7z archive property payload")
+        size = cur.uint64()
+        cur.read(size, "7z archive property payload")
 
 
-def _read_comment(buffer: BinaryIO) -> str | None:
-    data = buffer.read()
+def _read_comment(cur: _Cursor) -> str | None:
+    data = bytes(cur.buf[cur.pos :])
+    cur.pos = len(cur.buf)
     if not data:
         return None
     if data[0] == 0:
@@ -940,80 +1089,43 @@ def _read_comment(buffer: BinaryIO) -> str | None:
         raise CorruptionError(f"Could not decode 7z comment: {exc!r}") from exc
 
 
-def _read_digests(buffer: BinaryIO, count: int) -> tuple[list[bool], list[int | None]]:
-    defined = _read_boolean(buffer, count, check_all=True)
+def _read_digests(cur: _Cursor, count: int) -> tuple[list[bool], list[int | None]]:
+    # Digests can be dense (one CRC per folder); free-fn loop for the CRC table.
+    buf = cur.buf
+    pos = cur.pos
+    defined, pos = _load_boolean(buf, pos, count, check_all=True)
     crcs: list[int | None] = []
     for is_defined in defined:
-        crcs.append(_read_uint32(buffer) if is_defined else None)
+        if is_defined:
+            value, pos = _load_u32(buf, pos)
+            crcs.append(value)
+        else:
+            crcs.append(None)
+    cur.pos = pos
     return defined, crcs
 
 
-def _read_boolean(
-    buffer: BinaryIO, count: int, *, check_all: bool = False
-) -> list[bool]:
-    if check_all:
-        all_defined = _read_byte(buffer)
-        if all_defined != 0:
-            return [True] * count
-
-    result: list[bool] = []
-    current = 0
-    mask = 0
-    for _ in range(count):
-        if mask == 0:
-            current = _read_byte(buffer)
-            mask = 0x80
-        result.append((current & mask) != 0)
-        mask >>= 1
+def _read_boolean(cur: _Cursor, count: int, *, check_all: bool = False) -> list[bool]:
+    result, cur.pos = _load_boolean(cur.buf, cur.pos, count, check_all=check_all)
     return result
 
 
-def _read_utf16(buffer: BinaryIO) -> str:
+def _read_utf16(cur: _Cursor) -> str:
     """Read one null-terminated UTF-16LE string (legacy / single-name helper).
 
     Prefer :func:`_decode_utf16_names` for the ``kName`` property (bulk path).
     """
     chunks = bytearray()
     for _ in range(_MAX_UTF16_CHARS):
-        unit = _read_exact(buffer, 2, "7z UTF-16 name")
+        unit = cur.read(2, "7z UTF-16 name")
         if unit == b"\x00\x00":
             return bytes(chunks).decode("utf-16le")
         chunks.extend(unit)
     raise CorruptionError("7z UTF-16 string is not null-terminated")
 
 
-def _read_uint64(buffer: BinaryIO) -> int:
-    first = _read_byte(buffer)
-    if first == 0xFF:
-        return _read_real_uint64(buffer)
-
-    mask = 0x80
-    extra_bytes = _MAX_UINT64_ENCODING
-    for limit, length in (
-        (0b01111111, 0),
-        (0b10111111, 1),
-        (0b11011111, 2),
-        (0b11101111, 3),
-        (0b11110111, 4),
-        (0b11111011, 5),
-        (0b11111101, 6),
-        (0b11111110, 7),
-    ):
-        if first <= limit:
-            extra_bytes = length
-            break
-        mask >>= 1
-
-    if extra_bytes == 0:
-        return first & (mask - 1)
-    data = _read_exact(buffer, extra_bytes, "7z UINT64")
-    low = int.from_bytes(data, "little")
-    high = first & (mask - 1)
-    return low + (high << (extra_bytes * 8))
-
-
-def _read_property(buffer: BinaryIO, context: str) -> _Property:
-    value = _read_byte(buffer)
+def _read_property(cur: _Cursor, context: str) -> _Property:
+    value = cur.byte()
     try:
         return _Property(value)
     except ValueError:
@@ -1022,34 +1134,11 @@ def _read_property(buffer: BinaryIO, context: str) -> _Property:
         ) from None
 
 
-def _read_byte(buffer: BinaryIO) -> int:
-    return _read_exact(buffer, 1, "7z byte")[0]
-
-
-def _read_uint32(buffer: BinaryIO) -> int:
-    return int.from_bytes(_read_exact(buffer, 4, "7z UINT32"), "little")
-
-
-def _read_real_uint64(buffer: BinaryIO) -> int:
-    return int.from_bytes(_read_exact(buffer, 8, "7z real UINT64"), "little")
-
-
-def _read_exact(buffer: BinaryIO, length: int, context: str) -> bytes:
-    """Read ``length`` bytes, or raise a typed error for hostile/truncated claims."""
-    if length < 0:
-        raise CorruptionError(f"Negative length for {context}: {length}")
-    if length > _MAX_NEXT_HEADER_SIZE:
-        raise CorruptionError(
-            f"Claimed {context} length {length} exceeds the "
-            f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
-        )
-    remaining = _buffer_remaining(buffer)
-    if remaining is not None and length > remaining:
-        raise CorruptionError(
-            f"Truncated {context}: claimed {length} bytes, only {remaining} remain"
-        )
+def _read_stream_exact(fp: BinaryIO, length: int, context: str) -> bytes:
+    """Read ``length`` bytes from a real file/stream (signature / next-header only)."""
+    _check_length(length, context)
     try:
-        data = read_exact(buffer, length)
+        data = read_exact(fp, length)
     except OverflowError as exc:
         raise CorruptionError(
             f"Claimed {context} length {length} is not representable as a read size"
