@@ -36,7 +36,7 @@
     },
     "gzip_read_all": {
       "bytes_decompressed": 65536,
-      "source_seek_count": 3,
+      "source_seek_count": 1,
       "unpacked_bytes": 65536,
       "notes": ""
     },

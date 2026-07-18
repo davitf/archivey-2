@@ -41,6 +41,9 @@ from archivey.types import MemberType
         ("a//b/./c", MemberType.FILE, False, "a/b/c"),  # combined cleanups
         ("mydir", MemberType.DIRECTORY, False, "mydir/"),  # dir trailing slash
         ("mydir/", MemberType.DIRECTORY, False, "mydir/"),  # already has slash
+        # Non-directory trailing slash: empty segment dropped (fast path must not keep it).
+        ("a/", MemberType.FILE, False, "a"),
+        ("pkg/", MemberType.SYMLINK, False, "pkg"),
         ("/", MemberType.DIRECTORY, False, "."),  # bare root becomes dot
         ("", MemberType.FILE, False, "."),  # empty becomes dot
     ],
@@ -53,6 +56,30 @@ def test_normalize(
             decoded, member_type, backslash_is_separator=backslash_is_separator
         )
         == expected
+    )
+
+
+def test_file_trailing_slash_matches_slow_walk() -> None:
+    """Regression: fast path must not keep a trailing slash on FILE/SYMLINK.
+
+    TAR/7z/RAR/ISO classify type independently of the name; a crafted FILE named
+    ``a/`` must normalize to ``a`` (empty segment dropped), same as the slow walk.
+    """
+    for member_type in (MemberType.FILE, MemberType.SYMLINK, MemberType.OTHER):
+        assert (
+            normalize_member_name("a/", member_type, backslash_is_separator=False)
+            == "a"
+        )
+        assert (
+            normalize_member_name(
+                "dir/file/", member_type, backslash_is_separator=False
+            )
+            == "dir/file"
+        )
+    # DIRECTORY still keeps / requires the trailing slash.
+    assert (
+        normalize_member_name("a/", MemberType.DIRECTORY, backslash_is_separator=False)
+        == "a/"
     )
 
 

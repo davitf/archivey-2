@@ -126,6 +126,8 @@ def normalize_member_name(
     # segments to drop. ``..`` is retained as-is under the rules below, so a path
     # that only contains ordinary segments (and optional ``..``) needs no rebuild.
     # Listing hot path (ZIP/TAR open+list); keep behaviour identical to the full walk.
+    # A trailing ``/`` on a non-directory is an empty segment the slow walk drops
+    # (FILE ``"a/"`` → ``"a"``); only DIRECTORY may keep/require it.
     if (
         name
         and not name.startswith("/")
@@ -134,6 +136,7 @@ def normalize_member_name(
         and "/./" not in name
         and not name.endswith("/.")
         and name != "."
+        and (not name.endswith("/") or member_type == MemberType.DIRECTORY)
     ):
         if member_type == MemberType.DIRECTORY and not name.endswith("/"):
             return name + "/"
