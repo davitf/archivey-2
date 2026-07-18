@@ -29,10 +29,10 @@ The report SHALL iterate, index, and size as its `members` sequence (same
 ergonomics as `ExtractionReport` vs its results).
 
 Members in the report SHALL be identity-stamped for this reader (`member in
-reader`) so `open(member)` works for recovered `FILE` members. The system SHALL
-NOT publish them as a successful complete `_members_cache`: subsequent
-`members()` / `scan_members()` / `get(name)` MUST still raise the terminal error
-(or re-drive and raise) rather than return a silent partial list.
+reader`) so `open(member)` works for recovered `FILE` members. An incomplete
+report (`error` set) MUST NOT be treated as a successful complete materialization:
+subsequent `members()` / `scan_members()` / `get(name)` MUST still raise the
+terminal error rather than return a silent partial list.
 `members_report_if_available()` SHALL return a `MemberListReport | None`: the stored
 report when one exists without scanning — complete (`error is None`) **or**
 incomplete (`error` set) from a prior pass — or the upfront index as a complete
@@ -50,8 +50,8 @@ instead of raising on terminal archive-level listing errors.
 | Case | Expected |
 | --- | --- |
 | Clean archive | `error is None`; `members` is the full fully-resolved list |
-| TAR rejected mid/final header after prefix (Option F) | `members` = recoverable prefix; `error` is `CorruptionError`; no complete cache published |
-| Strict absent/short trailer after prefix | `members` = prefix; `error` is `TruncatedError`; no complete cache |
+| TAR rejected mid/final header after prefix (Option F) | `members` = recoverable prefix; `error` is `CorruptionError`; report stored incomplete |
+| Strict absent/short trailer after prefix | `members` = prefix; `error` is `TruncatedError`; report stored incomplete |
 | `members_report()` then `members()` on same RA reader after incomplete | `members()` raises the terminal error (not a partial list) |
 | `open(report.members[i])` for a recovered FILE after incomplete | Succeeds by identity |
 | `get(name)` after incomplete | Raises terminal error / does not pretend completeness |
@@ -99,11 +99,12 @@ running it consumes/finishes the pass.
 
 A live forward pass leaves forward-pointing symlinks unresolved at yield time.
 Completing a pass **successfully** via `__iter__`, `stream_members`,
-`extract_all`, or `scan_members` SHALL finalize the cache in place on
-already-yielded objects and make `members_report_if_available()` return it. An
-abandoned pass (early `break`, no `scan_members()`) SHALL NOT finalize. A pass
-that ends in a terminal archive-level listing error after a prefix SHALL NOT
-publish a successful complete cache (see `MemberListReport` requirement).
+`extract_all`, or `scan_members` SHALL store a complete `MemberListReport`
+(`error is None`) finalized in place on already-yielded objects so
+`members_report_if_available()` returns it. An abandoned pass (early `break`, no
+`scan_members()`) SHALL NOT finalize. A pass that ends in a terminal
+archive-level listing error after a prefix SHALL store an incomplete report
+(`error` set) — never a complete one (see `MemberListReport` requirement).
 
 No `__len__` / `__getitem__` (not a collection; protocols are probed implicitly —
 `list(reader)` probes `__len__` for preallocation). `len(ar)` → Python `TypeError`

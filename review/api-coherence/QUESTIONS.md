@@ -176,10 +176,12 @@ hard parts — deferred in that change.
 > Option F) — not part of the original api-coherence finding set in #133. Adjacent to
 > **E2 / Q5** and to salvage in `IDEAS.md` / `../backlog.md`, but not the same question.
 
-**Decision: leave for a next review round.** Do not explore or redesign in this
-freeze pass. Option F’s interim contract (RA fail-closed / streaming
-salvage-then-raise) stands; ownership of the VISION claim-(3) gap moves to the
-next round / backlog (cross-link from EOF design remains fine).
+**Decision: implement via OpenSpec change `partial-members-and-errors`.** Dual listing
+surface: `members()` / `scan_members()` stay complete-or-raise; `members_report()` →
+`MemberListReport` always returns prefix + `error`; RA iteration aligns with streaming
+(yield-then-raise). Single stored report model (completeness is `error is None`);
+`get_members_if_available` renamed to `members_report_if_available`. Exception-carried
+prefix rejected. Salvage / soft-extract / verify remain separate.
 
 ---
 
@@ -197,4 +199,4 @@ next round / backlog (cross-link from EOF design remains fine).
 | Q6 hashes → `Mapping[HashAlgorithm, bytes]` | Review-fix PR: add enum (`CRC32` / `BLAKE2SP` / `ADLER32`); crc32 `int`→4-byte `bytes`; backends/verify/docs for type only |
 | Q6 hashes fill (zlib/lzip) | **Separate change:** `openspec/changes/surface-stored-stream-digests` |
 | Q6 `display_name` | Property on `ArchiveFormat` + CLI |
-| Q7 | Next round — see `../backlog.md` / STATUS future list |
+| Q7 | **OpenSpec `partial-members-and-errors`** (this change) |

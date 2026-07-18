@@ -109,9 +109,8 @@ class MemberListReport:
     diagnostics: DiagnosticSummary
 ```
 
-Mirror `ExtractionReport`: report may iterate/len/index as `members` for
-ergonomics (optional; specs can require or leave as convenience — prefer yes for
-CLI/parity).
+Mirror `ExtractionReport`: the report **SHALL** iterate/len/index as its
+`members` sequence (locked in the archive-reading delta; Open Question 1 closed).
 
 **Rejected:** diagnostics-only; `members(raise_on_error=…)`; making `members()`
 always return a report; exception `.recovered_members` in **any** form (primary
@@ -181,7 +180,7 @@ Recovered `ArchiveMember` objects on the report are identity-stamped
 (`member in reader`) so `open(member)` works for recovered `FILE` members without
 pretending `members()` succeeded. Because the report is stored, a repeated
 `members_report()` on the same reader **replays** it (cheap, deterministic; no
-re-scan of a damaged source) — see Open Question 2.
+re-scan of a damaged source). A fresh scan only happens on reopen.
 
 Completeness (`error`) is orthogonal to link resolution: an upfront index or an
 incomplete prefix may carry unresolved links; `error is None` means "the listing
@@ -274,10 +273,4 @@ yield-then-raise).
 
 ## Open Questions
 
-1. **Should `MemberListReport` iterate as its members tuple?** Lean yes
-   (ExtractionReport precedent). Confirm in specs.
-2. **After incomplete RA scan, re-call `members_report` on the same seekable
-   reader:** re-scan or replay the incomplete snapshot? **Decided: replay.** The
-   single stored report (Decision 3) *is* the memo — repeated calls return it
-   without re-doing I/O on a source the reader already assumes is stable (the
-   complete-cache path assumes the same). A fresh scan only happens on reopen.
+None — sequence ergonomics and replay-vs-re-scan are locked under Decisions 1 and 3.

@@ -6,6 +6,7 @@ import sys
 from typing import TextIO
 
 from archivey.cli.common import open_for_cli, reject_salvage
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import member_predicate
 from archivey.cli.format import format_member_line
 from archivey.cli.password import resolve_password
@@ -32,11 +33,15 @@ def run_list(
     pred = member_predicate(patterns, exclude)
 
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
-        for member in reader:
+        report = reader.members_report()
+        for member in report:
             if pred is not None and not pred(member):
                 continue
             print(
                 format_member_line(member, digests=digests, verbose=verbose),
                 file=out,
             )
-    return 0
+        if report.error is not None:
+            print(f"archivey: {report.error}", file=err)
+            return EXIT_FAIL
+    return EXIT_OK

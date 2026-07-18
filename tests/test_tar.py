@@ -453,6 +453,48 @@ def test_missing_eof_blocks_strict_archive_eof_raises() -> None:
             ar.members()
 
 
+def test_members_report_recovers_prefix_on_strict_eof() -> None:
+    """Q7: members_report returns prefix + error; members() raises; iter yields then raises."""
+    data = _tar_missing_eof_block()
+    config = ArchiveyConfig(strict_archive_eof=True)
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR, config=config) as ar:
+        report = ar.members_report()
+        assert report.error is not None
+        assert isinstance(report.error, TruncatedError)
+        names = [m.name for m in report.members]
+        assert names == ["hello.txt", "dir/nested.txt", "dir/", "link.txt"]
+        assert ar.members_report_if_available() is report
+        with pytest.raises(TruncatedError):
+            ar.members()
+        yielded: list[str] = []
+        with pytest.raises(TruncatedError):
+            for member in ar:
+                yielded.append(member.name)
+        assert yielded == names
+        first = report.members[0]
+        assert first in ar
+        assert ar.open(first).read() == b"hello world"
+
+
+def test_members_report_streaming_strict_eof_yield_then_raise() -> None:
+    data = _tar_missing_eof_block()
+    config = ArchiveyConfig(strict_archive_eof=True)
+    with open_archive(
+        NonSeekableBytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=True,
+        config=config,
+    ) as ar:
+        yielded: list[str] = []
+        with pytest.raises(TruncatedError):
+            for member, _stream in ar.stream_members():
+                yielded.append(member.name)
+        assert yielded == ["hello.txt", "dir/nested.txt", "dir/", "link.txt"]
+        report = ar.members_report()
+        assert isinstance(report.error, TruncatedError)
+        assert [m.name for m in report.members] == yielded
+
+
 def test_missing_eof_blocks_streaming_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

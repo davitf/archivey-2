@@ -11,7 +11,7 @@ item is fixed or consciously deferred here / in `backlog.md`.
 |--------|---------------------|----------------------|-------------------|
 | `stream-layering/` | yes (#137) | **done** (F1/F2/D1/D2); Q4 parked → future | **almost** — park Q4 then archive |
 | `performance/` | yes (#134 + #139/#140/#143/#146) | partial (P3–P5 done; P7 listing L0–L2 done, L3 partial; P1/P2/P6 open) | no |
-| `api-coherence/` | yes (#133) | **Q1–Q6 decided + implemented** (hashes typing done; digest filling → `surface-stored-stream-digests`; Q5/Q7 deferred) | **almost** — park digest fill / Q5 / Q7 then archive |
+| `api-coherence/` | yes (#133) | **Q1–Q6 decided + implemented**; digest fill → `surface-stored-stream-digests`; Q5 deferred; **Q7 → `partial-members-and-errors`** | **almost** — park digest fill / Q5 then archive |
 | `cli-product/` | **no** — brief only | review not run | no |
 
 ---
@@ -62,7 +62,7 @@ Do not implement these until the maintainer answers (pause-and-ask).
 | Q | Status |
 |---|--------|
 | **Q1–Q6** | **Decided** 2026-07-18 — see §1 and `api-coherence/QUESTIONS.md` |
-| **Q7** | **Deferred to next review round** (partial members + honest error) |
+| **Q7** | **Decided** — OpenSpec `partial-members-and-errors` |
 
 ### `performance/QUESTIONS.md`
 
@@ -106,7 +106,7 @@ dedicated follow-up brief — they are not 0.2.0 blockers from the current round
 |----|-------|
 | **D1** | CLI list marks for `ANTI` / non-current — belongs to **`cli-product/`** when that review runs. |
 | **E2 / Q5** | Library `verify` / `VerifyReport` — deferred past 0.2.0; uncertain whether callers verify without extracting often enough. Park in `IDEAS.md`. |
-| **Q7** | Partial members + honest error accessor — **next review round** (VISION claim 3). Option F interim stands. |
+| **Q7** | Partial members + honest error — **OpenSpec `partial-members-and-errors`** |
 | **Stored stream digests** | zlib Adler-32 + lzip multi-member combine — OpenSpec **`surface-stored-stream-digests`** (after hashes typing). |
 
 ### Already on `backlog.md` (not from this round’s findings)
