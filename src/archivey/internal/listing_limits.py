@@ -9,11 +9,16 @@ from archivey.exceptions import ResourceLimitError
 from archivey.types import ArchiveMember
 
 
-def _utf8_len(value: str) -> int:
-    # ASCII is a pure length (no encode); listing accounts every member name.
-    if value.isascii():
-        return len(value)
-    return len(value.encode("utf-8", "surrogateescape"))
+def _str_retained_bytes(value: str) -> int:
+    """Cheap upper bound on UTF-8 size for listing bomb accounting.
+
+    ``max_metadata_bytes`` is a safety cap, not a precise allocator — encoding
+    every field on the open+list hot path is wasted work. UTF-8 is at most 4
+    bytes per Unicode code point, so ``4 * len(s)`` never under-counts a
+    Unicode name bomb; ASCII uses ``len(s)`` (exact, the common case).
+    """
+    n = len(value)
+    return n if value.isascii() else n * 4
 
 
 def _extra_bytes(extra: dict[str, Any]) -> int:
@@ -21,37 +26,36 @@ def _extra_bytes(extra: dict[str, Any]) -> int:
     total = 0
     for value in extra.values():
         if isinstance(value, str):
-            total += _utf8_len(value)
+            total += _str_retained_bytes(value)
         elif isinstance(value, bytes):
             total += len(value)
         elif isinstance(value, dict):
             for nested in value.values():
                 if isinstance(nested, str):
-                    total += _utf8_len(nested)
+                    total += _str_retained_bytes(nested)
                 elif isinstance(nested, bytes):
                     total += len(nested)
     return total
 
 
 def member_metadata_bytes(member: ArchiveMember) -> int:
-    """Byte length of retained string/bytes fields on one member (design accounting)."""
-    # Hot path for ZIP/TAR listing: most optional string fields are None. Avoid the
-    # getattr/isinstance loop over a fixed field list (perf review H3/Q1).
-    total = _utf8_len(member.name)
+    """Retained metadata weight for one member (listing bomb accounting)."""
+    # Hot path for ZIP/TAR listing: most optional string fields are None.
+    total = _str_retained_bytes(member.name)
     if member.raw_name is not None:
         total += len(member.raw_name)
     comment = member.comment
     if comment is not None:
-        total += _utf8_len(comment)
+        total += _str_retained_bytes(comment)
     link_target = member.link_target
     if link_target is not None:
-        total += _utf8_len(link_target)
+        total += _str_retained_bytes(link_target)
     uname = member.uname
     if uname is not None:
-        total += _utf8_len(uname)
+        total += _str_retained_bytes(uname)
     gname = member.gname
     if gname is not None:
-        total += _utf8_len(gname)
+        total += _str_retained_bytes(gname)
     if member.extra:
         total += _extra_bytes(member.extra)
     return total
@@ -60,7 +64,7 @@ def member_metadata_bytes(member: ArchiveMember) -> int:
 def archive_comment_bytes(comment: str | None) -> int:
     if comment is None:
         return 0
-    return _utf8_len(comment)
+    return _str_retained_bytes(comment)
 
 
 class ListingLimitTracker:

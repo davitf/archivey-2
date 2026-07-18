@@ -243,25 +243,31 @@ list use `members()` / `scan_members()` and accept the caps.
 
 ### Requirement: Listing metadata-byte accounting
 
-The system SHALL measure `max_metadata_bytes` as the sum of retained
-string/bytes field lengths accumulated as members are registered, plus
-archive-level `ArchiveInfo.comment` once when known:
+The system SHALL measure `max_metadata_bytes` as a **safety-oriented weight** of
+retained string/bytes fields accumulated as members are registered, plus
+archive-level `ArchiveInfo.comment` once when known. Exact UTF-8 encoding of
+every field is not required — the cap exists to bound metadata bombs, not to
+mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
 
-- `str` fields `name`, `comment`, `link_target`, `uname`, `gname`:
-  `len(s.encode("utf-8", "surrogateescape"))`
-- `raw_name`: `len(raw_name)` when not `None`
-- `extra`: lengths of `str` / `bytes` values; for a one-level `dict` value,
-  lengths of nested `str` / `bytes` values only
+- `str` fields `name`, `comment`, `link_target`, `uname`, `gname`: a cheap
+  upper bound on UTF-8 length — `len(s)` when `s` is ASCII, otherwise
+  `4 * len(s)` (UTF-8 is at most 4 bytes per code point). Implementations MAY
+  use a stricter exact encode; they MUST NOT use a measure that can be smaller
+  than UTF-8 (plain `len(s)` on non-ASCII would under-count a Unicode name bomb).
+- `raw_name`: `len(raw_name)` when not `None` (stored archive bytes; already exact)
+- `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
+  `dict` value, nested `str` / `bytes` values only
 - Exclude: `_raw`, `hashes`, diagnostics, Python object overhead
 
 #### Scenario: metadata accounting matrix
 
 | Case | Expected |
 | --- | --- |
-| Member with long `name` + `raw_name` | Both lengths count |
+| Member with long `name` + `raw_name` | Both weights count |
 | Huge `ArchiveInfo.comment` alone | Counts toward the budget once |
 | `extra` holds opaque non-str/bytes object | Not counted |
-| Undecodable surrogateescape name | Stable UTF-8-with-surrogateescape byte length |
+| ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
+| Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 
 ### Requirement: Name lookup and member identity
 
