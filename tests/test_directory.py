@@ -476,7 +476,7 @@ def test_archive_format_named_instances() -> None:
 
 
 def test_source_name_for_path_and_stream(tmp_path: Path) -> None:
-    from archivey.core import source_name
+    from archivey.internal.streams.streamtools import source_name
 
     p = tmp_path / "x.bin"
     p.write_bytes(b"")

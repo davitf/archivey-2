@@ -82,6 +82,7 @@ class ExtractionStatus(Enum):
 
     EXTRACTED = "extracted"
     SKIPPED = "skipped"  # pre-existing destination under OverwritePolicy.SKIP
+    SUPERSEDED = "superseded"  # non-current entry (a later same-name entry overwrites)
     REJECTED = "rejected"  # blocked by a safety filter (universal or policy check)
     FAILED = "failed"  # error while extracting (corrupt data, ratio bomb, write error)
 

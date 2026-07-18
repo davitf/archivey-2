@@ -766,7 +766,7 @@ def test_synthetic_anti_item_lists_and_extracts_safely(tmp_path: Path) -> None:
     with open_archive(archive) as reader:
         results = reader.extract_all(fresh).results
     assert [result.status for result in results] == [
-        ExtractionStatus.SKIPPED,
+        ExtractionStatus.SUPERSEDED,
         ExtractionStatus.EXTRACTED,
     ]
     assert not (fresh / "gone.txt").exists()

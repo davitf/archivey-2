@@ -333,8 +333,9 @@ zstd fixture generation.
 
 A guard test (`tests/test_extras_imported.py`) asserts that every package pinned in a
 user-facing extra is actually imported by some `src/` code path (with a small, documented
-allowlist for features whose implementation is a later phase: `tqdm` for `[cli]`, `py7zr` for
-`[7z-write]`), so a dead or test-only dependency cannot slip back into an extra.
+allowlist for features whose implementation is a later phase — currently empty), so a
+dead or test-only dependency cannot slip back into an extra. `py7zr` is a **dev** oracle
+only (7z writing is not shipped as a user-facing extra).
 
 ## Follow-up changes
 

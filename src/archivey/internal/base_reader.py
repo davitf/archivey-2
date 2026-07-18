@@ -19,6 +19,7 @@ from typing import (
 
 if TYPE_CHECKING:
     from archivey.internal.password import _PasswordCandidates
+    from archivey.measurement import IoStats
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
@@ -77,6 +78,28 @@ from archivey.types import (
     MemberStreams,
     MemberType,
 )
+
+
+def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
+    """Stamp is_current for duplicate names (last same-name entry wins).
+
+    Members whose ``name`` appears only once are left unchanged so format-specific
+    non-current rows (RAR ``path;N`` file-version history) keep the flag the backend
+    already set.
+    """
+    counts: dict[str, int] = {}
+    for member in members:
+        counts[member.name] = counts.get(member.name, 0) + 1
+
+    seen: set[str] = set()
+    for member in reversed(members):
+        if counts[member.name] < 2:
+            continue
+        if member.name in seen:
+            member.is_current = False
+        else:
+            member.is_current = True
+            seen.add(member.name)
 
 
 class ReadBackend(ABC):
@@ -708,6 +731,7 @@ class BaseArchiveReader(ArchiveReader):
             self._listing_tracker.reset()
             self._account_archive_comment(enforce=enforce_listing_limits)
             members = list(self._iter_members())
+            _apply_last_entry_wins_is_current(members)
             by_name_lists: dict[str, list[ArchiveMember]] = {}
             has_links = False
             for idx, member in enumerate(members):
@@ -765,6 +789,7 @@ class BaseArchiveReader(ArchiveReader):
         self._listing_tracker.reset()
         self._account_archive_comment(enforce=True)
         members = list(self._iter_members())
+        _apply_last_entry_wins_is_current(members)
         for idx, member in enumerate(members):
             self._register_member(idx, member, enforce_listing_limits=True)
         return members
@@ -952,6 +977,7 @@ class BaseArchiveReader(ArchiveReader):
         for member in self._pass_scanned:
             if member.is_link and member.link_target:
                 self._resolve_link(member, self._pass_by_name_lists)
+        _apply_last_entry_wins_is_current(self._pass_scanned)
         # Same publication order as _get_members_registered: name map before the
         # `_members_cache` sentinel (streaming passes are single-owner, so this is
         # consistency rather than a live race here).
@@ -1432,6 +1458,26 @@ class BaseArchiveReader(ArchiveReader):
             exc.archive_name = self._archive_name
         if exc.member_name is None and member_name is not None:
             exc.member_name = member_name
+
+    def io_stats(self) -> "IoStats | None":
+        """Return I/O counters if measurement is enabled, else ``None``.
+
+        Enable measurement via :func:`archivey.measurement.enable_measurement` around
+        the :func:`archivey.open_archive` call. Returns ``None`` when the reader was not
+        opened inside an ``enable_measurement()`` context.
+        """
+        if not self._measure:
+            return None
+        from archivey.measurement import IoStats
+
+        c_bytes = self._compressed_input_counter
+        return IoStats(
+            bytes_decompressed=self.bytes_decompressed,
+            compressed_bytes_consumed=c_bytes.bytes_read
+            if c_bytes is not None
+            else None,
+            source_seek_count=self.source_seek_count,
+        )
 
 
 class _ProgressivePassIterator(Iterator[ArchiveMember]):

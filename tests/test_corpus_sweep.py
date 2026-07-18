@@ -27,7 +27,6 @@ from archivey import (
     MemberStreams,
     MemberType,
     OnError,
-    OverwritePolicy,
     format_availability,
     open_archive,
 )
@@ -200,14 +199,10 @@ def _check_reads(ar, entry: CorpusEntry) -> None:
 
 def _check_extraction(tmp_path: Path, source, entry: CorpusEntry, key: str) -> None:
     dest = tmp_path / "extracted"
-    has_duplicates = len({m.name for m in entry.members}) != len(entry.members)
     with open_archive(source, password=list(entry.passwords) or None) as ar:
         results = ar.extract_all(
             dest,
             on_error=OnError.CONTINUE,
-            overwrite=OverwritePolicy.REPLACE
-            if has_duplicates
-            else OverwritePolicy.ERROR,
         ).results
 
     by_member_name: dict[str, list] = {}

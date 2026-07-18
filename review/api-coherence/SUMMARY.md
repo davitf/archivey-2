@@ -1,7 +1,8 @@
 # API-coherence review — SUMMARY
 
 > **Status (2026-07-18):** findings delivered in #133; **Q1–Q6 decided**
-> (`QUESTIONS.md`) — code follow-ups not landed yet. **Q7** deferred to a next
+> (`QUESTIONS.md`) — **Q1–Q6 code follow-ups implemented** on this branch (except
+> digest *filling*, which is OpenSpec `surface-stored-stream-digests`). **Q7** deferred to a next
 > review round. Mechanical surface work (S1/S2/S3/E1/E3) and P1/`is_current` are
 > now unblocked. Triage: `../STATUS.md`.
 
@@ -44,14 +45,14 @@ subtle generator semantics); and `ArchiveFormat` has no display name (the CLI pa
 
 | # | Severity | Finding | Where | Status |
 |---|----------|---------|-------|--------|
-| P1 | **High** | Duplicate-name members: `is_current` computed only by 7z/RAR; ZIP/TAR default extraction *errors* where 7z silently skips — same input, divergent outcome; `safe-extraction` scenario ("superseded by later same-name → SKIPPED") is format-silent and currently false for ZIP/TAR | `sevenzip_parser.py:331`, `extraction.py:351`, repro in `parity.md` | **decided Q1=(a)** — unify last-entry-wins; **not yet implemented** (ZIP/TAR still default `True`) |
-| E1 | Medium | No public measurement/IO-stats API: CLI `--track-io` imports `enable_measurement` + `BaseArchiveReader` from `internal/` and reads three counters not on the `ArchiveReader` ABC | `cli/common.py:15-16,56-68`, `base_reader.py:557-1009` | **actionable** (Q4 approved) |
+| P1 | **High** | Duplicate-name members: `is_current` computed only by 7z/RAR; ZIP/TAR default extraction *errors* where 7z silently skips — same input, divergent outcome; `safe-extraction` scenario ("superseded by later same-name → SKIPPED") is format-silent and currently false for ZIP/TAR | `sevenzip_parser.py:331`, `extraction.py:351`, repro in `parity.md` | **implemented** — `_apply_last_entry_wins_is_current` in `base_reader.py`; `ExtractionStatus.SUPERSEDED` distinguishes non-current skip |
+| E1 | Medium | No public measurement/IO-stats API: CLI `--track-io` imports `enable_measurement` + `BaseArchiveReader` from `internal/` and reads three counters not on the `ArchiveReader` ABC | `cli/common.py:15-16,56-68`, `base_reader.py:557-1009` | **implemented** — public `archivey.measurement` module with `IoStats` + `enable_measurement`; `ArchiveReader.io_stats()` on the ABC |
 | E2 | Medium | No library "verify" primitive: `archivey test` hand-rolls manual `next()` loop; a mid-pass failure poisons the stream and loses remaining members | `cli/test_cmd.py:56-73` | **deferred** (Q5 — post-0.2.0 / maybe never) |
-| S1 | Medium | `__all__` = 90 names: 13 `*Context` classes + `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` should demote; `PasswordInput` / `OnDiagnostic` missing; `MemberSelector` vs internal `MemberSelectorArg` duplicate aliases used inconsistently in one class | `__init__.py:113-204`, `reader.py:27,148` | **decided Q4=approve** — implement |
-| P2 | Low-Med | RAR `listing_cost=INDEXED` always, but `cost.py` docstring names "RAR with no quick-open record" as the canonical `REQUIRES_SCANNING` example — doc/impl conflict on an honest-cost axis | `rar_reader.py:773` vs `cost.py:24-27` | **decided Q3=`INDEXED`** — fix docstring + document actual open walk (QO unused); see investigation in `QUESTIONS.md` |
-| E3 | Low | `ExtractionStatus.SKIPPED` conflates overwrite-skip and non-current-skip; caller must infer reason via `member.is_current` | `extraction_types.py:80-87`, `extraction.py:351` | **decided Q6=split statuses** — implement |
-| S2 | Low | `ArchiveFormat` has no display-name property; CLI string-parses `repr()` | `cli/info_cmd.py:16-23` | **decided Q6=`display_name` property** — implement |
-| S3 | Low | `archivey.core.__all__` exports internal helper `source_name`; `docs/api.md` omits `open_stream`, `MemberStreams`, selectors, format-support queries | `core.py:78`, `docs/api.md` | **decided Q4=approve** — implement |
+| S1 | Medium | `__all__` = 90 names: 13 `*Context` classes + `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` should demote; `PasswordInput` / `OnDiagnostic` missing; `MemberSelector` vs internal `MemberSelectorArg` duplicate aliases used inconsistently in one class | `__init__.py:113-204`, `reader.py:27,148` | **implemented** — 13 concrete context classes demoted from `__all__`; `PasswordInput` / `OnDiagnostic` / `HashAlgorithm` / `crc32_digest` / `IoStats` / `enable_measurement` added; `MemberSelector` used consistently |
+| P2 | Low-Med | RAR `listing_cost=INDEXED` always, but `cost.py` docstring names "RAR with no quick-open record" as the canonical `REQUIRES_SCANNING` example — doc/impl conflict on an honest-cost axis | `rar_reader.py:773` vs `cost.py:24-27` | **implemented** — `cost.py` docstrings updated; `test_cost_receipt.py` RAR row added; `costs.md` RAR open-walk note added |
+| E3 | Low | `ExtractionStatus.SKIPPED` conflates overwrite-skip and non-current-skip; caller must infer reason via `member.is_current` | `extraction_types.py:80-87`, `extraction.py:351` | **implemented** — `ExtractionStatus.SUPERSEDED` added for non-current skip |
+| S2 | Low | `ArchiveFormat` has no display-name property; CLI string-parses `repr()` | `cli/info_cmd.py:16-23` | **implemented** — `ArchiveFormat.display_name` property; CLI uses it |
+| S3 | Low | `archivey.core.__all__` exports internal helper `source_name`; `docs/api.md` omits `open_stream`, `MemberStreams`, selectors, format-support queries | `core.py:78`, `docs/api.md` | **implemented** — `source_name` dropped from `core.__all__`; `WriteError` demoted from top-level `__all__`; `[7z-write]` extra removed |
 | D1 | Low | CLI list line has no mark for `ANTI` (falls to `"?"`, same as `OTHER`) and no non-current indicator — the member model's own distinctions are invisible in the first consumer | `cli/format.py:9-15` | **defer to `cli-product/`** |
 
 ## The maintainer's extra question (members scope)

@@ -223,8 +223,8 @@ All codec/detection-dependent formats stay unwired until Phases 2–3.
 ### Tasks
 1. **`pyproject.toml`** (clean slate): `hatchling`; `[project]` `archivey`,
    `0.2.0.dev0`, Python `>=3.11`; extras exactly per `packaging-and-extras/spec.md`
-   (`[7z]`, `[rar]`, `[crypto]`, `[7z-write]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`,
-   `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]`); `dev`
+   (`[7z]`, `[rar]`, `[crypto]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`,
+   `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]`; no `[7z-write]` until writing ships); `dev`
    `[dependency-groups]` for tooling + oracles (`py7zr`, `rarfile`); `pyrefly` + `ty`
    (strict, both kept clean — no mypy), `ruff`, `coverage` (report only, no gate).
 2. **Package layout:** `src/archivey/` with `internal/`, `formats/`, the public
@@ -496,8 +496,9 @@ the parallel-extraction entry in `IDEAS.md`.
    files info) + decode via stdlib `lzma`(raw)/`bz2`/`zlib` + STORED; true pull
    streaming for `stream_members()`, decode-from-folder-start for random `open()`;
    PPMd/Deflate64 via `[7z]`, AES via `[crypto]`; **BCJ2 and unknown method IDs
-   rejected explicitly** (never silent fallback). 7z **writing** stays on `py7zr`
-   behind `[7z-write]` (writing phase); reads import no third-party lib.
+   rejected explicitly** (never silent fallback). 7z **writing** is deferred (no
+   `[7z-write]` extra in the current release); `py7zr` remains a **dev oracle** only;
+   reads import no third-party lib.
 2. **Native RAR** RAR4/RAR5 metadata parse (listing without `unrar`); member data
    via a single `unrar p -inul` pipe demultiplexed by header sizes with incremental
    CRC32; header-encrypted RAR5 decrypted via `[crypto]`; multi-volume joining.

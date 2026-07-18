@@ -81,7 +81,7 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   rejected as `EncryptionError` (never a silent empty listing). See threat-model O8.
 - `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
   values 25–62 raise `UnsupportedFeatureError`.
-- Writing needs `[7z-write]` (`py7zr`).
+- Writing is not shipped in the current release (`py7zr` is a **dev oracle** only).
 
 ## RAR
 
@@ -131,10 +131,11 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 
 ## Stored digests (cheap dedupe)
 
-`member.hashes` holds digests the archive **already stores**, keyed by algorithm
-(`"crc32"` as `int`, `"blake2sp"` as `bytes`). They are readable without decompressing
-when the backend documents them. They are **not** computed digests — a full `read()` still
-verifies through the normal path.
+`member.hashes` holds digests the archive **already stores**, keyed by
+:class:`~archivey.HashAlgorithm` (values always ``bytes`` — CRC-32 is four
+big-endian bytes via :func:`~archivey.crc32_digest`). They are readable without
+decompressing when the backend documents them. They are **not** computed digests —
+a full `read()` still verifies through the normal path.
 
 | Format | When present | Keys |
 | --- | --- | --- |
@@ -146,6 +147,8 @@ verifies through the normal path.
 | `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
 
 See [usage](usage.md#cheap-dedupe-with-stored-hashes) for the cheap→computed fallback recipe.
+(Zlib Adler-32 and multi-member lzip CRC combine are tracked in OpenSpec
+`surface-stored-stream-digests`.)
 
 ## Detection
 

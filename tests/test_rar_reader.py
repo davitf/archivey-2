@@ -206,8 +206,8 @@ def test_file_version_extract_all_skips_history(name: str, tmp_path: Path) -> No
     with open_archive(_fixture(name)) as archive:
         results = archive.extract_all(dest).results
     by_name = {r.member.name: r for r in results if r.member.is_file}
-    assert by_name["file.txt;1"].status is ExtractionStatus.SKIPPED
-    assert by_name["file.txt;2"].status is ExtractionStatus.SKIPPED
+    assert by_name["file.txt;1"].status is ExtractionStatus.SUPERSEDED
+    assert by_name["file.txt;2"].status is ExtractionStatus.SUPERSEDED
     assert by_name["file.txt"].status is ExtractionStatus.EXTRACTED
     assert (dest / "file.txt").read_bytes() == _FILE_VERSION_CONTENTS["file.txt"]
     assert not (dest / "file.txt;1").exists()

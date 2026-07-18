@@ -108,6 +108,18 @@ class ArchiveFormat:
             return self.container.value
         return f"{self.container.value}.{self.stream.value}"
 
+    @property
+    def display_name(self) -> str:
+        """Human-readable name for this format, e.g. ``"ZIP"``, ``"TAR_GZ"``.
+
+        Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …);
+        falls back to ``repr()`` for an ad-hoc combination not in the named set.
+        ``_FORMAT_NAMES`` is populated just after the class definition — safe at
+        runtime because this property is never called before the module is fully loaded.
+        """
+        name = _FORMAT_NAMES.get(self)
+        return name if name is not None else repr(self)
+
     def __repr__(self) -> str:
         name = _FORMAT_NAMES.get(self)
         if name is not None:

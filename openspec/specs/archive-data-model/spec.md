@@ -149,7 +149,7 @@ class ArchiveMember:
     comment: str | None = None
     create_system: "CreateSystem | None" = None
     windows_attrs: int | None = None
-    hashes: Mapping[str, int | bytes] = field(default_factory=dict, compare=False)
+    hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
     diagnostics: tuple[Diagnostic, ...] = field(default=(), compare=False)
     extra: dict[str, Any] = field(default_factory=dict, compare=False)
 
@@ -175,10 +175,15 @@ class ArchiveMember:
 ```
 
 `is_anti` SHALL be derived (`type == MemberType.ANTI`); there is no `is_anti` field.
-`is_current` SHALL mean “live for default extract / path identity”: 7z computes
-last-entry-wins (including anti supersession); RAR file-version history rows
-(`format-rar`) SHALL set `is_current=False` while the live revision stays
-`True`; other formats MAY default `True`. Unavailable values SHALL be `None`;
+`is_current` SHALL mean “live for default extract / path identity”: last-entry-wins
+semantics apply uniformly across ALL container formats (ZIP, TAR, 7z, RAR, ISO,
+directory); when the same name appears more than once in an archive, the **last** entry
+in archive order has `is_current=True` and all earlier same-name entries have
+`is_current=False`. RAR file-version history rows (`format-rar`) use the `;N` suffix
+convention (unique presentation names) and MUST still set `is_current=False` on those
+rows; the shared last-entry-wins pass MUST NOT overwrite format-specific flags on
+names that appear only once. Anti entries (7z delete markers)
+supersede their targets per `format-7z`. Unavailable values SHALL be `None`;
 `name` follows normalization while `raw_name` preserves stored bytes; timestamp
 timezone semantics are preserved; digest keys name their real algorithms; there
 is no `crc32` alias. Sizes, link targets, hashes, and diagnostics MAY be
@@ -200,7 +205,7 @@ point-in-time snapshots.
 | Caller needs a renamed member | Uses `member.replace(name=...)`; original unchanged |
 | `ArchiveMember` used as set item/dict key | Fails because the type is unhashable |
 | Naive and aware `modified` values pass through `modified_utc()` | Returned values are aware UTC; original `modified` fields unchanged |
-| ZIP CRC32 and RAR5 Blake2sp hashes | Stored under `"crc32"` int and `"blake2sp"` bytes keys respectively |
+| ZIP CRC32 and RAR5 Blake2sp hashes | Stored under `HashAlgorithm.CRC32` / `BLAKE2SP` with `bytes` values |
 | Extraction report holds a member later completed in place | Report's result tuple is immutable; member object reflects late field update |
 | `type == MemberType.ANTI` | `is_anti` true; `is_file` false |
 | Content superseded by later same-name / anti (7z) | Earlier member `is_current` false |

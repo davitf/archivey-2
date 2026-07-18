@@ -160,7 +160,7 @@ command from the same metadata exposed by `format_availability()`.
 | --- | --- | --- |
 | Single-codec format backend/codec missing (ISO without `pycdlib`, `.zst` without zstd backend before 3.14, `.lz4` without `lz4`) | NONE | `UnsupportedFormatError` at open with hint |
 | Multi-codec container missing optional member codec/tool | PARTIAL | Opens/lists; member read raises `PackageNotInstalledError` or documented missing-tool error |
-| 7z writing without `py7zr` / `[7z-write]` | Read support unaffected | Write raises `UnsupportedOperationError` naming `[7z-write]` |
+| 7z writing (not yet implemented) | Read support unaffected | Write raises `UnsupportedOperationError` |
 
 #### Scenario: graceful degradation matrix
 

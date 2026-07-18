@@ -41,7 +41,7 @@ See `openspec/schemas/library/README.md` and the `rules:` / `context:` blocks in
 |------|------------|
 | Python version | 3.11+ |
 | Core dependencies | None (stdlib only) |
-| Optional extras | `[7z]`, `[rar]`, `[crypto]`, `[7z-write]` (py7zr), `[iso]` (pycdlib), `[zstd]`, `[lz4]`, `[cli]`, `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]` — RAR data needs the system `unrar` binary (see `packaging-and-extras`) |
+| Optional extras | `[7z]`, `[rar]`, `[crypto]`, `[iso]` (pycdlib), `[zstd]`, `[lz4]`, `[cli]`, `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]` — RAR data needs the system `unrar` binary (see `packaging-and-extras`); 7z writing is not shipped (no `[7z-write]`) |
 | OS support | Linux, macOS, Windows |
 | Thread safety | The `ArchiveReader` object is not generally thread-safe. Declared `MemberStreams.CONCURRENT` coordinates first-touch materialization and draining `close()`, then unlocks concurrent `open()` / independent streams (see `reader-concurrency`); free-threaded correctness is covered by the Linux `3.13t` `free-threaded-concurrency` CI job. Writers are not thread-safe. |
 | Concurrency model | Synchronous API only for v1 (async is a deferred follow-on). |
@@ -74,9 +74,9 @@ not `py7zr`/`rarfile`. 7z reading decodes common codecs through stdlib
 `lzma`/`bz2`/`zlib` (zero runtime deps); PPMd/Deflate64 come from the `[7z]` extra,
 AES decryption from `[crypto]`, and only BCJ2 is detect-and-rejected. RAR metadata
 is parsed natively (encrypted RAR5 headers decrypted via `[crypto]`) while the
-external `unrar` binary does the proprietary data decompression. `py7zr` is kept
-only for 7z *writing* (`[7z-write]`); `py7zr` and `rarfile` otherwise serve only as
-`dev`-group test oracles (see `testing-contract`). Provenance: the `archivey-dev`
+external `unrar` binary does the proprietary data decompression. `py7zr` and
+`rarfile` serve only as `dev`-group test oracles (see `testing-contract`);
+7z writing is deferred and not shipped as a user-facing extra. Provenance: the `archivey-dev`
 `sevenzip-native-reader` / `rar-native-metadata-reader` explorations (clone per
 `CLAUDE.md`).
 

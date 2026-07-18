@@ -15,12 +15,7 @@ from archivey.types import ArchiveFormat
 
 def _format_label(fmt: ArchiveFormat) -> str:
     """Human format name (``ZIP``) rather than ``ArchiveFormat.ZIP``."""
-    label = repr(fmt)
-    return (
-        label.removeprefix("ArchiveFormat.")
-        if label.startswith("ArchiveFormat.")
-        else label
-    )
+    return fmt.display_name
 
 
 def _line(key: str, value: object, out: TextIO) -> None:

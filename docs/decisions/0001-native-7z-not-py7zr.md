@@ -14,9 +14,9 @@ intractable. Third-party quirks also leaked into the unified contract.
 ## Decision
 
 Parse 7z headers natively. Decode common codecs with stdlib `lzma` / `bz2` / `zlib`
-(pull-based, folder decoded once per streaming pass). Keep `py7zr` only for optional
-writing (`[7z-write]`) and as a test oracle. Reject BCJ2 explicitly rather than falling
-back to another reader.
+(pull-based, folder decoded once per streaming pass). Keep `py7zr` as a **dev oracle**
+only; 7z writing is deferred and not shipped as a user-facing extra. Reject BCJ2
+explicitly rather than falling back to another reader.
 
 ## Consequences
 

@@ -19,12 +19,15 @@ class ListingCost(Enum):
     """An index / central directory is present (ZIP central directory, 7z header, ISO
     directory tree parsed at open); members can be enumerated without scanning header-to-header
     or decompressing payload. A filesystem directory is NOT indexed — its walk is a scan
-    (`REQUIRES_SCANNING`)."""
+    (`REQUIRES_SCANNING`). RAR is ``INDEXED``: the reader walks all file headers at open
+    time to build the member table (the optional Quick Open record is parsed but not
+    relied on as the sole source), so by the time ``members()`` is called the list is
+    already in memory at O(1) cost."""
 
     REQUIRES_SCANNING = "requires_scanning"
     """No index, but members can be enumerated by seeking/scanning header-to-header
-    without decompressing payload (e.g. an uncompressed tar, or a RAR with no quick-open
-    record)."""
+    without decompressing payload (e.g. an uncompressed tar, or a filesystem directory
+    walk)."""
 
     REQUIRES_DECOMPRESSION = "requires_decompression"
     """The stream must be decompressed to reach the member headers (e.g. a compressed tar)."""

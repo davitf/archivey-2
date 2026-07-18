@@ -14,6 +14,7 @@ import bz2
 import gzip
 import io
 import lzma
+import shutil
 import tarfile
 import zipfile
 from pathlib import Path
@@ -30,6 +31,8 @@ try:
     _HAVE_PYCDLIB = True
 except ImportError:
     _HAVE_PYCDLIB = False
+
+_HAVE_UNRAR = shutil.which("unrar") is not None
 
 
 def _zip(tmp: Path) -> Path:
@@ -158,6 +161,25 @@ _PARAMS.append(
         CostReceipt(ListingCost.INDEXED, AccessCost.DIRECT, StreamCapability.SEEKABLE),
         id="iso",
         marks=pytest.mark.skipif(not _HAVE_PYCDLIB, reason="pycdlib not installed"),
+    )
+)
+
+
+def _rar(tmp: Path) -> Path:
+    fixture = Path(__file__).parent / "fixtures" / "rar" / "basic_nonsolid__.rar"
+    dest = tmp / "a.rar"
+    import shutil as _shutil
+
+    _shutil.copy2(fixture, dest)
+    return dest
+
+
+_PARAMS.append(
+    pytest.param(
+        _rar,
+        CostReceipt(ListingCost.INDEXED, AccessCost.DIRECT, StreamCapability.SEEKABLE),
+        id="rar",
+        marks=pytest.mark.skipif(not _HAVE_UNRAR, reason="unrar binary not installed"),
     )
 )
 

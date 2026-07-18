@@ -360,7 +360,9 @@ class ExtractionCoordinator:
                     pass
                 elif not original.is_current:
                     results.append(
-                        ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
+                        ExtractionResult(
+                            original, None, ExtractionStatus.SUPERSEDED, None
+                        )
                     )
                 else:
                     result_index = len(results)

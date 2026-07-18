@@ -42,9 +42,6 @@ rar = [
 crypto = [
     "cryptography>=45.0.0",
 ]
-7z-write = [
-    "py7zr>=1.0.0",
-]
 iso = [
     "pycdlib>=1.16.0",
 ]
@@ -65,7 +62,7 @@ seekable = [
     "rapidgzip>=0.16.0",
 ]
 recommended-lite = [
-    "archivey[7z,rar,7z-write,iso,zstd,lz4,cli]",
+    "archivey[7z,rar,iso,zstd,lz4,cli]",
 ]
 recommended = [
     "archivey[recommended-lite,seekable]",

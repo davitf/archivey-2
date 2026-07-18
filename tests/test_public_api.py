@@ -58,8 +58,32 @@ def test_all_has_no_duplicates() -> None:
 
 def test_public_symbols_are_in_all() -> None:
     """Imported public symbols (classes/functions, not modules or dunders) must be
-    listed in __all__, so a new export can't be silently omitted."""
+    listed in __all__, so a new export can't be silently omitted.
+
+    Names deliberately demoted from ``__all__`` but kept importable (Q4) are
+    allowlisted here — they remain reachable as ``archivey.X`` for compatibility
+    without advertising them as part of the curated public surface.
+    """
     import inspect
+
+    # Demoted from ``__all__`` but still imported at package level (api-coherence Q4).
+    demoted_but_importable = {
+        "ArchiveEofContext",
+        "DigestContext",
+        "ExtractionOutcomeContext",
+        "FormatConflictContext",
+        "MemberTimestampContext",
+        "NameCollisionContext",
+        "NameEncodingContext",
+        "NameNormalizationContext",
+        "NameSanitizedContext",
+        "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+        "ScanRaceContext",
+        "SeekIndexContext",
+        "StreamRewindContext",
+        "SymlinkTargetContext",
+        "WriteError",
+    }
 
     public = {
         name
@@ -68,5 +92,10 @@ def test_public_symbols_are_in_all() -> None:
         and not inspect.ismodule(obj)
         and name not in ("annotations",)
     }
-    not_listed = public - set(archivey.__all__)
+    not_listed = public - set(archivey.__all__) - demoted_but_importable
     assert not not_listed, f"public symbols missing from __all__: {sorted(not_listed)}"
+    # Demoted names must stay importable (do not silently drop the re-exports).
+    missing_demoted = demoted_but_importable - public
+    assert not missing_demoted, (
+        f"demoted symbols no longer importable from archivey: {sorted(missing_demoted)}"
+    )
