@@ -12,7 +12,7 @@
 |--------|------|
 | [`VISION.md`](../../../../VISION.md) | Product tie-breaker when trade-offs conflict |
 | [`CONTRIBUTING.md`](../../../../CONTRIBUTING.md) | Coding, typing, exceptions, testing, three-config gate |
-| [`openspec/specs/`](../../../../openspec/specs/) | Normative behavior contracts |
+| [`openspec/specs/`](../../../../openspec/specs/) | Capability contracts — starting point for behavior, revisable when wrong (§3) |
 | [`docs/internal/threat-model.md`](../../../../docs/internal/threat-model.md) | Trust boundaries + open security gaps |
 | [`review/README.md`](../../../../review/README.md) | Deep-review conventions, ranking, deliverable shape |
 | [`review/STATUS.md`](../../../../review/STATUS.md) | Live triage of in-flight review follow-ups |
@@ -99,12 +99,40 @@ These are **review blockers** when violated — not style nits.
   otherwise (e.g. safe-extraction `OnError.CONTINUE`)
 - [ ] `ArchiveyUsageError` stays **outside** the archive-error tree (caller misuse)
 
-### Clean-as-you-go
+### Zero tech debt (and clean-as-you-go)
 
-- [ ] Touched code is left in the shape it *should* have (rename/move/doc/spec sync in
-  the same change when the contract moves)
-- [ ] **Pause and ask** on spec↔doc↔code discrepancies — do not silently pick a winner
+The project aim is **debt-free** — not “clean enough,” but *no deliberately carried
+debt* (`review/backlog.md`). Clean-as-you-go is how day-to-day PRs enforce that:
+
+- [ ] Touched code is left in the shape it *should* have (rename / move / small
+  refactor in the same change when the design requires it)
+- [ ] Don’t land a “we’ll clean this later” shortcut without an **explicit, justified
+  decision** (PR note, `QUESTIONS.md`, `IDEAS.md`, or `review/backlog.md`) — unspoken
+  deferrals are debt
+- [ ] Duplication, drift, and TODOs introduced or left adjacent to the change are
+  either **paid now** or recorded as keep-with-reason — not ignored
+- [ ] **Pause and ask** on real design discrepancies — do not silently pick a winner
   (`CONTRIBUTING.md`, `CLAUDE.md`, `review/README.md`)
+
+### Specs & OpenSpec changes
+
+Specs are **guidelines for intended behavior**, not holy writ. Reviewers and authors
+should treat them as the best current description of the contract — and revise them
+when reality or a better design wins.
+
+- [ ] **Not every change needs a spec.** Bug fixes, refactors, tests, tooling, docs
+  polish, and internal cleanups usually do not. Prefer a spec/`openspec/changes/`
+  delta when the **public or cross-format behavior contract** moves (or when an
+  in-flight change proposal already owns the work).
+- [ ] When a change *does* move a contract, update the relevant
+  `openspec/specs/` (or propose via `openspec/changes/`) and matching user/decision
+  docs in the **same** change — don’t leave prose lying.
+- [ ] **If following a spec yields a worse outcome**, don’t contort the code to satisfy
+  the letter of the doc. Surface it: prefer changing the spec (or opening a change
+  proposal / maintainer question) so the written contract matches the better design.
+- [ ] Spec ↔ doc ↔ code conflicts still use **pause-and-ask** — guessing bakes the
+  wrong decision in. The goal is an explicit revision, not silent divergence.
+- [ ] Open threat-model gaps (`O*`) are not “fixed” by marketing language alone
 
 ### Comments
 
@@ -164,11 +192,13 @@ Use alongside the skill’s generic checklist. Severity: 🔴 blocking / 🟡 im
 - [ ] Format backends stay behind the uniform reader contracts
 - [ ] Sync-first: no accidental async public API
 
-### Specs & docs
+### Specs & docs (quick)
 
-- [ ] Behavior changes update the relevant `openspec/specs/` (or an `openspec/changes/`
-  proposal) and user/decision docs in the **same** change
-- [ ] Open threat-model gaps (`O*`) are not “fixed” by marketing language alone
+- [ ] Spec update only when the behavior contract moves — see §3
+- [ ] Don’t reject a better design solely because an old spec forbids it; propose
+  revising the spec instead
+- [ ] Don’t demand a new OpenSpec change for pure refactors / bugfixes with no
+  contract delta
 
 ---
 
@@ -185,7 +215,8 @@ For commissioned deep reviews (not ordinary PR review), inherit
    section.
 4. **Evidence** — `file:line`, concrete triggering input/state, runnable repro when
    practical.
-5. **Pause and ask** — spec/design conflicts go to `QUESTIONS.md`, not silent fixes.
+5. **Pause and ask** — spec/design conflicts go to `QUESTIONS.md`, not silent fixes
+   (including “the spec is wrong; here’s the better contract”).
 6. **Don’t re-litigate settled ground** — check archive tables + `STATUS.md` for
    already-closed findings before spending budget.
 7. **Archive lifecycle** — only move a review to `review/archive/` when every
@@ -207,8 +238,8 @@ In-flight themes to know (see `STATUS.md` for live items):
 
 | Label | Archivey examples |
 |-------|-------------------|
-| 🔴 `[blocking]` | Path escape on default extract; catch-all exception translation; core grows a hard dep; unjustified type suppressions; silent solid O(n²) on a common API; public contract change without spec/decision |
-| 🟡 `[important]` | Dishonest cost signal; format parity hole without docs; missing red-green test for a bugfix; threat-model gap touched but unaddressed; CLI forced to import `internal/` |
+| 🔴 `[blocking]` | Path escape on default extract; catch-all exception translation; core grows a hard dep; unjustified type suppressions; silent solid O(n²) on a common API; deliberate new debt with no recorded decision; public contract change left undocumented *and* undiscussed |
+| 🟡 `[important]` | Dishonest cost signal; format parity hole without docs; missing red-green test for a bugfix; threat-model gap touched but unaddressed; CLI forced to import `internal/`; code contorted to match a questionable spec without raising a revision |
 | 🟢 `[nit]` | Naming, comment polish, non-user-facing refactor suggestions |
 | 💡 / 📚 / 🎉 | Alternatives, teaching notes, praise — non-blocking |
 
