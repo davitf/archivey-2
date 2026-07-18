@@ -485,4 +485,8 @@ def parse_sevenzip_archive(
         )
         block = parse_header_block(decoded)
     assert isinstance(block, PlainHeader)
+    # O8: encrypted headers never legitimately decode to zero file records.
+    # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.
+    if header_encrypted and not block.files:
+        raise EncryptionError("Password(s) rejected for the 7z header")
     return materialize_archive(signature, block, is_header_encrypted=header_encrypted)

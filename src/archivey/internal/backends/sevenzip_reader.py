@@ -215,6 +215,12 @@ class SevenZipReader(BaseArchiveReader):
                     ) from exc
                 raise
         assert isinstance(block, PlainHeader)
+        # O8: 7zAES has no password check value. Wrong-key garbage occasionally
+        # LZMA-decodes into a header that parses with zero file records (py7zr
+        # omits the encoded-header folder CRC). Legitimate writers never encrypt
+        # an empty header — treat that as a rejected password.
+        if header_encrypted and not block.files:
+            raise EncryptionError("Password(s) rejected for the 7z header")
         return materialize_archive(
             signature, block, is_header_encrypted=header_encrypted
         )

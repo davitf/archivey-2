@@ -218,7 +218,7 @@ still rejecting only names that cannot be `os.fsencode`d at all; `TRUSTED` attem
 faithful bytes and lets the local OS decide (today's behavior). Awaiting implementation of
 that `safe-extraction` delta.
 
-### O8. 7z wrong header-decryption password can silently yield an *empty* archive
+### O8. 7z wrong header-decryption password can silently yield an *empty* archive — mitigated
 
 The 7z format has **no password check value** (unlike RAR5's `pswcheck` or WinZip
 AES's verifier bytes), so wrong-password detection on a header-encrypted archive
@@ -248,20 +248,31 @@ This is also the root cause of the flaky
 py3.14 CI for PR #139; the flake predates that PR — same rate measured on
 `main`).
 
-*Direction (proposed, not yet implemented):* after decoding a `kEncodedHeader`,
-**treat a parsed result with zero file records as a rejected password**
-(`EncryptionError`). Legitimate writers never emit an encrypted header for an
-empty archive — header encryption exists to hide member names, and an empty
-py7zr/7-Zip archive is written with `next_header_size == 0` or a plain header —
-so the check costs nothing on real archives and deterministically closes the
-*observed* slip-through mode (and deflakes the test). Residual: garbage that
-parses into a *non-empty* plausible header survives in principle, but must then
-present coherent member counts/sizes/digests against the real packed streams —
-astronomically unlikely, and inherent to the format absent a check value. Two
-cheap hardenings beyond that: validate decoded-header property ordering/bounds
-strictly (the parser already rejects most nonsense), and suggest upstream that
-py7zr write `kCRC` for the encoded-header folder (fixes detection for archives
-we and py7zr produce, the common fixture case).
+*Mechanism (not a `num_files == 0` field):* wrong-key AES still feeds LZMA, which
+often emits the full claimed unpack size (e.g. 105 bytes) of garbage.
+`parse_header_block` only inspects the **leading property id** and stops:
+
+- `0x00` (`END`) → empty `PlainHeader` immediately; the remaining ~104 bytes are
+  **never read**.
+- `0x01 0x00` (`HEADER` + `END`) → `_parse_plain_header` exits on the next `END`
+  with empty streams/files; trailing garbage likewise ignored.
+
+Empirically (8 slips in ~2k py7zr writes): 7/8 were leading `END`, 1/8 was
+`HEADER`+`END`. Rate ≈ 1/256 matches “first garbage byte is `0x00`”. A real
+decoded header for the same fixture is a full 105-byte structure
+(`HEADER` → `MAIN_STREAMS_INFO` → `FILES_INFO` → `END`) with **no** trailing
+unread bytes — so the slip is an early terminator in random output, not a
+zeroed `FILES_INFO` count.
+
+*Mitigation:* after decoding a `kEncodedHeader`, a parsed result with **zero file
+records** is treated as a rejected password (`EncryptionError`). Legitimate writers
+never encrypt an empty header (empty archives use `nextHeaderSize == 0` or a plain
+header). Residual: garbage that parses into a *non-empty* plausible header survives
+in principle (inherent to the format absent a check value); requiring the parser to
+consume the entire decoded buffer (reject trailing bytes), stricter property
+bounds, and upstream py7zr writing `kCRC` for the encoded-header folder remain
+optional hardenings. See `format-7z` ("never a silent empty listing") and
+`test_header_encrypted_empty_decoded_header_rejected`.
 
 ## OPEN gaps — compatibility
 
