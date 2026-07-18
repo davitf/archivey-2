@@ -1,12 +1,15 @@
 ---
 name: code-review-skill
 description: |
-  Provides comprehensive code review guidance for Python.
+  Provides comprehensive code review guidance for Python, plus an archivey-specific
+  addendum (VISION, CONTRIBUTING, review/ standards). Wired from Cursor `/code-review`
+  via `.cursor/commands/code-review.md`.
   Covers architecture review, performance review, security audit, code quality anti-patterns,
   and common bugs.
   Use when: reviewing pull requests, conducting PR reviews, code review, reviewing code changes,
     establishing review standards, mentoring developers, architecture reviews, security audits,
-    performance reviews, checking code quality, finding bugs, giving feedback on code.
+    performance reviews, checking code quality, finding bugs, giving feedback on code,
+    or when the user invokes /code-review.
 allowed-tools:
   - Read
   - Grep
@@ -30,6 +33,10 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 > **[reference/archivey-review-addendum.md](reference/archivey-review-addendum.md)** —
 > VISION tie-breakers, CONTRIBUTING contracts, and `review/` deep-review norms.
 > **Read that addendum first** when reviewing changes in this repository.
+>
+> **Cursor entrypoint:** project command [`.cursor/commands/code-review.md`](../../.cursor/commands/code-review.md)
+> wires `/code-review` to this skill + addendum (findings-first defaults + archivey
+> process). Invoking `/code-review-skill` also loads this skill directly.
 
 ## When to Use This Skill
 
