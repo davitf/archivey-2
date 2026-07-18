@@ -146,7 +146,8 @@ Cells verified against stdlib in-tree; native = the P3 walker's expected behavio
 | Truncated mid-member-data | `TruncatedError` | `TruncatedError` | `TruncatedError` | `TruncatedError` |
 | Truncated mid-header (partial block) | `TruncatedError` | `TruncatedError` | `TruncatedError` | `TruncatedError` |
 | Corrupt non-first header, data follows (`nonzero`) | `CorruptionError` | `CorruptionError` | `CorruptionError` | `CorruptionError` |
-| **Corrupt header in the _final_ block** (nothing after) | **warn** | **`TruncatedError`** | **`CorruptionError`** | **`CorruptionError`** |
+| Corrupt header in the _final_ block, random-access (via `_EofProbeStream`) | `CorruptionError` | `CorruptionError` | `CorruptionError` | `CorruptionError` |
+| **Corrupt header in the _final_ block, streaming** (probe unavailable) | **warn** | **`TruncatedError`** | **`CorruptionError`** | **`CorruptionError`** |
 
 Two facts fall out, and they are nearly orthogonal — each knob is load-bearing in exactly
 one narrow spot:
@@ -154,15 +155,16 @@ one narrow spot:
 - **`strict_archive_eof` changes the outcome only for the `absent`/`short` bucket** — a
   stream that ended cleanly on a member boundary with no valid trailer (trailer-less-complete
   *or* truncated-at-boundary, indistinguishable). `False` → warn, `True` → `TruncatedError`.
-  In every other row — valid trailer, any mid-stream truncation, `nonzero` corruption — the
-  verdict is fixed and the flag is inert.
-- **stdlib vs native change the pass/fail verdict only for corruption that evades the
-  `nonzero` proxy** — chiefly a corrupt header in the archive's *final* block, which stdlib
-  reads past into EOF and so misclassifies as `absent` (verified: it lands in the `absent`
-  bucket, not `nonzero`). A native walker validates the header at its offset and raises
-  `CorruptionError`. For all truncation and for corruption that leaves trailing data both
-  readers agree; native's extra value there is precision (exact offset) and salvage, not a
-  different pass/fail.
+  In every other row — valid trailer, any mid-stream truncation, `nonzero` corruption,
+  random-access final-header corruption — the verdict is fixed and the flag is inert.
+- **stdlib vs native change the pass/fail verdict only for corruption that still evades
+  the probe** — chiefly a corrupt header in the archive's *final* block under
+  **streaming**, where tarfile's `_Stream` hides header reads so the offset probe is
+  unavailable and the trailing-block check misclassifies the stop as `absent`. Random
+  access catches that case via `_EofProbeStream` (including after a GNU sparse member).
+  A native walker would raise `CorruptionError` in streaming too. For all truncation and
+  for corruption that leaves trailing data both readers agree; native's extra value there
+  is precision (exact offset) and salvage, not a different pass/fail on the RA path.
 
 ## Decisions
 
@@ -207,8 +209,9 @@ Classify the end-of-archive on what tarfile actually stopped on, not a single mo
 - **Rejected header → `CorruptionError`, regardless of the flag.** When tarfile stops the
   scan on a block it could not parse as a header (a corrupt member header after the first,
   treated as a silent early end), a conformant tar never produces this. Detected via the
-  `_EofProbeStream` offset cross-check (below) in random access — including when the bad
-  header is the archive's *final* block — and via the trailing-block proxy in streaming.
+  `_EofProbeStream` stop-block capture (below) in random access — including when the bad
+  header is the archive's *final* block and after a GNU sparse member — and via the
+  trailing-block proxy in streaming.
 - **Missing / short trailer → flag-governed.** A stream that ended cleanly on a member
   boundary without a valid two-block trailer (`observed_kind` `absent`/`short`) → warn by
   default (Phase 5 / GNU-tar compatible), `TruncatedError` under `strict_archive_eof=True`.
@@ -229,28 +232,27 @@ raise; a rejected *final* header is caught only in random access (streaming's `_
 the block — P3); no lenient escape for a caller who *wants* to read a corrupt tar without an
 exception until a salvage/best-effort mode exists (`IDEAS.md`).
 
-#### `_EofProbeStream` — the offset cross-check (implemented)
+#### `_EofProbeStream` — the stop-block capture (implemented)
 
 A thin read/seek proxy wraps the seekable fileobj handed to tarfile in random-access mode and
 records the `(offset, bytes)` of the most recent read (empty reads included). Right after the
-header scan, `_capture_eof_probe` compares that read's offset to the last member's
-block-aligned end (`offset_data + roundup(size)`, computed from `TarInfo`): a full non-null
-block sitting exactly there is a rejected header → corruption. This grounds the decision in the
-TAR *layout invariant* (next header at `offset_data + roundup(size)`) rather than any tarfile
-read-order quirk; on an offset mismatch it falls back to the trailing-block check, so the worst
-case is exactly the pre-change behavior — never a regression. It is **passive forward capture**:
-no backward seek, so no re-decompression on a compressed source (verified: 0 backward seeks on
-gzip). The snapshot is taken during the scan so later member extraction moving the shared handle
-cannot corrupt it.
+header scan, `_capture_eof_probe` inspects that read: `TarFile.next()` always attempts one
+more header block before returning `None`, so `last_read` *is* the stop block. A full
+non-null block there is a rejected header → corruption. This does **not** key on
+`offset_data + roundup(size)` — that formula uses logical size and is wrong for GNU sparse
+(logical ≫ packed), which previously false-negatived final-header corruption into a
+missing-trailer warning. The snapshot is taken during the scan so later member extraction
+moving the shared handle cannot corrupt it. It is **passive forward capture**: no backward
+seek, so no re-decompression on a compressed source.
 
 ### 2. Decision (LOCKED + IMPLEMENTED — Option F)
 
 **Option F is chosen and implemented for v1.** The real gap P1 named is "callers don't look at
 diagnostics," but for the *detectable* corruption case the safe answer is not "hope they read
 logs" (Option A/D) nor "break every trailer-less tar" (Option B/C) — it is to **raise on the
-signal we can trust and stay lenient on the signal we cannot**. The `_EofProbeStream` offset
-cross-check gives that split today; native TAR (P3) is still what will eventually make the
-`absent`/`short` residual decidable and close the streaming final-header gap. So `False` no
+signal we can trust and stay lenient on the signal we cannot**. The `_EofProbeStream`
+stop-block capture gives that split today; native TAR (P3) is still what will eventually
+close the streaming final-header gap. So `False` no
 longer means "silent on everything" — it means "silent only on the ambiguous-EOF residual,"
 and the flag's job narrows to "escalate that residual too."
 
@@ -293,7 +295,7 @@ on `nonzero`, keep flag for the `absent`/`short` residual)"; point back at this 
 | --- | --- |
 | `nonzero`→raise breaks a caller relying on reading a malformed tar | Narrow blast radius (excludes trailer-less/`cat`-joined); release note; salvage mode tracked in `IDEAS.md` as the future escape |
 | A false-positive `nonzero` on a legit archive | Analysis shows conformant tars never reach `nonzero` (≥2 null trailer blocks stop the check first); guard with a `tar -b1` + trailing-padding regression fixture |
-| Extract-at-end raise after successful `nonzero` writes surprises callers | Documented as raise-at-end; `members()` and `extract` share the failure mode; honest ("you got 1..N, archive didn't end cleanly") |
+| Extract-at-end raise after successful `nonzero` writes surprises callers | Streaming writes salvageable members then raises (documented). Random-access extract **fails closed** (materializes before any write). RA `members()` raises with no caller-visible list; streaming `__iter__` yields then raises. |
 | `absent`/`short` truncation still silently shortens inventory | Explicit residual; `strict_archive_eof=True` escalates it; native TAR (P3) is the structural fix |
 | Docs teach the new default then it changes again | This change owns the decision; docs cite the `observed_kind` split + config field, not "archivey always warns" |
 

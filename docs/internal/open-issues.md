@@ -31,18 +31,20 @@ same change when relevant.
 
 ## Product — candidates to fix
 
-### P1. TAR end-of-archive strictness — DECIDED (Option F, signal-aware default)
+### P1. TAR end-of-archive strictness — DECIDED + IMPLEMENTED (Option F)
 
-- **Status:** decided in OpenSpec change
+- **Status:** decided and implemented in OpenSpec change
   [`decide-strict-archive-eof-default`](../../openspec/changes/decide-strict-archive-eof-default/)
-  — **Option F**, ready to apply. `config.py` default stays `False`; do not flip it ad hoc.
+  — **Option F**. `config.py` default stays `False`.
 - **Decision:** split the EOF diagnostic on `ArchiveEofContext.observed_kind` (the signal the
   check already computes) instead of on one bool. `observed_kind="nonzero"` (a stray non-null
   block where a trailer/header was expected — which a conformant tar never produces) raises
   `CorruptionError` **by default**, catching the *detectable* slice of stdlib's "corrupt
   non-first header = clean EOF." The ambiguous `absent`/`short` residual (complete-trailer-less
   vs. truncated-at-boundary) warns by default and escalates to `TruncatedError` only under
-  `strict_archive_eof=True`. Extract raises at end after salvageable writes.
+  `strict_archive_eof=True`. Random-access extract **fails closed** (raises before any write);
+  streaming writes salvageable members then raises. Random-access listing raises with no
+  caller-visible member list; streaming `__iter__` yields salvageable members then raises.
 - **Why Option F:** honors Phase 5 warn-by-default for trailer-less / `cat`-joined tars (those
   are `absent`) while still hard-failing the corruption we *can* detect, without a native TAR
   walker and without breaking the common corpus. The `absent`/`short` residual is the piece
@@ -61,10 +63,14 @@ same change when relevant.
 
 ### P3. Native TAR header walker (replace stdlib silent-EOF leniency)
 
-- **Today:** Archivey’s EOF-marker backstop is a warning/escalation on top of
-  `tarfile`’s “corrupt non-first header = end of archive.”
-- **Why fixable:** Same native-first strategy as 7z/RAR — make corrupt mid-archive
-  headers archivey’s own `CorruptionError` / salvage decision.
+- **Today:** Option F's EOF backstop raises `CorruptionError` on a rejected (non-null)
+  header in random access (including final-block via `_EofProbeStream`) and on mid-archive
+  rejected headers in streaming; streaming still cannot see a rejected *final* header
+  (tarfile's `_Stream` hides it). The `absent`/`short` residual stays warn-by-default.
+- **Why fixable:** Same native-first strategy as 7z/RAR — validate each header at its
+  offset, close the streaming final-header gap, and improve salvage/precision on detectable
+  cases. The `absent`/`short` residual remains intrinsically ambiguous even with a native
+  walker (byte-identical trailer-less-complete vs. truncated-at-boundary).
 - **Larger than P1;** P1 is the cheap honesty upgrade, this is the structural one.
 - **Refs:** `known-issues.md`; `IDEAS.md` (implied by native-first); W1 longer-term.
 

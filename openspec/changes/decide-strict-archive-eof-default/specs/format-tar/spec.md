@@ -25,12 +25,15 @@ single monolithic flag:
   complete tar never produces this (its two-or-more null trailer blocks end the scan
   first). Emitted with `observed_kind="nonzero"` after the diagnostic's normal
   count/retention/log/callback ordering, then escalated to `CorruptionError`.
-  - In **random-access** mode the backend SHALL detect this via a read/offset probe
-    (`_EofProbeStream`): it captures the block tarfile read at the last member's
-    block-aligned end (`offset_data + roundup(size)`) during the scan and treats a
-    full non-null block there as a rejected header. This catches the case even when the
-    bad header is the archive's **final** block (nothing following). On an offset
-    mismatch it SHALL fall back to the trailing-block check (no regression).
+  - In **random-access** mode the backend SHALL detect this via a read probe
+    (`_EofProbeStream`): after the header scan it inspects the block tarfile's final
+    header attempt returned (``TarFile.next()`` always tries one more block before
+    stopping) and treats a full non-null block there as a rejected header. This catches
+    the case even when the bad header is the archive's **final** block (nothing
+    following), including after a GNU sparse member whose logical ``size`` does not
+    match the physical packed end. It SHALL NOT key the decision on
+    ``offset_data + roundup(size)`` (that formula is wrong for sparse). When the probe
+    is unavailable it SHALL fall back to the trailing-block check.
   - In **streaming** mode (no probe) the backend SHALL detect a rejected header via the
     block following tarfile's stop being full and non-null. A rejected **final** header
     (no data after it) is NOT detectable this way and surfaces as a missing trailer
@@ -49,11 +52,15 @@ Escalation (either `CorruptionError` or `TruncatedError`) SHALL take precedence 
 `RAISE`. Logging-handler or callback exceptions propagate at their earlier ordered step.
 
 The archive-level EOF check runs at the end of the member scan, so its escalation
-surfaces there. For **`extract_all`**, random access materializes the member list before
-writing (extract-prep), so a corrupt/truncated archive **fails closed** — the escalation
-raises before any member is written and no partial output is left on disk. Streaming
-verifies at the end of the forward pass, so it writes the salvageable members first and
-then raises. The check SHALL NOT record the archive-level EOF only on a report field.
+surfaces there. For **listing** (`members()` / random-access `__iter__`), materialization
+drains the scan before returning, so a rejected-header escalation raises with **no
+caller-visible member list** (fail closed on the listing). Streaming `__iter__` /
+`stream_members` yields salvageable members first, then raises. For **`extract_all`**,
+random access materializes the member list before writing (extract-prep), so a
+corrupt/truncated archive **fails closed** — the escalation raises before any member is
+written and no partial output is left on disk. Streaming verifies at the end of the
+forward pass, so it writes the salvageable members first and then raises. The check
+SHALL NOT record the archive-level EOF only on a report field.
 
 Truncation *inside* a member's data or across a partial header block is out of scope of
 this end-of-marker check: it already raises `TruncatedError` **during iteration** (stdlib

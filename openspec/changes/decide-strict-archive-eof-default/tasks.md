@@ -11,12 +11,13 @@
 ## 2. Implement Option F in `tar_reader`
 
 - [x] 2.1 No `ArchiveyConfig` / `config.py` default change (stays `False`)
-- [x] 2.2 `_EofProbeStream` read/offset probe wraps the random-access fileobj (plain +
-      compressed + stream sources); `_capture_eof_probe` snapshots the block tarfile stopped
-      on at the last member's `offset_data + roundup(size)` right after the scan
-- [x] 2.3 `_verify_tar_eof`: rejected header (non-null block at the header position, or the
-      trailing-block proxy in streaming) → `CorruptionError` unconditionally; missing/short
-      trailer → warn by default, `TruncatedError` under strict; valid two-block trailer OK
+- [x] 2.2 `_EofProbeStream` read probe wraps the random-access fileobj (plain +
+      compressed + stream sources); `_capture_eof_probe` snapshots tarfile's final header
+      attempt (`last_read` after the scan) — not `offset_data + roundup(size)` (wrong for
+      GNU sparse)
+- [x] 2.3 `_verify_tar_eof`: rejected header (non-null stop block, or the trailing-block
+      proxy in streaming) → `CorruptionError` unconditionally; missing/short trailer →
+      warn by default, `TruncatedError` under strict; valid two-block trailer OK
 - [x] 2.4 Extract behavior recorded: random access fails closed (materializes members before
       writing, raises before any write); streaming writes salvageable members then raises
 - [x] 2.5 Streaming final-header limitation documented (probe unavailable under `_Stream`)
@@ -28,14 +29,17 @@
 - [x] 3.2 `docs/gotchas.md`: rejected-header raise + strict knob + streaming final-header
       limitation, framed as today's behavior with "native TAR later"
 - [x] 3.3 `docs/internal/known-issues.md` rewritten (probe mechanism + streaming gap);
-      `docs/internal/open-issues.md` P1 reworded to "decided — Option F"
+      `docs/internal/open-issues.md` P1 reworded to "decided + implemented — Option F"
 
 ## 4. Verify
 
 - [x] 4.1 Targeted tests in `tests/test_tar.py`: rejected final header → `CorruptionError`
       (random access, default config); rejected mid header → `CorruptionError` (both modes);
       rejected final header streaming → warns (limitation); padded-tar no false positive;
-      extract fails closed; existing warn/strict + minimal-trailer cases still pass
+      extract fails closed; GNU sparse last member + corrupt final → `CorruptionError`;
+      compressed corrupt final; `strict=True`/IGNORE + nonzero still `CorruptionError`;
+      streaming extract salvage-then-raise; existing warn/strict + minimal-trailer cases
+      still pass
 - [ ] 4.2 Run the suite in all three dependency configs (`[all]`, `[all-lowest]`,
       `[core-only]`) per `CONTRIBUTING.md`
 - [ ] 4.3 `openspec validate --strict decide-strict-archive-eof-default`

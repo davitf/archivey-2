@@ -1,13 +1,28 @@
 # decide-strict-archive-eof-default — pick the TAR end-of-archive strictness stance
 
-**Status:** Decided — **Option F (signal-aware default)**. Depends on nothing. Ready to apply (`tar_reader._verify_tar_eof` + docs). Minor breaking: `nonzero` tars change from warn to raise. Effort: small — one backend method, docs, tests.
+**Status:** Decided + **implemented** — **Option F (signal-aware default)**. Depends on
+nothing. Minor breaking: `nonzero` tars change from warn to raise. `config.py` default
+stays `False`.
 
-**Why it matters:** The founding inventory use case needs honest listings, but stdlib tarfile can treat a corrupt mid-archive header as a clean end. Archivey’s trailer check is the only backstop, and today it warns by default. Flipping that default wholesale is a product stance, not a drive-by fix — Phase 5 already chose warn-by-default for trailer-less real-world tars.
+**Why it matters:** The founding inventory use case needs honest listings, but stdlib
+tarfile can treat a corrupt mid-archive header as a clean end. Archivey’s trailer check is
+the only backstop; a monolithic `strict_archive_eof` flip could not serve both inventory
+honesty and the common trailer-less corpus.
 
-**What it does:** Surveys Options A–F with trade-offs and locks **Option F**: split the EOF diagnostic on the `observed_kind` signal the check already computes. `nonzero` (a stray non-null block where a trailer/header was expected — which a conformant tar never produces) raises `CorruptionError` by default; the ambiguous `absent`/`short` residual (complete-trailer-less vs. truncated-at-boundary) warns by default and escalates to `TruncatedError` only under `strict_archive_eof=True`. Extract raises at end after salvageable writes.
+**What it does:** Locks **Option F**: split the EOF diagnostic on the stop-block signal.
+Rejected header (`nonzero`) → `CorruptionError` by default (RA via `_EofProbeStream`,
+including final-block and GNU sparse last members; streaming via trailing-block when data
+follows). Missing/short trailer (`absent`/`short`) → warn by default,
+`TruncatedError` under `strict_archive_eof=True`. RA extract fails closed; streaming writes
+salvageable members then raises.
 
-**Decided:** Option F over A/D (leave `nonzero` silent — fails inventory honesty), B/C (break the wild trailer-less corpus), and E (soft-extract report — more surface than v1 needs). `config.py` default stays `False`; no `archive-reading` delta. Native TAR (P3) still owns the `absent`/`short` structural fix; a salvage mode (`IDEAS.md`) is the future escape for reading a `nonzero` tar without an exception.
+**Decided:** Option F over A/D (leave `nonzero` silent), B/C (break trailer-less corpus),
+and E (soft-extract report). Native TAR (P3) still owns the streaming final-header gap and
+salvage precision; a salvage mode (`IDEAS.md`) is the future escape for reading a `nonzero`
+tar without an exception.
 
-**Cross-notes for later:** CLI (`cli-v1`) — `archivey test` should default to strict EOF (validator = maximally paranoid). Open-issues P1 reworded to "decided — Option F".
+**Cross-notes for later:** CLI (`cli-v1`) — `archivey test` should default to strict EOF
+(validator = maximally paranoid). Open-issues P1 reworded to decided + implemented.
 
-**Bottom line:** Apply per `tasks.md`: change `_verify_tar_eof` to raise `CorruptionError` on `nonzero` unconditionally, keep `absent`/`short` on the existing warn/strict path, update docs, add the regression fixtures.
+**Bottom line:** Applied in `tar_reader._verify_tar_eof` / `_EofProbeStream`; docs and
+regression fixtures (incl. sparse final-header) land with the change.

@@ -18,10 +18,10 @@ Archivey's backstop is the end-of-archive check in `TarReader._verify_tar_eof`
 a tar that merely ended on a member boundary without the two-block null trailer is warned
 via `ARCHIVE_EOF_MARKER_MISSING` (WARNING by default; `strict_archive_eof=True` escalates
 to `TruncatedError`). In random-access mode the rejected-header detection uses
-`_EofProbeStream`: it records the block tarfile read at the last member's block-aligned
-end (`offset_data + roundup(size)`) during the scan, so it catches the case **even when
-the bad header is the archive's final block** — without seeking back (no re-decompression
-on a compressed source).
+`_EofProbeStream`: after the header scan it inspects the block tarfile's final header
+attempt returned (always one more `next()` before stop), so it catches the case **even
+when the bad header is the archive's final block** — including after a GNU sparse member —
+without seeking back (no re-decompression on a compressed source).
 
 **Streaming limitation (open).** In forward-only streaming (`streaming=True`), tarfile's
 `_Stream` hides its header reads, so `_EofProbeStream` is unavailable and detection falls

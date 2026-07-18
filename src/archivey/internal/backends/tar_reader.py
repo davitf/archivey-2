@@ -142,9 +142,11 @@ class _EofProbeStream:
     recent ``read`` (empty reads included).
 
     After the header scan, that read is tarfile's attempt to parse a header at the
-    end-of-archive position. Comparing its offset to the last member's block-aligned end
-    lets :meth:`TarReader._verify_tar_eof` inspect the exact block tarfile stopped on —
-    telling a rejected header (corruption) apart from a merely missing trailer — without
+    end-of-archive position (``TarFile.next()`` always tries one more block before
+    returning ``None``). A full non-null block there is a rejected header — including when
+    it is the archive's final block, and including after a GNU sparse member whose
+    logical ``size`` does not match the physical packed end. Relying on the scan's last
+    read (rather than ``offset_data + roundup(size)``) avoids that false negative without
     seeking backwards, which on a compressed source would force a re-decompression.
 
     tarfile treats this as an external fileobj (``read``/``seek``/``tell``/``seekable``
@@ -429,21 +431,20 @@ class TarReader(BaseArchiveReader):
         """Snapshot whether tarfile stopped the header scan on a *rejected* (non-null)
         header block, using the random-access EOF probe.
 
-        Reads the probe's recorded block rather than the live handle position, so it is
-        robust against later member extraction moving the shared handle. A full non-null
-        block sitting exactly at the last member's block-aligned end is what tarfile read
-        and rejected when it treated a corrupt member header as a clean end of archive —
-        including when that bad header is the archive's final block (which the
-        trailing-block check in :meth:`_verify_tar_eof` reads past and cannot see).
+        After ``getmembers()`` / ``_load()``, ``TarFile.next()`` has always attempted one
+        more header read before returning ``None``, so the probe's ``last_read`` *is* the
+        block tarfile stopped on — independent of the live handle position (later member
+        extraction may seek away) and independent of ``offset_data + roundup(size)``
+        (wrong for GNU sparse, where logical size ≫ packed size). A full non-null block
+        there is a rejected header, including when it is the archive's final block (which
+        the trailing-block check in :meth:`_verify_tar_eof` reads past and cannot see).
         """
         self._eof_header_rejected = False
         probe = self._eof_probe_stream
         if probe is None or not members:
             return
-        offset, chunk = probe.last_read
-        last = members[-1]
-        next_header = last.offset_data + ((last.size + 511) & ~511)
-        if offset == next_header and len(chunk) == 512 and chunk != b"\x00" * 512:
+        _offset, chunk = probe.last_read
+        if len(chunk) == 512 and chunk != b"\x00" * 512:
             self._eof_header_rejected = True
 
     def _verify_tar_eof(self) -> None:

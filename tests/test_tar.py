@@ -102,6 +102,65 @@ def _tar_corrupt_final_header() -> bytes:
     return full[:eof_start] + b"\xff" * 512
 
 
+def _tar_content_end(data: bytes) -> int:
+    """Byte offset of the first end-of-archive null block (strip record padding)."""
+    end = len(data)
+    while end >= 512 and data[end - 512 : end] == b"\x00" * 512:
+        end -= 512
+    return end
+
+
+def _tar_sparse_gnu(tmp_path: Path) -> bytes:
+    """A GNU sparse tar whose logical size ≫ packed size (holes).
+
+    Built with system ``tar --sparse`` when available. The physical next-header offset
+    after the sparse member is far smaller than ``offset_data + roundup(size)``, which is
+    exactly the layout that used to false-negative the RA EOF probe.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("tar") is None:
+        pytest.skip("system tar not available for GNU sparse fixture")
+    blob = tmp_path / "sparse.bin"
+    # 1 MiB logical file with a single trailing data byte → large hole, tiny packed body.
+    with open(blob, "wb") as f:
+        f.seek(1024 * 1024 - 1)
+        f.write(b"x")
+    out = tmp_path / "sparse.tar"
+    subprocess.run(
+        [
+            "tar",
+            "--sparse",
+            "-cf",
+            str(out),
+            "-C",
+            str(tmp_path),
+            blob.name,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    data = out.read_bytes()
+    # Confirm we actually got a sparse member (otherwise the regression is vacuous).
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as t:
+        member = t.getmembers()[0]
+        assert member.type == tarfile.GNUTYPE_SPARSE
+        logical_end = member.offset_data + ((member.size + 511) & ~511)
+        physical_end = _tar_content_end(data)
+        assert physical_end < logical_end, (
+            "fixture must diverge logical vs physical end to exercise the probe bug"
+        )
+    return data
+
+
+def _tar_corrupt_final_header_sparse(tmp_path: Path) -> bytes:
+    """Sparse member + rejected final header (nothing after) — the probe false-negative."""
+    full = _tar_sparse_gnu(tmp_path)
+    eof_start = _tar_content_end(full)
+    return full[:eof_start] + b"\xff" * 512
+
+
 def _tar_corrupt_mid_header() -> bytes:
     """Corrupt the second member's header so tarfile stops iterating after the first,
     with valid member data still following the bad block."""
@@ -655,6 +714,91 @@ def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.extract_all(dest)
     assert not (dest / "hello.txt").exists()
+
+
+def test_corrupt_final_header_sparse_raises_corruption(tmp_path: Path) -> None:
+    # Regression: logical size ≫ packed size used to make the probe's
+    # offset_data+roundup(size) check miss the stop block, so a rejected final header
+    # after a GNU sparse member warned as absent instead of raising CorruptionError.
+    data = _tar_corrupt_final_header_sparse(tmp_path)
+    with pytest.raises(CorruptionError):
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            ar.members()
+
+
+def test_sparse_tar_eof_no_false_positive(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A well-formed GNU sparse tar with a valid trailer must stay silent.
+    data = _tar_sparse_gnu(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            members = ar.members()
+    assert members
+    assert members[0].is_sparse
+    assert _eof_warnings(caplog) == []
+
+
+def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
+    # Compressed path also carries the EOF probe (no re-decompression / backward seek).
+    import gzip
+
+    path = tmp_path / "bad.tar.gz"
+    path.write_bytes(gzip.compress(_tar_corrupt_final_header()))
+    with pytest.raises(CorruptionError):
+        with open_archive(path) as ar:
+            ar.members()
+
+
+def test_corrupt_mid_header_strict_still_corruption() -> None:
+    # strict_archive_eof escalates absent/short only; nonzero stays CorruptionError.
+    data = _tar_corrupt_mid_header()
+    with pytest.raises(CorruptionError):
+        with open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(strict_archive_eof=True),
+        ) as ar:
+            ar.members()
+
+
+def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
+    # escalate_as=CorruptionError takes precedence over IGNORE (spec matrix).
+    from archivey.diagnostics import (
+        DiagnosticCode,
+        DiagnosticDisposition,
+        DiagnosticPolicy,
+    )
+
+    data = _tar_corrupt_final_header()
+    policy = DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.IGNORE
+        }
+    )
+    with pytest.raises(CorruptionError):
+        with open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(diagnostic_policy=policy),
+        ) as ar:
+            ar.members()
+
+
+def test_corrupt_mid_header_streaming_extract_writes_then_raises(
+    tmp_path: Path,
+) -> None:
+    # Streaming extract writes salvageable members, then raises at end-of-pass.
+    data = _tar_corrupt_mid_header()
+    dest = tmp_path / "out"
+    with pytest.raises(CorruptionError):
+        with open_archive(
+            NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+        ) as ar:
+            ar.extract_all(dest)
+    assert (dest / "a.txt").exists()
+    assert (dest / "a.txt").read_bytes() == b"aaa"
+    assert not (dest / "b.txt").exists()
 
 
 def test_padded_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> None:
