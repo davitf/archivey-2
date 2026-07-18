@@ -10,6 +10,10 @@ Repro: `measurements.py <section>`.
 > over-weighted the wrapper stack; the revised attribution (decode-chunk
 > granularity + distributed per-member machinery) is in `residual-gap.md`,
 > which supersedes H2's candidate list.
+>
+> **Follow-up investigation PR:** H2 candidate 3 (larger decode chunks) is
+> implemented (`_COMPRESSED_READ_SIZE = 64 KiB` + scaled bounded feeds). Gate
+> holes G3/G4/G5 closed. Full conclusions: `investigation-report.md`.
 
 ## H1 — Selective extraction from a solid 7z decodes ~the whole folder (blocker) — FIXED (#136)
 

@@ -17,11 +17,12 @@ Probes:
    (which opens each member independently via ``_open_member``).
 2. ``solid-double``    — a subtler regression: every solid folder is decoded
    exactly twice (e.g. an eager verify pass). Checked arithmetically against the
-   gate's ``SOLID_DECODE_FACTOR = 2.0`` bound, and empirically by wrapping
+   gate's ``SOLID_DECODE_FACTOR`` bound, and empirically by wrapping
    ``_iter_with_data`` to drain one full extra folder decode per archive.
 3. ``zip-double``      — a non-solid path decompresses every member twice but
    delivers bytes once (e.g. an internal pre-read). Simulated by patching
    ``ZipReader._open_member`` to open/consume/close the member, then open again.
+   Caught by the non-solid over-decode bound and the tightened seek slack.
 
 Exit code 0 always; output is the evidence table.
 """

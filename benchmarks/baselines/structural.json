@@ -1,5 +1,8 @@
 {
-  "solid_decode_factor": 2.0,
+  "solid_decode_factor": 1.25,
+  "nonsolid_decode_factor": 1.1,
+  "solid_random_bytes_factor": 1.5,
+  "seek_baseline_slack": 8,
   "cases": {
     "zip_open_list": {
       "bytes_decompressed": 0,
@@ -71,7 +74,7 @@
       "bytes_decompressed": 34603008,
       "source_seek_count": 35,
       "unpacked_bytes": 2097152,
-      "notes": "re-decode recorded; not gated"
+      "notes": "re-decode recorded; gated vs baseline×SOLID_RANDOM_BYTES_FACTOR"
     }
   }
 }
