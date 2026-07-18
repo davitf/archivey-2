@@ -33,7 +33,6 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipFileRecord,
     SevenZipFolder,
     compression_method_for_coder,
-    compute_is_current,
     empty_archive,
     folder_is_encrypted,
     materialize_archive,
@@ -267,13 +266,8 @@ class SevenZipReader(BaseArchiveReader):
         return starts
 
     def _build_members(self) -> list[ArchiveMember]:
-        current_flags = compute_is_current(self._archive.files)
-        return [
-            self._to_member(record, is_current=is_current)
-            for record, is_current in zip(
-                self._archive.files, current_flags, strict=True
-            )
-        ]
+        # is_current is stamped by BaseArchiveReader's shared last-entry-wins pass.
+        return [self._to_member(record) for record in self._archive.files]
 
     def _members_by_folder(self) -> dict[int, list[ArchiveMember]]:
         grouped: dict[int, list[ArchiveMember]] = {}
@@ -329,9 +323,7 @@ class SevenZipReader(BaseArchiveReader):
             if solid is not None:
                 solid.close()
 
-    def _to_member(
-        self, record: SevenZipFileRecord, *, is_current: bool
-    ) -> ArchiveMember:
+    def _to_member(self, record: SevenZipFileRecord) -> ArchiveMember:
         member_type = self._member_type(record)
         presented_name = record.filename
         if presented_name == "":
@@ -386,7 +378,6 @@ class SevenZipReader(BaseArchiveReader):
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,
-            is_current=is_current,
             create_system=CreateSystem.UNIX
             if unix_mode is not None
             else CreateSystem.WINDOWS_NTFS,

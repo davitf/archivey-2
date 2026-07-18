@@ -356,7 +356,7 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         is_solid=False,
         compression_methods=(),
     )
-    member = reader._to_member(record, is_current=True)  # noqa: SLF001
+    member = reader._to_member(record)  # noqa: SLF001
     assert member.hashes == {}
     summary = collector.snapshot()
     assert summary.counts.get(DiagnosticCode.DIGEST_UNVERIFIABLE, 0) == 1

@@ -43,8 +43,8 @@ if TYPE_CHECKING:
     from archivey.types import ArchiveMember
 
 # Keys: ``HashAlgorithm`` or algorithm name string (``hashlib`` / legacy). Values are
-# ``bytes``; ``int`` CRC32 accepted briefly for internal/test callers.
-_ExpectedHashes = Mapping[Any, bytes | int]
+# digest ``bytes`` (CRC-32 as four big-endian bytes).
+_ExpectedHashes = Mapping[Any, bytes]
 _DigestTransforms = Mapping[Any, Callable[[bytes], bytes]]
 
 
@@ -94,24 +94,6 @@ def _make_hasher(algorithm: Any) -> Callable[[], _IncrementalHasher] | None:
     if name in hashlib.algorithms_available:
         return lambda: hashlib.new(name)
     return None
-
-
-def _expected_as_bytes(value: bytes | int, hasher: _IncrementalHasher) -> bytes:
-    """Normalize a stored digest to ``bytes`` once, in the hasher's own width.
-
-    Digests are ``bytes`` (CRC-32 as four big-endian bytes). An ``int`` form is still
-    accepted briefly for internal callers; oversized ints produce a longer byte string
-    that fails the digest compare rather than raising here.
-    """
-    if isinstance(value, int):
-        # Size the buffer to whichever is larger: the hasher's digest width (so a normal,
-        # in-range value compares equal to digest()) or the value's own minimum width. A
-        # malformed/oversized stored int (e.g. a "crc32" > 2**32) thus produces a longer
-        # byte string that simply won't equal the digest — surfacing as a CorruptionError on
-        # verify — rather than raising OverflowError here and leaking a non-ArchiveyError.
-        width = max(hasher.digest_size, (value.bit_length() + 7) // 8)
-        return value.to_bytes(width, "big")
-    return value
 
 
 class MemberVerifier:
@@ -166,7 +148,7 @@ class MemberVerifier:
                 continue
             hasher = factory()
             self._hashers[key] = hasher
-            self._expected[key] = _expected_as_bytes(value, hasher)
+            self._expected[key] = value
         self._verified = False
         self._pos = 0  # bytes read so far — the sequential verification frontier
         self._verify_enabled = True  # cleared by a seek off the frontier

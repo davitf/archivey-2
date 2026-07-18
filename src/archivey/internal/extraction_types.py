@@ -77,7 +77,7 @@ class OnError(Enum):
     CONTINUE = "continue"  # record the failure, clean up, proceed to the next member
 
 
-class ExtractionStatus(Enum):
+class ExtractionStatus(str, Enum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
     EXTRACTED = "extracted"

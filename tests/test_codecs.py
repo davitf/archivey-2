@@ -743,15 +743,15 @@ def test_verify_crc32_accepts_bytes_form() -> None:
     assert stream.read() == CONTENT
 
 
-def test_verify_oversized_int_digest_mismatches_not_raises() -> None:
-    """A malformed stored digest wider than the hash must surface as CorruptionError.
+def test_verify_wrong_width_digest_mismatches_not_raises() -> None:
+    """A stored digest wider than the hasher's digest_size must surface as CorruptionError.
 
-    A "crc32" int > 2**32 can't equal a 4-byte digest; normalization must not raise
-    OverflowError (which would leak a non-ArchiveyError out of the stream layer).
+    Callers always pass ``bytes``; a malformed width must compare unequal (and raise
+    :class:`CorruptionError`) rather than raising a non-ArchiveyError from the
+    stream layer.
     """
-    stream = VerifyingStream(
-        io.BytesIO(CONTENT), {"crc32": (zlib.crc32(CONTENT) & 0xFFFFFFFF) + (1 << 40)}
-    )
+    wrong_width = _crc32(CONTENT) + b"\x00\x00"  # 6 bytes vs CRC-32's 4
+    stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: wrong_width})
     with pytest.raises(CorruptionError, match="crc32"):
         while stream.read(64):  # read to EOF; the terminal read verifies
             pass
