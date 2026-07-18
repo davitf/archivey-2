@@ -194,6 +194,7 @@ next round / backlog (cross-link from EOF design remains fine).
 | Q5 | `IDEAS.md` park only |
 | Q6 WriteError / `[7z-write]` | Demote exception; remove or un-advertise extra |
 | Q6 SKIPPED split | New `ExtractionStatus` value + CLI/report call sites |
-| Q6 hashes → `Mapping[HashAlgorithm, bytes]` | Add enum (`CRC32` / `BLAKE2SP` / `ADLER32`); crc32 `int`→4-byte `bytes`; surface zlib trailer as `ADLER32`; update backends, verify, specs, `docs/formats.md`, CLI formatter |
+| Q6 hashes → `Mapping[HashAlgorithm, bytes]` | Review-fix PR: add enum (`CRC32` / `BLAKE2SP` / `ADLER32`); crc32 `int`→4-byte `bytes`; backends/verify/docs for type only |
+| Q6 hashes fill (zlib/lzip) | **Separate change:** `openspec/changes/surface-stored-stream-digests` |
 | Q6 `display_name` | Property on `ArchiveFormat` + CLI |
 | Q7 | Next round — see `../backlog.md` / STATUS future list |

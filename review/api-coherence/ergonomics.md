@@ -90,9 +90,9 @@ Two lines of ceremony; stored-vs-computed fallback documented as a recipe in
 - `hashes` is `Mapping[str, int | bytes]` today (crc32 int, blake2sp bytes; string
   keys, **no** algorithm enum) — every consumer needs a formatting/normalizing
   branch (the CLI grew `format_hash_value`, `cli/format.py:46-49`). **Decided
-  (Q6): `Mapping[HashAlgorithm, bytes]`** — add the enum (`CRC32` / `BLAKE2SP` /
-  `ADLER32`); crc32 becomes 4-byte `bytes`; surface zlib’s Adler-32 trailer for
-  parity with gzip’s crc32 probe.
+  (Q6 typing): `Mapping[HashAlgorithm, bytes]`** — add the enum (`CRC32` /
+  `BLAKE2SP` / `ADLER32`); crc32 becomes 4-byte `bytes`. **Filling** zlib Adler /
+  multi-lzip CRC: separate OpenSpec change `surface-stored-stream-digests`.
 - The recipe iterates *all* members — including superseded 7z revisions and RAR
   history rows, silently hashing dead content. After Q1/Q2, add one `is_current`
   line to the recipe (see `members-scope.md`).

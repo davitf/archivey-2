@@ -41,7 +41,7 @@ or the finding is a clear proposed fix with no spec conflict).
 | **S2 / Q6** | `ArchiveFormat.display_name` **property** so the CLI stops parsing `repr()`. |
 | **E1** | Public measurement / IO-stats API so CLI `--track-io` leaves `internal/`. |
 | **E3 / Q6** | Split `ExtractionStatus.SKIPPED` into distinct statuses (overwrite vs non-current). |
-| **Q6 hashes** | Add `HashAlgorithm` enum (`CRC32` / `BLAKE2SP` / `ADLER32`); type `Mapping[HashAlgorithm, bytes]`. Surface zlib Adler-32; **lzip multi-member via `crc32_combine`** (index already has per-member CRC+size). gzip/xz stay single-unit-only for now (combine math works; acquiring mid-unit digests is the hard part). See QUESTIONS §Q6 multi-member. |
+| **Q6 hashes** | **Typing (review fix now):** `HashAlgorithm` enum + `Mapping[HashAlgorithm, bytes]` (crc32 `int` → 4-byte `bytes`; include `ADLER32` member). **Filling digests:** OpenSpec `surface-stored-stream-digests` (zlib Adler peek, lzip multi-member `crc32_combine`) — separate change, depends on typing. |
 | **Q6 WriteError / `[7z-write]`** | Demote/unexport `WriteError` for read-only 0.2.0; remove or stop advertising `[7z-write]` until writing lands (py7zr remains a dev oracle). |
 
 ### Process
@@ -107,6 +107,7 @@ dedicated follow-up brief — they are not 0.2.0 blockers from the current round
 | **D1** | CLI list marks for `ANTI` / non-current — belongs to **`cli-product/`** when that review runs. |
 | **E2 / Q5** | Library `verify` / `VerifyReport` — deferred past 0.2.0; uncertain whether callers verify without extracting often enough. Park in `IDEAS.md`. |
 | **Q7** | Partial members + honest error accessor — **next review round** (VISION claim 3). Option F interim stands. |
+| **Stored stream digests** | zlib Adler-32 + lzip multi-member combine — OpenSpec **`surface-stored-stream-digests`** (after hashes typing). |
 
 ### Already on `backlog.md` (not from this round’s findings)
 
