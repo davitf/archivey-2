@@ -192,6 +192,7 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 
 ## Next
 
+- [Gotchas](gotchas.md) — if you read one more page after this, make it that one
 - [Access costs and pitfalls](costs.md) — solid archives, seeking, concurrency
 - [Formats and extras](formats.md) — quirks per format
 - [Safe extraction](safe-extraction.md) — policies and limits

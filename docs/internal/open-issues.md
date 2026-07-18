@@ -3,14 +3,16 @@
 > **Not user-facing.** Holding area for items that *look* like user gotchas but are
 > candidates to fix (product), sync (docs/specs), or deliberately leave irreducible.
 > Companion to [threat-model.md](threat-model.md) (security/compat gap register) and
-> root `IDEAS.md` (speculative backlog). User-facing Gotchas / “why Archivey” pages
-> (when written) should only keep the **irreducible** bucket — everything else either
-> ships as a fix or stays here until it does.
+> root `IDEAS.md` (speculative backlog). User-facing [Gotchas](../gotchas.md) should
+> keep the **irreducible** bucket (plus post-v1 “may improve later” notes) —
+> everything else either ships as a fix or stays here until it does.
 >
-> Snapshot date: 2026-07-16. Assumes open review-fix PRs land:
+> Snapshot: 2026-07-18 against `main` @ `93dc28e`. Merged since the first triage:
 > [#127](https://github.com/davitf/archivey-2/pull/127) (crypto F1–F5),
 > [#128](https://github.com/davitf/archivey-2/pull/128) (stream-decoder F1–F6),
-> [#124](https://github.com/davitf/archivey-2/pull/124) (PPMd bound decode).
+> [#124](https://github.com/davitf/archivey-2/pull/124) /
+> [#130](https://github.com/davitf/archivey-2/pull/130) (PPMd bound decode),
+> [#120](https://github.com/davitf/archivey-2/pull/120) (CLI). This triage PR is #129.
 
 ## How to use this list
 
@@ -20,9 +22,10 @@
 | **Docs / specs** | Drift or missing user/spec prose for shipped behavior | No — fix the guide/spec |
 | **Irreducible** | Format/stdlib/upstream constraint we can only document + warn | Yes |
 | **Longer-term** | Real work, but belongs in `IDEAS.md` / OpenSpec changes | Maybe a one-liner pointer |
+| **Closed** | Shipped; kept briefly for provenance | No |
 
-When an item ships, strike it here (or move to a “Closed” section) and update the
-user docs in the same change when relevant.
+When an item ships, move it to **Closed** (or delete) and update user docs in the
+same change when relevant.
 
 ---
 
@@ -48,7 +51,7 @@ user docs in the same change when relevant.
 - **Why fixable:** 7z/RAR already join volumes; ZIP needs disk-aware central-directory
   addressing over an ordered concatenation — natural part of a **native streaming ZIP**
   reader (`IDEAS.md`), not a stdlib `zipfile` wrap.
-- **Until then:** user Gotcha / `formats.md` (already noted).
+- **Until then:** user Gotchas / `formats.md` (already noted).
 - **Refs:** `IDEAS.md` native ZIP; `format-zip`; `zip_reader.py`.
 
 ### P3. Native TAR header walker (replace stdlib silent-EOF leniency)
@@ -74,9 +77,9 @@ user docs in the same change when relevant.
   under a live accelerator stream. Archivey avoids closing *its* SharedSource under
   the stream; **caller-owned** sources remain exposed.
 - **Why partially fixable:** Keep mitigating in-tree; full fix is upstream. Product
-  work: document loudly; optionally refuse accelerator on non-path / non-owned
-  sources; hang sandbox for untrusted input (threat-model O5 follow-up).
-- **Refs:** `known-issues.md` Bug 3; `costs.md`; threat-model accelerator hang.
+  work: document loudly (Gotchas); optionally refuse accelerator on non-path /
+  non-owned sources; hang sandbox for untrusted input (threat-model O5 follow-up).
+- **Refs:** `known-issues.md` Bug 3; `costs.md`; Gotchas; threat-model accelerator hang.
 
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
@@ -86,46 +89,46 @@ user docs in the same change when relevant.
 - **Why fixable:** Spec’d hardening / shared emission table; called out in the
   unrar-piping investigation as a future change (same class as mixed-password
   ALL-pipe forbid).
-- **Refs:** PR #101 / `docs/internal/rar-unrar-piping-investigation.md` (when merged);
-  `format-rar`.
+- **Refs:** PR #101 (still open) / `docs/internal/rar-unrar-piping-investigation.md`
+  (when merged); `format-rar`.
 
-### P7. Spec vs behavior: encrypted 7z with no integrity anchor
+### P7. Spec drift: encrypted 7z with no integrity anchor
 
-- **Today (after #127):** Best-effort accept (matches 7-Zip) + `DIGEST_UNVERIFIABLE`
-  (`reason="no_integrity_anchor"`).
+- **Status:** **code done** (#127) — best-effort accept (matches 7-Zip) +
+  `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). User Gotchas documents it.
 - **Still open:** `openspec/specs/format-7z` still says wrong password → “never
   silent bytes” / no incorrect data. Align the requirement with the maintainer
-  decision (diagnostic, not hard-error) so Gotchas and the spec agree.
-- **Refs:** `review/next/02-crypto` F2 / Q2; PR #127.
+  decision (diagnostic, not hard-error).
+- **Refs:** `review/archive/2026-07-16-crypto/` F2 / Q2; PR #127;
+  `sevenzip_reader.py`.
 
 ---
 
 ## Docs / specs — drift and missing prose
 
-These are **already implemented** (or will be once the review-fix PRs merge). They
-should not stay in user Gotchas as “broken” — update the guides instead.
+Code is done unless noted. These should not appear in Gotchas as “broken.”
 
-| Item | Status in code | Doc / spec action |
+| Item | Code | Doc / spec action |
 | --- | --- | --- |
-| Gzip multi-member: omit trailer CRC from `member.hashes` | Done (`gzip_has_additional_member`; `test_multi_member_gzip_omits_crc32`) | Confirm `formats.md` + stored-digest matrix stay accurate; don’t list as open bug |
-| 7z CRC-less encrypted store → diagnostic | #127 | User Gotchas + `formats.md` 7z; fix `format-7z` wording (P7) |
-| RAR5 HASHMAC / tweaked digests | #127 | `formats.md` RAR integrity notes |
-| 7z `NumCyclesPower` ≤24 / `0x3F` | #127 | `formats.md` / packaging notes if useful |
-| RAR password via stdin (`-p` + stdin) | #127 | Drop any “password in argv” gotcha |
-| Cross-platform name safety (O2/O3/O4/O7 + RENAME) | #109 / #123 | **threat-model.md still says O2/O7 “awaiting”** — mark implemented; teach STRICT sanitization in user Gotchas / safe-extraction |
-| RAR5 `-ver` history rows in `members()` | Specced + implemented | **Missing from `formats.md`** — high user surprise |
-| Duplicate names / `get` last-wins / str vs `ArchiveMember` selectors | Specced | Almost absent from `usage.md` / Gotchas |
-| Hardlink target = earlier same name by `member_id` | Specced | Same |
-| Nested-archive stance + bounded recursion recipe | Behavior OK | Threat-model O6; add recipe to user guide |
-| Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Worth a line in safe-extraction / Why |
-| Accelerator opt-out for untrusted + latency budget | Documented internally | Promote from threat-model into user Gotchas / costs |
+| Gzip multi-member: omit trailer CRC from `member.hashes` | Done | **Closed** — `formats.md` + Gotchas already accurate |
+| 7z CRC-less encrypted store → diagnostic | #127 | Gotchas done; still fix `format-7z` wording (P7); optional `formats.md` 7z line |
+| RAR5 HASHMAC / tweaked digests | #127 | Optional `formats.md` RAR integrity note |
+| 7z `NumCyclesPower` ≤24 / `0x3F` | #127 | Optional packaging / formats note |
+| RAR password via stdin (`-p` + stdin) | #127 | **Closed** for Gotchas (no argv warning) |
+| Cross-platform name safety (O2/O3/O4/O7 + RENAME) | #109 / #123 | Gotchas extraction section done; **threat-model.md still says O2/O4/O7 awaiting** — mark implemented |
+| RAR5 `-ver` history rows in `members()` | Specced + implemented | Gotchas done; **still missing from `formats.md`** |
+| Duplicate names / `get` last-wins / str vs `ArchiveMember` selectors | Specced | Gotchas done; optional `usage.md` pointer |
+| Hardlink target = earlier same name by `member_id` | Specced | Gotchas done; optional `usage.md` pointer |
+| Nested-archive stance + bounded recursion recipe | Behavior OK | Gotchas one-liner done; fuller recipe still nice for usage/O6 |
+| Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `safe-extraction.md` |
+| Accelerator opt-out for untrusted + latency budget | Mitigations in tree | Gotchas + costs cover it; P5 residual remains |
 
 ---
 
 ## Irreducible — document forever (user Gotchas)
 
 These are constraints of formats, stdlib, or upstream. Hardenings and diagnostics
-help; they do not disappear.
+help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 
 - **Solid archives:** out-of-order `open()` can re-decode; prefer `stream_members()`.
 - **Seek without index:** backward seek may re-decompress (`STREAM_REWIND_REDECOMPRESSES`).
@@ -137,7 +140,8 @@ help; they do not disappear.
 - **RARLAB `unrar` only** for member data; listing works without it.
 - **BCJ2 unsupported** — rejected, not garbage.
 - **Native optional wheels / accelerators** may crash or hang on hostile input; we
-  mitigate, cannot promise 100%.
+  mitigate, cannot promise 100%. Includes residual `pyppmd` native-abort risk despite
+  #124/#130 bounds (see `known-issues.md`).
 - **ISO import patches pycdlib’s collections** (cycle guard) — visible if the process
   also uses pycdlib directly.
 - **`.Z` truncation:** only nonzero leftover bits are loud.
@@ -157,15 +161,26 @@ help; they do not disappear.
 | Nested-archive helper / bounded recursion | O6 recipe → maybe a small helper later |
 | Free-threading support matrix | Document core vs ISO vs accelerators |
 | Public backend API / plugins | Home for exotic formats without libarchive-in-core |
+| CLI UX polish | CLI shipped (#120); remaining design Qs under `review/archive/2026-07-17-cli/` |
+
+---
+
+## Closed (recent)
+
+| Item | Closed by |
+| --- | --- |
+| Crypto F1–F5 (HASHMAC, 7z no-anchor diagnostic, NumCycles clamp, unrar stdin password, `compare_digest`) | #127 |
+| Stream-decoder F1–F6 (seek-point collision, rapidgzip size/verify, feed budgets, `readall` pending_error, …) | #128 |
+| PPMd `max_length` / after-eof / version pin product work | #124 / #130 (residual abort → Irreducible) |
+| Gzip multi-member CRC omission from `hashes` | Earlier + tests; docs accurate |
+| Cross-platform name safety implementation | #109 / #123 (threat-model prose still stale) |
 
 ---
 
 ## Suggested first cuts
 
-1. **Docs sweep (cheap):** threat-model O2/O7 status; `formats.md` RAR `-ver`;
-   duplicate-name / hardlink notes in usage or Gotchas; `format-7z` vs F2 diagnostic.
+1. **Docs sweep (cheap):** threat-model O2/O4/O7 status; `formats.md` RAR `-ver`;
+   `format-7z` vs F2 diagnostic (P7).
 2. **`strict_archive_eof` (P1):** locked only via
    `openspec/changes/decide-strict-archive-eof-default/` — do not flip ad hoc.
-3. **User Gotchas + Why pages:** write from the **Irreducible** bucket + post-v1
-   “may improve later” items + the hardenings narrative; link Product items as
-   “not yet” only when still open.
+3. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”

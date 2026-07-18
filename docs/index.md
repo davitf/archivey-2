@@ -32,11 +32,12 @@ with archivey.open_archive("photos.zip") as reader:
 
 1. **[Philosophy](philosophy.md)** — why Archivey exists and the defaults that follow
 2. **[Basic usage](usage.md)** — open, list, stream, extract
-3. **[Access costs and pitfalls](costs.md)** — hidden decompression costs and how to avoid them
-4. **[Formats and extras](formats.md)** — per-format quirks, required libraries, limitations
-5. **[Safe extraction](safe-extraction.md)** — what “safe by default” means in practice
-6. **[API reference](api.md)** — generated from source
-7. **[Acknowledgements](acknowledgements.md)** — libraries, oracles, and design references
+3. **[Gotchas](gotchas.md)** — traps worth knowing after the basics (read this next)
+4. **[Access costs and pitfalls](costs.md)** — hidden decompression costs and how to avoid them
+5. **[Formats and extras](formats.md)** — per-format quirks, required libraries, limitations
+6. **[Safe extraction](safe-extraction.md)** — what “safe by default” means in practice
+7. **[API reference](api.md)** — generated from source
+8. **[Acknowledgements](acknowledgements.md)** — libraries, oracles, and design references
 
 ## For contributors
 

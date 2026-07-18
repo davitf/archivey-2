@@ -79,16 +79,18 @@ rationale.
 
 ### Requirement: End-user guide is separate from internal reference
 
-The MkDocs site SHALL present an end-user narrative (philosophy, basic usage, access
-costs/pitfalls, formats/extras, safe extraction, API reference) distinct from
-contributor material (decision log, threat model, codec analysis, known issues) and
-from the non-normative grab-bag of historical prose and explorations.
+The MkDocs site SHALL present an end-user narrative (philosophy, basic usage, gotchas,
+access costs/pitfalls, formats/extras, safe extraction, API reference) distinct from
+contributor material (decision log, threat model, codec analysis, known issues,
+open-issues triage) and from the non-normative grab-bag of historical prose and
+explorations. Gotchas SHALL sit immediately after basic usage in primary navigation.
 
 #### Scenario: docs information architecture
 
 | Case | Expected |
 | --- | --- |
 | User opens the docs home | User-guide pages are primary navigation; internal/grab-bag are clearly secondary |
+| User finishes basic usage | Next recommended page is Gotchas |
 | Contributor looks up “why not py7zr” | Answer is in `docs/decisions/` (and/or library analysis), not mixed into basic usage |
 
 ### Requirement: Document the stored-digest matrix and cheap-dedupe recipe
