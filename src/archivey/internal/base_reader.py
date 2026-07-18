@@ -792,6 +792,12 @@ class BaseArchiveReader(ArchiveReader):
                     self._index_member_name(by_name_lists, member)
                     members.append(member)
             except (CorruptionError, TruncatedError) as exc:
+                # If link finalization itself raises CorruptionError/TruncatedError
+                # (e.g. damaged ZIP symlink target data inside the recovered prefix),
+                # that escapes to the outer BaseException handler: the reader stays
+                # unmaterialized and raises instead of publishing an incomplete report.
+                # Narrow; TAR stores link targets in headers so it cannot fire there.
+                # members() would raise either way — only members_report() loses the prefix.
                 self._finalize_materialized_links(members, by_name_lists)
                 holder = self._publish_materialized(
                     members,
@@ -1644,6 +1650,10 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
             try:
                 self._reader._finalize_pass_links(error=exc)
             except BaseException as finalize_exc:
+                # Same double-fault degradation as RA _materialize_members: a
+                # CorruptionError/TruncatedError during link finalization leaves the
+                # pass poisoned/unmaterialized rather than publishing an incomplete
+                # report (members_report would lose the prefix; members() raises either way).
                 self._error = finalize_exc
                 raise
             raise
