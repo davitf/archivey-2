@@ -75,7 +75,8 @@ with a future native ZIP/TAR reader — until then, plan around them.
 
 | Limitation | Today | Later? |
 | --- | --- | --- |
-| TAR mid-archive corrupt header | Stdlib `tarfile` can treat it as clean EOF → silently short listing. Backstop: `ARCHIVE_EOF_MARKER_MISSING`. For inventory/dedupe use `ArchiveyConfig(strict_archive_eof=True)`. | May improve with a native TAR walker |
+| TAR mid-archive corrupt header | Stdlib `tarfile` can treat it as clean EOF → silently short listing. Archivey raises `CorruptionError` **by default** when the stopped scan lands on a rejected (non-null) header block. A tar that just lacks the two-block null trailer (trailer-less / `cat`-joined, or truncated exactly at a member boundary) is warned via `ARCHIVE_EOF_MARKER_MISSING`; for inventory/dedupe use `ArchiveyConfig(strict_archive_eof=True)` to make that a `TruncatedError` too. | Native TAR walker |
+| TAR corrupt **final** header, streaming | Caught in random-access reads; in forward-only `streaming=True` it surfaces as the missing-trailer warning, not `CorruptionError` (tarfile's stream layer hides the block). | Native TAR walker closes the gap |
 | Multi-volume ZIP (`.z01`…`.zip`) | Detected and rejected (`UnsupportedFeatureError`) — rejoin first | May improve with native ZIP |
 | ZIP/ISO from a pure pipe | Need seek; no silent spool | ZIP pipe reading may improve later; ISO stays seekful |
 | ZIP UTF-8 flag “lie” (bit 11) | Stdlib may make the **whole** archive unlistable | May improve with native ZIP |

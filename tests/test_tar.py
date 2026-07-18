@@ -75,6 +75,43 @@ def _tar_missing_eof_block() -> bytes:
     return full[: eof_start + 512]
 
 
+def _tar_three() -> bytes:
+    """A plain tar of three members (the middle one spanning several blocks)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as t:
+        for name, data in [
+            ("a.txt", b"aaa"),
+            ("b.txt", b"b" * 4000),
+            ("c.txt", b"ccc"),
+        ]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _tar_corrupt_final_header() -> bytes:
+    """Member data followed by a single non-null block where the end-of-archive marker
+    (and the next header) should be, with nothing after it — the shape stdlib tarfile
+    treats as a clean end. Only the block tarfile stopped on reveals the corruption; the
+    trailing-block check reads past it into EOF."""
+    full = _build_tar()
+    with tarfile.open(fileobj=io.BytesIO(full), mode="r:") as t:
+        last = t.getmembers()[-1]
+        eof_start = last.offset_data + ((last.size + 511) & ~511)
+    return full[:eof_start] + b"\xff" * 512
+
+
+def _tar_corrupt_mid_header() -> bytes:
+    """Corrupt the second member's header so tarfile stops iterating after the first,
+    with valid member data still following the bad block."""
+    full = _tar_three()
+    with tarfile.open(fileobj=io.BytesIO(full), mode="r:") as t:
+        second = t.getmembers()[1]
+    start = second.offset  # header-block offset of the second member
+    return full[:start] + b"\xff" * 512 + full[start + 512 :]
+
+
 def _tar_minimal_eof() -> bytes:
     """A fully valid archive terminated by exactly the two required EOF null blocks.
 
@@ -559,6 +596,75 @@ def test_minimal_eof_trailer_strict_does_not_raise() -> None:
         config=ArchiveyConfig(strict_archive_eof=True),
     ) as ar:
         assert [m for m, _ in ar.stream_members()]
+
+
+def test_corrupt_final_header_raises_corruption_by_default() -> None:
+    # A rejected header in the archive's final block: tarfile treats it as a clean end,
+    # and the trailing-block check reads past it. The random-access EOF probe inspects
+    # the block tarfile stopped on and raises CorruptionError — even under the default
+    # (non-strict) config, because a non-null block there is unambiguous corruption.
+    data = _tar_corrupt_final_header()
+    with pytest.raises(CorruptionError):
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            ar.members()
+
+
+def test_corrupt_mid_header_raises_corruption_by_default() -> None:
+    # A rejected non-first header with valid data still following: caught by default in
+    # both access modes.
+    data = _tar_corrupt_mid_header()
+    with pytest.raises(CorruptionError):
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            ar.members()
+
+
+def test_corrupt_mid_header_streaming_raises_corruption() -> None:
+    # Streaming has no probe, but a rejected mid-archive header leaves valid bytes after
+    # the stop, so the trailing-block heuristic still surfaces it as corruption.
+    data = _tar_corrupt_mid_header()
+    with pytest.raises(CorruptionError):
+        with open_archive(
+            NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+        ) as ar:
+            list(ar.stream_members())
+
+
+def test_corrupt_final_header_streaming_warns_not_corruption(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Documented streaming limitation: with nothing after the rejected final block, the
+    # forward-only path cannot recover it and surfaces a missing-trailer warning instead
+    # of CorruptionError. Random access catches this case (test above); native TAR would
+    # close the streaming gap.
+    data = _tar_corrupt_final_header()
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(
+            NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+        ) as ar:
+            list(ar.stream_members())
+    assert len(_eof_warnings(caplog)) == 1
+
+
+def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
+    # Extraction surfaces the corruption too. Random access materializes the member list
+    # (which runs the EOF check) before writing, so a corrupt archive fails closed — no
+    # partial output on disk.
+    data = _tar_corrupt_final_header()
+    dest = tmp_path / "out"
+    with pytest.raises(CorruptionError):
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            ar.extract_all(dest)
+    assert not (dest / "hello.txt").exists()
+
+
+def test_padded_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> None:
+    # tarfile writes 10240-byte record padding (many trailing null blocks past the two
+    # required ones). The probe must not read that padding as a rejected block.
+    data = _build_tar()  # full tarfile output, padded
+    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            ar.members()
+    assert _eof_warnings(caplog) == []
 
 
 # ---------------------------------------------------------------------------

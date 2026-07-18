@@ -202,42 +202,67 @@ writes (unless a stricter extract policy is set).
 **Cons:** New split semantics (list vs extract); more API surface; still breaks truncated
 RA listing; design+spec heavy for v1.
 
-**Option F — Signal-aware default + keep the opt-in** *(LOCKED, see Decision 2)*  
-Split the diagnostic on `observed_kind` instead of on a single monolithic bool:
-- **Default (`strict_archive_eof=False`):** `absent`/`short` → warn (unchanged, Phase 5 /
-  GNU-tar compatible); **`nonzero` → raise `CorruptionError`** regardless of the flag,
-  because it is a high-confidence early-stop / silent-shorten.
-- **`strict_archive_eof=True`:** all three buckets escalate — `absent`/`short` become
-  `TruncatedError`, `nonzero` stays `CorruptionError` — for inventory / dedupe / validators
-  needing completeness even against boundary truncation.
-- Extract raises **after** writing every salvageable member (raise-at-end), matching the
-  `members()` / iteration failure mode; no soft-extract report field (that stays Option E /
-  a future salvage change).
-**Pros:** Closes the *detectable*-corruption slice of the inventory-honesty gap (P1) without
-a native TAR walker; does **not** break trailer-less / `cat`-joined tars; keeps the flag for
-the ambiguous residual; no `config.py` default change, no signature change.  
-**Cons:** Minor behavior change — archives that today only *warn* on `nonzero` now raise;
-extract-at-end awkwardness survives for the `nonzero` case (honest, but no member row to
-attribute it to under `OnError.CONTINUE`); no lenient escape for a caller who *wants* to read
-a `nonzero` tar without an exception until a salvage/best-effort mode exists (`IDEAS.md`).
+**Option F — Signal-aware default + keep the opt-in** *(LOCKED + IMPLEMENTED, see Decision 2)*  
+Classify the end-of-archive on what tarfile actually stopped on, not a single monolithic bool:
+- **Rejected header → `CorruptionError`, regardless of the flag.** When tarfile stops the
+  scan on a block it could not parse as a header (a corrupt member header after the first,
+  treated as a silent early end), a conformant tar never produces this. Detected via the
+  `_EofProbeStream` offset cross-check (below) in random access — including when the bad
+  header is the archive's *final* block — and via the trailing-block proxy in streaming.
+- **Missing / short trailer → flag-governed.** A stream that ended cleanly on a member
+  boundary without a valid two-block trailer (`observed_kind` `absent`/`short`) → warn by
+  default (Phase 5 / GNU-tar compatible), `TruncatedError` under `strict_archive_eof=True`.
+- **Detectable truncation is out of scope** — truncation inside member data or across a
+  partial header already raises `TruncatedError` during iteration (stdlib "unexpected end of
+  data"), in both modes, flag-independent.
+- **Extract:** the corruption surfaces where the check runs — during the member scan. Random
+  access materializes the member list before writing (extract-prep), so a corrupt archive
+  **fails closed** (raises before any file is written — no partial output). Streaming verifies
+  at the end of the forward pass, so it writes salvageable members then raises. No
+  soft-extract report field (that stays Option E / a future salvage change).
+**Pros:** Closes the *detectable*-corruption slice of the inventory-honesty gap (P1) without a
+native TAR walker; does **not** break trailer-less / `cat`-joined tars; keeps the flag for the
+ambiguous residual; no `config.py` default change, no signature change; random-access extract
+never leaves partial output from a corrupt archive.  
+**Cons:** Minor behavior change — archives that today only *warn* on a rejected header now
+raise; a rejected *final* header is caught only in random access (streaming's `_Stream` hides
+the block — P3); no lenient escape for a caller who *wants* to read a corrupt tar without an
+exception until a salvage/best-effort mode exists (`IDEAS.md`).
 
-### 2. Decision (LOCKED — Option F)
+#### `_EofProbeStream` — the offset cross-check (implemented)
 
-**Option F is chosen for v1.** The real gap P1 named is "callers don't look at diagnostics,"
-but for the *detectable* corruption case (`nonzero`) the safe answer is not "hope they read
+A thin read/seek proxy wraps the seekable fileobj handed to tarfile in random-access mode and
+records the `(offset, bytes)` of the most recent read (empty reads included). Right after the
+header scan, `_capture_eof_probe` compares that read's offset to the last member's
+block-aligned end (`offset_data + roundup(size)`, computed from `TarInfo`): a full non-null
+block sitting exactly there is a rejected header → corruption. This grounds the decision in the
+TAR *layout invariant* (next header at `offset_data + roundup(size)`) rather than any tarfile
+read-order quirk; on an offset mismatch it falls back to the trailing-block check, so the worst
+case is exactly the pre-change behavior — never a regression. It is **passive forward capture**:
+no backward seek, so no re-decompression on a compressed source (verified: 0 backward seeks on
+gzip). The snapshot is taken during the scan so later member extraction moving the shared handle
+cannot corrupt it.
+
+### 2. Decision (LOCKED + IMPLEMENTED — Option F)
+
+**Option F is chosen and implemented for v1.** The real gap P1 named is "callers don't look at
+diagnostics," but for the *detectable* corruption case the safe answer is not "hope they read
 logs" (Option A/D) nor "break every trailer-less tar" (Option B/C) — it is to **raise on the
-signal we can trust and stay lenient on the signal we cannot**. `observed_kind` gives that
-split today; native TAR (P3) is still what will eventually make the `absent`/`short` residual
-decidable. So `False` no longer means "silent on everything" — it means "silent only on the
-ambiguous-EOF residual," and the flag's job narrows to "escalate that residual too."
+signal we can trust and stay lenient on the signal we cannot**. The `_EofProbeStream` offset
+cross-check gives that split today; native TAR (P3) is still what will eventually make the
+`absent`/`short` residual decidable and close the streaming final-header gap. So `False` no
+longer means "silent on everything" — it means "silent only on the ambiguous-EOF residual,"
+and the flag's job narrows to "escalate that residual too."
 
 - **`config.py` default stays `False`.** Not breaking on defaults for the common corpus.
-- **Breaking-ness:** minor — only genuinely-malformed (`nonzero`) tars change from warn to
-  raise. Blast radius excludes the trailer-less / `cat`-joined corpus. Ship with a release
+- **Breaking-ness:** minor — only genuinely-malformed (rejected-header) tars change from warn
+  to raise. Blast radius excludes the trailer-less / `cat`-joined corpus. Ship with a release
   note; the only "read it anyway" escape is a future salvage mode, called out as a known gap.
-- **Exception types:** `nonzero` → `CorruptionError` (a bad block is present); `absent`/
+- **Exception types:** rejected header → `CorruptionError` (a bad block is present); `absent`/
   `short` under strict → `TruncatedError` (data ran out). This splits today's uniform
   `TruncatedError` escalation.
+- **Streaming limitation:** a rejected *final* header is not caught in streaming (documented in
+  `docs/internal/known-issues.md` + user Gotchas; P3 closes it).
 - **CLI (`cli-v1`, cross-note):** `archivey test` defaults to strict (validator = maximally
   paranoid); plain reads use the signal-aware default.
 

@@ -4,8 +4,10 @@ Random-access reading (``streaming=False``) scans 512-byte headers on a seekable
 (decompressing first for a compressed tar) and opens any member on demand. Forward-only
 reading (``streaming=True``) walks the archive in one progressive pass — including on a
 non-seekable source for plain and compressed tars — via ``_iter_with_data()`` /
-``stream_members()``. End-of-archive truncation is checked after a full scan or streaming
-pass when ``config.strict_archive_eof`` is enabled.
+``stream_members()``. After a full scan or streaming pass the end-of-archive is checked
+(``_verify_tar_eof``): a rejected header raises ``CorruptionError`` regardless of config,
+while a missing two-block null trailer warns unless ``config.strict_archive_eof`` escalates
+it to ``TruncatedError``.
 """
 
 from __future__ import annotations
@@ -134,6 +136,55 @@ def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
         return None
 
 
+class _EofProbeStream:
+    """Transparent read/seek proxy over the seekable fileobj handed to stdlib
+    ``tarfile`` in random-access mode, remembering the ``(offset, bytes)`` of the most
+    recent ``read`` (empty reads included).
+
+    After the header scan, that read is tarfile's attempt to parse a header at the
+    end-of-archive position. Comparing its offset to the last member's block-aligned end
+    lets :meth:`TarReader._verify_tar_eof` inspect the exact block tarfile stopped on —
+    telling a rejected header (corruption) apart from a merely missing trailer — without
+    seeking backwards, which on a compressed source would force a re-decompression.
+
+    tarfile treats this as an external fileobj (``read``/``seek``/``tell``/``seekable``
+    only) and never closes it; the reader closes the wrapped stream via ``_owned_stream``.
+    """
+
+    def __init__(self, inner: BinaryIO) -> None:
+        self._inner = inner
+        # Offsets share tarfile's coordinate space (both anchored at the wrapped
+        # stream's current position), so they compare directly to TarInfo offsets.
+        self._pos = inner.tell() if inner.seekable() else 0
+        self.last_read: tuple[int, bytes] = (-1, b"")
+
+    def read(self, size: int = -1) -> bytes:
+        offset = self._pos
+        chunk = self._inner.read(size)
+        self._pos += len(chunk)
+        self.last_read = (offset, chunk)
+        return chunk
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        self._inner.seek(offset, whence)
+        self._pos = self._inner.tell()
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
+
+    def seekable(self) -> bool:
+        return self._inner.seekable()
+
+    def readable(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        # No-op: the reader owns the wrapped stream's lifetime (``_owned_stream``); a
+        # stray tarfile call must not tear the shared handle down early.
+        pass
+
+
 class TarReader(BaseArchiveReader):
     """Reads a TAR archive (plain or compressed) via stdlib ``tarfile``."""
 
@@ -169,6 +220,10 @@ class TarReader(BaseArchiveReader):
         self._encoding = encoding
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
+        # Random-access EOF probe: set when the fileobj is wrapped (non-streaming opens),
+        # snapshotted into ``_eof_header_rejected`` right after the header scan.
+        self._eof_probe_stream: _EofProbeStream | None = None
+        self._eof_header_rejected: bool = False
         # A decompression stream we open and therefore must close (compressed tars only);
         # for a plain tar from a path, tarfile owns and closes the file handle itself.
         self._owned_stream: BinaryIO | None = None
@@ -226,21 +281,44 @@ class TarReader(BaseArchiveReader):
             # tarfile can mis-handle a short read() (fewer bytes than requested) from a
             # decompressor; a BufferedReader in front guarantees full-sized reads.
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
-            return self._tarfile_open(fileobj=self._owned_stream, streaming=streaming)
+            return self._tarfile_open(
+                fileobj=self._wrap_eof_probe(self._owned_stream, streaming),
+                streaming=streaming,
+            )
         if isinstance(source, Path):
+            if not self._measure and streaming:
+                # Forward-only from a path with no measurement: let tarfile own and close
+                # the handle. The EOF probe only applies to random access, so nothing is
+                # lost by keeping this fast path.
+                return self._tarfile_open(name=str(source), streaming=streaming)
+            # Open the handle ourselves so random access can carry the EOF probe (and, when
+            # measuring, the seek instrumentation); we own the fp for close.
+            fp: BinaryIO = open(source, "rb")
             if self._measure:
-                # Instrument seeks on the plain-tar handle; we own the fp for close.
-                self._owned_stream = cast(
-                    "BinaryIO", self._track_source_seeks(open(source, "rb"))
-                )
-                return self._tarfile_open(
-                    fileobj=self._owned_stream, streaming=streaming
-                )
-            return self._tarfile_open(name=str(source), streaming=streaming)
+                fp = cast("BinaryIO", self._track_source_seeks(fp))
+            self._owned_stream = fp
+            return self._tarfile_open(
+                name=str(source),
+                fileobj=self._wrap_eof_probe(fp, streaming),
+                streaming=streaming,
+            )
         return self._tarfile_open(
-            fileobj=cast("BinaryIO", self._track_source_seeks(source)),
+            fileobj=self._wrap_eof_probe(
+                cast("BinaryIO", self._track_source_seeks(source)), streaming
+            ),
             streaming=streaming,
         )
+
+    def _wrap_eof_probe(self, fileobj: BinaryIO, streaming: bool) -> BinaryIO:
+        """Wrap a random-access fileobj so the end-of-archive check can inspect the block
+        tarfile stopped on. Forward-only (streaming) opens get no probe — tarfile's
+        ``_Stream`` hides its header reads and a consumed block cannot be recovered there.
+        """
+        if streaming:
+            return fileobj
+        probe = _EofProbeStream(fileobj)
+        self._eof_probe_stream = probe
+        return cast("BinaryIO", probe)
 
     def _tarfile_open(
         self,
@@ -293,6 +371,9 @@ class TarReader(BaseArchiveReader):
             # _load()/next() on the shared fileobj — must run under the handle lock.
             with self._handle_guard():
                 members = self._tar.getmembers()  # forces the full header scan
+                # Snapshot the EOF probe now, while the handle sits just past the scan and
+                # before any member extraction can move it.
+                self._capture_eof_probe(members)
         for info in members:
             yield self._to_member(info)
         self._verify_tar_eof()
@@ -344,22 +425,56 @@ class TarReader(BaseArchiveReader):
                 else:
                     yield member, None
 
-    def _verify_tar_eof(self) -> None:
-        """Verify the two-block null end-of-archive marker.
+    def _capture_eof_probe(self, members: list[tarfile.TarInfo]) -> None:
+        """Snapshot whether tarfile stopped the header scan on a *rejected* (non-null)
+        header block, using the random-access EOF probe.
 
-        The POSIX trailer is two null-filled 512-byte blocks, but ``tarfile`` has
-        already consumed the *first* one by the time we get here — stopping on a null
-        block (``EOFHeaderError``) is exactly how it detects the end of the archive,
-        and with the default ``ignore_zeros=False`` it stops after that single block.
-        So ``fileobj`` is positioned just past the first marker block, and we only need
-        to confirm the *second* one follows. (Reading two blocks here would demand a
-        third block of trailing zeros and wrongly flag a valid archive whose trailer is
-        the minimal two blocks with no record padding — e.g. ``tar -b1``.)
-
-        A short or non-zero read means the marker is missing or truncated: a truncation
-        right after the last member leaves no first block for ``tarfile`` to consume,
-        so ``fileobj`` is at EOF and this read comes up empty.
+        Reads the probe's recorded block rather than the live handle position, so it is
+        robust against later member extraction moving the shared handle. A full non-null
+        block sitting exactly at the last member's block-aligned end is what tarfile read
+        and rejected when it treated a corrupt member header as a clean end of archive —
+        including when that bad header is the archive's final block (which the
+        trailing-block check in :meth:`_verify_tar_eof` reads past and cannot see).
         """
+        self._eof_header_rejected = False
+        probe = self._eof_probe_stream
+        if probe is None or not members:
+            return
+        offset, chunk = probe.last_read
+        last = members[-1]
+        next_header = last.offset_data + ((last.size + 511) & ~511)
+        if offset == next_header and len(chunk) == 512 and chunk != b"\x00" * 512:
+            self._eof_header_rejected = True
+
+    def _verify_tar_eof(self) -> None:
+        """Verify the two-block null end-of-archive marker and surface a rejected header
+        as corruption.
+
+        In random-access mode ``_capture_eof_probe`` has already inspected the block
+        tarfile stopped on. A full non-null block there means tarfile rejected a header —
+        a corrupt member header after the first, treated as a silent early end, including
+        when it is the archive's *final* block — which escalates to ``CorruptionError``
+        regardless of ``strict_archive_eof``.
+
+        Otherwise (and for forward-only streaming, which has no probe) it inspects the
+        block following tarfile's stop. ``tarfile`` has already consumed the *first* null
+        trailer block (stopping on it via ``EOFHeaderError`` with ``ignore_zeros=False``),
+        so we only confirm the *second*: reading two blocks here would demand a third
+        block of trailing zeros and wrongly flag a minimal ``tar -b1`` trailer. Two null
+        blocks are valid; a non-null block is corruption (a rejected trailer/header); a
+        short or empty read is a truncated or absent trailer, which stays a warning unless
+        ``strict_archive_eof`` escalates it to ``TruncatedError``.
+
+        Streaming cannot see a rejected *final* header (tarfile's ``_Stream`` hides the
+        block and it cannot be recovered without re-reading), so that one case surfaces as
+        a missing-trailer warning there rather than corruption — see
+        ``docs/internal/known-issues.md``.
+        """
+        if self._eof_header_rejected:
+            self._emit_eof_marker(
+                observed_bytes=512, observed_kind="nonzero", corrupt=True
+            )
+            return
         fileobj = self._tar.fileobj
         if fileobj is None:
             return
@@ -367,19 +482,41 @@ class TarReader(BaseArchiveReader):
             chunk = fileobj.read(512)
         if len(chunk) == 512 and chunk == b"\x00" * 512:
             return
-        msg = (
-            "TAR archive may be truncated or corrupt: missing or invalid "
-            "end-of-archive marker block(s). Note that stdlib tarfile treats a "
-            "corrupt member header after the first as a clean end of archive, so a "
-            "silently shortened listing can also surface only here."
+        if len(chunk) == 512:
+            # A non-null block where the second trailer block belongs: tarfile treated a
+            # bad block as a clean end (or trailing junk followed a lone zero block).
+            self._emit_eof_marker(
+                observed_bytes=512, observed_kind="nonzero", corrupt=True
+            )
+            return
+        observed_kind: Literal["absent", "short"] = (
+            "absent" if len(chunk) == 0 else "short"
         )
-        if len(chunk) == 0:
-            observed_kind: Literal["absent", "short", "nonzero"] = "absent"
-        elif len(chunk) < 512:
-            observed_kind = "short"
+        self._emit_eof_marker(
+            observed_bytes=len(chunk), observed_kind=observed_kind, corrupt=False
+        )
+
+    def _emit_eof_marker(
+        self,
+        *,
+        observed_bytes: int,
+        observed_kind: Literal["absent", "short", "nonzero"],
+        corrupt: bool,
+    ) -> None:
+        if corrupt:
+            message = (
+                "TAR archive is corrupt: a non-null block appears where the "
+                "end-of-archive marker was expected. Stdlib tarfile treats a corrupt "
+                "member header after the first as a clean end of archive, so a silently "
+                "shortened listing surfaces here."
+            )
+            escalate_as: type[BaseException] | None = CorruptionError
         else:
-            observed_kind = "nonzero"
-        escalate_as = TruncatedError if self._config.strict_archive_eof else None
+            message = (
+                "TAR archive may be truncated: missing or short end-of-archive marker "
+                "block(s)."
+            )
+            escalate_as = TruncatedError if self._config.strict_archive_eof else None
         escalate_kwargs: dict[str, object] | None = None
         if escalate_as is not None:
             escalate_kwargs = {
@@ -388,13 +525,13 @@ class TarReader(BaseArchiveReader):
             }
         self._diagnostics_collector.emit(
             code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
-            message=msg,
+            message=message,
             context=ArchiveEofContext(
                 archive_name=self._archive_name,
                 format="tar",
                 expected_marker="two_zero_blocks",
                 expected_bytes=1024,
-                observed_bytes=len(chunk),
+                observed_bytes=observed_bytes,
                 observed_kind=observed_kind,
             ),
             logger=backends_logger,
