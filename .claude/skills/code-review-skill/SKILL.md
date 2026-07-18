@@ -19,9 +19,10 @@ allowed-tools:
 
 Transform code reviews from gatekeeping to knowledge sharing through constructive feedback, systematic analysis, and collaborative improvement.
 
-> **Repo note:** This is a Python-only subset of
+> **Repo note:** This is a Python-only, English-translated subset of
 > [awesome-skills/code-review-skill](https://github.com/awesome-skills/code-review-skill)
-> (MIT). Non-Python language guides were omitted to keep the skill lean for this library.
+> (MIT). Non-Python language guides were omitted, and upstream Simplified Chinese
+> reference prose was translated to English for this library.
 
 ## When to Use This Skill
 

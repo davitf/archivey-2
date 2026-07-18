@@ -1,321 +1,321 @@
 # Architecture Review Guide
 
-架构设计审查指南，帮助评估代码的架构是否合理、设计是否恰当。
+A guide for architecture design reviews, helping you assess whether the code's architecture is sound and the design is appropriate.
 
-## SOLID 原则检查清单
+## SOLID Principles Checklist
 
-### S - 单一职责原则 (SRP)
+### S - Single Responsibility Principle (SRP)
 
-**检查要点：**
-- 这个类/模块是否只有一个改变的理由？
-- 类中的方法是否都服务于同一个目的？
-- 如果要向非技术人员描述这个类，能否用一句话说清楚？
+**What to check:**
+- Does this class/module have only one reason to change?
+- Do all methods in the class serve the same purpose?
+- If you had to describe this class to a non-technical person, could you do it in one sentence?
 
-**代码审查中的识别信号：**
+**Signals to spot during code review:**
 ```
-⚠️ 类名包含 "And"、"Manager"、"Handler"、"Processor" 等泛化词汇
-⚠️ 一个类超过 200-300 行代码
-⚠️ 类有超过 5-7 个公共方法
-⚠️ 不同的方法操作完全不同的数据
-```
-
-**审查问题：**
-- "这个类负责哪些事情？能否拆分？"
-- "如果 X 需求变化，哪些方法需要改？如果 Y 需求变化呢？"
-
-### O - 开闭原则 (OCP)
-
-**检查要点：**
-- 添加新功能时，是否需要修改现有代码？
-- 是否可以通过扩展（继承、组合）来添加新行为？
-- 是否存在大量的 if/else 或 switch 语句来处理不同类型？
-
-**代码审查中的识别信号：**
-```
-⚠️ switch/if-else 链处理不同类型
-⚠️ 添加新功能需要修改核心类
-⚠️ 类型检查 (instanceof, typeof) 散布在代码中
+⚠️ Class names contain generic words like "And", "Manager", "Handler", "Processor"
+⚠️ A class exceeds 200–300 lines of code
+⚠️ A class has more than 5–7 public methods
+⚠️ Different methods operate on completely different data
 ```
 
-**审查问题：**
-- "如果要添加新的 X 类型，需要修改哪些文件？"
-- "这个 switch 语句会随着新类型增加而增长吗？"
+**Review questions:**
+- "What responsibilities does this class have? Can it be split?"
+- "If requirement X changes, which methods need to change? What about requirement Y?"
 
-### L - 里氏替换原则 (LSP)
+### O - Open/Closed Principle (OCP)
 
-**检查要点：**
-- 子类是否可以完全替代父类使用？
-- 子类是否改变了父类方法的预期行为？
-- 是否存在子类抛出父类未声明的异常？
+**What to check:**
+- When adding new functionality, do you need to modify existing code?
+- Can new behavior be added through extension (inheritance, composition)?
+- Are there large if/else or switch statements handling different types?
 
-**代码审查中的识别信号：**
+**Signals to spot during code review:**
 ```
-⚠️ 显式类型转换 (casting)
-⚠️ 子类方法抛出 NotImplementedException
-⚠️ 子类方法为空实现或只有 return
-⚠️ 使用基类的地方需要检查具体类型
-```
-
-**审查问题：**
-- "如果用子类替换父类，调用方代码是否需要修改？"
-- "这个方法在子类中的行为是否符合父类的契约？"
-
-### I - 接口隔离原则 (ISP)
-
-**检查要点：**
-- 接口是否足够小且专注？
-- 实现类是否被迫实现不需要的方法？
-- 客户端是否依赖了它不使用的方法？
-
-**代码审查中的识别信号：**
-```
-⚠️ 接口超过 5-7 个方法
-⚠️ 实现类有空方法或抛出 NotImplementedException
-⚠️ 接口名称过于宽泛 (IManager, IService)
-⚠️ 不同的客户端只使用接口的部分方法
+⚠️ switch/if-else chains handling different types
+⚠️ Adding new functionality requires modifying core classes
+⚠️ Type checks (instanceof, typeof) scattered throughout the code
 ```
 
-**审查问题：**
-- "这个接口的所有方法是否都被每个实现类使用？"
-- "能否将这个大接口拆分为更小的专用接口？"
+**Review questions:**
+- "If we add a new X type, which files need to change?"
+- "Will this switch statement keep growing as new types are added?"
 
-### D - 依赖倒置原则 (DIP)
+### L - Liskov Substitution Principle (LSP)
 
-**检查要点：**
-- 高层模块是否依赖于抽象而非具体实现？
-- 是否使用依赖注入而非直接 new 对象？
-- 抽象是否由高层模块定义而非低层模块？
+**What to check:**
+- Can subclasses fully replace the parent class wherever it is used?
+- Do subclasses change the expected behavior of parent methods?
+- Do subclasses throw exceptions not declared by the parent?
 
-**代码审查中的识别信号：**
+**Signals to spot during code review:**
 ```
-⚠️ 高层模块直接 new 低层模块的具体类
-⚠️ 导入具体实现类而非接口/抽象类
-⚠️ 配置和连接字符串硬编码在业务逻辑中
-⚠️ 难以为某个类编写单元测试
+⚠️ Explicit type casting
+⚠️ Subclass methods throw NotImplementedException
+⚠️ Subclass methods are empty implementations or only return
+⚠️ Code using the base class needs to check the concrete type
 ```
 
-**审查问题：**
-- "这个类的依赖能否在测试时被 mock 替换？"
-- "如果要更换数据库/API 实现，需要修改多少地方？"
+**Review questions:**
+- "If we substitute a subclass for the parent class, does calling code need to change?"
+- "Does this method's behavior in the subclass honor the parent's contract?"
+
+### I - Interface Segregation Principle (ISP)
+
+**What to check:**
+- Is the interface small and focused enough?
+- Are implementers forced to implement methods they do not need?
+- Do clients depend on methods they do not use?
+
+**Signals to spot during code review:**
+```
+⚠️ Interface has more than 5–7 methods
+⚠️ Implementing classes have empty methods or throw NotImplementedException
+⚠️ Interface name is too broad (IManager, IService)
+⚠️ Different clients use only a subset of the interface's methods
+```
+
+**Review questions:**
+- "Are all methods in this interface used by every implementing class?"
+- "Can this large interface be split into smaller, purpose-specific interfaces?"
+
+### D - Dependency Inversion Principle (DIP)
+
+**What to check:**
+- Do high-level modules depend on abstractions rather than concrete implementations?
+- Is dependency injection used instead of directly `new`-ing objects?
+- Are abstractions defined by high-level modules rather than low-level modules?
+
+**Signals to spot during code review:**
+```
+⚠️ High-level modules directly new concrete classes from low-level modules
+⚠️ Imports concrete implementations instead of interfaces/abstract classes
+⚠️ Configuration and connection strings hardcoded in business logic
+⚠️ Difficult to write unit tests for a class
+```
+
+**Review questions:**
+- "Can this class's dependencies be replaced with mocks in tests?"
+- "If we swap the database/API implementation, how many places need to change?"
 
 ---
 
-## 架构反模式识别
+## Architecture Anti-Pattern Identification
 
-### 致命反模式
+### Critical Anti-Patterns
 
-| 反模式 | 识别信号 | 影响 |
+| Anti-pattern | Signals | Impact |
 |--------|----------|------|
-| **大泥球 (Big Ball of Mud)** | 没有清晰的模块边界，任何代码都可能调用任何其他代码 | 难以理解、修改和测试 |
-| **上帝类 (God Object)** | 单个类承担过多职责，知道太多、做太多 | 高耦合，难以重用和测试 |
-| **意大利面条代码** | 控制流程混乱，goto 或深层嵌套，难以追踪执行路径 | 难以理解和维护 |
-| **熔岩流 (Lava Flow)** | 没人敢动的古老代码，缺乏文档和测试 | 技术债务累积 |
+| **Big Ball of Mud** | No clear module boundaries; any code can call any other code | Hard to understand, modify, and test |
+| **God Object** | A single class takes on too many responsibilities; knows too much, does too much | High coupling; hard to reuse and test |
+| **Spaghetti Code** | Chaotic control flow, goto or deep nesting; hard to trace execution paths | Hard to understand and maintain |
+| **Lava Flow** | Ancient code nobody dares touch; lacks documentation and tests | Technical debt accumulates |
 
-### 设计反模式
+### Design Anti-Patterns
 
-| 反模式 | 识别信号 | 建议 |
+| Anti-pattern | Signals | Recommendation |
 |--------|----------|------|
-| **金锤子 (Golden Hammer)** | 对所有问题使用同一种技术/模式 | 根据问题选择合适的解决方案 |
-| **过度工程 (Gas Factory)** | 简单问题用复杂方案解决，滥用设计模式 | YAGNI 原则，先简单后复杂 |
-| **船锚 (Boat Anchor)** | 为"将来可能需要"而写的未使用代码 | 删除未使用代码，需要时再写 |
-| **复制粘贴编程** | 相同逻辑出现在多处 | 提取公共方法或模块 |
+| **Golden Hammer** | Using the same technology/pattern for every problem | Choose the right solution for each problem |
+| **Gas Factory (Over-engineering)** | Solving simple problems with complex solutions; design patterns abused | YAGNI—start simple, add complexity only when needed |
+| **Boat Anchor** | Unused code written for "we might need it later" | Delete unused code; write it when needed |
+| **Copy-Paste Programming** | The same logic appears in multiple places | Extract shared methods or modules |
 
-### 审查问题
+### Review Questions
 
 ```markdown
-🔴 [blocking] "这个类有 2000 行代码，建议拆分为多个专注的类"
-🟡 [important] "这段逻辑在 3 个地方重复，考虑提取为公共方法？"
-💡 [suggestion] "这个 switch 语句可以用策略模式替代，更易扩展"
+🔴 [blocking] "This class has 2000 lines of code; consider splitting it into several focused classes"
+🟡 [important] "This logic is duplicated in 3 places—consider extracting a shared method?"
+💡 [suggestion] "This switch statement could be replaced with the Strategy pattern for easier extension"
 ```
 
 ---
 
-## 耦合度与内聚性评估
+## Coupling and Cohesion Assessment
 
-### 耦合类型（从好到差）
+### Coupling Types (best to worst)
 
-| 类型 | 描述 | 示例 |
+| Type | Description | Example |
 |------|------|------|
-| **消息耦合** ✅ | 通过参数传递数据 | `calculate(price, quantity)` |
-| **数据耦合** ✅ | 共享简单数据结构 | `processOrder(orderDTO)` |
-| **印记耦合** ⚠️ | 共享复杂数据结构但只用部分 | 传入整个 User 对象但只用 name |
-| **控制耦合** ⚠️ | 传递控制标志影响行为 | `process(data, isAdmin=true)` |
-| **公共耦合** ❌ | 共享全局变量 | 多个模块读写同一个全局状态 |
-| **内容耦合** ❌ | 直接访问另一模块的内部 | 直接操作另一个类的私有属性 |
+| **Message coupling** ✅ | Data passed via parameters | `calculate(price, quantity)` |
+| **Data coupling** ✅ | Share simple data structures | `processOrder(orderDTO)` |
+| **Stamp coupling** ⚠️ | Share complex data structures but use only part | Pass entire User object but only use name |
+| **Control coupling** ⚠️ | Control flags passed in affect behavior | `process(data, isAdmin=true)` |
+| **Common coupling** ❌ | Share global variables | Multiple modules read/write the same global state |
+| **Content coupling** ❌ | Direct access to another module's internals | Directly manipulate another class's private fields |
 
-### 内聚类型（从好到差）
+### Cohesion Types (best to worst)
 
-| 类型 | 描述 | 质量 |
+| Type | Description | Quality |
 |------|------|------|
-| **功能内聚** | 所有元素完成单一任务 | ✅ 最佳 |
-| **顺序内聚** | 输出作为下一步输入 | ✅ 良好 |
-| **通信内聚** | 操作相同数据 | ⚠️ 可接受 |
-| **时间内聚** | 同时执行的任务 | ⚠️ 较差 |
-| **逻辑内聚** | 逻辑相关但功能不同 | ❌ 差 |
-| **偶然内聚** | 没有明显关系 | ❌ 最差 |
+| **Functional cohesion** | All elements complete a single task | ✅ Best |
+| **Sequential cohesion** | Output of one step is input to the next | ✅ Good |
+| **Communicational cohesion** | Operate on the same data | ⚠️ Acceptable |
+| **Temporal cohesion** | Tasks executed at the same time | ⚠️ Poor |
+| **Logical cohesion** | Logically related but functionally different | ❌ Bad |
+| **Coincidental cohesion** | No obvious relationship | ❌ Worst |
 
-### 度量指标参考
+### Metric Reference
 
 ```yaml
-耦合指标:
-  CBO (类间耦合):
-    好: < 5
-    警告: 5-10
-    危险: > 10
+Coupling metrics:
+  CBO (Coupling Between Objects):
+    good: < 5
+    warning: 5-10
+    danger: > 10
 
-  Ce (传出耦合):
-    描述: 依赖多少外部类
-    好: < 7
+  Ce (Efferent coupling):
+    description: How many external classes this depends on
+    good: < 7
 
-  Ca (传入耦合):
-    描述: 被多少类依赖
-    高值意味着: 修改影响大，需要稳定
+  Ca (Afferent coupling):
+    description: How many classes depend on this
+    high value means: Large blast radius on change; needs stability
 
-内聚指标:
-  LCOM4 (方法缺乏内聚):
-    1: 单一职责 ✅
-    2-3: 可能需要拆分 ⚠️
-    >3: 应该拆分 ❌
+Cohesion metrics:
+  LCOM4 (Lack of Cohesion of Methods):
+    1: Single responsibility ✅
+    2-3: May need splitting ⚠️
+    >3: Should split ❌
 ```
 
-### 审查问题
+### Review Questions
 
-- "这个模块依赖了多少其他模块？能否减少？"
-- "修改这个类会影响多少其他地方？"
-- "这个类的方法是否都操作相同的数据？"
+- "How many other modules does this module depend on? Can that be reduced?"
+- "How many other places are affected if we change this class?"
+- "Do all methods in this class operate on the same data?"
 
 ---
 
-## 分层架构审查
+## Layered Architecture Review
 
-### Clean Architecture 层次检查
+### Clean Architecture Layer Check
 
 ```
 ┌─────────────────────────────────────┐
-│         Frameworks & Drivers        │ ← 最外层：Web、DB、UI
+│         Frameworks & Drivers        │ ← Outermost: Web, DB, UI
 ├─────────────────────────────────────┤
-│         Interface Adapters          │ ← Controllers、Gateways、Presenters
+│         Interface Adapters          │ ← Controllers, Gateways, Presenters
 ├─────────────────────────────────────┤
-│          Application Layer          │ ← Use Cases、Application Services
+│          Application Layer          │ ← Use Cases, Application Services
 ├─────────────────────────────────────┤
-│            Domain Layer             │ ← Entities、Domain Services
+│            Domain Layer             │ ← Entities, Domain Services
 └─────────────────────────────────────┘
-          ↑ 依赖方向只能向内 ↑
+          ↑ Dependencies point inward only ↑
 ```
 
-### 依赖规则检查
+### Dependency Rule Check
 
-**核心规则：源代码依赖只能指向内层**
+**Core rule: source-code dependencies may only point inward**
 
 ```typescript
-// ❌ 违反依赖规则：Domain 层依赖 Infrastructure
+// ❌ Violates dependency rule: Domain layer depends on Infrastructure
 // domain/User.ts
 import { MySQLConnection } from '../infrastructure/database';
 
-// ✅ 正确：Domain 层定义接口，Infrastructure 实现
-// domain/UserRepository.ts (接口)
+// ✅ Correct: Domain defines the interface; Infrastructure implements
+// domain/UserRepository.ts (interface)
 interface UserRepository {
   findById(id: string): Promise<User>;
 }
 
-// infrastructure/MySQLUserRepository.ts (实现)
+// infrastructure/MySQLUserRepository.ts (implementation)
 class MySQLUserRepository implements UserRepository {
   findById(id: string): Promise<User> { /* ... */ }
 }
 ```
 
-### 审查清单
+### Review Checklist
 
-**层次边界检查：**
-- [ ] Domain 层是否有外部依赖（数据库、HTTP、文件系统）？
-- [ ] Application 层是否直接操作数据库或调用外部 API？
-- [ ] Controller 是否包含业务逻辑？
-- [ ] 是否存在跨层调用（UI 直接调用 Repository）？
+**Layer boundary check:**
+- [ ] Does the Domain layer have external dependencies (database, HTTP, filesystem)?
+- [ ] Does the Application layer directly access the database or call external APIs?
+- [ ] Does the Controller contain business logic?
+- [ ] Are there cross-layer calls (e.g., UI calling Repository directly)?
 
-**关注点分离检查：**
-- [ ] 业务逻辑是否与展示逻辑分离？
-- [ ] 数据访问是否封装在专门的层？
-- [ ] 配置和环境相关代码是否集中管理？
+**Separation of concerns check:**
+- [ ] Is business logic separated from presentation logic?
+- [ ] Is data access encapsulated in a dedicated layer?
+- [ ] Is configuration and environment-specific code centralized?
 
-### 审查问题
+### Review Questions
 
 ```markdown
-🔴 [blocking] "Domain 实体直接导入了数据库连接，违反依赖规则"
-🟡 [important] "Controller 包含业务计算逻辑，建议移到 Service 层"
-💡 [suggestion] "考虑使用依赖注入来解耦这些组件"
+🔴 [blocking] "Domain entity directly imports a database connection, violating the dependency rule"
+🟡 [important] "Controller contains business calculation logic; move it to the Service layer"
+💡 [suggestion] "Consider using dependency injection to decouple these components"
 ```
 
 ---
 
-## 设计模式使用评估
+## Design Pattern Usage Assessment
 
-### 何时使用设计模式
+### When to Use Design Patterns
 
-| 模式 | 适用场景 | 不适用场景 |
+| Pattern | Good fit | Poor fit |
 |------|----------|------------|
-| **Factory** | 需要创建不同类型对象，类型在运行时确定 | 只有一种类型，或类型固定不变 |
-| **Strategy** | 算法需要在运行时切换，有多种可互换的行为 | 只有一种算法，或算法不会变化 |
-| **Observer** | 一对多依赖，状态变化需要通知多个对象 | 简单的直接调用即可满足需求 |
-| **Singleton** | 确实需要全局唯一实例，如配置管理 | 可以通过依赖注入传递的对象 |
-| **Decorator** | 需要动态添加职责，避免继承爆炸 | 职责固定，不需要动态组合 |
+| **Factory** | Need to create different object types; type determined at runtime | Only one type, or type is fixed |
+| **Strategy** | Algorithm must switch at runtime; multiple interchangeable behaviors | Only one algorithm, or algorithm never changes |
+| **Observer** | One-to-many dependency; state changes must notify multiple objects | Simple direct calls are enough |
+| **Singleton** | Truly need a globally unique instance (e.g., config manager) | Object can be passed via dependency injection |
+| **Decorator** | Need to add responsibilities dynamically; avoid inheritance explosion | Fixed responsibilities; no dynamic composition needed |
 
-### 过度设计警告信号
+### Over-Design Warning Signals
 
 ```
-⚠️ Patternitis（模式炎）识别信号：
+⚠️ Patternitis signals:
 
-1. 简单的 if/else 被替换为策略模式 + 工厂 + 注册表
-2. 只有一个实现的接口
-3. 为了"将来可能需要"而添加的抽象层
-4. 代码行数因模式应用而大幅增加
-5. 新人需要很长时间才能理解代码结构
+1. Simple if/else replaced by Strategy + Factory + Registry
+2. Interface with only one implementation
+3. Abstraction layers added for "we might need it later"
+4. Line count grows sharply because of pattern application
+5. Newcomers take a long time to understand the structure
 ```
 
-### 审查原则
+### Review Principles
 
 ```markdown
-✅ 正确使用模式:
-- 解决了实际的可扩展性问题
-- 代码更容易理解和测试
-- 添加新功能变得更简单
+✅ Correct pattern use:
+- Solves a real extensibility problem
+- Code is easier to understand and test
+- Adding new features becomes simpler
 
-❌ 过度使用模式:
-- 为了使用模式而使用
-- 增加了不必要的复杂度
-- 违反了 YAGNI 原则
+❌ Overuse of patterns:
+- Using patterns for their own sake
+- Adds unnecessary complexity
+- Violates YAGNI
 ```
 
-### 审查问题
+### Review Questions
 
-- "使用这个模式解决了什么具体问题？"
-- "如果不用这个模式，代码会有什么问题？"
-- "这个抽象层带来的价值是否大于它的复杂度？"
+- "What specific problem does this pattern solve?"
+- "What would go wrong if we did not use this pattern?"
+- "Is the value of this abstraction worth its complexity?"
 
 ---
 
-## 可扩展性评估
+## Extensibility Assessment
 
-### 扩展性检查清单
+### Extensibility Checklist
 
-**功能扩展性：**
-- [ ] 添加新功能是否需要修改核心代码？
-- [ ] 是否提供了扩展点（hooks、plugins、events）？
-- [ ] 配置是否外部化（配置文件、环境变量）？
+**Functional extensibility:**
+- [ ] Does adding new features require changing core code?
+- [ ] Are extension points provided (hooks, plugins, events)?
+- [ ] Is configuration externalized (config files, environment variables)?
 
-**数据扩展性：**
-- [ ] 数据模型是否支持新增字段？
-- [ ] 是否考虑了数据量增长的场景？
-- [ ] 查询是否有合适的索引？
+**Data extensibility:**
+- [ ] Does the data model support new fields?
+- [ ] Have data-growth scenarios been considered?
+- [ ] Do queries have appropriate indexes?
 
-**负载扩展性：**
-- [ ] 是否可以水平扩展（添加更多实例）？
-- [ ] 是否有状态依赖（session、本地缓存）？
-- [ ] 数据库连接是否使用连接池？
+**Load extensibility:**
+- [ ] Can the system scale horizontally (add more instances)?
+- [ ] Is there state affinity (session, local cache)?
+- [ ] Does the database use connection pooling?
 
-### 扩展点设计检查
+### Extension Point Design Check
 
 ```typescript
-// ✅ 好的扩展设计：使用事件/钩子
+// ✅ Good extension design: events/hooks
 class OrderService {
   private hooks: OrderHooks;
 
@@ -327,38 +327,38 @@ class OrderService {
   }
 }
 
-// ❌ 差的扩展设计：硬编码所有行为
+// ❌ Poor extension design: all behavior hardcoded
 class OrderService {
   async createOrder(order: Order) {
-    await this.sendEmail(order);        // 硬编码
-    await this.updateInventory(order);  // 硬编码
-    await this.notifyWarehouse(order);  // 硬编码
+    await this.sendEmail(order);        // hardcoded
+    await this.updateInventory(order);  // hardcoded
+    await this.notifyWarehouse(order);  // hardcoded
     return await this.save(order);
   }
 }
 ```
 
-### 审查问题
+### Review Questions
 
 ```markdown
-💡 [suggestion] "如果将来需要支持新的支付方式，这个设计是否容易扩展？"
-🟡 [important] "这里的逻辑是硬编码的，考虑使用配置或策略模式？"
-📚 [learning] "事件驱动架构可以让这个功能更容易扩展"
+💡 [suggestion] "If we need to support new payment methods later, is this design easy to extend?"
+🟡 [important] "Logic here is hardcoded—consider configuration or the Strategy pattern?"
+📚 [learning] "Event-driven architecture could make this feature easier to extend"
 ```
 
 ---
 
-## 代码结构最佳实践
+## Code Structure Best Practices
 
-### 目录组织
+### Directory Organization
 
-**按功能/领域组织（推荐）：**
+**Organize by feature/domain (recommended):**
 ```
 src/
 ├── user/
-│   ├── User.ts           (实体)
-│   ├── UserService.ts    (服务)
-│   ├── UserRepository.ts (数据访问)
+│   ├── User.ts           (entity)
+│   ├── UserService.ts    (service)
+│   ├── UserRepository.ts (data access)
 │   └── UserController.ts (API)
 ├── order/
 │   ├── Order.ts
@@ -369,10 +369,10 @@ src/
     └── types/
 ```
 
-**按技术层组织（不推荐）：**
+**Organize by technical layer (not recommended):**
 ```
 src/
-├── controllers/     ← 不同领域混在一起
+├── controllers/     ← different domains mixed together
 │   ├── UserController.ts
 │   └── OrderController.ts
 ├── services/
@@ -380,90 +380,90 @@ src/
 └── models/
 ```
 
-### 命名约定检查
+### Naming Convention Check
 
-| 类型 | 约定 | 示例 |
+| Type | Convention | Example |
 |------|------|------|
-| 类名 | PascalCase，名词 | `UserService`, `OrderRepository` |
-| 方法名 | camelCase，动词 | `createUser`, `findOrderById` |
-| 接口名 | I 前缀或无前缀 | `IUserService` 或 `UserService` |
-| 常量 | UPPER_SNAKE_CASE | `MAX_RETRY_COUNT` |
-| 私有属性 | 下划线前缀或无 | `_cache` 或 `#cache` |
+| Class names | PascalCase, nouns | `UserService`, `OrderRepository` |
+| Method names | camelCase, verbs | `createUser`, `findOrderById` |
+| Interface names | `I` prefix or no prefix | `IUserService` or `UserService` |
+| Constants | UPPER_SNAKE_CASE | `MAX_RETRY_COUNT` |
+| Private fields | Leading underscore or none | `_cache` or `#cache` |
 
-### 文件大小指南
+### File Size Guidelines
 
 ```yaml
-建议限制:
-  单个文件: < 300 行
-  单个函数: < 50 行
-  单个类: < 200 行
-  函数参数: < 4 个
-  嵌套深度: < 4 层
+Suggested limits:
+  single file: < 300 lines
+  single function: < 50 lines
+  single class: < 200 lines
+  function parameters: < 4
+  nesting depth: < 4 levels
 
-超出限制时:
-  - 考虑拆分为更小的单元
-  - 使用组合而非继承
-  - 提取辅助函数或类
+When limits are exceeded:
+  - Consider splitting into smaller units
+  - Prefer composition over inheritance
+  - Extract helper functions or classes
 ```
 
-### 审查问题
+### Review Questions
 
 ```markdown
-🟢 [nit] "这个 500 行的文件可以考虑按职责拆分"
-🟡 [important] "建议按功能领域而非技术层组织目录结构"
-💡 [suggestion] "函数名 `process` 不够明确，考虑改为 `calculateOrderTotal`？"
+🟢 [nit] "This 500-line file could be split by responsibility"
+🟡 [important] "Organize directories by feature domain rather than technical layer"
+💡 [suggestion] "Function name `process` is vague—consider `calculateOrderTotal`?"
 ```
 
 ---
 
-## 快速参考清单
+## Quick Reference Checklist
 
-### 架构审查 5 分钟速查
+### 5-Minute Architecture Review
 
 ```markdown
-□ 依赖方向是否正确？（外层依赖内层）
-□ 是否存在循环依赖？
-□ 核心业务逻辑是否与框架/UI/数据库解耦？
-□ 是否遵循 SOLID 原则？
-□ 是否存在明显的反模式？
+□ Is dependency direction correct? (outer layers depend on inner)
+□ Are there circular dependencies?
+□ Is core business logic decoupled from framework/UI/database?
+□ Are SOLID principles followed?
+□ Are obvious anti-patterns present?
 ```
 
-### 红旗信号（必须处理）
+### Red Flags (must address)
 
 ```markdown
-🔴 God Object - 单个类超过 1000 行
-🔴 循环依赖 - A → B → C → A
-🔴 Domain 层包含框架依赖
-🔴 硬编码的配置和密钥
-🔴 没有接口的外部服务调用
+🔴 God Object — single class over 1000 lines
+🔴 Circular dependency — A → B → C → A
+🔴 Domain layer contains framework dependencies
+🔴 Hardcoded configuration and secrets
+🔴 External service calls with no interface
 ```
 
-### 黄旗信号（建议处理）
+### Yellow Flags (should address)
 
 ```markdown
-🟡 类间耦合度 (CBO) > 10
-🟡 方法参数超过 5 个
-🟡 嵌套深度超过 4 层
-🟡 重复代码块 > 10 行
-🟡 只有一个实现的接口
+🟡 Coupling between objects (CBO) > 10
+🟡 More than 5 method parameters
+🟡 Nesting depth greater than 4
+🟡 Duplicated code block > 10 lines
+🟡 Interface with only one implementation
 ```
 
 ---
 
-## 工具推荐
+## Recommended Tools
 
-| 工具 | 用途 | 语言支持 |
+| Tool | Purpose | Language Support |
 |------|------|----------|
-| **SonarQube** | 代码质量、耦合度分析 | 多语言 |
-| **NDepend** | 依赖分析、架构规则 | .NET |
-| **JDepend** | 包依赖分析 | Java |
-| **Madge** | 模块依赖图 | JavaScript/TypeScript |
-| **ESLint** | 代码规范、复杂度检查 | JavaScript/TypeScript |
-| **CodeScene** | 技术债务、热点分析 | 多语言 |
+| **SonarQube** | Code quality, coupling analysis | Multi-language |
+| **NDepend** | Dependency analysis, architecture rules | .NET |
+| **JDepend** | Package dependency analysis | Java |
+| **Madge** | Module dependency graph | JavaScript/TypeScript |
+| **ESLint** | Code style, complexity checks | JavaScript/TypeScript |
+| **CodeScene** | Technical debt, hotspot analysis | Multi-language |
 
 ---
 
-## 参考资源
+## References
 
 - [Clean Architecture - Uncle Bob](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
 - [SOLID Principles in Code Review - JetBrains](https://blog.jetbrains.com/upsource/2015/08/31/what-to-look-for-in-a-code-review-solid-principles-2/)

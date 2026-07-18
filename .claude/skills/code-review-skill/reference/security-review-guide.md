@@ -103,7 +103,7 @@ app.post('/api/data', (req, res) => {
 # ✅ Django: built-in CSRF protection
 # settings.py
 MIDDLEWARE = [
-    'django.middleware.csrf.CsrfViewMiddleware',  # 默认启用
+    'django.middleware.csrf.CsrfViewMiddleware',  # enabled by default
 ]
 
 # templates: include CSRF token
@@ -112,7 +112,7 @@ MIDDLEWARE = [
 # </form>
 
 # ❌ Disabling CSRF on a view
-@csrf_exempt  # 除非绝对必要，否则不使用
+@csrf_exempt  # do not use unless absolutely necessary
 def my_view(request):
     ...
 ```
@@ -139,7 +139,7 @@ public class SecurityConfig {
 res.cookie('session', sessionId, {
   httpOnly: true,
   secure: true,
-  sameSite: 'strict',  // 或 'lax' 用于允许导航 GET 请求
+  sameSite: 'strict',  // or 'lax' to allow navigation GET requests
   maxAge: 3600000,
 });
 ```
@@ -210,12 +210,12 @@ func isSafeURL(rawURL string) bool {
 }
 ```
 
-### IDOR（不安全直接对象引用）
+### IDOR (Insecure Direct Object Reference)
 
 ```python
 # ❌ Vulnerable: no ownership check
 def get_order(request, order_id):
-    order = Order.objects.get(id=order_id)  # 任何用户可查看任何订单
+    order = Order.objects.get(id=order_id)  # any user can view any order
     return JsonResponse(order.to_dict())
 
 # ✅ Check ownership before returning
@@ -257,16 +257,16 @@ public Order getOrder(@PathVariable Long id) {
 }
 ```
 
-**UUID vs 自增 ID**
+**UUID vs sequential ID**
 ```typescript
-// ❌ 自增 ID 可被枚举
+// ❌ Sequential IDs are enumerable
 // GET /api/users/1, /api/users/2, /api/users/3 ...
 
-// ✅ UUID 不可预测
+// ✅ UUIDs are unpredictable
 // GET /api/users/550e8400-e29b-41d4-a716-446655440000
 
-// ⚠️ UUID 只是防止枚举，不是权限控制
-// 仍然需要验证当前用户是否有权访问该资源
+// ⚠️ UUIDs only prevent enumeration, not authorization
+// still verify the current user is authorized to access the resource
 ```
 
 ### Command Injection Prevention

@@ -1,129 +1,129 @@
-# 错误处理原则 — 跨语言通用指南
+# Error Handling Principles — Cross-Language Guide
 
-> 本文档覆盖错误处理的核心原则、常见反模式、错误层次设计和日志最佳实践。每个原则附带跨语言代码示例。
+> This document covers core error-handling principles, common anti-patterns, error hierarchy design, and logging best practices. Each principle includes cross-language code examples.
 
-## 目录
+## Table of Contents
 
-- [核心原则](#核心原则)
-- [反模式](#反模式)
-- [错误层次设计](#错误层次设计)
-- [日志最佳实践](#日志最佳实践)
-- [跨语言代码示例](#跨语言代码示例)
+- [Core Principles](#core-principles)
+- [Anti-Patterns](#anti-patterns)
+- [Error Hierarchy Design](#error-hierarchy-design)
+- [Logging Best Practices](#logging-best-practices)
+- [Cross-Language Code Examples](#cross-language-code-examples)
 - [Review Checklist](#review-checklist)
 
 ---
 
-## 核心原则
+## Core Principles
 
-### 原则 1: 不要吞掉错误
+### Principle 1: Do Not Swallow Errors
 
-每个错误都必须被处理：向上传播、记录日志、或转换为更有意义的错误。**永远不要**静默忽略。
+Every error must be handled: propagate upward, log, or convert to a more meaningful error. **Never** ignore silently.
 
 ```
-// 伪代码
+// Pseudocode
 result = risky_operation()
 if error:
-    // 必须做以下之一：
-    //   1. return error to caller（传播）
-    //   2. log + return fallback（降级）
-    //   3. panic/crash（不可恢复时）
+    // You must do one of the following:
+    //   1. return error to caller (propagate)
+    //   2. log + return fallback (degrade)
+    //   3. panic/crash (when unrecoverable)
 ```
 
-### 原则 2: 添加上下文
+### Principle 2: Add Context
 
-错误信息应包含**操作描述**和**关键参数**，使调试者无需阅读调用链即可定位问题。
+Error messages should include an **operation description** and **key parameters** so a debugger can locate the problem without reading the call chain.
 
 ```
-// ❌ 无上下文
+// ❌ No context
 "failed"
 
-// ✅ 有上下文
+// ✅ With context
 "failed to process order #12345: payment gateway timeout after 30s"
 ```
 
-### 原则 3: 使用特定类型
+### Principle 3: Use Specific Types
 
-用错误类型区分失败原因，让调用者能精确处理不同的失败场景。
+Use error types to distinguish failure causes so callers can handle different failure scenarios precisely.
 
 ```
-// ❌ 通用错误
+// ❌ Generic error
 throw new Error("something went wrong")
 
-// ✅ 特定类型
+// ✅ Specific types
 throw new OrderNotFoundError(orderId)
 throw new PaymentTimeoutException(gatewayName, timeoutMs)
 ```
 
-### 原则 4: Fail Fast
+### Principle 4: Fail Fast
 
-在操作开始前验证前置条件，尽早失败。这避免了部分执行后才发现错误导致的不一致状态。
+Validate preconditions before starting work and fail as early as possible. This avoids inconsistent state caused by discovering errors partway through execution.
 
 ```
-// ❌ 执行到一半才发现参数无效
+// ❌ Invalid parameters discovered halfway through
 def process(data, config):
-    result = expensive_computation(data)  # 已花费 5 秒
+    result = expensive_computation(data)  # Already spent 5 seconds
     if not config.valid:
-        raise ValueError("invalid config")  # 5 秒白费了
+        raise ValueError("invalid config")  # 5 seconds wasted
 
-// ✅ 先验证
+// ✅ Validate first
 def process(data, config):
     if not config.valid:
         raise ValueError("invalid config")
     result = expensive_computation(data)
 ```
 
-### 原则 5: 错误处理只做一次
+### Principle 5: Handle Each Error Once
 
-不要在每个层级都处理同一个错误（既 log 又 return 又 wrap）。选择一种方式，让调用者决定如何处理。
+Do not handle the same error at every layer (log, return, and wrap). Pick one approach and let the caller decide how to handle it.
 
 ```
-// ❌ 既 log 又 return（重复处理）
+// ❌ Both log and return (duplicate handling)
 if err:
     log.error("failed: %s", err)
     return err
 
-// ✅ 只包装并返回，让顶层统一处理
+// ✅ Only wrap and return; let the top level handle uniformly
 if err:
     return wrap_error("operation failed", err)
 ```
 
 ---
 
-## 反模式
+## Anti-Patterns
 
-### 反模式 1: 空 catch 块
+### Anti-Pattern 1: Empty catch Blocks
 
 ```python
-# ❌ Python: 空 except 吞掉所有异常（包括 KeyboardInterrupt）
+# ❌ Python: empty except swallows all exceptions (including KeyboardInterrupt)
 try:
     result = risky()
 except:
     pass
 
-# ❌ Java: 空 catch 吞掉异常
+# ❌ Java: empty catch swallows the exception
 try {
     result = risky();
 } catch (Exception e) {
-    // 什么都不做
+    // Do nothing
 }
 
-# ❌ Go: 忽略 error
+# ❌ Go: ignore error
 result, _ := risky()
 
-# ❌ Rust: unwrap() 在生产代码中
+# ❌ Rust: unwrap() in production code
 let result = risky().unwrap();  // panic on error
 ```
 
-### 反模式 2: 过宽的 catch
+### Anti-Pattern 2: Overly Broad catch
 
 ```python
-# ❌ 捕获所有异常，无法区分失败类型
+# ❌ Catch all exceptions; cannot distinguish failure types
 try:
     result = risky()
 except Exception as e:
     logger.error(f"failed: {e}")
 
-# ✅ 捕获特定异常
+# ✅ Catch specific exceptions
 try:
     result = risky()
 except ConnectionError as e:
@@ -134,16 +134,16 @@ except ValueError as e:
     raise
 ```
 
-### 反模式 3: 丢失原始异常
+### Anti-Pattern 3: Losing the Original Exception
 
 ```python
-# ❌ 丢失了原始异常的堆栈和信息
+# ❌ Loses the original exception's stack trace and details
 try:
     result = external_api.call()
 except APIError as e:
-    raise RuntimeError("API failed")  # 丢失了原因
+    raise RuntimeError("API failed")  # Cause is lost
 
-# ✅ 保留异常链
+# ✅ Preserve the exception chain
 try:
     result = external_api.call()
 except APIError as e:
@@ -151,39 +151,39 @@ except APIError as e:
 ```
 
 ```java
-// ❌ 丢失原始异常
+// ❌ Lose the original exception
 catch (IOException e) {
     throw new ServiceException("IO failed");
 }
 
-// ✅ 保留原因
+// ✅ Preserve the cause
 catch (IOException e) {
     throw new ServiceException("IO failed", e);
 }
 ```
 
-### 反模式 4: 用异常做流程控制
+### Anti-Pattern 4: Using Exceptions for Control Flow
 
 ```python
-# ❌ 异常做正常流程控制（慢且不清晰）
+# ❌ Exceptions for normal control flow (slow and unclear)
 try:
     user = users[name]
 except KeyError:
     user = create_default_user(name)
 
-# ✅ 显式检查
+# ✅ Explicit check
 user = users.get(name) or create_default_user(name)
 ```
 
 ```go
-// ❌ Go: panic 做流程控制
+// ❌ Go: panic for control flow
 func getUser(id int) User {
     if id <= 0 {
         panic("invalid id")
     }
 }
 
-// ✅ Go: 返回 error
+// ✅ Go: return error
 func getUser(id int) (User, error) {
     if id <= 0 {
         return User{}, fmt.Errorf("invalid user id: %d", id)
@@ -191,14 +191,14 @@ func getUser(id int) (User, error) {
 }
 ```
 
-### 反模式 5: 忽略返回值
+### Anti-Pattern 5: Ignoring Return Values
 
 ```csharp
-// ❌ 忽略返回的 bool/Result
+// ❌ Ignore returned bool/Result
 dict.TryGetValue("key", out var value);
-// value 可能是默认值，但代码继续执行如同成功
+// value may be the default, but code continues as if it succeeded
 
-// ✅ 检查返回值
+// ✅ Check the return value
 if (!dict.TryGetValue("key", out var value))
 {
     throw new KeyNotFoundException("key not found");
@@ -207,54 +207,54 @@ if (!dict.TryGetValue("key", out var value))
 
 ---
 
-## 错误层次设计
+## Error Hierarchy Design
 
-### 三层错误架构
+### Three-Layer Error Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│ Application Errors（应用级）                      │
+│ Application Errors (application layer)          │
 │   - AppError / ServiceError                      │
-│   - 全局异常处理器捕获，返回用户友好的响应          │
+│   - Caught by global handler; user-friendly resp │
 ├─────────────────────────────────────────────────┤
-│ Module Errors（模块级）                            │
+│ Module Errors (module layer)                     │
 │   - PaymentError, AuthError, ValidationError     │
-│   - 每个业务模块定义自己的错误类型                  │
+│   - Each business module defines its own types   │
 ├─────────────────────────────────────────────────┤
-│ Infrastructure Errors（基础设施级）                │
+│ Infrastructure Errors (infrastructure layer)     │
 │   - IOError, NetworkError, DatabaseError         │
-│   - 来自操作系统、网络、数据库的底层错误            │
+│   - Low-level errors from OS, network, database  │
 └─────────────────────────────────────────────────┘
 ```
 
-### 设计规则
+### Design Rules
 
-1. **模块级错误继承自应用级基类**，便于全局 catch
-2. **基础设施错误在模块边界转换为模块级错误**，不暴露给上层
-3. **每个错误类型包含足够的上下文**用于调试（ID、时间戳、操作名称）
+1. **Module-level errors inherit from an application-level base class** for easy global catch
+2. **Infrastructure errors are converted to module-level errors at module boundaries** and not exposed upward
+3. **Each error type carries enough context for debugging** (ID, timestamp, operation name)
 
-### 示例层次（Python）
+### Example Hierarchy (Python)
 
 ```python
 class AppError(Exception):
-    """应用基础异常"""
+    """Application base exception"""
     pass
 
 class PaymentError(AppError):
-    """支付模块错误"""
+    """Payment module error"""
     def __init__(self, order_id: str, reason: str):
         self.order_id = order_id
         super().__init__(f"payment failed for order {order_id}: {reason}")
 
 class PaymentGatewayTimeout(PaymentError):
-    """支付网关超时"""
+    """Payment gateway timeout"""
     def __init__(self, order_id: str, gateway: str, timeout_ms: int):
         self.gateway = gateway
         self.timeout_ms = timeout_ms
         super().__init__(order_id, f"gateway {gateway} timed out after {timeout_ms}ms")
 ```
 
-### 示例层次（Java）
+### Example Hierarchy (Java)
 
 ```java
 public class AppException extends RuntimeException {
@@ -274,24 +274,24 @@ public class OrderNotFoundException extends AppException {
 
 ---
 
-## 日志最佳实践
+## Logging Best Practices
 
-### 日志级别选择
+### Choosing Log Levels
 
-| 级别 | 何时使用 | 示例 |
+| Level | When to Use | Example |
 |------|---------|------|
-| **ERROR** | 需要人工介入的故障 | 支付失败、数据不一致 |
-| **WARN** | 可自动恢复的异常 | 重试成功、降级处理 |
-| **INFO** | 正常业务事件 | 订单创建、用户登录 |
-| **DEBUG** | 调试信息 | 函数参数、中间状态 |
+| **ERROR** | Failures requiring human intervention | Payment failure, data inconsistency |
+| **WARN** | Recoverable anomalies | Retry succeeded, degraded handling |
+| **INFO** | Normal business events | Order created, user login |
+| **DEBUG** | Debugging detail | Function arguments, intermediate state |
 
-### 日志格式
+### Log Format
 
 ```
-// ❌ 无结构化信息
+// ❌ No structured information
 log.error("failed to process")
 
-// ✅ 结构化信息 + 上下文
+// ✅ Structured information + context
 log.error("payment_failed", {
     "order_id": "12345",
     "gateway": "stripe",
@@ -301,20 +301,20 @@ log.error("payment_failed", {
 })
 ```
 
-### 日志安全
+### Log Security
 
-- **不要记录敏感信息**：密码、token、PII、完整信用卡号
-- **脱敏处理**：`email: a***@example.com`
-- **日志注入防护**：对用户输入做转义，防止伪造日志行
+- **Do not log sensitive information**: passwords, tokens, PII, full credit card numbers
+- **Redact sensitive fields**: `email: a***@example.com`
+- **Prevent log injection**: escape user input to avoid forged log lines
 
 ---
 
-## 跨语言代码示例
+## Cross-Language Code Examples
 
 ### Python
 
 ```python
-# ✅ 特定异常 + 上下文 + 异常链
+# ✅ Specific exception + context + exception chain
 try:
     response = http_client.post(url, data=payload)
     response.raise_for_status()
@@ -329,7 +329,7 @@ except requests.HTTPError as e:
 ### Java
 
 ```java
-// ✅ 特定异常 + 上下文 + 原因链
+// ✅ Specific exception + context + cause chain
 try {
     var response = httpClient.send(request, BodyHandlers.ofString());
     if (response.statusCode() == 404) {
@@ -344,7 +344,7 @@ try {
 ### Go
 
 ```go
-// ✅ 错误包装 + 上下文 + %w 保留链
+// ✅ Error wrapping + context + %w preserves chain
 result, err := client.Do(req)
 if err != nil {
     return fmt.Errorf("payment gateway %s request failed: %w", gatewayName, err)
@@ -359,7 +359,7 @@ if result.StatusCode == http.StatusNotFound {
 ### Rust
 
 ```rust
-// ✅ thiserror 定义错误类型 + 上下文
+// ✅ thiserror-defined error types + context
 #[derive(Debug, thiserror::Error)]
 enum PaymentError {
     #[error("gateway {gateway} unreachable")]
@@ -387,7 +387,7 @@ async fn process_payment(gateway: &str, order_id: u64) -> Result<(), PaymentErro
 ### C#
 
 ```csharp
-// ✅ 特定异常 + 上下文
+// ✅ Specific exception + context
 try
 {
     var response = await httpClient.PostAsync(url, content);
@@ -406,7 +406,7 @@ catch (HttpRequestException ex)
 ### Swift
 
 ```swift
-// ✅ Error enum + 上下文
+// ✅ Error enum + context
 enum PaymentError: Error {
     case gatewayUnreachable(name: String, underlying: Error)
     case orderNotFound(id: Int)
@@ -429,7 +429,7 @@ func processPayment(orderId: Int) throws -> Receipt {
 ### TypeScript
 
 ```typescript
-// ✅ 自定义错误类 + 上下文
+// ✅ Custom error class + context
 class PaymentError extends Error {
     constructor(
         message: string,
@@ -466,27 +466,27 @@ async function processPayment(orderId: string): Promise<Receipt> {
 
 ## Review Checklist
 
-### 核心检查
-- [ ] 没有空 catch 块或静默忽略错误
-- [ ] 错误信息包含操作描述和关键参数
-- [ ] 使用特定错误类型（非通用 Error/Exception）
-- [ ] 异常链保留（from / cause / %w）
-- [ ] 前置条件在操作开始前验证（fail fast）
+### Core Checks
+- [ ] No empty catch blocks or silent error ignoring
+- [ ] Error messages include operation description and key parameters
+- [ ] Specific error types are used (not generic Error/Exception)
+- [ ] Exception chains are preserved (from / cause / %w)
+- [ ] Preconditions are validated before work starts (fail fast)
 
-### 架构检查
-- [ ] 定义了清晰的错误层次（应用/模块/基础设施）
-- [ ] 全局异常处理器捕获未处理错误
-- [ ] API 边界将内部错误转换为适当的 HTTP 状态码
+### Architecture Checks
+- [ ] A clear error hierarchy is defined (application / module / infrastructure)
+- [ ] A global exception handler catches unhandled errors
+- [ ] API boundaries map internal errors to appropriate HTTP status codes
 
-### 日志检查
-- [ ] 错误日志包含结构化上下文
-- [ ] 没有记录敏感信息（密码、token、PII）
-- [ ] 日志级别使用正确（ERROR vs WARN vs INFO）
+### Logging Checks
+- [ ] Error logs include structured context
+- [ ] No sensitive information is logged (passwords, tokens, PII)
+- [ ] Log levels are used correctly (ERROR vs WARN vs INFO)
 
-### 语言特定
-- [ ] Go: error 不忽略，使用 `%w` 包装
-- [ ] Python: catch 特定异常，使用 `from` 保留链
-- [ ] Java: 异常有 cause，使用特定类型
-- [ ] Rust: `?` 传播，自定义 Error 类型
-- [ ] C#: when 过滤器，特定异常类型
-- [ ] Swift: do-catch，Result 用于延迟处理
+### Language-Specific
+- [ ] Go: errors are not ignored; use `%w` for wrapping
+- [ ] Python: catch specific exceptions; use `from` to preserve chains
+- [ ] Java: exceptions have a cause; use specific types
+- [ ] Rust: propagate with `?`; use custom Error types
+- [ ] C#: `when` filters; specific exception types
+- [ ] Swift: do-catch; use Result for deferred handling

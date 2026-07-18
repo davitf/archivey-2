@@ -1,53 +1,53 @@
-# N+1 查询问题 — 跨语言通用指南
+# N+1 Query Problem — Cross-Language Guide
 
-> N+1 查询是 ORM 和数据库访问层最常见的性能反模式。本文档覆盖问题定义、检测方法、通用解决方案和跨语言代码示例。
+> N+1 queries are the most common performance anti-pattern in ORM and database access layers. This document covers problem definition, detection methods, general solutions, and cross-language code examples.
 
-## 目录
+## Table of Contents
 
-- [问题定义](#问题定义)
-- [性能影响](#性能影响)
-- [检测方法](#检测方法)
-- [通用解决方案](#通用解决方案)
-- [语言特定实现](#语言特定实现)
+- [Problem Definition](#problem-definition)
+- [Performance Impact](#performance-impact)
+- [Detection Methods](#detection-methods)
+- [General Solutions](#general-solutions)
+- [Language-Specific Implementations](#language-specific-implementations)
 - [Review Checklist](#review-checklist)
 
 ---
 
-## 问题定义
+## Problem Definition
 
-N+1 查询是指：**1 次查询获取 N 条记录，随后在循环中触发 N 次额外查询**来获取关联数据。
+N+1 queries occur when **one query fetches N records, then a loop triggers N additional queries** to load related data.
 
 ```
-请求流程:
-  1 query   → 获取 N 条主记录
-  N queries → 每条主记录查一次关联数据
+Request flow:
+  1 query   → fetch N primary records
+  N queries → one related-data query per primary record
   ─────────
   Total: 1 + N queries
 ```
 
-### 危害
+### Harm
 
-| 问题 | 影响 |
+| Issue | Impact |
 |------|------|
-| **查询数量线性增长** | 100 条记录 = 101 条 SQL，1000 条 = 1001 条 |
-| **网络延迟叠加** | 每条查询都有往返延迟（RTT），N 次往返 >> 1 次批量查询 |
-| **连接池耗尽** | 大量查询占满数据库连接，拖慢整个应用 |
-| **难以在开发中发现** | 开发环境数据少，N+1 不明显；生产环境数据量大时性能崩塌 |
+| **Linear query growth** | 100 records = 101 SQL statements, 1000 = 1001 |
+| **Stacked network latency** | Each query incurs round-trip latency (RTT); N round trips >> 1 batch query |
+| **Connection pool exhaustion** | Many queries consume database connections, slowing the entire application |
+| **Hard to spot in development** | Dev datasets are small so N+1 is subtle; performance collapses in production with large data volumes |
 
 ---
 
-## 性能影响
+## Performance Impact
 
-### 场景对比：获取 100 个用户及其订单
+### Scenario comparison: fetch 100 users and their orders
 
-| 方案 | SQL 数量 | 延迟（假设 RTT=1ms） | 适用场景 |
+| Approach | SQL count | Latency (assume RTT=1ms) | Use case |
 |------|----------|---------------------|---------|
-| N+1 懒加载 | 101 条 | ~101ms | 极少数据量 |
-| Eager loading (JOIN) | 1 条 | ~1ms | 一对多，数据量适中 |
-| Eager loading (IN) | 2 条 | ~2ms | 多对多，大数据集 |
-| DataLoader / batch | 2 条 | ~2ms | GraphQL / 复杂图查询 |
+| N+1 lazy load | 101 | ~101ms | Very small datasets |
+| Eager loading (JOIN) | 1 | ~1ms | One-to-many, moderate data volume |
+| Eager loading (IN) | 2 | ~2ms | Many-to-many, large datasets |
+| DataLoader / batch | 2 | ~2ms | GraphQL / complex graph queries |
 
-### SQL 数量对比
+### SQL count comparison
 
 ```sql
 -- ❌ N+1: 1 + 100 = 101 queries
@@ -64,11 +64,11 @@ SELECT * FROM orders WHERE user_id IN (1,2,...,100);
 
 ---
 
-## 检测方法
+## Detection Methods
 
-### 1. ORM SQL 日志
+### 1. ORM SQL logging
 
-开启 SQL 日志，在测试或开发环境中观察查询数量：
+Enable SQL logging and observe query counts in test or development environments:
 
 ```python
 # Django
@@ -94,9 +94,9 @@ spring:
 optionsBuilder.LogTo(Console.WriteLine, LogLevel.Information);
 ```
 
-### 2. 查询计数断言
+### 2. Query count assertions
 
-在测试中断言 SQL 查询数量：
+Assert SQL query counts in tests:
 
 ```python
 # Django: django-assert-num-queries
@@ -105,65 +105,65 @@ from django.db import connection
 
 with CaptureQueriesContext(connection) as ctx:
     list(User.objects.select_related("profile").all())
-assert len(ctx) <= 2  # 预期最多 2 条查询
+assert len(ctx) <= 2  # expect at most 2 queries
 ```
 
 ```java
-// Hibernate: p6spy 或 datasource-proxy
-// 在测试中统计 SQL 执行次数
+// Hibernate: p6spy or datasource-proxy
+// Count SQL executions in tests
 assertThat(sqlCount).isLessThanOrEqualTo(2);
 ```
 
-### 3. APM / 数据库监控工具
+### 3. APM / database monitoring tools
 
-- **Django Debug Toolbar** — 实时显示 SQL 数量和时间
-- **p6spy** (Java) — JDBC 层拦截，记录所有 SQL
-- **MiniProfiler** (.NET) — 页面内嵌 SQL 统计
-- **DataDog / New Relic** — 生产环境慢查询告警
+- **Django Debug Toolbar** — shows SQL count and timing in real time
+- **p6spy** (Java) — JDBC-layer interception, logs all SQL
+- **MiniProfiler** (.NET) — inline SQL statistics on the page
+- **DataDog / New Relic** — slow-query alerts in production
 
 ---
 
-## 通用解决方案
+## General Solutions
 
-### 方案 1: Eager Loading（JOIN 预加载）
+### Option 1: Eager Loading (JOIN prefetch)
 
-一次 JOIN 查询获取主记录和关联记录。适用于一对一、一对多。
+Fetch primary and related records in a single JOIN query. Suitable for one-to-one and one-to-many relationships.
 
-### 方案 2: Batch Fetching（IN 子句批量查询）
+### Option 2: Batch Fetching (IN clause)
 
-两次查询：主记录 + `WHERE id IN (...)` 批量获取关联记录。适用于多对多、大数据集。
+Two queries: primary records + `WHERE id IN (...)` to batch-load related records. Suitable for many-to-many relationships and large datasets.
 
-### 方案 3: DataLoader Pattern
+### Option 3: DataLoader Pattern
 
-在 GraphQL 或复杂图查询场景中，收集所有需要的 ID，合并为一次批量查询。
+In GraphQL or complex graph-query scenarios, collect all required IDs and merge them into one batch query.
 
 ```
-// DataLoader 伪代码
+// DataLoader pseudocode
 class DataLoader<K, V> {
-    load(K key) → V         // 注册需求，不立即查询
-    loadAll([K]) → [V]      // 合并为一次批量查询
+    load(K key) → V         // register demand, do not query immediately
+    loadAll([K]) → [V]      // merge into one batch query
 }
 ```
 
-### 方案 4: Projection（投影）
+### Option 4: Projection
 
-只查询需要的字段，减少数据传输量：
+Query only the fields you need to reduce data transfer:
 
 ```sql
--- ❌ 获取所有列
+-- ❌ Fetch all columns
 SELECT * FROM users JOIN profiles ON ...
 
--- ✅ 只投影需要的字段
+-- ✅ Project only required fields
 SELECT u.name, p.avatar_url FROM users u JOIN profiles p ON ...
 ```
 
 ---
 
-## 语言特定实现
+## Language-Specific Implementations
 
 ### Python / Django
 
-> 详见 [Django Guide](../django.md#n1-查询优化)
+> See [Django Guide](../django.md#n1-query-optimization)
 
 ```python
 # ForeignKey / OneToOne → select_related (SQL JOIN)
@@ -172,10 +172,10 @@ books = Book.objects.select_related("publisher")
 # M2M / reverse FK → prefetch_related (2 queries + Python merge)
 authors = Author.objects.prefetch_related("books")
 
-# 嵌套预加载
+# Nested prefetch
 authors = Author.objects.prefetch_related("books__publisher")
 
-# Prefetch 对象精细控制
+# Fine-grained control with Prefetch objects
 from django.db.models import Prefetch
 authors = Author.objects.prefetch_related(
     Prefetch("books", queryset=Book.objects.filter(published=True), to_attr="published_books")
@@ -184,35 +184,35 @@ authors = Author.objects.prefetch_related(
 
 ### Python / SQLAlchemy (FastAPI)
 
-> 详见 [FastAPI Guide](../fastapi.md#database-sessions--n1)
+> See [FastAPI Guide](../fastapi.md#database-sessions--n1)
 
 ```python
 from sqlalchemy.orm import selectinload
 
-# selectinload: IN 子句批量加载（推荐异步场景）
+# selectinload: batch load via IN clause (recommended for async)
 stmt = select(Order).options(selectinload(Order.customer))
 
-# joinedload: JOIN 加载
+# joinedload: JOIN load
 stmt = select(Order).options(joinedload(Order.customer))
 ```
 
 ### Java / JPA (Spring Boot)
 
-> 详见 [Java Guide](../java.md)
+> See [Java Guide](../java.md)
 
 ```java
-// ❌ FetchType.EAGER 或循环中触发懒加载
-@OneToMany(fetch = FetchType.EAGER)  // 危险！
+// ❌ FetchType.EAGER or lazy loading triggered in a loop
+@OneToMany(fetch = FetchType.EAGER)  // dangerous!
 
 // ✅ JOIN FETCH
 @Query("SELECT u FROM User u JOIN FETCH u.orders")
 List<User> findAllWithOrders();
 
-// ✅ @EntityGraph（声明式）
+// ✅ @EntityGraph (declarative)
 @EntityGraph(attributePaths = {"orders", "profile"})
 List<User> findAll();
 
-// ✅ @BatchSize（减少 N+1 为 N/batchSize + 1）
+// ✅ @BatchSize (reduces N+1 to N/batchSize + 1)
 @OneToMany
 @BatchSize(size = 50)
 private List<Order> orders;
@@ -220,19 +220,19 @@ private List<Order> orders;
 
 ### C# / EF Core
 
-> 详见 [C# Guide](../csharp.md)
+> See [C# Guide](../csharp.md)
 
 ```csharp
-// ❌ N+1: foreach 触发懒加载
+// ❌ N+1: foreach triggers lazy loading
 foreach (var blog in await context.Blogs.ToListAsync())
-    foreach (var post in blog.Posts)  // 每次循环都查询！
+    foreach (var post in blog.Posts)  // one query per iteration!
 
 // ✅ Include + ThenInclude
 var blogs = await context.Blogs
     .Include(b => b.Posts)
     .ToListAsync();
 
-// ✅ 投影（最安全，避免过度获取）
+// ✅ Projection (safest, avoids over-fetching)
 var data = await context.Blogs
     .Select(b => new { b.Url, PostTitles = b.Posts.Select(p => p.Title) })
     .ToListAsync();
@@ -240,16 +240,16 @@ var data = await context.Blogs
 
 ### PHP / Laravel / Doctrine
 
-> 详见 [PHP Guide](../php.md)
+> See [PHP Guide](../php.md)
 
 ```php
-// ❌ 循环内查询
+// ❌ Query inside loop
 foreach ($orders as $order) {
     $customer = $customerRepo->find($order->customerId);
     render($order, $customer);
 }
 
-// ✅ 批量预加载
+// ✅ Batch prefetch
 $customerIds = array_unique(array_map(fn($o) => $o->customerId, $orders));
 $customers = $customerRepo->findByIds($customerIds);
 
@@ -273,12 +273,12 @@ for (const user of users) {
     user.posts = await prisma.post.findMany({ where: { userId: user.id } });
 }
 
-// ✅ include（Prisma 自动生成 JOIN 或批量查询）
+// ✅ include (Prisma auto-generates JOIN or batch query)
 const users = await prisma.user.findMany({
     include: { posts: true },
 });
 
-// ✅ 嵌套 include
+// ✅ Nested include
 const users = await prisma.user.findMany({
     include: {
         posts: {
@@ -292,18 +292,18 @@ const users = await prisma.user.findMany({
 
 ## Review Checklist
 
-### 检测
-- [ ] 开启了 SQL 日志或查询计数监控
-- [ ] 测试中有查询数量断言
-- [ ] APM 工具配置了 N+1 告警
+### Detection
+- [ ] SQL logging or query-count monitoring is enabled
+- [ ] Tests assert query counts
+- [ ] APM tools are configured with N+1 alerts
 
-### 修复
-- [ ] ForeignKey / OneToOne 关系使用 JOIN eager loading
-- [ ] M2M / 反向关系使用 IN 批量预加载
-- [ ] 避免在循环中触发数据库查询
-- [ ] 使用投影只获取需要的字段
+### Fixes
+- [ ] ForeignKey / OneToOne relationships use JOIN eager loading
+- [ ] M2M / reverse relationships use IN batch prefetch
+- [ ] Avoid triggering database queries inside loops
+- [ ] Use projection to fetch only required fields
 
-### 架构
-- [ ] 列表 API 分页，避免一次加载过多记录
-- [ ] GraphQL 场景使用 DataLoader
-- [ ] 缓存策略（Redis）处理高频读取的关联数据
+### Architecture
+- [ ] List APIs are paginated to avoid loading too many records at once
+- [ ] GraphQL scenarios use DataLoader
+- [ ] Caching strategy (Redis) for frequently read related data
