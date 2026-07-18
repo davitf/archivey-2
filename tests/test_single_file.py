@@ -36,6 +36,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedOperationError,
 )
+from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import NonSeekableBytesIO, make_lzip_member, make_unix_compress
 
@@ -236,14 +237,14 @@ def test_single_member_gzip_exposes_stored_crc32(tmp_path: Path) -> None:
     path.write_bytes(gzip.compress(payload))
     with open_archive(path) as ar:
         member = ar.members()[0]
-        assert member.hashes["crc32"] == zlib.crc32(payload) & 0xFFFFFFFF
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
 
 
 def test_multi_member_gzip_omits_crc32(tmp_path: Path) -> None:
     path = tmp_path / "multi.gz"
     path.write_bytes(gzip.compress(b"first") + gzip.compress(b"second"))
     with open_archive(path) as ar:
-        assert "crc32" not in ar.members()[0].hashes
+        assert HashAlgorithm.CRC32 not in ar.members()[0].hashes
 
 
 def test_gzip_metadata_omits_crc_without_gzip_magic() -> None:
@@ -262,7 +263,7 @@ def test_gzip_metadata_omits_crc_without_gzip_magic() -> None:
         probe_gzip_stored_crc32=boom,
     )
     GzipCodec().extract_metadata(ctx, member)
-    assert "crc32" not in member.hashes
+    assert HashAlgorithm.CRC32 not in member.hashes
 
 
 def test_gzip_omits_crc32_on_nonseekable_source() -> None:
@@ -270,7 +271,7 @@ def test_gzip_omits_crc32_on_nonseekable_source() -> None:
     with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
         members = ar.get_members_if_available()
         assert members is not None
-        assert "crc32" not in members[0].hashes
+        assert HashAlgorithm.CRC32 not in members[0].hashes
 
 
 def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
@@ -279,10 +280,10 @@ def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
     path.write_bytes(make_lzip_member(payload))
     with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
         member = ar.members()[0]
-        assert member.hashes["crc32"] == zlib.crc32(payload) & 0xFFFFFFFF
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
     # Same gate as size: without declared SEEKABLE, omit the trailer CRC.
     with open_archive(path) as ar:
-        assert "crc32" not in ar.members()[0].hashes
+        assert HashAlgorithm.CRC32 not in ar.members()[0].hashes
 
 
 def test_other_single_file_codecs_omit_stored_crc32(tmp_path: Path) -> None:
@@ -296,7 +297,7 @@ def test_other_single_file_codecs_omit_stored_crc32(tmp_path: Path) -> None:
         path = tmp_path / name
         path.write_bytes(blob)
         with open_archive(path) as ar:
-            assert "crc32" not in ar.members()[0].hashes, name
+            assert HashAlgorithm.CRC32 not in ar.members()[0].hashes, name
 
 
 def test_stored_gzip_crc32_does_not_change_read_or_verification(tmp_path: Path) -> None:
@@ -305,7 +306,7 @@ def test_stored_gzip_crc32_does_not_change_read_or_verification(tmp_path: Path) 
     path.write_bytes(gzip.compress(payload))
     with open_archive(path) as ar:
         member = ar.members()[0]
-        assert "crc32" in member.hashes
+        assert HashAlgorithm.CRC32 in member.hashes
         assert ar.read(member) == payload
         # Second open still succeeds (path source; codec verifies its own trailer).
         assert ar.read(member) == payload

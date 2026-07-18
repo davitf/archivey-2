@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from archivey.internal.hashing.blake2sp import Blake2sp, blake2sp
+from archivey.types import HashAlgorithm
 
 # (input_length, expected_hex). Input bytes are ``bytes(range(n))`` as in the
 # official KATs (``in`` is 000102… for length n).
@@ -57,5 +58,5 @@ def test_blake2sp_matches_rar5_fixture_payload() -> None:
     payload = b"stored payload"
     with open_archive(fixture) as archive:
         member = next(m for m in archive.members() if m.is_file)
-        assert member.hashes["blake2sp"] == blake2sp(payload)
-        assert len(member.hashes["blake2sp"]) == 32
+        assert member.hashes[HashAlgorithm.BLAKE2SP] == blake2sp(payload)
+        assert len(member.hashes[HashAlgorithm.BLAKE2SP]) == 32

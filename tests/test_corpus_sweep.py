@@ -31,6 +31,7 @@ from archivey import (
     format_availability,
     open_archive,
 )
+from archivey.types import HashAlgorithm
 from tests.conftest import _has_zstd_backend
 from tests.sample_archives import (
     BUILDER_BINARIES,
@@ -140,33 +141,37 @@ def _check_listing(ar, entry: CorpusEntry, key: str) -> None:
 def _assert_stored_digest_parity(member, key: str) -> None:
     """Assert documented stored-digest keys are present/absent (testing-contract)."""
     keys = set(member.hashes)
-    digest_keys = keys & {"crc32", "blake2sp"}
+    digest_keys = keys & {HashAlgorithm.CRC32, HashAlgorithm.BLAKE2SP}
     if key == "zip":
         if member.type in (MemberType.FILE, MemberType.SYMLINK):
             # AE-2 (WinZip AES) stores CRC as 0 and relies on the HMAC — no crc32 digest.
             if member.extra.get("zip.aes_vendor_version") == 2:
-                assert "crc32" not in keys, (
+                assert HashAlgorithm.CRC32 not in keys, (
                     f"zip AE-2 {member.name!r} should not surface crc32"
                 )
             else:
-                assert "crc32" in keys, f"zip {member.name!r} missing crc32"
+                assert HashAlgorithm.CRC32 in keys, f"zip {member.name!r} missing crc32"
         else:
-            assert "crc32" not in keys, f"zip {member.name!r} unexpected crc32"
+            assert HashAlgorithm.CRC32 not in keys, (
+                f"zip {member.name!r} unexpected crc32"
+            )
         return
     if key == "7z":
         if member.type is MemberType.FILE:
-            assert "crc32" in keys, f"7z {member.name!r} missing crc32"
+            assert HashAlgorithm.CRC32 in keys, f"7z {member.name!r} missing crc32"
         elif member.type is MemberType.DIRECTORY:
-            assert "crc32" not in keys, f"7z {member.name!r} unexpected crc32"
+            assert HashAlgorithm.CRC32 not in keys, (
+                f"7z {member.name!r} unexpected crc32"
+            )
         # SYMLINK may carry a CRC of the stored link payload; do not require or forbid.
         return
     if key == "rar":
         if member.type is MemberType.FILE:
             # RAR5 may store Blake2sp instead of (or in addition to) CRC32.
             assert digest_keys, f"rar FILE {member.name!r} missing stored digest"
-            if "blake2sp" in keys and "crc32" not in keys:
+            if HashAlgorithm.BLAKE2SP in keys and HashAlgorithm.CRC32 not in keys:
                 return
-            assert "crc32" in keys or "blake2sp" in keys
+            assert HashAlgorithm.CRC32 in keys or HashAlgorithm.BLAKE2SP in keys
         else:
             assert not digest_keys, (
                 f"rar {member.name!r} unexpected digests {digest_keys}"
@@ -278,12 +283,12 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
         # Stored-digest parity: single-member gzip always (path source); lzip only with
         # declared SEEKABLE (same gate as size); other codecs omit.
         if key in ("gz", "gz-meta"):
-            assert "crc32" in member.hashes
+            assert HashAlgorithm.CRC32 in member.hashes
         elif key == "lz":
-            assert "crc32" not in member.hashes
+            assert HashAlgorithm.CRC32 not in member.hashes
         else:
-            assert "crc32" not in member.hashes
-            assert "blake2sp" not in member.hashes
+            assert HashAlgorithm.CRC32 not in member.hashes
+            assert HashAlgorithm.BLAKE2SP not in member.hashes
     if key == "lz":
         with open_archive(source, member_streams=MemberStreams.SEEKABLE) as ar:
-            assert "crc32" in ar.members()[0].hashes
+            assert HashAlgorithm.CRC32 in ar.members()[0].hashes

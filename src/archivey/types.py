@@ -195,6 +195,19 @@ class MemberType(Enum):
     ANTI = "anti"
 
 
+class HashAlgorithm(str, Enum):
+    """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
+
+    CRC32 = "crc32"
+    BLAKE2SP = "blake2sp"
+    ADLER32 = "adler32"
+
+
+def crc32_digest(value: int) -> bytes:
+    """Encode a CRC-32 as four big-endian bytes for :attr:`ArchiveMember.hashes`."""
+    return (value & 0xFFFFFFFF).to_bytes(4, "big")
+
+
 class CompressionAlgorithm(Enum):
     """A compression/filter codec. Extensible: codecs Archivey does not recognize
     map to ``UNKNOWN`` rather than raising, so callers should treat the set as
@@ -329,8 +342,11 @@ class ArchiveMember:
     windows_attrs: int | None = None
     """Raw Windows file-attribute bitmask, if recorded."""
 
-    hashes: Mapping[str, int | bytes] = field(default_factory=dict, compare=False)
-    """Stored content digests keyed by algorithm name (e.g. ``"crc32"``). Excluded from equality."""
+    hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
+    """Stored content digests keyed by :class:`HashAlgorithm` (values always ``bytes``).
+
+    CRC-32 is four big-endian bytes (:func:`crc32_digest`). Excluded from equality.
+    """
 
     extra: dict[str, Any] = field(default_factory=dict, compare=False)
     """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality."""

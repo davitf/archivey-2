@@ -25,7 +25,7 @@ from archivey.internal.zip_aes import (
     derive_winzip_aes_keys,
     parse_winzip_aes_extra,
 )
-from archivey.types import CompressionAlgorithm
+from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
 
 _PASSWORD = b"secret"
@@ -181,9 +181,9 @@ def test_handbuilt_aes_roundtrip(
         assert member.extra["zip.aes_vendor_version"] == vendor_version
         assert member.extra["zip.aes_strength"] == strength
         if vendor_version == 2:
-            assert "crc32" not in member.hashes
+            assert HashAlgorithm.CRC32 not in member.hashes
         else:
-            assert "crc32" in member.hashes
+            assert HashAlgorithm.CRC32 in member.hashes
         expected_algo = (
             CompressionAlgorithm.STORED if method == 0 else CompressionAlgorithm.DEFLATE
         )
@@ -199,7 +199,7 @@ def test_7z_aes_zip_roundtrip(tmp_path: Path, strength: str) -> None:
     with open_archive(archive, password=_PASSWORD) as ar:
         (member,) = ar.members()
         assert member.is_encrypted
-        assert "crc32" not in member.hashes  # 7z emits AE-2
+        assert HashAlgorithm.CRC32 not in member.hashes  # 7z emits AE-2
         assert ar.read(member) == payload
 
 

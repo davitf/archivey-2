@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from archivey import MemberType, open_archive
+from archivey.types import HashAlgorithm, crc32_digest
 from tests.sample_archives import CORPUS, CorpusEntry, corpus_archive_path
 
 _ORACLE_ENTRY_IDS = {"basic", "encoding", "permissions", "large", "encrypted"}
@@ -54,5 +55,9 @@ def test_native_sevenzip_matches_py7zr_metadata_and_bytes(
             assert member.size == oracle_info.uncompressed
             if oracle_info.compressed is not None:
                 assert member.compressed_size == oracle_info.compressed
-            assert member.hashes.get("crc32") == oracle_info.crc32
+            assert member.hashes.get(HashAlgorithm.CRC32) == (
+                crc32_digest(oracle_info.crc32)
+                if oracle_info.crc32 is not None
+                else None
+            )
             assert native.read(member) == (oracle_dir / name).read_bytes()

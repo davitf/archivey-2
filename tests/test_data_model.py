@@ -18,8 +18,10 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     ContainerFormat,
+    HashAlgorithm,
     MemberType,
     StreamFormat,
+    crc32_digest,
 )
 
 # ---------------------------------------------------------------------------
@@ -103,10 +105,16 @@ def test_equality_excludes_hashes_and_extra() -> None:
     # hashes vary by format and extra is format-specific overflow; neither affects logical
     # identity, so both are excluded from __eq__.
     a = ArchiveMember(
-        type=MemberType.FILE, name="a.txt", hashes={"crc32": 1}, extra={"x": 1}
+        type=MemberType.FILE,
+        name="a.txt",
+        hashes={HashAlgorithm.CRC32: crc32_digest(1)},
+        extra={"x": 1},
     )
     b = ArchiveMember(
-        type=MemberType.FILE, name="a.txt", hashes={"crc32": 2}, extra={"y": 2}
+        type=MemberType.FILE,
+        name="a.txt",
+        hashes={HashAlgorithm.CRC32: crc32_digest(2)},
+        extra={"y": 2},
     )
     assert a == b
 

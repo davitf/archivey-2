@@ -53,6 +53,7 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.streams import crypto
 from archivey.internal.streams.verify import VerifyingStream
+from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_binary
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
@@ -123,7 +124,10 @@ def test_f1_member_hashes_keeps_untweaked_digests() -> None:
         crc32=0x11, blake2sp_hash=b"\x22" * 32, flags=0x01
     )  # checkval only
     assert not _crc_is_tweaked(info)
-    assert _member_hashes(info) == {"crc32": 0x11, "blake2sp": b"\x22" * 32}
+    assert _member_hashes(info) == {
+        HashAlgorithm.CRC32: crc32_digest(0x11),
+        HashAlgorithm.BLAKE2SP: b"\x22" * 32,
+    }
 
 
 def test_f1_convert_hash_to_mac_crc_and_blake2sp_roundtrip() -> None:
@@ -147,12 +151,15 @@ def test_f1_convert_hash_to_mac_crc_and_blake2sp_roundtrip() -> None:
 
     # VerifyingStream with transforms accepts good data and rejects a wrong MAC.
     transforms = {
-        "crc32": lambda d, hk=hash_key: convert_crc_to_mac(
+        HashAlgorithm.CRC32: lambda d, hk=hash_key: convert_crc_to_mac(
             int.from_bytes(d, "big"), hk
         ).to_bytes(4, "big"),
-        "blake2sp": lambda d, hk=hash_key: convert_blake2sp_to_mac(d, hk),
+        HashAlgorithm.BLAKE2SP: lambda d, hk=hash_key: convert_blake2sp_to_mac(d, hk),
     }
-    expected = {"crc32": tweaked_crc, "blake2sp": tweaked_blake}
+    expected = {
+        HashAlgorithm.CRC32: crc32_digest(tweaked_crc),
+        HashAlgorithm.BLAKE2SP: tweaked_blake,
+    }
     stream = VerifyingStream(
         io.BytesIO(plaintext), expected, digest_transforms=transforms
     )
@@ -161,7 +168,7 @@ def test_f1_convert_hash_to_mac_crc_and_blake2sp_roundtrip() -> None:
 
     bad = VerifyingStream(
         io.BytesIO(plaintext),
-        {"blake2sp": bytes(32)},
+        {HashAlgorithm.BLAKE2SP: bytes(32)},
         digest_transforms=transforms,
     )
     with pytest.raises(CorruptionError, match="blake2sp"):
@@ -237,7 +244,7 @@ def test_f1_encryption_blake2sp_reads_without_false_corruption() -> None:
 
     with open_archive(path, password="password") as reader:
         member = next(m for m in reader.members() if m.is_file)
-        assert "blake2sp" not in member.hashes
+        assert HashAlgorithm.BLAKE2SP not in member.hashes
         assert member.extra["rar.tweaked_blake2sp"] == info.blake2sp_hash
         assert reader.read(member) == b"stored payload"
         # Password known → forward-transform verify; no DIGEST_UNVERIFIABLE.
@@ -366,7 +373,7 @@ def test_f2_normal_aes_archive_has_crc_anchor_no_diagnostic(tmp_path: Path) -> N
     _write_py7zr_archive(archive, {"a.txt": b"hello"}, password="secret")
     with open_archive(archive, password="secret") as reader:
         member = next(m for m in reader.members() if m.is_file)
-        assert "crc32" in member.hashes
+        assert HashAlgorithm.CRC32 in member.hashes
         assert reader.diagnostics.counts.get(DiagnosticCode.DIGEST_UNVERIFIABLE, 0) == 0
         assert reader.read(member) == b"hello"
 

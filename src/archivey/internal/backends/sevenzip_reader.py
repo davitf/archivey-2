@@ -80,9 +80,11 @@ from archivey.types import (
     ArchiveMember,
     CompressionAlgorithm,
     CreateSystem,
+    HashAlgorithm,
     MagicSignature,
     MemberStreams,
     MemberType,
+    crc32_digest,
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -349,9 +351,9 @@ class SevenZipReader(BaseArchiveReader):
             )
             if method.algo is not CompressionAlgorithm.UNKNOWN
         )
-        hashes: dict[str, int] = {}
+        hashes: dict[HashAlgorithm, bytes] = {}
         if record.crc32 is not None:
-            hashes["crc32"] = record.crc32
+            hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
         attrs = record.attributes
         unix_mode = (attrs >> 16) if attrs is not None and attrs >> 16 else None
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
@@ -542,12 +544,12 @@ class SevenZipReader(BaseArchiveReader):
         for folder_member in self._folder_members.get(folder_index, []):
             size = _member_stream_size(folder_member)
             raw_expected = (
-                folder_member.hashes.get("crc32") if folder_member.hashes else None
+                folder_member.hashes.get(HashAlgorithm.CRC32)
+                if folder_member.hashes
+                else None
             )
             if isinstance(raw_expected, bytes):
                 expected: int | None = int.from_bytes(raw_expected, "big") & 0xFFFFFFFF
-            elif isinstance(raw_expected, int):
-                expected = raw_expected & 0xFFFFFFFF
             else:
                 expected = None
             member_digests.append((size, expected))

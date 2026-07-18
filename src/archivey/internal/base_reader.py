@@ -72,6 +72,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    HashAlgorithm,
     MagicSignature,
     MemberStreams,
     MemberType,
@@ -580,9 +581,10 @@ class BaseArchiveReader(ArchiveReader):
         size: int | None = None,
         track_output: bool = True,
         seekable: bool | None = None,
-        expected_hashes: Mapping[str, int | bytes] | None = None,
+        expected_hashes: Mapping[HashAlgorithm, bytes] | None = None,
         expected_size: int | None = None,
-        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+        digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]]
+        | None = None,
         verify_member: ArchiveMember | None = None,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
