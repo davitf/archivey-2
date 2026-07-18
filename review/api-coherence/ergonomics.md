@@ -67,11 +67,11 @@ the CLI proves the gap with working code today. → Q5.
 `SKIPPED` is recorded both for "destination existed under `OverwritePolicy.SKIP`"
 (`extraction_types.py:84`) and for "member is non-current" (`extraction.py:351-354`).
 A report consumer (like the CLI's summary, which prints `skipped: <name>` for both)
-can only distinguish by re-deriving `result.member.is_current`. Cheap pre-release fix:
-either a fourth status (`SUPERSEDED`?) or a `reason` field on `ExtractionResult`.
-Post-freeze this becomes a compatibility negotiation. (The third skip-ish concept —
-user-filter skip — produces *no* result row, which is defensible but worth one
-docstring sentence on `extract_all`.)
+can only distinguish by re-deriving `result.member.is_current`. **Decided (Q6): split into distinct statuses** (not a `reason` field) — overwrite-skip
+vs non-current-skip are different caller concerns. Name at implement
+(`SUPERSEDED` / `NON_CURRENT` / …). (The third skip-ish concept — user-filter skip —
+produces *no* result row, which is defensible but worth one docstring sentence on
+`extract_all`.)
 
 ## The three canonical jobs, walked
 
@@ -89,9 +89,8 @@ Two lines of ceremony; stored-vs-computed fallback documented as a recipe in
 
 - `hashes` values are `int | bytes` (crc32 int, blake2sp bytes) — every consumer
   needs a formatting/normalizing branch (the CLI grew `format_hash_value`,
-  `cli/format.py:46-49`). Faithful-but-annoying; a documented convention ("crc32 is
-  an int; everything else bytes") is probably enough, but normalizing to `bytes` was
-  also available pre-freeze. Judgement call, low stakes.
+  `cli/format.py:46-49`). **Decided (Q6): convert `crc32` to `str` (hex)**; prefer
+  aligning `blake2sp` to hex `str` in the same change so values are uniformly `str`.
 - The recipe iterates *all* members — including superseded 7z revisions and RAR
   history rows, silently hashing dead content. After Q1/Q2, add one `is_current`
   line to the recipe (see `members-scope.md`).

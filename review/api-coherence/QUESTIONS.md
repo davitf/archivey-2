@@ -1,79 +1,149 @@
 # QUESTIONS — maintainer decisions
 
-> **Status (2026-07-18):** Q1–Q6 still open — no decisions recorded since findings
-> landed in #133. **Q7** was surfaced later (from #149 / Option F review), not in
-> the original api-coherence pass. Triage: `../STATUS.md`.
+> **Status (2026-07-18):** **Q1–Q6 decided** (recorded below). **Q7** deferred to a
+> next review round (not this freeze pass). Triage / follow-up work: `../STATUS.md`.
 
 Per the pause-and-ask rule (`CLAUDE.md`, `CONTRIBUTING.md`): discrepancies and
 judgement calls surfaced, not silently resolved. Ordered by weight.
 
 ## Q1 — Duplicate-name members: unify `is_current`, and what do specs mean? (P1)
 
-Two spec artifacts disagree with each other and with the implementation:
+**Decision: (a) — unify.** Compute last-entry-wins `is_current` in all random-access
+materializations; route exact-same-name duplicates through the non-current skip.
+Update specs so `safe-extraction` and `archive-data-model` agree; make the
+conformance sweep assert the uniform contract (drop the
+`REPLACE if has_duplicates` dodge). Streaming-mode caveat stays documented (forward
+pass cannot know supersession mid-yield).
 
-- `safe-extraction/spec.md:230`: "Content superseded by later same-name or anti →
-  `SKIPPED` on extract" — **no format qualifier**.
-- `archive-data-model/spec.md:206`: the same statement scoped "(7z)".
-- Implementation: ZIP/TAR never compute `is_current`; a duplicate-name ZIP/TAR fails
-  default extraction with `ExtractionError` (O2 collision under `OverwritePolicy.ERROR`)
-  — repro in `parity.md`.
+### Already done? (checked 2026-07-18)
 
-Decision needed: **(a)** compute last-entry-wins `is_current` in all random-access
-materializations and route exact-same-name duplicates through the non-current skip
-(recommended — makes `tar -rf` output extract by default, restores uniformity;
-detailed plan in `members-scope.md` §"What actually needs fixing"), or **(b)** declare
-`is_current` a 7z/RAR-only concept in `archive-data-model`, fix the `safe-extraction`
-scenario wording, and accept that duplicate-name ZIP/TAR needs a non-default
-`OverwritePolicy` (then also fix `get()`'s docstring parenthetical, `reader.py:114`).
-Either way the conformance sweep should assert the chosen contract instead of
-special-casing duplicates (`test_corpus_sweep.py:203`).
+**No — not implemented for ZIP/TAR.** Current code:
+
+| Backend | `is_current` |
+|---|---|
+| 7z | `compute_is_current(...)` in `sevenzip_reader` / `sevenzip_parser` |
+| RAR | history rows get distinct `path;n` names + `is_current=False` |
+| ZIP / TAR | never set — field defaults to `True` (`types.py`) |
+| `base_reader` | no shared last-entry-wins pass |
+
+So a duplicate-name ZIP/TAR still fails default extraction with `ExtractionError`
+(O2 / `OverwritePolicy.ERROR`). The impression that this was already done is
+understandable (7z has the helper; the specs already describe the skip) — but the
+ZIP/TAR materialization path never grew the equivalent. Tracking fix: P1 in
+`SUMMARY.md` / `parity.md`.
+
+---
 
 ## Q2 — `members()` scope: include non-current by default? (maintainer's added question)
 
-Full analysis in `members-scope.md`. Recommendation: keep "everything" as the only
-listing behavior, no include/exclude argument (streaming-TAR can't honor it, a
-boolean doesn't carve the space — anti items are `is_current=True` — and bookkeeping
-alignment breaks); invest in Q1 + docs + predicate recipes instead. Needs an explicit
-yes/no so the visibility table in `safe-extraction` can be marked settled.
+**Decision: yes — keep "everything" as the only listing behavior.** No
+include/exclude argument. Invest in Q1 + docs + predicate recipes
+(`m.is_current`, and `m.is_current and not m.is_anti` for extractable payload).
+Visibility table in `safe-extraction` is settled on this reading.
+
+Full analysis unchanged in `members-scope.md`.
+
+---
 
 ## Q3 — RAR `listing_cost`: `INDEXED` or `REQUIRES_SCANNING`? (P2)
 
-`cost.py:24-27` names "a RAR with no quick-open record" as the canonical
-`REQUIRES_SCANNING` example; `rar_reader.py:773` always reports `INDEXED`; the
-`access-mode-and-cost` spec's example matrix is silent on RAR. Decide which is the
-honest receipt (is the axis "what the format's layout requires" or "what a caller
-pays after open?") and fix the losing artifact + add the RAR row to
-`test_cost_receipt.py`. If the axis is layout-based, distinguishing quick-open RAR5
-from plain requires plumbing a parser fact into the receipt — small but real work,
-which may itself inform the choice.
+**Decision: keep `INDEXED`; fix the docstring / grab-bag prose that claim
+otherwise.** Axis for the receipt: **what the caller pays after `open_archive`
+returns**. Open always materializes the full member table today, so `INDEXED` is
+the honest post-open receipt. Document the *actual* open-time walk (and that QO
+is unused) in format/cost docs — do not invent a `REQUIRES_SCANNING` value the
+caller never observes on `reader.cost`.
+
+### Investigation (2026-07-18)
+
+**How common is “no quick-open”?**
+
+- **RAR 1.5 / 3 / 4:** QO does not exist → 100% of those archives are
+  header-to-header.
+- **RAR5:** QO is optional. WinRAR’s default (`-qo` / bare default) stores QO
+  mainly for *relatively large* files and may omit small-file headers; `-qo+`
+  stores all; `-qo-` stores none (RARLAB technote / 7-Zip FR #1537).
+- **This repo’s fixtures:** 0/15 RAR5 fixtures contain a `QO` service name
+  marker (all small / `-m0` / solid test archives from `scripts/gen_rar_fixtures.py`
+  with no `-qo*` flag). 11 RAR3/4 fixtures never can. So the corpus is entirely
+  “no usable QO,” which matches typical small-archive and non-WinRAR-default
+  producers.
+
+**What does the reader do today?**
+
+- `parse_rar_archive` / `_parse_rar5` / `_parse_rar3` always walk
+  header→packed-skip→header to EOF at open. Service blocks named `QO` are
+  skipped (only `CMT` is special-cased). There is **no locator/QO fast path**.
+- `listing_cost=INDEXED` is unconditional (`rar_reader.py`);
+  `format-rar/spec.md` already describes an indexed backend that builds the
+  member table up front.
+- Member **data** (non-stored) shells out to a fresh `unrar p -n./member …`
+  per open. That process re-parses the archive on the unrar side; native listing
+  work is not reused by unrar.
+
+**How hard would TAR-like lazy scan be?**
+
+Non-trivial and low leverage for v0.2.0:
+
+1. **API shape:** today’s RAR open fails closed on non-seekable sources and
+   publishes `member_count` / full `_members` immediately. A TAR-style
+   `REQUIRES_SCANNING` lazy iterator would need deferred materialization,
+   streaming-mode semantics, and answers for `get()` / extract-prep /
+   solid demux / multi-volume merge / `path;n` history — a real backend redesign,
+   not a receipt tweak.
+2. **QO fast path** (true layout-`INDEXED` without a full walk): parse main-header
+   locator → seek to QO → decode cache structures, with mandatory
+   list/extract same-path discipline (RARLAB security note). Default QO is often
+   *partial*, so you still need a fallback header walk for omitted members.
+   Parser work is real; security footgun if list and extract diverge.
+3. **Payoff vs unrar:** list+stored-hash (founding dedupe path) *would* benefit
+   from cheaper open on huge RAR5-with-QO archives. Extract/open-member workloads
+   remain dominated by `unrar`’s own scan/decompress. Lazy native listing without
+   QO is mostly “pay the same header walk later,” not “avoid it.”
+
+**Conclusion:** keep always-upfront materialization for now → **`INDEXED` is
+correct**. Fix `cost.py`’s `REQUIRES_SCANNING` docstring (drop the “RAR with no
+quick-open record” example), align `docs/grab-bag/SPEC.md` if still cited, add a
+RAR row to `test_cost_receipt.py`, and document in `docs/formats.md` /
+`docs/costs.md`: open always walks headers; QO unused; unrar re-parses on data
+open. Revisit QO-accelerated open only if huge-archive list latency shows up as
+a real workload.
+
+---
 
 ## Q4 — Approve the surface changes (S1/S3)
 
-Pre-release, all free (`surface.md`): demote the 13 `*Context` classes +
-`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` from `__all__`; export `PasswordInput` (and
-decide `OnDiagnostic`); collapse `MemberSelectorArg` into public `MemberSelector`;
-drop `source_name` from `core.__all__`; fill the `api.md` gaps (`open_stream` at
-minimum). Blanket approval or line-item veto?
+**Decision: blanket approve** as proposed in `surface.md`:
+
+- Demote the 13 `*Context` classes + `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` from
+  package `__all__` (remain importable from `archivey.diagnostics` / `config`).
+- Export `PasswordInput`; export `OnDiagnostic` (symmetry with other public
+  callback/param types).
+- Collapse `MemberSelectorArg` into public `MemberSelector`.
+- Drop `source_name` from `core.__all__`.
+- Fill `api.md` gaps (`open_stream` at minimum; other listed gaps).
+
+---
 
 ## Q5 — A `verify` primitive (E2): now or post-0.2.0?
 
-`archivey test` proves the gap (60 lines, generator-semantics traps, poisoned-stream
-data loss). Adding `reader.verify(...) -> VerifyReport` (or `stream_members`
-error-recovery) is additive — it can land after 0.2.0 without breakage, so this is a
-prioritization question, not a freeze question. Related sub-decision: if it lands,
-`ExtractionProgress` gets a neutral-named alias (`ergonomics.md` nits).
+**Decision: defer past 0.2.0.** Additive either way; not worth freezing a shape
+before we know whether callers verify without extracting often enough to justify
+a first-class API (CLI `test` can keep its hand-rolled loop for now). Park in
+`IDEAS.md` / `../STATUS.md` future list; do not block the freeze.
+
+---
 
 ## Q6 — Small freeze-list confirmations
 
-- **`WriteError`**: exported but unraisable until Phase 9. Keep (confident in the
-  name) or demote until writing lands?
-- **`ExtractionStatus.SKIPPED` split (E3)**: add a distinct status or a `reason`
-  field on `ExtractionResult` for non-current skips? Cheap now, negotiation later.
-- **`hashes` value convention**: keep `int` crc32 / `bytes` others (documented), or
-  normalize to `bytes` pre-freeze? Recommendation: keep + document the convention in
-  the field docstring.
-- **`ArchiveFormat` display name** (S2): add `display_name()`/`label` so the CLI
-  stops parsing `repr()`. Name preference?
+| Item | Decision |
+|---|---|
+| **`WriteError`** | **Defer / remove from the read-only 0.2.0 surface.** v0.2.0 is read-only; writing is a later major release. Do not ship writing leftovers — demote/unexport `WriteError` for now. Same spirit: drop or stop advertising the `[7z-write]` extra/dep group until writing is real (py7zr stays a *dev* oracle as needed). |
+| **`ExtractionStatus.SKIPPED` split (E3)** | **Split into distinct statuses** (not a `reason` field). Overwrite-skip and non-current-skip are different caller concerns: most tools ignore superseded members but care that an expected extract hit a pre-existing path. Name at implement (`SUPERSEDED` / `NON_CURRENT` / …) — prefer a clear verb/noun over overloading `SKIPPED`. |
+| **`hashes` value convention** | **Convert `crc32` from `int` to `str`** (hex encoding; exact width/case fixed at implement — recommend lowercase, zero-padded 8 hex digits, no `0x`). No-surprises move; cheap pre-freeze. **Implementer note:** `blake2sp` is already `bytes` — converting only crc32 still leaves a mixed value type. Prefer aligning `blake2sp` to hex `str` in the same change so `hashes: Mapping[str, str]`, unless a follow-up objection lands. |
+| **`ArchiveFormat` display name (S2)** | **Add a `display_name` property** (not a method). CLI stops parsing `repr()`. |
+
+---
 
 ## Q7 — Partial members + honest error accessor (later-surfaced)
 
@@ -81,38 +151,24 @@ prioritization question, not a freeze question. Related sub-decision: if it land
 > Option F) — not part of the original api-coherence finding set in #133. Adjacent to
 > **E2 / Q5** and to salvage in `IDEAS.md` / `../backlog.md`, but not the same question.
 
-For scan-required formats (TAR today; others similarly), a pass can recover a usable
-*prefix* of members and still hit a terminal archive-level error (rejected mid/final
-header, strict missing trailer, mid-pass decode failure, …). VISION claim (3) wants
-**recoverable members + an honest error**, not members *or* an error. Today the
-library forces a false dichotomy:
+**Decision: leave for a next review round.** Do not explore or redesign in this
+freeze pass. Option F’s interim contract (RA fail-closed / streaming
+salvage-then-raise) stands; ownership of the VISION claim-(3) gap moves to the
+next round / backlog (cross-link from EOF design remains fine).
 
-- **Silence the error** (pre-Option F warn on TAR `nonzero`) — dishonest for inventory.
-- **Raise and hide the members** (RA `members()` / `__iter__` / extract-prep fail
-  closed under Option F) — honest error, but throws away the recoverable listing.
-- **Yield then raise** (streaming `__iter__` / `stream_members` / extract) — caller
-  sees members only while iterating; there is still no first-class “here is the
-  list we got + the error” result from materializing APIs.
+---
 
-**Q5 / E2** covers per-member integrity-check recovery (`verify` /
-`stream_members` continuing past a bad *member*). **Salvage** covers best-effort
-resync past damage. **Q7** is narrower: a uniform way to surface a **partial
-listing together with a terminal archive error** without silencing either side —
-and without silently republishing a partial cache as a complete listing (archived
-concurrency N1).
+## Decision → implementation map
 
-Decision needed (exploration, not a freeze blocker):
-
-1. **Park vs explore now** — leave Option F’s RA fail-closed / streaming
-   salvage-then-raise split as the interim contract, or open an OpenSpec explore
-   change (e.g. `explore-partial-members-and-errors`) before 0.2.0 docs freeze the
-   dichotomy?
-2. **API shape if explored** — e.g. `members()` stays raise-on-terminal-error;
-   new `list_with_status()` / report object returns `(members, error|None)`; or
-   error only on `reader.diagnostics` with an explicit “listing incomplete” flag?
-3. **Uniformity** — how RA materialize-then-raise and streaming yield-then-raise
-   reconcile under one contract; interaction with CLI `list` / `test` exit codes.
-
-Recommendation: **park for Option F merge**; add a one-line cross-link from the
-EOF change’s design open-questions; open the explore change (or answer “post-0.2.0
-with salvage”) explicitly so the gap is owned.
+| Decision | Follow-up (code/docs; not this PR unless noted) |
+|---|---|
+| Q1 (a) | Shared last-entry-wins on ZIP/TAR RA materialization; spec delta; sweep asserts |
+| Q2 | Docs / recipes only once Q1 lands |
+| Q3 | Fix `cost.py` docstring + receipt test + formats/costs prose |
+| Q4 | Surface PR (demote/export/docs) |
+| Q5 | `IDEAS.md` park only |
+| Q6 WriteError / `[7z-write]` | Demote exception; remove or un-advertise extra |
+| Q6 SKIPPED split | New `ExtractionStatus` value + CLI/report call sites |
+| Q6 hashes → str | Type + backends + docs/formats matrix + CLI formatter |
+| Q6 `display_name` | Property on `ArchiveFormat` + CLI |
+| Q7 | Next round — see `../backlog.md` / STATUS future list |
