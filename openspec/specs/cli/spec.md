@@ -62,9 +62,13 @@ written to **stderr**.
 measurement hook (decode/seek counters), without patching `builtins.open`. It is
 a maintainer/debug affordance and MUST NOT add a public library performance API.
 
-`list` SHALL print a human layer-1 member view by default (type, size, mtime,
-mode, encrypted flag, name; link target for links) and MUST NOT show digests
-unless `--digests` is set (stored `member.hashes` only; no body read). `-v` /
+`list` SHALL obtain its member set via `ArchiveReader.members_report()` (or an
+equivalent report path). It SHALL print a human layer-1 member view by default
+(type, size, mtime, mode, encrypted flag, name; link target for links) for every
+recovered member in the report and MUST NOT show digests unless `--digests` is
+set (stored `member.hashes` only; no body read). When the report’s `error` is
+set, `list` SHALL still print the recovered members, SHALL emit a short stderr
+message naming the terminal archive error, and SHALL exit nonzero (`1`). `-v` /
 `--verbose` SHALL surface diagnostics when present.
 
 `test` SHALL fully read selected file members and verify stored digests through
@@ -115,6 +119,7 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `archivey create <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
 | `archivey cat <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
 | `archivey list <archive>` / `archivey l <archive>` | Layer-1 member listing |
+| `archivey list <archive>` with recoverable prefix + terminal archive error | Prints recovered members on stdout; stderr names the error; exit `1` |
 | `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
 | `archivey test <archive>` / `archivey t <archive>` | Fully reads members, verifies stored digests, reports failures |
 | `archivey extract <archive>` / `archivey x …` | Extracts under `--policy` default `strict`, overwrite default `rename`, into the smart default dest |
@@ -183,10 +188,10 @@ member-to-stdout verb does not silently change the meaning of
 The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
 verb/flag or bad arguments — the argparse default). All operational failures
 (unreadable, unsupported, or corrupt archive; read/integrity failure; extraction
-error) SHALL exit `1` in this capability. Exit codes `≥3` SHALL be reserved and
-MUST NOT be emitted in this change; documentation SHALL direct callers to treat
-any nonzero code other than `2` as a failure and MUST NOT assume `1` is the only
-failure code.
+error; incomplete listing whose `MemberListReport.error` is set) SHALL exit `1`
+in this capability. Exit codes `≥3` SHALL be reserved and MUST NOT be emitted in
+this change; documentation SHALL direct callers to treat any nonzero code other
+than `2` as a failure and MUST NOT assume `1` is the only failure code.
 
 #### Scenario: exit codes
 
@@ -195,6 +200,7 @@ failure code.
 | `archivey list <valid-archive>` | Exit `0` |
 | `archivey --badflag` / unknown verb | Exit `2` (usage) |
 | `archivey list <corrupt-or-unreadable>` | Exit `1` |
+| `archivey list <archive-with-recoverable-prefix-and-terminal-error>` | Exit `1` (after printing recovered members) |
 | `archivey test <archive-with-failing-member>` | Exit `1` |
 
 ### Requirement: stdin archives are reserved, not supported in v1
