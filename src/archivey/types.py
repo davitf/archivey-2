@@ -108,6 +108,18 @@ class ArchiveFormat:
             return self.container.value
         return f"{self.container.value}.{self.stream.value}"
 
+    @property
+    def display_name(self) -> str:
+        """Human-readable name for this format, e.g. ``"ZIP"``, ``"TAR_GZ"``.
+
+        Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …);
+        falls back to ``repr()`` for an ad-hoc combination not in the named set.
+        ``_FORMAT_NAMES`` is populated just after the class definition — safe at
+        runtime because this property is never called before the module is fully loaded.
+        """
+        name = _FORMAT_NAMES.get(self)
+        return name if name is not None else repr(self)
+
     def __repr__(self) -> str:
         name = _FORMAT_NAMES.get(self)
         if name is not None:
@@ -193,6 +205,19 @@ class MemberType(Enum):
     HARDLINK = "hardlink"
     OTHER = "other"
     ANTI = "anti"
+
+
+class HashAlgorithm(str, Enum):
+    """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
+
+    CRC32 = "crc32"
+    BLAKE2SP = "blake2sp"
+    ADLER32 = "adler32"
+
+
+def crc32_digest(value: int) -> bytes:
+    """Encode a CRC-32 as four big-endian bytes for :attr:`ArchiveMember.hashes`."""
+    return (value & 0xFFFFFFFF).to_bytes(4, "big")
 
 
 class CompressionAlgorithm(Enum):
@@ -329,8 +354,11 @@ class ArchiveMember:
     windows_attrs: int | None = None
     """Raw Windows file-attribute bitmask, if recorded."""
 
-    hashes: Mapping[str, int | bytes] = field(default_factory=dict, compare=False)
-    """Stored content digests keyed by algorithm name (e.g. ``"crc32"``). Excluded from equality."""
+    hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
+    """Stored content digests keyed by :class:`HashAlgorithm` (values always ``bytes``).
+
+    CRC-32 is four big-endian bytes (:func:`crc32_digest`). Excluded from equality.
+    """
 
     extra: dict[str, Any] = field(default_factory=dict, compare=False)
     """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality."""

@@ -85,13 +85,14 @@ see the [stored-digest matrix](formats.md#stored-digests-cheap-dedupe). Recipe:
 ```python
 import hashlib
 import archivey
+from archivey import HashAlgorithm
 
 def content_key(reader, member):
     """Best available digest for a first-pass dedupe index."""
-    if "blake2sp" in member.hashes:
-        return ("stored", "blake2sp", member.hashes["blake2sp"])
-    if "crc32" in member.hashes:
-        return ("stored", "crc32", member.hashes["crc32"])
+    if HashAlgorithm.BLAKE2SP in member.hashes:
+        return ("stored", "blake2sp", member.hashes[HashAlgorithm.BLAKE2SP])
+    if HashAlgorithm.CRC32 in member.hashes:
+        return ("stored", "crc32", member.hashes[HashAlgorithm.CRC32])
     # No cheap stored digest (e.g. tar, bzip2): compute while reading.
     h = hashlib.sha256()
     with reader.open(member) as stream:
@@ -101,12 +102,42 @@ def content_key(reader, member):
 
 with archivey.open_archive("backups.zip") as reader:
     for member in reader:
-        if member.is_file:
+        if member.is_file and member.is_current:
             print(member.name, content_key(reader, member))
 ```
 
 Stored digests are weaker or format-specific; computed digests are stronger but cost a
 full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
+
+## Duplicate names and is_current
+
+Appended tarballs, 7z update operations, and similar workflows can produce archives
+where **the same member name appears more than once**. Archivey always returns all
+entries — `members()` / `__iter__` never hide anything — but marks which one is
+"live" with `member.is_current`:
+
+- The **last** entry with a given name has `is_current=True` (last-entry-wins).
+- All earlier same-name entries have `is_current=False` (superseded).
+
+`extract_all` honours this automatically: non-current entries get
+`ExtractionStatus.SUPERSEDED` (distinct from overwrite `SKIPPED`) and are not written,
+so the final on-disk state matches what you would get from a fresh write.
+
+To enumerate only the live state in your own code, filter with a one-liner:
+
+```python
+with archivey.open_archive("updated.tar") as reader:
+    current = [m for m in reader if m.is_current]
+```
+
+If you need all versions (e.g. a history view), iterate without filtering:
+
+```python
+with archivey.open_archive("history.tar") as reader:
+    for member in reader:
+        tag = "" if member.is_current else " [superseded]"
+        print(f"{member.name}{tag}")
+```
 
 ## Passwords
 

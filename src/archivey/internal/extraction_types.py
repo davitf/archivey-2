@@ -77,11 +77,12 @@ class OnError(Enum):
     CONTINUE = "continue"  # record the failure, clean up, proceed to the next member
 
 
-class ExtractionStatus(Enum):
+class ExtractionStatus(str, Enum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
     EXTRACTED = "extracted"
     SKIPPED = "skipped"  # pre-existing destination under OverwritePolicy.SKIP
+    SUPERSEDED = "superseded"  # non-current entry (a later same-name entry overwrites)
     REJECTED = "rejected"  # blocked by a safety filter (universal or policy check)
     FAILED = "failed"  # error while extracting (corrupt data, ratio bomb, write error)
 

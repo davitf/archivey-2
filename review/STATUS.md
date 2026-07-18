@@ -11,7 +11,7 @@ item is fixed or consciously deferred here / in `backlog.md`.
 |--------|---------------------|----------------------|-------------------|
 | `stream-layering/` | yes (#137) | **done** (F1/F2/D1/D2); Q4 parked → future | **almost** — park Q4 then archive |
 | `performance/` | yes (#134 + #139/#140/#143/#146) | partial (P3–P5 done; P7 listing L0–L2 done, L3 partial; P1/P2/P6 open) | no |
-| `api-coherence/` | yes (#133) | **Q1–Q6 decided** (docs in QUESTIONS); code follow-ups open | no |
+| `api-coherence/` | yes (#133) | **Q1–Q6 decided + implemented** (hashes typing done; digest filling → `surface-stored-stream-digests`; Q5/Q7 deferred) | **almost** — park digest fill / Q5 / Q7 then archive |
 | `cli-product/` | **no** — brief only | review not run | no |
 
 ---
@@ -30,19 +30,19 @@ or the finding is a clear proposed fix with no spec conflict).
 | **P2 remainder** | Many-small `read_all` follows the listing story (same per-member machinery as P7). Large-member ZIP read already ≤1.25× after #139; realistic extract ~1.9× (inside ~2× band) — no further extract code pending Q2. |
 | **VISION/docs** | Re-word the ≤1.3× claim to match Q1 (decompression-dominated ≤1.3×; listing as peer ratios) once enforcement (Q2) is chosen. |
 
-### From `api-coherence/` (Q1–Q6 decided 2026-07-18 — implement)
+### From `api-coherence/` (Q1–Q6 decided 2026-07-18 — implemented)
 
 | ID | Action |
 |----|--------|
-| **P1 / Q1** | Unify last-entry-wins `is_current` on ZIP/TAR RA materialization; align specs; sweep asserts uniform duplicate contract. **Not already done** — only 7z/RAR set the field today. |
-| **Q2** | Docs/recipes only (listing stays “everything”); pairs with P1. |
-| **P2 / Q3** | Keep RAR `listing_cost=INDEXED`; fix `cost.py` docstring + grab-bag prose; document open always walks headers / QO unused; add RAR row to `test_cost_receipt.py`. |
-| **S1 / S3 / Q4** | Demote `*Context` + `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` from `__all__`; export `PasswordInput` + `OnDiagnostic`; drop `core.source_name`; document `open_stream` in `api.md`. |
-| **S2 / Q6** | `ArchiveFormat.display_name` **property** so the CLI stops parsing `repr()`. |
-| **E1** | Public measurement / IO-stats API so CLI `--track-io` leaves `internal/`. |
-| **E3 / Q6** | Split `ExtractionStatus.SKIPPED` into distinct statuses (overwrite vs non-current). |
-| **Q6 hashes** | **Typing (review fix now):** `HashAlgorithm` enum + `Mapping[HashAlgorithm, bytes]` (crc32 `int` → 4-byte `bytes`; include `ADLER32` member). **Filling digests:** OpenSpec `surface-stored-stream-digests` (zlib Adler peek, lzip multi-member `crc32_combine`) — separate change, depends on typing. |
-| **Q6 WriteError / `[7z-write]`** | Demote/unexport `WriteError` for read-only 0.2.0; remove or stop advertising `[7z-write]` until writing lands (py7zr remains a dev oracle). |
+| **P1 / Q1** | **implemented** — `_apply_last_entry_wins_is_current` in `base_reader.py`; ZIP/TAR/all RA formats now set `is_current`; `archive-data-model` spec updated; corpus sweep uses default ERROR policy. |
+| **Q2** | **implemented** — `docs/usage.md` duplicate-name section + filter recipe. |
+| **P2 / Q3** | **implemented** — `cost.py` docstrings fixed; RAR open-walk note in `docs/costs.md`; RAR row in `test_cost_receipt.py`. |
+| **S1 / S3 / Q4** | **implemented** — 13 `*Context` classes + `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` + `WriteError` demoted from `__all__`; `PasswordInput` / `OnDiagnostic` / `HashAlgorithm` / `crc32_digest` / `IoStats` / `enable_measurement` added; `source_name` dropped from `core.__all__`; `MemberSelector` used consistently. |
+| **S2 / Q6** | **implemented** — `ArchiveFormat.display_name` property; CLI `_format_label` uses it. |
+| **E1** | **implemented** — public `archivey.measurement` with `IoStats` + `enable_measurement`; `ArchiveReader.io_stats()` on the ABC; CLI `common.py` uses public API only. |
+| **E3 / Q6** | **implemented** — `ExtractionStatus.SUPERSEDED` for non-current skip; `SKIPPED` is overwrite-skip only. |
+| **Q6 hashes** | **typing done** (c7b88b5) — `HashAlgorithm` enum + `Mapping[HashAlgorithm, bytes]`; filling digests deferred to OpenSpec `surface-stored-stream-digests`. |
+| **Q6 WriteError / `[7z-write]`** | **implemented** — `WriteError` demoted from `__all__`; `[7z-write]` extra removed from pyproject.toml and `recommended-lite`; `py7zr` kept in dev. |
 
 ### Process
 

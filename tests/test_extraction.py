@@ -1458,7 +1458,13 @@ def test_hardlink_duplicate_name_extraction_links_first_inode(tmp_path: Path) ->
     dest = tmp_path / "out"
     with open_archive(src) as r:
         results = r.extract_all(dest, overwrite=OverwritePolicy.REPLACE).results
-    assert all(res.status is ExtractionStatus.EXTRACTED for res in results)
+    # First A.txt is superseded; hardlink still materializes its target bytes;
+    # the live A.txt is the last entry.
+    assert [res.status for res in results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.EXTRACTED,
+    ]
     assert (dest / "L.txt").read_bytes() == b"content1"
     assert (dest / "A.txt").read_bytes() == b"content2"
     # L was linked against the first A.txt inode; the second duplicate replaced the path.
@@ -1494,6 +1500,7 @@ def test_selector_archivemember_entry_matches_by_identity(tmp_path: Path) -> Non
     # The collection selector's ArchiveMember entries match by object identity (the Phase 5
     # semantics, now specced in safe-extraction): with duplicate names, passing one member
     # object selects only that occurrence — while a str entry matches every duplicate.
+    # Non-current duplicates are reported as SUPERSEDED (no write).
     src = tmp_path / "a.tar"
     src.write_bytes(
         _tar_bytes([("file", "dup.txt", b"first"), ("file", "dup.txt", b"second")])
@@ -1502,15 +1509,22 @@ def test_selector_archivemember_entry_matches_by_identity(tmp_path: Path) -> Non
     with open_archive(src) as r:
         first, second = r.members()
         assert first.name == second.name == "dup.txt"
+        assert first.is_current is False
+        assert second.is_current is True
         results = r.extract_all(tmp_path / "by_member", members=[first]).results
     assert len(results) == 1
-    assert (tmp_path / "by_member" / "dup.txt").read_bytes() == b"first"
+    assert results[0].status is ExtractionStatus.SUPERSEDED
+    assert not (tmp_path / "by_member" / "dup.txt").exists()
 
     with open_archive(src) as r:
         results = r.extract_all(
             tmp_path / "by_name", members=["dup.txt"], overwrite=OverwritePolicy.REPLACE
         ).results
     assert len(results) == 2  # a str entry matches every same-named duplicate
+    assert [res.status for res in results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+    ]
     assert (tmp_path / "by_name" / "dup.txt").read_bytes() == b"second"
 
 
@@ -1781,28 +1795,26 @@ def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
 
 
 def test_rename_inserts_counter_before_suffix(tmp_path: Path) -> None:
-    archive = _tar_bytes(
-        [
-            ("file", "photo.jpg", b"A"),
-            ("file", "photo.jpg", b"B"),
-            ("file", "photo.jpg", b"C"),
-        ]
-    )
+    # RENAME applies to destination collisions, not archive duplicate names
+    # (duplicates are SUPERSEDED / last-entry-wins instead).
+    archive = _tar_bytes([("file", "photo.jpg", b"from-archive")])
     dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "photo.jpg").write_bytes(b"preexisting")
     report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
-    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert len(report.results) == 1
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
     assert sorted(p.name for p in dest.iterdir()) == [
         "photo (1).jpg",
-        "photo (2).jpg",
         "photo.jpg",
     ]
-    assert (dest / "photo.jpg").read_bytes() == b"A"
-    assert (dest / "photo (1).jpg").read_bytes() == b"B"
+    assert (dest / "photo.jpg").read_bytes() == b"preexisting"
+    assert (dest / "photo (1).jpg").read_bytes() == b"from-archive"
     # The rename is observable via requested_path != path.
-    second = report.results[1]
-    assert second.path.name == "photo (1).jpg"
-    assert second.requested_path.name == "photo.jpg"
-    assert second.requested_path != second.path
+    written = report.results[0]
+    assert written.path.name == "photo (1).jpg"
+    assert written.requested_path.name == "photo.jpg"
+    assert written.requested_path != written.path
 
 
 @pytest.mark.parametrize(
@@ -1814,10 +1826,13 @@ def test_rename_inserts_counter_before_suffix(tmp_path: Path) -> None:
     ],
 )
 def test_rename_suffix_edge_cases(tmp_path: Path, name: str, expected: str) -> None:
-    archive = _tar_bytes([("file", name, b"A"), ("file", name, b"B")])
+    archive = _tar_bytes([("file", name, b"from-archive")])
     dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / name).write_bytes(b"preexisting")
     extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
     assert expected in {p.name for p in dest.iterdir()}
+    assert (dest / name).read_bytes() == b"preexisting"
 
 
 def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:

@@ -13,7 +13,6 @@ from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
     MemberFilter,
-    MemberSelectorArg,
     OnError,
     OverwritePolicy,
 )
@@ -21,6 +20,7 @@ from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember
 
 if TYPE_CHECKING:
     from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.measurement import IoStats
 
 # Type alias for the member selector passed to stream_members() and extract_all().
 # Accepts a predicate, a collection of names / ArchiveMember objects, or None (all).
@@ -145,7 +145,7 @@ class ArchiveReader(ABC):
         self,
         dest: str | Path,
         *,
-        members: MemberSelectorArg = None,
+        members: MemberSelector = None,
         filter: MemberFilter | None = None,
         policy: ExtractionPolicy = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
@@ -163,6 +163,16 @@ class ArchiveReader(ABC):
         config the reader was opened with; ``limits`` overrides its extraction limits for
         this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
         summary is the delta for this extraction call.
+        """
+        ...
+
+    @abstractmethod
+    def io_stats(self) -> "IoStats | None":
+        """Return I/O counters if measurement was enabled at open time, else ``None``.
+
+        Enable via :func:`archivey.measurement.enable_measurement` around the
+        :func:`archivey.open_archive` call. Counters cover bytes decompressed, compressed
+        bytes consumed from the outer source, and source seek calls.
         """
         ...
 

@@ -69,9 +69,11 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     ContainerFormat,
+    HashAlgorithm,
     MagicSignature,
     MissingComponent,
     StreamFormat,
+    crc32_digest,
 )
 
 if TYPE_CHECKING:
@@ -734,8 +736,8 @@ class GzipCodec(StreamCodec):
         RFC 1952 specifies the FNAME field as ISO-8859-1 (Latin-1), so the decoded value in
         ``extra`` uses that encoding; ``raw_name`` keeps the verbatim stored bytes.
 
-        The 8-byte trailer CRC-32 is surfaced as ``member.hashes["crc32"]`` only when the
-        header is a valid gzip magic *and* the stream is a single member on a
+        The 8-byte trailer CRC-32 is surfaced as ``member.hashes[HashAlgorithm.CRC32]``
+        only when the header is a valid gzip magic *and* the stream is a single member on a
         seekable/path source (multi-member trailers cover only the last member). Never
         triggers a decompression pass.
         """
@@ -765,7 +767,7 @@ class GzipCodec(StreamCodec):
         crc32 = ctx.probe_gzip_stored_crc32()
         if crc32 is not None:
             hashes = dict(member.hashes)
-            hashes["crc32"] = crc32
+            hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
             member.hashes = hashes
 
 
@@ -909,7 +911,7 @@ class LzipCodec(_SizedLzmaCodec):
         crc32, _data_size, member_size = struct.unpack_from("<IQQ", trailer, 0)
         if member_size == member.compressed_size:
             hashes = dict(member.hashes)
-            hashes["crc32"] = crc32
+            hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
             member.hashes = hashes
 
 

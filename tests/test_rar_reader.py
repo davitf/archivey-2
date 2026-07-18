@@ -21,7 +21,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends import rar_unrar
 from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID, parse_rar_archive
-from archivey.types import MemberType
+from archivey.types import HashAlgorithm, MemberType
 from tests.conftest import requires, requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -206,8 +206,8 @@ def test_file_version_extract_all_skips_history(name: str, tmp_path: Path) -> No
     with open_archive(_fixture(name)) as archive:
         results = archive.extract_all(dest).results
     by_name = {r.member.name: r for r in results if r.member.is_file}
-    assert by_name["file.txt;1"].status is ExtractionStatus.SKIPPED
-    assert by_name["file.txt;2"].status is ExtractionStatus.SKIPPED
+    assert by_name["file.txt;1"].status is ExtractionStatus.SUPERSEDED
+    assert by_name["file.txt;2"].status is ExtractionStatus.SUPERSEDED
     assert by_name["file.txt"].status is ExtractionStatus.EXTRACTED
     assert (dest / "file.txt").read_bytes() == _FILE_VERSION_CONTENTS["file.txt"]
     assert not (dest / "file.txt;1").exists()
@@ -241,8 +241,8 @@ def test_file_version_solid_demux_aligned() -> None:
 def test_blake2sp_only_hash() -> None:
     with open_archive(_fixture("blake2sp.rar")) as archive:
         member = next(m for m in archive.members() if m.is_file)
-        assert "crc32" not in member.hashes
-        assert "blake2sp" in member.hashes
+        assert HashAlgorithm.CRC32 not in member.hashes
+        assert HashAlgorithm.BLAKE2SP in member.hashes
         assert archive.read(member) == b"stored payload"
 
 
@@ -274,7 +274,7 @@ def test_blake2sp_corrupt_payload_raises(tmp_path: Path) -> None:
     corrupt.write_bytes(mutated)
     with open_archive(corrupt) as archive:
         member = next(m for m in archive.members() if m.is_file)
-        assert "blake2sp" in member.hashes
+        assert HashAlgorithm.BLAKE2SP in member.hashes
         with pytest.raises(CorruptionError, match="blake2sp"):
             archive.read(member)
 

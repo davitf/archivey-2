@@ -16,6 +16,15 @@ Every open archive exposes a machine-readable receipt:
 
 Cost never changes what is *legal* — it describes what your access pattern will *pay*.
 
+### RAR listing cost
+
+RAR reports `listing_cost=INDEXED`: the native parser walks all file headers at open
+time and builds the member table in memory before `members()` is called. The optional
+**Quick Open** record (a pre-built central directory in some RAR5 archives) is read but
+is not the primary source — every archive header is still traversed, so the open-time
+cost scales with member count. Once open, `members()` / `get()` return from the
+in-memory table at O(1) cost.
+
 ## Solid archives: prefer one forward pass
 
 On solid 7z / RAR (and compressed TAR, which is solid for random member access), opening

@@ -23,7 +23,7 @@ from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFo
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.streams import codecs, crypto
-from archivey.types import CompressionAlgorithm, MemberType
+from archivey.types import CompressionAlgorithm, HashAlgorithm, MemberType
 from tests.conftest import requires, requires_binary, requires_zstd
 
 _FILES = {
@@ -766,7 +766,7 @@ def test_synthetic_anti_item_lists_and_extracts_safely(tmp_path: Path) -> None:
     with open_archive(archive) as reader:
         results = reader.extract_all(fresh).results
     assert [result.status for result in results] == [
-        ExtractionStatus.SKIPPED,
+        ExtractionStatus.SUPERSEDED,
         ExtractionStatus.EXTRACTED,
     ]
     assert not (fresh / "gone.txt").exists()
@@ -923,7 +923,7 @@ def test_cursor_parse_matches_open_archive_fixture(tmp_path: Path) -> None:
         for name, data in files.items():
             m = members[name]
             assert m.size == len(data)
-            assert "crc32" in m.hashes
+            assert HashAlgorithm.CRC32 in m.hashes
             assert m.modified is not None
             assert archive.read(m) == data
         # Archive-level comment is optional; presence must not break listing.

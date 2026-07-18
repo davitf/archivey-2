@@ -48,7 +48,6 @@ from archivey.internal.streams.streamtools import (
     fix_stream_start_position,
     is_seekable,
     is_stream,
-    source_name,
 )
 from archivey.internal.volumes import ConcatenatedFile, OpenSourceInput, resolve_source
 from archivey.reader import ArchiveReader
@@ -75,7 +74,6 @@ __all__ = [
     "list_supported_formats",
     "open_archive",
     "open_stream",
-    "source_name",  # re-exported from streamtools (the single implementation)
 ]
 
 

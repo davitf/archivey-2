@@ -47,13 +47,13 @@ The build SHALL use `hatchling` and the distribution name `archivey`.
 | Core read of `.tar.Z` / bare `.Z` | Native LZW decode; no `uncompresspy` |
 | Core RAR listing | Native metadata/listing works |
 | Core RAR data read with no `unrar` on `PATH` | Clear error says the external `unrar` tool is required |
-| Core-only 7z write | Unavailable until `[7z-write]`; 7z reading still works |
+| Core-only 7z write | Unavailable (writing not shipped); 7z reading still works |
 
 ### Requirement: Optional extras enable specific capabilities
 
 The system SHALL gate each optional capability behind a named extra that pulls the
 third-party dependency required for that capability. 7z and RAR reading are native
-for the common case, so extras cover less-common 7z codecs, encryption, 7z writing,
+for the common case, so extras cover less-common 7z codecs, encryption,
 ISO, extra compression formats, seeking accelerators, and the CLI.
 
 | Extra | Pulls in | Enables |
@@ -62,13 +62,12 @@ ISO, extra compression formats, seeking accelerators, and the CLI.
 | `[7z]` | `pyppmd`, `inflate64`, `backports.zstd` on Python <3.14, `brotli`, `lz4`, `cryptography`, `pybcj` | All 7z reading features: PPMd, Deflate64, Zstd, Brotli, LZ4, AES, LZMA1+BCJ |
 | `[rar]` | `cryptography`, Blake2sp backend | Header-encrypted RAR5 and Blake2sp checksum verification; RAR data still needs RARLAB `unrar` |
 | `[crypto]` | `cryptography` | AES/crypto backend subset used by `[7z]` / `[rar]` |
-| `[7z-write]` | `py7zr` | 7z writing only; reading remains native |
 | `[iso]` | `pycdlib` | ISO 9660 (`.iso`) |
 | `[zstd]` | `backports.zstd` on Python <3.14 | Standalone Zstandard (`.zst`, `.tar.zst`); Python 3.14+ uses stdlib `compression.zstd` |
 | `[lz4]` | `lz4` | Standalone LZ4 (`.lz4`, `.tar.lz4`) and 7z LZ4 folders |
 | `[cli]` | `tqdm` | `archivey` command-line interface progress output |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access into gz/bz2 streams via rapidgzip / bundled `IndexedBzip2File` |
-| `[recommended-lite]` | `[7z]` + `[rar]` + `[7z-write]` + `[iso]` + `[zstd]` + `[lz4]` + `[cli]` | Every broadly wheeled format/codec dependency; excludes build-finicky C++ seek libs |
+| `[recommended-lite]` | `[7z]` + `[rar]` + `[iso]` + `[zstd]` + `[lz4]` + `[cli]` | Every broadly wheeled format/codec dependency; excludes build-finicky C++ seek libs |
 | `[recommended]` | `[recommended-lite]` + `[seekable]` | Recommended install: every primary backend plus gz/bz2 seeking and speed |
 | `[all]` | `[recommended]` plus every alternative/secondary backend, currently none | Everything; currently resolves exactly to `[recommended]` |
 
@@ -88,8 +87,10 @@ raise `PackageNotInstalledError` or `UnsupportedFeatureError` only when bytes ca
 be produced, and skip any integrity check that cannot be computed with an integrity
 diagnostic/warning instead of failing the read.
 
-The system SHALL keep `py7zr` and `rarfile` as dev-only test oracles except for
-`py7zr` under `[7z-write]`. BCJ2-filtered 7z members MUST remain unsupported by every
+The system SHALL keep `py7zr` and `rarfile` as **dev-only** test oracles.
+7z writing is not shipped in the current release (no `[7z-write]` extra); when
+writing lands in a later phase it MAY reintroduce a dedicated write extra.
+BCJ2-filtered 7z members MUST remain unsupported by every
 extra. Installing any individual extra MUST make that capability available without
 requiring unrelated extras. `[all]` MUST be equivalent to installing every runtime
 extra. No user-facing extra SHALL pull an alternate RAR decompressor library or tool
@@ -139,7 +140,7 @@ absent from every user-facing extra.
 The per-codec library choice and rationale SHALL be recorded in
 `docs/internal/library-analysis.md`. A guard test or check script SHALL prevent dead or
 test-only dependencies from returning to user-facing extras. A dependency pinned
-ahead of its implementation phase, such as `[cli]` or `[7z-write]`, is permitted only
+ahead of its implementation phase, such as `[cli]`, is permitted only
 through an explicit documented allowlist in that guard.
 
 #### Scenario: dependency-audit matrix

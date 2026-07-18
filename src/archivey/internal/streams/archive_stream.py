@@ -30,6 +30,7 @@ from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
 from archivey.internal.streams.verify import MemberVerifier, build_member_verifier
+from archivey.types import HashAlgorithm
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -85,9 +86,10 @@ class ArchiveStream(ReadOnlyIOStream):
         size: int | None = None,
         collector: DiagnosticCollector | None = None,
         on_close: CloseHook | None = None,
-        expected_hashes: Mapping[str, int | bytes] | None = None,
+        expected_hashes: Mapping[HashAlgorithm, bytes] | None = None,
         expected_size: int | None = None,
-        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+        digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]]
+        | None = None,
         verify_member: ArchiveMember | None = None,
         archive_name: str | None = None,
         verifier: MemberVerifier | None = None,

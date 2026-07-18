@@ -487,18 +487,6 @@ def encoded_folder_slices(
     return slices
 
 
-def compute_is_current(files: list[SevenZipFileRecord]) -> list[bool]:
-    """Last-entry-wins by filename."""
-    current = [False] * len(files)
-    seen: set[str] = set()
-    for index in range(len(files) - 1, -1, -1):
-        filename = files[index].filename
-        if filename not in seen:
-            current[index] = True
-            seen.add(filename)
-    return current
-
-
 def folder_unpack_size(folder: SevenZipFolder) -> int:
     bound_out_streams = {out_stream for _, out_stream in folder.bind_pairs}
     for index in range(len(folder.unpack_sizes) - 1, -1, -1):
@@ -537,7 +525,6 @@ __all__ = [
     "SevenZipFolder",
     "SignatureInfo",
     "compression_method_for_coder",
-    "compute_is_current",
     "empty_archive",
     "encoded_folder_slices",
     "folder_is_encrypted",

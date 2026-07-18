@@ -33,7 +33,6 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipFileRecord,
     SevenZipFolder,
     compression_method_for_coder,
-    compute_is_current,
     empty_archive,
     folder_is_encrypted,
     materialize_archive,
@@ -80,9 +79,11 @@ from archivey.types import (
     ArchiveMember,
     CompressionAlgorithm,
     CreateSystem,
+    HashAlgorithm,
     MagicSignature,
     MemberStreams,
     MemberType,
+    crc32_digest,
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -265,13 +266,8 @@ class SevenZipReader(BaseArchiveReader):
         return starts
 
     def _build_members(self) -> list[ArchiveMember]:
-        current_flags = compute_is_current(self._archive.files)
-        return [
-            self._to_member(record, is_current=is_current)
-            for record, is_current in zip(
-                self._archive.files, current_flags, strict=True
-            )
-        ]
+        # is_current is stamped by BaseArchiveReader's shared last-entry-wins pass.
+        return [self._to_member(record) for record in self._archive.files]
 
     def _members_by_folder(self) -> dict[int, list[ArchiveMember]]:
         grouped: dict[int, list[ArchiveMember]] = {}
@@ -327,9 +323,7 @@ class SevenZipReader(BaseArchiveReader):
             if solid is not None:
                 solid.close()
 
-    def _to_member(
-        self, record: SevenZipFileRecord, *, is_current: bool
-    ) -> ArchiveMember:
+    def _to_member(self, record: SevenZipFileRecord) -> ArchiveMember:
         member_type = self._member_type(record)
         presented_name = record.filename
         if presented_name == "":
@@ -349,9 +343,9 @@ class SevenZipReader(BaseArchiveReader):
             )
             if method.algo is not CompressionAlgorithm.UNKNOWN
         )
-        hashes: dict[str, int] = {}
+        hashes: dict[HashAlgorithm, bytes] = {}
         if record.crc32 is not None:
-            hashes["crc32"] = record.crc32
+            hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
         attrs = record.attributes
         unix_mode = (attrs >> 16) if attrs is not None and attrs >> 16 else None
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
@@ -384,7 +378,6 @@ class SevenZipReader(BaseArchiveReader):
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,
-            is_current=is_current,
             create_system=CreateSystem.UNIX
             if unix_mode is not None
             else CreateSystem.WINDOWS_NTFS,
@@ -542,12 +535,12 @@ class SevenZipReader(BaseArchiveReader):
         for folder_member in self._folder_members.get(folder_index, []):
             size = _member_stream_size(folder_member)
             raw_expected = (
-                folder_member.hashes.get("crc32") if folder_member.hashes else None
+                folder_member.hashes.get(HashAlgorithm.CRC32)
+                if folder_member.hashes
+                else None
             )
             if isinstance(raw_expected, bytes):
                 expected: int | None = int.from_bytes(raw_expected, "big") & 0xFFFFFFFF
-            elif isinstance(raw_expected, int):
-                expected = raw_expected & 0xFFFFFFFF
             else:
                 expected = None
             member_digests.append((size, expected))

@@ -90,9 +90,11 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
+    HashAlgorithm,
     MagicSignature,
     MemberStreams,
     MemberType,
+    crc32_digest,
 )
 
 # Comment decoding: try UTF-8 first, else fall back to cp437 (the ZIP appnote default,
@@ -611,15 +613,15 @@ class ZipReader(BaseArchiveReader):
             )
 
         modified, accessed, created, ts_issues = _zip_timestamps(info)
-        # Surface the central-directory CRC-32 as a stored digest (archive-data-model spec:
-        # "ZIP CRC32 … stored under the 'crc32' int key"), so a dedupe pass can key on it
+        # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
+        # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
         # without decompressing (VISION "hashes without decompression"). Only for FILE and
         # SYMLINK members, which have data: a directory's stored CRC is a meaningless 0.
         # AE-2 stores CRC as 0 and relies on the HMAC — do not surface a fake crc32.
-        hashes: dict[str, int] = {}
+        hashes: dict[HashAlgorithm, bytes] = {}
         if member_type in (MemberType.FILE, MemberType.SYMLINK):
             if aes_info is None or not aes_info.is_ae2:
-                hashes = {"crc32": info.CRC & 0xFFFFFFFF}
+                hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra: dict[str, object] = {"zip.compress_type": info.compress_type}
         if aes_info is not None:
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
@@ -834,7 +836,9 @@ class ZipReader(BaseArchiveReader):
         except _ZIP_MEMBER_READ_ERRORS as exc:
             self._reraise_member_error(exc, member_name)
 
-        hashes = member.hashes if member is not None else {}
+        hashes: Mapping[HashAlgorithm, bytes] = (
+            member.hashes if member is not None else {}
+        )
         size = member.size if member is not None else info.file_size
         if hashes or size is not None:
             return self._wrap_member_stream(
@@ -1050,7 +1054,9 @@ class ZipReader(BaseArchiveReader):
         except _ZIP_MEMBER_READ_ERRORS as exc:
             self._reraise_member_error(exc, member_name)
 
-        hashes = member.hashes if member is not None else {}
+        hashes: Mapping[HashAlgorithm, bytes] = (
+            member.hashes if member is not None else {}
+        )
         size = member.size if member is not None else info.file_size
         if hashes or size is not None:
             return self._wrap_member_stream(

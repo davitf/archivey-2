@@ -35,9 +35,8 @@ _IMPORT_NAME = {
 # Packages pinned ahead of their implementation phase: the extra is part of the documented
 # packaging surface, but the feature's ``src/`` code lands later. Keep this list short and
 # justified; remove an entry once the feature is implemented and imports its package.
-_PENDING_IMPLEMENTATION = {
-    "py7zr": "7z writing ([7z-write]) lands with the native 7z reader work (Phase 7)",
-}
+# Empty while every user-facing extra package is already wired in ``src/``.
+_PENDING_IMPLEMENTATION: dict[str, str] = {}
 
 
 def _load_optional_dependencies() -> dict[str, list[str]]:

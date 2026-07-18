@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import zlib
-from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Mapping, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
 from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
@@ -37,9 +37,26 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
 )
+from archivey.types import HashAlgorithm
 
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
+
+# Keys: ``HashAlgorithm`` or algorithm name string (``hashlib`` / legacy). Values are
+# digest ``bytes`` (CRC-32 as four big-endian bytes).
+_ExpectedHashes = Mapping[Any, bytes]
+_DigestTransforms = Mapping[Any, Callable[[bytes], bytes]]
+
+
+def _algo_key(algorithm: Any) -> str:
+    """Normalize a hash key to a lowercase algorithm name.
+
+    ``str(HashAlgorithm.CRC32)`` is ``"HashAlgorithm.CRC32"``; use the enum value
+    so registry lookup matches ``"crc32"``.
+    """
+    if isinstance(algorithm, HashAlgorithm):
+        return algorithm.value
+    return str(algorithm).lower()
 
 
 class _IncrementalHasher(Protocol):
@@ -66,9 +83,9 @@ class _Crc32Hasher:
         return (self._value & 0xFFFFFFFF).to_bytes(self.digest_size, "big")
 
 
-def _make_hasher(algorithm: str) -> Callable[[], _IncrementalHasher] | None:
+def _make_hasher(algorithm: Any) -> Callable[[], _IncrementalHasher] | None:
     """Return a zero-arg factory for an incremental hasher, or ``None`` if unavailable."""
-    name = algorithm.lower()
+    name = _algo_key(algorithm)
     if name == "crc32":
         return _Crc32Hasher
     if name == "blake2sp":
@@ -77,24 +94,6 @@ def _make_hasher(algorithm: str) -> Callable[[], _IncrementalHasher] | None:
     if name in hashlib.algorithms_available:
         return lambda: hashlib.new(name)
     return None
-
-
-def _expected_as_bytes(value: int | bytes, hasher: _IncrementalHasher) -> bytes:
-    """Normalize a stored digest to ``bytes`` once, in the hasher's own width.
-
-    A digest may be stored as raw bytes or as a big-endian integer (e.g. CRC32 as int).
-    Converting the *expected* value up front lets verification be a plain ``bytes ==
-    bytes`` compare against ``hasher.digest()`` — no per-read int<->bytes round-trip.
-    """
-    if isinstance(value, int):
-        # Size the buffer to whichever is larger: the hasher's digest width (so a normal,
-        # in-range value compares equal to digest()) or the value's own minimum width. A
-        # malformed/oversized stored int (e.g. a "crc32" > 2**32) thus produces a longer
-        # byte string that simply won't equal the digest — surfacing as a CorruptionError on
-        # verify — rather than raising OverflowError here and leaking a non-ArchiveyError.
-        width = max(hasher.digest_size, (value.bit_length() + 7) // 8)
-        return value.to_bytes(width, "big")
-    return value
 
 
 class MemberVerifier:
@@ -108,26 +107,28 @@ class MemberVerifier:
 
     def __init__(
         self,
-        expected: Mapping[str, int | bytes],
+        expected: _ExpectedHashes,
         *,
         expected_size: int | None = None,
         collector: DiagnosticCollector | None = None,
         member: ArchiveMember | None = None,
         archive_name: str | None = None,
-        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+        digest_transforms: _DigestTransforms | None = None,
     ) -> None:
         self._expected_size = expected_size
         self._short = False
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
-        self._digest_transforms: dict[str, Callable[[bytes], bytes]] = (
-            dict(digest_transforms) if digest_transforms else {}
-        )
+        self._digest_transforms: dict[str, Callable[[bytes], bytes]] = {}
+        if digest_transforms:
+            for key, transform in digest_transforms.items():
+                self._digest_transforms[_algo_key(key)] = transform
         for algorithm, value in expected.items():
-            factory = _make_hasher(algorithm)
+            key = _algo_key(algorithm)
+            factory = _make_hasher(key)
             if factory is None:
                 message = (
-                    f"Cannot verify digest {algorithm!r} (unknown algorithm or backend "
+                    f"Cannot verify digest {key!r} (unknown algorithm or backend "
                     f"not installed); skipping integrity check for it."
                 )
                 resolve_collector(collector).emit(
@@ -137,7 +138,7 @@ class MemberVerifier:
                         archive_name=archive_name,
                         member_name=member.name if member is not None else "",
                         member_id=member._member_id if member is not None else None,
-                        algorithm=algorithm,
+                        algorithm=key,
                         reason="unknown_algorithm_or_backend",
                     ),
                     member=member,
@@ -146,8 +147,8 @@ class MemberVerifier:
                 )
                 continue
             hasher = factory()
-            self._hashers[algorithm] = hasher
-            self._expected[algorithm] = _expected_as_bytes(value, hasher)
+            self._hashers[key] = hasher
+            self._expected[key] = value
         self._verified = False
         self._pos = 0  # bytes read so far — the sequential verification frontier
         self._verify_enabled = True  # cleared by a seek off the frontier
@@ -305,13 +306,13 @@ class MemberVerifier:
 
 
 def build_member_verifier(
-    expected: Mapping[str, int | bytes] | None,
+    expected: _ExpectedHashes | None,
     *,
     expected_size: int | None = None,
     collector: DiagnosticCollector | None = None,
     member: ArchiveMember | None = None,
     archive_name: str | None = None,
-    digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+    digest_transforms: _DigestTransforms | None = None,
 ) -> MemberVerifier | None:
     """Return a :class:`MemberVerifier` when there is something to check, else ``None``."""
     hashes = expected if expected is not None else {}
@@ -337,13 +338,13 @@ class VerifyingStream(ReadOnlyIOStream):
     def __init__(
         self,
         inner: BinaryIO,
-        expected: Mapping[str, int | bytes],
+        expected: _ExpectedHashes,
         *,
         expected_size: int | None = None,
         collector: DiagnosticCollector | None = None,
         member: ArchiveMember | None = None,
         archive_name: str | None = None,
-        digest_transforms: Mapping[str, Callable[[bytes], bytes]] | None = None,
+        digest_transforms: _DigestTransforms | None = None,
     ) -> None:
         super().__init__()
         self._inner = inner

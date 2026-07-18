@@ -32,7 +32,7 @@ These are not on the primary read path (except where noted).
 
 | Project | Role |
 | --- | --- |
-| [py7zr](https://github.com/miurahr/py7zr) (Hiroshi Miura et al.) | 7z **format reference**, write backend under `[7z-write]`, and **dev oracle** / optional external corpus (`ARCHIVEY_PY7ZR_TEST_FILES`). Reading is native — see [ADR 0001](decisions/0001-native-7z-not-py7zr.md). |
+| [py7zr](https://github.com/miurahr/py7zr) (Hiroshi Miura et al.) | 7z **format reference** and **dev oracle** / optional external corpus (`ARCHIVEY_PY7ZR_TEST_FILES`). Reading is native; writing is not shipped yet — see [ADR 0001](decisions/0001-native-7z-not-py7zr.md). |
 | [rarfile](https://github.com/markokr/rarfile) | RAR **format reference**, **dev oracle**, optional corpus (`ARCHIVEY_RARFILE_TEST_FILES`), and two legacy fixtures under `tests/fixtures/rar/` (RAR 1.5 / 2.0). Reading metadata is native; data uses RARLAB `unrar` — see [ADR 0002](decisions/0002-native-rar-metadata-unrar-data.md). |
 | [libarchive](https://github.com/libarchive/libarchive) (+ [libarchive-c](https://github.com/Changaco/python-libarchive-c)) | Optional **cross-format corpus** oracle (`ARCHIVEY_LIBARCHIVE_TEST_FILES` → libarchive’s `libarchive/test` uuencoded archives). Dev-only; not a runtime backend. |
 | [7-Zip](https://www.7-zip.org/) / `7z` CLI ([p7zip](https://github.com/p7zip-project/p7zip)) | Fixture builder and anti-item / encrypted-ZIP oracle in tests (when installed). |
@@ -62,7 +62,6 @@ Bare `pip install archivey` has **no** third-party runtime deps. Named extras pu
 | --- | --- |
 | `[7z]` | [pyppmd](https://github.com/miurahr/pyppmd), [inflate64](https://github.com/miurahr/inflate64), [brotli](https://github.com/google/brotli), [lz4](https://github.com/python-lz4/python-lz4), [cryptography](https://github.com/pyca/cryptography), [pybcj](https://github.com/miurahr/pybcj), [backports.zstd](https://github.com/Rogdham/backports.zstd) (Python before 3.14) |
 | `[rar]` / `[crypto]` | [cryptography](https://github.com/pyca/cryptography) (Blake2sp backend still TBD) |
-| `[7z-write]` | [py7zr](https://github.com/miurahr/py7zr) |
 | `[iso]` | [pycdlib](https://github.com/clalancette/pycdlib) |
 | `[zstd]` | [backports.zstd](https://github.com/Rogdham/backports.zstd) on Python before 3.14; 3.14+ uses stdlib `compression.zstd` |
 | `[lz4]` | [lz4](https://github.com/python-lz4/python-lz4) |

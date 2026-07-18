@@ -65,9 +65,11 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
+    HashAlgorithm,
     MagicSignature,
     MemberStreams,
     MemberType,
+    crc32_digest,
 )
 
 # rarfile / RAR host_os values (parser maps RAR5 Windows→2, Unix→3).
@@ -123,7 +125,7 @@ def _crc_is_tweaked(info: RarMemberInfo) -> bool:
     return bool(enc.flags & _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS)
 
 
-def _member_hashes(info: RarMemberInfo) -> dict[str, int | bytes]:
+def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
     """Plaintext digests safe for member verification without a HashKey.
 
     When ``RAR5_XENC_TWEAKED`` / ``HASHMAC`` (0x02) is set, the stored CRC32 and
@@ -132,12 +134,12 @@ def _member_hashes(info: RarMemberInfo) -> dict[str, int | bytes]:
     forward-transform when a password is available (see
     :meth:`RarReader._tweaked_verify_spec`).
     """
-    hashes: dict[str, int | bytes] = {}
+    hashes: dict[HashAlgorithm, bytes] = {}
     tweaked = _crc_is_tweaked(info)
     if info.crc32 is not None and not tweaked:
-        hashes["crc32"] = info.crc32
+        hashes[HashAlgorithm.CRC32] = crc32_digest(info.crc32)
     if info.blake2sp_hash is not None and not tweaked:
-        hashes["blake2sp"] = info.blake2sp_hash
+        hashes[HashAlgorithm.BLAKE2SP] = info.blake2sp_hash
     return hashes
 
 
@@ -519,8 +521,8 @@ class RarReader(BaseArchiveReader):
         if _crc_is_tweaked(info) and self._unrar_password is None:
             # No password → cannot forward-transform; surface as unverifiable digests.
             for algorithm in (
-                ("crc32", info.crc32 is not None),
-                ("blake2sp", info.blake2sp_hash is not None),
+                (HashAlgorithm.CRC32, info.crc32 is not None),
+                (HashAlgorithm.BLAKE2SP, info.blake2sp_hash is not None),
             ):
                 algo, present = algorithm
                 if not present:
@@ -535,7 +537,7 @@ class RarReader(BaseArchiveReader):
                         archive_name=self._archive_name,
                         member_name=member.name,
                         member_id=member._member_id,
-                        algorithm=algo,
+                        algorithm=algo.value,
                         reason="tweaked_checksum",
                     ),
                     member=member,
@@ -634,7 +636,13 @@ class RarReader(BaseArchiveReader):
 
     def _tweaked_verify_spec(
         self, info: RarMemberInfo
-    ) -> tuple[dict[str, int | bytes], dict[str, Callable[[bytes], bytes]]] | None:
+    ) -> (
+        tuple[
+            dict[HashAlgorithm, bytes],
+            dict[HashAlgorithm, Callable[[bytes], bytes]],
+        ]
+        | None
+    ):
         """Build ``(expected, digest_transforms)`` for tweaked RAR5 checksums.
 
         Returns ``None`` when checksums are not tweaked, no password is available, or
@@ -651,16 +659,16 @@ class RarReader(BaseArchiveReader):
         hash_key = _tweaked_hash_key(enc, password)
         if hash_key is None:
             return None
-        expected: dict[str, int | bytes] = {}
-        transforms: dict[str, Callable[[bytes], bytes]] = {}
+        expected: dict[HashAlgorithm, bytes] = {}
+        transforms: dict[HashAlgorithm, Callable[[bytes], bytes]] = {}
         if info.crc32 is not None:
-            expected["crc32"] = info.crc32
-            transforms["crc32"] = lambda digest, hk=hash_key: convert_crc_to_mac(
-                int.from_bytes(digest, "big"), hk
-            ).to_bytes(4, "big")
+            expected[HashAlgorithm.CRC32] = crc32_digest(info.crc32)
+            transforms[HashAlgorithm.CRC32] = lambda digest, hk=hash_key: (
+                convert_crc_to_mac(int.from_bytes(digest, "big"), hk).to_bytes(4, "big")
+            )
         if info.blake2sp_hash is not None:
-            expected["blake2sp"] = info.blake2sp_hash
-            transforms["blake2sp"] = lambda digest, hk=hash_key: (
+            expected[HashAlgorithm.BLAKE2SP] = info.blake2sp_hash
+            transforms[HashAlgorithm.BLAKE2SP] = lambda digest, hk=hash_key: (
                 convert_blake2sp_to_mac(digest, hk)
             )
         if not expected:
@@ -670,9 +678,9 @@ class RarReader(BaseArchiveReader):
     def _payload_verify_args(
         self, member: ArchiveMember
     ) -> tuple[
-        Mapping[str, int | bytes] | None,
+        Mapping[HashAlgorithm, bytes] | None,
         int | None,
-        Mapping[str, Callable[[bytes], bytes]] | None,
+        Mapping[HashAlgorithm, Callable[[bytes], bytes]] | None,
         ArchiveMember | None,
     ]:
         """Return ``(hashes, size, transforms, member)`` for fused verify, or Nones.
@@ -681,8 +689,8 @@ class RarReader(BaseArchiveReader):
         read. Tweaked RAR5 digests (HASHMAC) use ConvertHashToMAC transforms when
         a password is available.
         """
-        expected: Mapping[str, int | bytes] = member.hashes
-        transforms: Mapping[str, Callable[[bytes], bytes]] | None = None
+        expected: Mapping[HashAlgorithm, bytes] = member.hashes
+        transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]] | None = None
         raw = member._raw
         if isinstance(raw, RarMemberInfo):
             tweaked = self._tweaked_verify_spec(raw)

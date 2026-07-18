@@ -9,11 +9,12 @@ except PackageNotFoundError:
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
-    RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
+    RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,  # noqa: F401 — not in __all__ but kept importable
     AcceleratorMode,
     ArchiveyConfig,
     ExtractionLimits,
     ListingLimits,
+    PasswordInput,
     PasswordProvider,
     PasswordRequest,
 )
@@ -38,7 +39,7 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import (
-    ArchiveEofContext,
+    ArchiveEofContext,  # noqa: F401 — not in __all__ but kept importable
     Diagnostic,
     DiagnosticCode,
     DiagnosticContext,
@@ -46,19 +47,20 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
     DiagnosticSeverity,
     DiagnosticSummary,
-    DigestContext,
-    ExtractionOutcomeContext,
+    DigestContext,  # noqa: F401
+    ExtractionOutcomeContext,  # noqa: F401
     ExtractionReport,
-    FormatConflictContext,
-    MemberTimestampContext,
-    NameCollisionContext,
-    NameEncodingContext,
-    NameNormalizationContext,
-    NameSanitizedContext,
-    ScanRaceContext,
-    SeekIndexContext,
-    StreamRewindContext,
-    SymlinkTargetContext,
+    FormatConflictContext,  # noqa: F401
+    MemberTimestampContext,  # noqa: F401
+    NameCollisionContext,  # noqa: F401
+    NameEncodingContext,  # noqa: F401
+    NameNormalizationContext,  # noqa: F401
+    NameSanitizedContext,  # noqa: F401
+    OnDiagnostic,
+    ScanRaceContext,  # noqa: F401
+    SeekIndexContext,  # noqa: F401
+    StreamRewindContext,  # noqa: F401
+    SymlinkTargetContext,  # noqa: F401
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -84,7 +86,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     UnsupportedFormatError,
     UnsupportedOperationError,
-    WriteError,
+    WriteError,  # noqa: F401 — not in __all__ but kept importable
 )
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
@@ -96,6 +98,7 @@ from archivey.internal.extraction_types import (
     OverwritePolicy,
 )
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.measurement import IoStats, enable_measurement
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,
@@ -105,9 +108,11 @@ from archivey.types import (
     CompressionMethod,
     ContainerFormat,
     CreateSystem,
+    HashAlgorithm,
     MemberStreams,
     MemberType,
     StreamFormat,
+    crc32_digest,
 )
 
 __all__ = [
@@ -120,9 +125,10 @@ __all__ = [
     "ExtractionLimits",
     "ListingLimits",
     "AcceleratorMode",
-    "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+    "PasswordInput",
     "PasswordRequest",
     "PasswordProvider",
+    "OnDiagnostic",
     "ExtractionPolicy",
     "OverwritePolicy",
     "OnError",
@@ -153,10 +159,14 @@ __all__ = [
     "CompressionAlgorithm",
     "CompressionMethod",
     "CreateSystem",
+    "HashAlgorithm",
+    "crc32_digest",
     "CostReceipt",
     "ListingCost",
     "AccessCost",
     "StreamCapability",
+    "IoStats",
+    "enable_measurement",
     "Diagnostic",
     "DiagnosticCode",
     "DiagnosticContext",
@@ -165,19 +175,6 @@ __all__ = [
     "DiagnosticPolicy",
     "DiagnosticSummary",
     "DiagnosticRaisedError",
-    "ArchiveEofContext",
-    "DigestContext",
-    "ExtractionOutcomeContext",
-    "FormatConflictContext",
-    "MemberTimestampContext",
-    "NameCollisionContext",
-    "NameSanitizedContext",
-    "NameEncodingContext",
-    "NameNormalizationContext",
-    "ScanRaceContext",
-    "SeekIndexContext",
-    "StreamRewindContext",
-    "SymlinkTargetContext",
     "ArchiveyError",
     "ArchiveyUsageError",
     "ConcurrentAccessError",
@@ -190,7 +187,6 @@ __all__ = [
     "TruncatedError",
     "EncryptionError",
     "LinkTargetNotFoundError",
-    "WriteError",
     "ExtractionError",
     "FilterRejectionError",
     "PathTraversalError",

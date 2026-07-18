@@ -7,13 +7,19 @@ contracts: `openspec/specs/`.
 ## Opening archives
 
 ::: archivey.open_archive
+::: archivey.open_stream
 ::: archivey.extract
 ::: archivey.detect_format
+::: archivey.format_availability
+::: archivey.list_supported_formats
+::: archivey.list_known_formats
 
 ## The reader interface
 
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
+::: archivey.MemberSelector
+::: archivey.MemberStreams
 
 ## Data model
 
@@ -23,6 +29,8 @@ contracts: `openspec/specs/`.
 ::: archivey.ContainerFormat
 ::: archivey.StreamFormat
 ::: archivey.MemberType
+::: archivey.HashAlgorithm
+::: archivey.crc32_digest
 ::: archivey.CompressionAlgorithm
 ::: archivey.CompressionMethod
 ::: archivey.CreateSystem
@@ -38,6 +46,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.DiagnosticDisposition
 ::: archivey.DiagnosticPolicy
 ::: archivey.DiagnosticSummary
+::: archivey.OnDiagnostic
 ::: archivey.ExtractionReport
 
 ## Extraction
@@ -47,6 +56,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.ExtractionPolicy
 ::: archivey.OverwritePolicy
 ::: archivey.OnError
+::: archivey.MemberFilter
 
 ## Configuration
 
@@ -54,6 +64,9 @@ spec for lifecycle, retention, and policy.
 ::: archivey.ExtractionLimits
 ::: archivey.ListingLimits
 ::: archivey.AcceleratorMode
+::: archivey.PasswordInput
+::: archivey.PasswordRequest
+::: archivey.PasswordProvider
 
 ## Access cost
 
@@ -61,6 +74,11 @@ spec for lifecycle, retention, and policy.
 ::: archivey.ListingCost
 ::: archivey.AccessCost
 ::: archivey.StreamCapability
+
+## Measurement
+
+::: archivey.IoStats
+::: archivey.enable_measurement
 
 ## Errors
 

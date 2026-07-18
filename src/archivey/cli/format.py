@@ -43,7 +43,8 @@ def format_size(size: int | None) -> str:
     return str(size)
 
 
-def format_hash_value(value: int | bytes) -> str:
+def format_hash_value(value: bytes | int) -> str:
+    """Format a stored digest for CLI display (values are ``bytes``; ``int`` accepted)."""
     if isinstance(value, int):
         return f"{value:08x}" if value <= 0xFFFFFFFF else hex(value)
     return value.hex()

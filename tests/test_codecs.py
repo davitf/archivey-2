@@ -33,7 +33,7 @@ from archivey.internal.streams.codecs import (
     resolve_codec,
 )
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.types import StreamFormat
+from archivey.types import HashAlgorithm, StreamFormat, crc32_digest
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.streams_util import (
     NonSeekableBytesIO,
@@ -542,24 +542,30 @@ def test_translated_error_is_stamped() -> None:
 # --- digest verification ---------------------------------------------------------------
 
 
-def _crc32(data: bytes) -> int:
-    return zlib.crc32(data) & 0xFFFFFFFF
+def _crc32(data: bytes) -> bytes:
+    return crc32_digest(zlib.crc32(data))
 
 
 def test_verify_matching_crc32_passes() -> None:
-    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT)})
+    stream = VerifyingStream(
+        io.BytesIO(CONTENT), {HashAlgorithm.CRC32: _crc32(CONTENT)}
+    )
     assert stream.read() == CONTENT
     assert stream.read() == b""  # terminal read verifies; no error
 
 
 def test_verify_multiple_algorithms() -> None:
-    expected = {"crc32": _crc32(CONTENT), "sha256": hashlib.sha256(CONTENT).digest()}
+    expected = {
+        HashAlgorithm.CRC32: _crc32(CONTENT),
+        "sha256": hashlib.sha256(CONTENT).digest(),
+    }
     stream = VerifyingStream(io.BytesIO(CONTENT), expected)
     assert stream.read() == CONTENT
 
 
 def test_verify_mismatch_raises_at_eof_without_losing_final_chunk() -> None:
-    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) ^ 0xFFFF})
+    bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
+    stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: bad})
     collected = bytearray()
     with pytest.raises(CorruptionError, match="crc32"):
         while True:
@@ -571,14 +577,16 @@ def test_verify_mismatch_raises_at_eof_without_losing_final_chunk() -> None:
 
 
 def test_verify_partial_read_is_not_verified() -> None:
-    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) ^ 0xFFFF})
+    bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
+    stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: bad})
     assert stream.read(10) == CONTENT[:10]
     stream.close()  # abandoned before EOF — must not raise
 
 
 def test_verify_on_close_after_full_single_read() -> None:
     """A single read()-to-end must still verify when the stream is closed."""
-    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) ^ 0xFFFF})
+    bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
+    stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: bad})
     assert stream.read() == CONTENT
     with pytest.raises(CorruptionError, match="crc32"):
         stream.close()
@@ -622,7 +630,7 @@ def test_verify_hashed_overlong_with_matching_crc_still_capped() -> None:
     bloated = b"A" * 200
     stream = VerifyingStream(
         io.BytesIO(bloated),
-        {"crc32": _crc32(bloated)},
+        {HashAlgorithm.CRC32: _crc32(bloated)},
         expected_size=declared,
     )
     out = bytearray()
@@ -639,7 +647,7 @@ def test_verify_expected_size_short_with_hash_is_digest_mismatch() -> None:
     """A hashed short read surfaces as the digest mismatch, not a truncation error."""
     stream = VerifyingStream(
         io.BytesIO(CONTENT),
-        {"crc32": _crc32(CONTENT + b"more")},
+        {HashAlgorithm.CRC32: _crc32(CONTENT + b"more")},
         expected_size=len(CONTENT) + 4,
     )
     assert stream.read() == CONTENT
@@ -656,7 +664,9 @@ def test_verify_expected_size_partial_read_then_close_is_ok() -> None:
 
 def test_verify_read0_is_not_eof() -> None:
     """F1: read(0) must not run end-of-stream verification (BytesIO / file contract)."""
-    stream = VerifyingStream(io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT)})
+    stream = VerifyingStream(
+        io.BytesIO(CONTENT), {HashAlgorithm.CRC32: _crc32(CONTENT)}
+    )
     assert stream.read(0) == b""
     assert stream.read(5) == CONTENT[:5]
     assert stream.read(0) == b""  # mid-stream
@@ -713,33 +723,35 @@ def test_verify_unverifiable_algorithm_skipped_with_warning(
 def test_verify_blake2sp_match() -> None:
     from archivey.internal.hashing.blake2sp import blake2sp
 
-    expected = {"blake2sp": blake2sp(CONTENT)}
+    expected = {HashAlgorithm.BLAKE2SP: blake2sp(CONTENT)}
     stream = VerifyingStream(io.BytesIO(CONTENT), expected)
     assert stream.read() == CONTENT
 
 
 def test_verify_blake2sp_mismatch_raises() -> None:
-    stream = VerifyingStream(io.BytesIO(CONTENT), {"blake2sp": b"\x00" * 32})
+    stream = VerifyingStream(
+        io.BytesIO(CONTENT), {HashAlgorithm.BLAKE2SP: b"\x00" * 32}
+    )
     with pytest.raises(CorruptionError, match="blake2sp"):
         while stream.read(64):
             pass
 
 
 def test_verify_crc32_accepts_bytes_form() -> None:
-    expected = {"crc32": _crc32(CONTENT).to_bytes(4, "big")}
+    expected = {HashAlgorithm.CRC32: _crc32(CONTENT)}
     stream = VerifyingStream(io.BytesIO(CONTENT), expected)
     assert stream.read() == CONTENT
 
 
-def test_verify_oversized_int_digest_mismatches_not_raises() -> None:
-    """A malformed stored digest wider than the hash must surface as CorruptionError.
+def test_verify_wrong_width_digest_mismatches_not_raises() -> None:
+    """A stored digest wider than the hasher's digest_size must surface as CorruptionError.
 
-    A "crc32" int > 2**32 can't equal a 4-byte digest; normalization must not raise
-    OverflowError (which would leak a non-ArchiveyError out of the stream layer).
+    Callers always pass ``bytes``; a malformed width must compare unequal (and raise
+    :class:`CorruptionError`) rather than raising a non-ArchiveyError from the
+    stream layer.
     """
-    stream = VerifyingStream(
-        io.BytesIO(CONTENT), {"crc32": _crc32(CONTENT) + (1 << 40)}
-    )
+    wrong_width = _crc32(CONTENT) + b"\x00\x00"  # 6 bytes vs CRC-32's 4
+    stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: wrong_width})
     with pytest.raises(CorruptionError, match="crc32"):
         while stream.read(64):  # read to EOF; the terminal read verifies
             pass

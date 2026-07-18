@@ -30,6 +30,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.types import HashAlgorithm, crc32_digest
 from tests.streams_util import NonSeekableBytesIO
 
 # ---------------------------------------------------------------------------
@@ -162,12 +163,13 @@ def test_directory_member_type(simple_zip: Path) -> None:
 
 
 def test_file_member_exposes_stored_crc32(simple_zip: Path) -> None:
-    # archive-data-model spec: ZIP CRC32 is surfaced under hashes["crc32"] as an int,
-    # so a dedupe pass can key on it without decompressing (VISION).
+    # archive-data-model: ZIP CRC32 under HashAlgorithm.CRC32 as 4 big-endian bytes.
     with open_archive(simple_zip) as ar:
         member = ar.get("hello.txt")
         assert member is not None
-        assert member.hashes["crc32"] == zlib.crc32(b"hello world") & 0xFFFFFFFF
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(
+            zlib.crc32(b"hello world")
+        )
 
 
 def test_directory_member_has_no_crc32(tmp_path: Path) -> None:
@@ -178,9 +180,9 @@ def test_directory_member_has_no_crc32(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         by_name = {m.name: m for m in ar.members()}
         # A directory's stored CRC is a meaningless 0; do not present it as a digest.
-        assert "crc32" not in by_name["adir/"].hashes
-        assert (
-            by_name["adir/file.txt"].hashes["crc32"] == zlib.crc32(b"data") & 0xFFFFFFFF
+        assert HashAlgorithm.CRC32 not in by_name["adir/"].hashes
+        assert by_name["adir/file.txt"].hashes[HashAlgorithm.CRC32] == crc32_digest(
+            zlib.crc32(b"data")
         )
 
 

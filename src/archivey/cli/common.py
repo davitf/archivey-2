@@ -12,8 +12,7 @@ from archivey import open_archive
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.config import PasswordInput
-from archivey.internal.base_reader import BaseArchiveReader
-from archivey.internal.measurement import enable_measurement
+from archivey.measurement import enable_measurement
 from archivey.reader import ArchiveReader
 
 
@@ -54,15 +53,19 @@ def open_for_cli(
 
 
 def _report_track_io(reader: ArchiveReader, err: TextIO) -> None:
-    if not isinstance(reader, BaseArchiveReader):
+    stats = reader.io_stats()
+    if stats is None:
         print("track-io: counters unavailable for this reader", file=err)
         return
-    consumed = reader.compressed_bytes_consumed
-    consumed_s = "-" if consumed is None else str(consumed)
+    consumed_s = (
+        "-"
+        if stats.compressed_bytes_consumed is None
+        else str(stats.compressed_bytes_consumed)
+    )
     print(
         "track-io:"
-        f" bytes_decompressed={reader.bytes_decompressed}"
+        f" bytes_decompressed={stats.bytes_decompressed}"
         f" compressed_bytes_consumed={consumed_s}"
-        f" source_seek_count={reader.source_seek_count}",
+        f" source_seek_count={stats.source_seek_count}",
         file=err,
     )

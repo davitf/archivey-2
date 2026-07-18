@@ -312,6 +312,10 @@ def _report_extraction(
             # Skips also change outcomes under --overwrite skip; always note.
             where = result.requested_path or result.member.name
             print(f"skipped: {where}", file=err)
+        elif status is ExtractionStatus.SUPERSEDED:
+            skipped += 1  # count superseded entries alongside skipped in summary
+            if verbose:
+                print(f"superseded: {result.member.name}", file=err)
         elif status is ExtractionStatus.REJECTED:
             rejected += 1
             detail = f": {result.error}" if result.error is not None else ""
