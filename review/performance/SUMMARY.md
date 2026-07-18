@@ -43,11 +43,11 @@ bounded.
 | # | Severity | Finding | Where | Status |
 |---|----------|---------|-------|--------|
 | P1 | **blocker** | ≤1.3× wall budget enforced nowhere; nightly hard-fails only at 10×, VISION band informational | `benchmarks/harness.py:55,826-834`, `benchmark-wall.yml` | open — decision needed (Q2) |
-| P2 | **blocker** | Budget not met: ZIP read-all 2.2–2.3×, extract-all 2.4–3.7×, open+list 5–8×; TAR read 1.8× | `budget-table.md` | open |
+| P2 | **blocker** | Budget not met: ZIP read-all 2.2–2.3×, extract-all 2.4–3.7×, open+list 5–8×; TAR read 1.8× | `budget-table.md` | **partial** — #136/#137/#139 put large-member ZIP read ≤1.25× and realistic extract ~1.9×; open+list vs the Q1 ratio bands and many-small remain |
 | P3 | **blocker** | Selective solid-7z extraction decodes ~whole folder for one early member (31× needed bytes); CLI `extract archive.7z <name>` hits it | `sevenzip_reader.py:283-323`, `extraction.py:340` | **fixed by #136** — verified 31.0× → 1.00× |
-| P4 | high | Non-solid re-decompression is invisible to the gate: decode-twice-deliver-once ZIP regression passes (byte axis counts delivered output; seek slack ×2+8 absorbs churn; wall ungated) | `gate-efficacy.md` G4, `repro.py` probe 3 | open |
-| P5 | high | A full 2× solid re-decode passes the gate (`SOLID_DECODE_FACTOR = 2.0`, non-strict bound) — VISION says a re-read must fail | `harness.py:51,526-532`, `repro.py` probe 2 | open — tighten (Q3) |
-| P6 | med | Harness has no stdlib peer for open/list/extract (why P2's extract miss went unnoticed); no RAR case in committed baseline; ZIP-AES / native-codec / in-ZIP-accelerated paths unbenchmarked | `gate-efficacy.md` G6/G7 | open |
+| P4 | high | Non-solid re-decompression is invisible to the gate: decode-twice-deliver-once ZIP regression passes (byte axis counts delivered output; seek slack ×2+8 absorbs churn; wall ungated) | `gate-efficacy.md` G4, `repro.py` probe 3 | **fixed by #139** — over-decode ×1.1 bound + seek slack baseline+8; probe CAUGHT |
+| P5 | high | A full 2× solid re-decode passes the gate (`SOLID_DECODE_FACTOR = 2.0`, non-strict bound) — VISION says a re-read must fail | `harness.py:51,526-532`, `repro.py` probe 2 | **fixed by #139** — factor 1.25; probe CAUGHT |
+| P6 | med | Harness has no stdlib peer for open/list/extract (why P2's extract miss went unnoticed); no RAR case in committed baseline; ZIP-AES / native-codec / in-ZIP-accelerated paths unbenchmarked | `gate-efficacy.md` G6/G7 | partial — #139 adds ZIP open_list/extract peers; RAR/encrypted/accel cases + Q1 listing peers still missing |
 | P7 | med | Per-`open()` 5–8× zipfile (detection + member-model build ~0.3 ms/archive) — the founding million-archive sweep pays minutes | `hotspots.md` H3 | partial — #136 caches the extension map; rest open |
 | P8 | low | rapidgzip AUTO threshold (1 MiB) conservative: seek workloads win ~1.5× well below it; provenance script never measured compressed sizes near 1 MiB | `hotspots.md` H5 | follow-up |
 | P9 | low | Measurement blind spots: 7z password-confirm folder decode uncounted; RAR byte axis (unrar pipe output) cannot see solid rewind | `gate-efficacy.md` G6 | follow-up |
@@ -77,6 +77,31 @@ selective-solid probe re-run against main, #136, #137 trees):
   plan: `residual-gap.md`.
 - **Still open:** P1 (enforcement), P2 (budget — now with a concrete lever),
   P4/P5 (gate bounds), P6 (stdlib peers), Q1–Q4/Q6.
+
+## Second follow-up (#139, `main` @ `93dc28e`) — verified
+
+#139 implemented the `residual-gap.md` plan; I verified it independently (full
+suite green, gate green, probes re-run, before/after probe on shared fixtures):
+
+- **Decode-feed fix confirmed.** ZIP read-all **1.41× → 1.20×** on the review
+  host; OS-level `read()` census 1220 → **196** (zipfile = 195). H1 stays 1.00×.
+- **P4 and P5 fixed.** All three `repro.py` adversarial probes now CAUGHT
+  (`SOLID_DECODE_FACTOR` 1.25, non-solid over-decode ×1.1, seek slack
+  baseline+8); `sevenzip_solid_random` gated vs baseline×1.5 (Q6).
+- **The regime split is the story now** (#139 Track 2): 4 KiB members ≈ 4×
+  (pure per-member machinery, feed-size-insensitive), 256 KiB ≈ 1.38×,
+  1 MiB ≈ 1.30×. Q1 has a maintainer direction as of 2026-07-18 — metadata
+  ops budgeted as *ratios vs the relevant peer* (2–3×/member vs
+  `zipfile`/`tarfile`; parity vs `py7zr`/`rarfile` for the native parsers) —
+  see `QUESTIONS.md` Q1 for the consequences (listing peers in the harness;
+  ZIP open+list becomes in-budget work again).
+- **Side-finding (security register O8):** while triaging #139's Windows CI
+  failure — a pre-existing flake, not the PR — measured that **~0.3% of
+  py7zr-written header-encrypted 7z archives open as an *empty* archive under
+  a wrong password** (no error; py7zr stores no encoded-header CRC, and the
+  garbage occasionally parses as a zero-member header). Hazard + proposed
+  deterministic tightening (reject file-less encoded headers) written up in
+  `docs/internal/threat-model.md` O8.
 
 ## What is actually fine
 

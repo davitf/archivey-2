@@ -218,6 +218,51 @@ still rejecting only names that cannot be `os.fsencode`d at all; `TRUSTED` attem
 faithful bytes and lets the local OS decide (today's behavior). Awaiting implementation of
 that `safe-extraction` delta.
 
+### O8. 7z wrong header-decryption password can silently yield an *empty* archive
+
+The 7z format has **no password check value** (unlike RAR5's `pswcheck` or WinZip
+AES's verifier bytes), so wrong-password detection on a header-encrypted archive
+(`-mhe=on`) is heuristic: decrypt with the derived key, LZMA-decode the garbage,
+and rely on the decode or the header parse failing. There are two lines of
+defense today:
+
+1. **Decoded-folder CRC** — `decode_folder_to_bytes` verifies the encoded-header
+   folder's `kCRC` digest when the writer stored one
+   (`sevenzip_pipeline.py`). Reference 7-Zip writes it → detection is
+   deterministic (2⁻³²) for those archives. **py7zr does not**
+   (`digest_defined: False` on the encoded-header folder), and our own `[7z-write]`
+   output goes through py7zr, so archives *we* write share the gap.
+2. **Structural parse failure** of the garbage — which usually works, but not
+   always.
+
+Measured (2026-07-18, loop of fresh py7zr header-encrypted archives, wrong
+password): **~0.3% of salts slip through both checks** (2/300, 3/1,110 across
+runs — the AES IV/salt is random per write, so the rate is per-archive, not
+per-attempt). Every observed slip-through decodes to a degenerate header that
+parses as **an archive with zero members**: `open_archive(...,
+password="wrong")` returns member_count=0 with no error. Hazard: not traversal
+or corruption, but *silent data invisibility* — a backup-verification or sweep
+tool concludes "empty archive" instead of "wrong password" and reports success.
+This is also the root cause of the flaky
+`test_header_encrypted_wrong_password_mentions_header` (seen on Windows
+py3.14 CI for PR #139; the flake predates that PR — same rate measured on
+`main`).
+
+*Direction (proposed, not yet implemented):* after decoding a `kEncodedHeader`,
+**treat a parsed result with zero file records as a rejected password**
+(`EncryptionError`). Legitimate writers never emit an encrypted header for an
+empty archive — header encryption exists to hide member names, and an empty
+py7zr/7-Zip archive is written with `next_header_size == 0` or a plain header —
+so the check costs nothing on real archives and deterministically closes the
+*observed* slip-through mode (and deflakes the test). Residual: garbage that
+parses into a *non-empty* plausible header survives in principle, but must then
+present coherent member counts/sizes/digests against the real packed streams —
+astronomically unlikely, and inherent to the format absent a check value. Two
+cheap hardenings beyond that: validate decoded-header property ordering/bounds
+strictly (the parser already rejects most nonsense), and suggest upstream that
+py7zr write `kCRC` for the encoded-header folder (fixes detection for archives
+we and py7zr produce, the common fixture case).
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed

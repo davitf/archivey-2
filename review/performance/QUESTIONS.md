@@ -24,6 +24,31 @@ TAR 1.4–1.8×. Is the intended reading:
 
 The answer decides whether P2 is "fix H2/H3 until green" or "fix + re-word".
 
+**Maintainer direction (2026-07-18) — metadata ops get *ratio* budgets vs the
+relevant peer, not absolute numbers:**
+
+- **ZIP/TAR listing** (we wrap stdlib internally): at most **2–3× per member**
+  vs `zipfile`/`tarfile`.
+- **7z/RAR listing** (our own native parsers): **on par with `py7zr`/`rarfile`**
+  — the peers are already test oracles, so benchmark-only optional deps.
+
+Consequences to implement:
+
+1. Harness: add `open_list` ratio cases with those peers and bands —
+   `zipfile`/`tarfile` peers exist (ZIP wired in #139); `py7zr`/`rarfile`
+   listing peers are new. Bands per backend, asserted the same way the wall
+   budget ends up asserted (Q2).
+2. This makes ZIP open+list a *live* budget miss again: measured **5–8×**
+   `zipfile` (ci and realistic scales, `budget-table.md`), vs the chosen 2–3×
+   band — so the per-member model-build cost (~45 µs/member `_to_member` etc.,
+   Track 3's deferred "dedicated change") is now in-budget work, needing
+   roughly a 2–3× reduction. 7z/RAR vs `py7zr`/`rarfile` is unmeasured — the
+   native parsers may already be at/under parity; measure before optimizing.
+3. Read/extract regimes stay as previously framed: decompression-dominated
+   ≤1.3× (met for large-member ZIP after #139), extract inside the ~2× safety
+   band (met at realistic scale), many-small read_all follows the listing
+   story (its cost *is* per-member machinery).
+
 ## Q2 — Where should the wall budget be *enforced*?
 
 Today: nowhere (`gate-efficacy.md` G1) — deliberate, because shared-runner ratios
