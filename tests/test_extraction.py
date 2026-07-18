@@ -478,9 +478,12 @@ def test_user_filter_skip(tmp_path: Path) -> None:
         return None if m.name == "b.txt" else m
 
     with open_archive(src) as r:
-        r.extract_all(dest, filter=skip_b)
+        report = r.extract_all(dest, filter=skip_b)
     assert (dest / "a.txt").exists()
     assert not (dest / "b.txt").exists()
+    # Filter returning None is a caller-elected exclusion: no ExtractionResult (D1).
+    assert [r.member.name for r in report.results] == ["a.txt"]
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +510,7 @@ def test_overwrite_skip(tmp_path: Path) -> None:
     (dest / "a.txt").write_bytes(b"old")
     results = extract(src, dest, overwrite=OverwritePolicy.SKIP).results
     assert (dest / "a.txt").read_bytes() == b"old"
-    assert results[0].status is ExtractionStatus.SKIPPED
+    assert results[0].status is ExtractionStatus.NOT_OVERWRITTEN
 
 
 def test_overwrite_replace(tmp_path: Path) -> None:
@@ -651,7 +654,7 @@ def test_on_error_continue_records_rejected(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     results = extract(src, dest, on_error=OnError.CONTINUE).results
     statuses = {r.member.name: r.status for r in results}
-    assert ExtractionStatus.REJECTED in statuses.values()
+    assert ExtractionStatus.BLOCKED in statuses.values()
     assert (dest / "good.txt").read_bytes() == b"good"
 
 
@@ -760,7 +763,7 @@ def test_rejected_members_do_not_count_toward_max_entries(tmp_path: Path) -> Non
     statuses = {res.member.name: res.status for res in results}
     assert statuses["good1.txt"] is ExtractionStatus.EXTRACTED
     assert statuses["good2.txt"] is ExtractionStatus.EXTRACTED
-    assert ExtractionStatus.REJECTED in statuses.values()
+    assert ExtractionStatus.BLOCKED in statuses.values()
 
 
 # ---------------------------------------------------------------------------
@@ -984,7 +987,7 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     results = extract(src, dest, on_error=OnError.CONTINUE).results
     statuses = {r.member.name: r.status for r in results}
-    assert statuses["evil"] is ExtractionStatus.REJECTED
+    assert statuses["evil"] is ExtractionStatus.BLOCKED
     assert (dest / "ok.txt").read_bytes() == b"ok"
 
 
@@ -1038,7 +1041,7 @@ def test_chained_symlink_attack_file_payload_rejected(tmp_path: Path) -> None:
     # proceeds, proving the FILE payload cannot follow it out of dest.
     results = extract(src, dest, on_error=OnError.CONTINUE).results
     statuses = {r.member.name: r.status for r in results}
-    assert statuses["sub"] is ExtractionStatus.REJECTED
+    assert statuses["sub"] is ExtractionStatus.BLOCKED
     assert not (outside / "leak.txt").exists()
     assert list(outside.iterdir()) == []
 
@@ -1375,7 +1378,7 @@ def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
         ).results
 
     statuses = {res.member.name: res.status for res in results}
-    assert statuses["L1.txt"] is ExtractionStatus.SKIPPED
+    assert statuses["L1.txt"] is ExtractionStatus.NOT_OVERWRITTEN
     assert statuses["L2.txt"] is ExtractionStatus.EXTRACTED
     assert (dest / "L1.txt").read_bytes() == b"pre-existing"  # untouched under SKIP
     assert (
@@ -1386,7 +1389,7 @@ def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
 
 def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
     # Companion to the above: when EVERY selected link's destination already exists under
-    # SKIP, all links are recorded SKIPPED, existing files stay untouched, and no stray
+    # SKIP, all links are recorded NOT_OVERWRITTEN, existing files stay untouched, and no stray
     # content or temp file is written anywhere.
     src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
     dest = tmp_path / "out"
@@ -1401,7 +1404,7 @@ def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
             overwrite=OverwritePolicy.SKIP,
         ).results
 
-    assert [res.status for res in results] == [ExtractionStatus.SKIPPED] * 2
+    assert [res.status for res in results] == [ExtractionStatus.NOT_OVERWRITTEN] * 2
     assert (dest / "L1.txt").read_bytes() == b"keep-1"
     assert (dest / "L2.txt").read_bytes() == b"keep-2"
     assert sorted(p.name for p in dest.iterdir()) == ["L1.txt", "L2.txt"]  # no strays
@@ -1649,7 +1652,7 @@ def test_o3_reserved_name_rejected(tmp_path: Path, name: str, policy) -> None:
     report = extract(
         io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
     )
-    assert report.results[0].status is ExtractionStatus.REJECTED
+    assert report.results[0].status is ExtractionStatus.BLOCKED
     assert isinstance(report.results[0].error, UnportableNameError)
 
 
@@ -1663,7 +1666,7 @@ def test_o3_reserved_name_written_under_trusted(tmp_path: Path) -> None:
     archive = _tar_bytes([("file", "NUL", b"x")])
     dest = tmp_path / "out"
     report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.TRUSTED)
-    # TRUSTED does not apply the O3 name rejection — the member is not REJECTED by policy.
+    # TRUSTED does not apply the O3 name rejection — the member is not BLOCKED by policy.
     assert report.results[0].status is ExtractionStatus.EXTRACTED
     assert (dest / "NUL").read_bytes() == b"x"
 
@@ -1675,7 +1678,7 @@ def test_o4_colon_rejected_strict_and_standard(tmp_path: Path, policy) -> None:
     report = extract(
         io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
     )
-    assert report.results[0].status is ExtractionStatus.REJECTED
+    assert report.results[0].status is ExtractionStatus.BLOCKED
     assert isinstance(report.results[0].error, UnportableNameError)
 
 
@@ -1734,7 +1737,7 @@ def test_o3_all_dots_segment_rejected(tmp_path: Path) -> None:
         policy=ExtractionPolicy.STRICT,
         on_error=OnError.CONTINUE,
     )
-    assert report.results[0].status is ExtractionStatus.REJECTED
+    assert report.results[0].status is ExtractionStatus.BLOCKED
     assert isinstance(report.results[0].error, UnportableNameError)
 
 

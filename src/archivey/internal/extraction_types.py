@@ -59,11 +59,11 @@ class OverwritePolicy(Enum):
     ``ERROR`` raises an ``ExtractionError`` for the member, which is then a per-member
     failure governed by the ``OnError`` policy — ``OnError.STOP`` re-raises and halts,
     ``OnError.CONTINUE`` records a ``FAILED`` ``ExtractionResult`` and proceeds. ``SKIP``
-    is not an error: it records a ``SKIPPED`` result regardless of ``OnError``.
+    is not an error: it records a ``NOT_OVERWRITTEN`` result regardless of ``OnError``.
     """
 
     ERROR = "error"  # existing entry -> ExtractionError (then handled per OnError)
-    SKIP = "skip"  # silently skip existing entries (records SKIPPED)
+    SKIP = "skip"  # silently skip existing entries (records NOT_OVERWRITTEN)
     REPLACE = (
         "replace"  # unlink the existing entry, then create fresh (never write-through)
     )
@@ -81,9 +81,9 @@ class ExtractionStatus(str, Enum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
     EXTRACTED = "extracted"
-    SKIPPED = "skipped"  # pre-existing destination under OverwritePolicy.SKIP
+    NOT_OVERWRITTEN = "not_overwritten"  # existing dest left under OverwritePolicy.SKIP
     SUPERSEDED = "superseded"  # non-current entry (a later same-name entry overwrites)
-    REJECTED = "rejected"  # blocked by a safety filter (universal or policy check)
+    BLOCKED = "blocked"  # blocked by a safety filter (universal or policy check)
     FAILED = "failed"  # error while extracting (corrupt data, ratio bomb, write error)
 
 
@@ -118,7 +118,7 @@ class ExtractionResult:
     member: ArchiveMember
     path: Path | None  # the written path, or None if the member was not written
     status: ExtractionStatus
-    # The failure, for FAILED/REJECTED under OnError.CONTINUE; an OSError when the failure
+    # The failure, for FAILED/BLOCKED under OnError.CONTINUE; an OSError when the failure
     # is a filesystem read/write error on this member (not translated to an ArchiveyError).
     error: ArchiveyError | OSError | None = None
     # The destination the coordinator intended before overwrite/rename resolution. For an

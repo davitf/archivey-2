@@ -120,7 +120,7 @@ entries — `members()` / `__iter__` never hide anything — but marks which one
 - All earlier same-name entries have `is_current=False` (superseded).
 
 `extract_all` honours this automatically: non-current entries get
-`ExtractionStatus.SUPERSEDED` (distinct from overwrite `SKIPPED`) and are not written,
+`ExtractionStatus.SUPERSEDED` (distinct from overwrite `NOT_OVERWRITTEN`) and are not written,
 so the final on-disk state matches what you would get from a fresh write.
 
 To enumerate only the live state in your own code, filter with a one-liner:

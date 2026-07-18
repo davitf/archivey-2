@@ -13,8 +13,6 @@ proposal.md / design.md / tasks.md; do not introduce new decisions here.
 
 **What it does:** Renames Skipped to Not Overwritten and Rejected to Blocked. Blocked stays honest for both a hardwired path-safety block and a policy filter, so no by-policy suffix, because a zip-slip block is safety, not policy. The rename cascades to the paired diagnostic, so the code becomes Extraction Member Blocked and its status field becomes blocked, keeping one vocabulary across the result and its diagnostic. Extracted, Superseded, and Failed keep their names.
 
-**Also fixes two drifts in the same area:** The spec claimed a filter returning None yields a skipped result, but the coordinator actually records no result at all, like a selector exclusion, so the spec is corrected. And the RAR file-version spec still said history rows extract as skipped, when they are now superseded.
-
-**Your call later:** Whether the enum should become a string enum to match the spec text and the hash algorithm enum. Flagged, not bundled.
+**Also fixes two drifts in the same area:** The spec claimed a filter returning None yields a skipped result, but the coordinator actually records no result at all, like a selector exclusion, so the spec is corrected. And the RAR file-version spec still said history rows extract as skipped, when they are now superseded. ExtractionStatus stays a string enum, matching the other public enums.
 
 **Bottom line:** Honest, self-documenting status names, plus two contract corrections, stacked on the Q1 follow-up.

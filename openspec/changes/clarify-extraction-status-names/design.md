@@ -77,9 +77,8 @@ vocabulary split for a purely cosmetic diff saving.
 - No back-compat aliases: archivey is pre-1.0 and prefers an honest rename now
   over carrying a deprecated misnomer.
 
-## Adjacent drift noted, not fixed here
+## Adjacent drift resolved with this change
 
-`safe-extraction` pseudocode declares `class ExtractionStatus(str, Enum)` but the
-implementation is `class ExtractionStatus(Enum)`. Left for a separate decision
-(whether to make it `str, Enum` for serialization symmetry with `HashAlgorithm`,
-or correct the spec). Flagged so it is not silently bundled into a rename.
+`safe-extraction` pseudocode declares `class ExtractionStatus(str, Enum)`. The
+implementation already matches (`ExtractionStatus(str, Enum)`), keeping
+serialization symmetry with `HashAlgorithm` / `DiagnosticCode`.
