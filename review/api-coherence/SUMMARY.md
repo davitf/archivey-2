@@ -2,8 +2,9 @@
 
 > **Status (2026-07-18):** findings delivered in #133; **no code follow-ups have
 > landed yet.** Every row in the table below is still open. Blockers that need
-> a maintainer answer first: **Q1–Q6** (`QUESTIONS.md`). Mechanical surface
-> work (S1/S2/S3/E1/E3) is actionable after Q4/Q6. Triage: `../STATUS.md`.
+> a maintainer answer first: **Q1–Q6** (`QUESTIONS.md`). **Q7** (partial members +
+> honest error) was surfaced later from #149 — see `QUESTIONS.md`. Mechanical
+> surface work (S1/S2/S3/E1/E3) is actionable after Q4/Q6. Triage: `../STATUS.md`.
 
 Reviewed at `main` + CLI (#120) merged (`7139c13`). Baseline (all captured before
 review, `[all]` config): pytest **1699 passed / 131 skipped / 3 deselected**, pyrefly

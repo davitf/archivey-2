@@ -65,6 +65,7 @@ Do not implement these until the maintainer answers (pause-and-ask).
 | **Q4** | Surface demote/add list | Blanket approval or line-item veto. |
 | **Q5** | **E2** library `verify` primitive | Priority: now vs post-0.2.0 (additive either way). |
 | **Q6** | Freeze nits | `WriteError` keep/demote; SKIPPED split shape; `hashes` int/bytes; display-name spelling. |
+| **Q7** | Partial members + honest error accessor | **Later-surfaced** (from #149 Option F review), not in #133. Adjacent to Q5/salvage; park vs explore-change. |
 
 ### `performance/QUESTIONS.md`
 
