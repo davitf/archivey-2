@@ -5,6 +5,7 @@ Maintainer / contributor material. Not the primary user guide.
 | Doc | Role |
 | --- | --- |
 | [Threat model](threat-model.md) | Trust boundaries, enforced guarantees, open security/compat gaps |
+| [Open issues (gotchas triage)](open-issues.md) | Fixable leftovers vs irreducible user gotchas; docs/spec drift |
 | [Compression-library analysis](library-analysis.md) | Per-codec backend choice and rationale |
 | [Known issues](known-issues.md) | Accelerator lifecycle / macOS coexistence notes |
 

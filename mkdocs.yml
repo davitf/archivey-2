@@ -6,6 +6,7 @@ nav:
   - Home: index.md
   - Philosophy: philosophy.md
   - Basic usage: usage.md
+  - Gotchas: gotchas.md
   - Access costs and pitfalls: costs.md
   - Formats and extras: formats.md
   - Safe extraction: safe-extraction.md
@@ -25,9 +26,11 @@ nav:
       - No silent buffer: decisions/0010-no-silent-buffer-nonseekable.md
       - Zero-dep core: decisions/0011-zero-dependency-core.md
       - Usage errors: decisions/0012-usage-errors-outside-archiveyerror.md
+      - Cross-platform name safety: decisions/0013-cross-platform-name-safety-policies.md
   - Internal:
       - Overview: internal/index.md
       - Threat model: internal/threat-model.md
+      - Open issues (gotchas triage): internal/open-issues.md
       - Compression-library analysis: internal/library-analysis.md
       - Known issues: internal/known-issues.md
       - Release-repo cutover: internal/release-repo-cutover.md
