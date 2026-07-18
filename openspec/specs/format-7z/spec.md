@@ -228,7 +228,7 @@ passwords as `EncryptionError`/`CorruptionError`, never silent bytes.
 | Header-encrypted archive, no password/provider result | `EncryptionError` before listing |
 | Header-encrypted archive, valid password + crypto | Header is decrypted natively; members list; `is_encrypted` true |
 | Encrypted folders with different passwords | Each folder uses its matching candidate in random access or one streaming pass |
-| Sole wrong password | `EncryptionError`/`CorruptionError`; no incorrect data |
+| Sole wrong password | `EncryptionError`/`CorruptionError`; no incorrect data (including never a silent empty listing from a header-encrypted archive) |
 | Repeated salt/cycles/password | Derived key cache avoids repeated key derivation |
 
 ### Requirement: Stream solid folders with bounded memory

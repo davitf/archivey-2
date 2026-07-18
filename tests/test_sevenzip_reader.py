@@ -408,6 +408,41 @@ def test_header_encrypted_wrong_password_mentions_header(tmp_path: Path) -> None
     assert "Password required" not in caught.value.message
 
 
+@requires("cryptography")
+def test_header_encrypted_empty_decoded_header_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """O8: EncodedHeader that decrypts to a file-less plain header is a rejected password.
+
+    7zAES has no check value; py7zr omits the encoded-header folder CRC, so wrong-key
+    garbage occasionally LZMA-decodes into a zero-member header (~0.3% of salts). Force
+    that slip-through mode and require EncryptionError instead of a silent empty listing.
+    """
+    archive = tmp_path / "header-encrypted-o8.7z"
+    _write_py7zr_archive(archive, _FILES, password="secret", header_encryption=True)
+
+    # HEADER + END → PlainHeader with zero file records (legitimate empty archives use
+    # nextHeaderSize == 0 instead, never an encrypted empty header).
+    monkeypatch.setattr(
+        "archivey.internal.backends.sevenzip_reader.decode_encoded_header",
+        lambda *args, **kwargs: b"\x01\x00",
+    )
+
+    with pytest.raises(EncryptionError, match="(?i)rejected.*header") as caught:
+        open_archive(archive, password="secret").close()
+    assert "Password required" not in caught.value.message
+
+    # Same check on the fuzz/helper parse path.
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+
+    monkeypatch.setattr(
+        "archivey.internal.backends.sevenzip_pipeline.decode_encoded_header",
+        lambda *args, **kwargs: b"\x01\x00",
+    )
+    with pytest.raises(EncryptionError, match="(?i)rejected.*header"):
+        parse_sevenzip_archive(archive.open("rb"), password=b"secret")
+
+
 @requires("bcj")
 def test_lzma1_bcj_fixture_roundtrip(tmp_path: Path) -> None:
     """py7zr LZMA1+BCJ archives decode via staged pybcj (not combined liblzma)."""
