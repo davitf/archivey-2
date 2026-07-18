@@ -25,8 +25,8 @@ or the finding is a clear proposed fix with no spec conflict).
 
 | ID | Action |
 |----|--------|
-| **P7 / H3** | Cut ZIP/TAR open+list toward the **2–3×/member** peer band (measured 5–8×). Dedicated change — Track 3 found no ≥5% micro-win; needs a real model-build pass. |
-| **P6 remainder** | Add `py7zr` / `rarfile` listing peers + bands to the harness; measure 7z/RAR before optimizing. ZIP `open_list`/`extract` peers already in #139. |
+| **P7 / H3** | **partial** — model-build fast paths landed (ASCII bidi/utf8, normalize, compression-tuple cache, no-link short-circuit, cheaper metadata accounting). ZIP open+list ~4.4×→~3.7× many-small / ~4.6×→~4.1× realistic; still above 2–3×. Further cuts need deeper open-path work. |
+| **P6 remainder** | **partial** — `py7zr` / `rarfile` / TAR `open_list` peers + Q1 band labels in harness. RAR/encrypted/accel *data* cases still missing. |
 | **P2 remainder** | Many-small `read_all` follows the listing story (same per-member machinery as P7). Large-member ZIP read already ≤1.25× after #139; realistic extract ~1.9× (inside ~2× band) — no further extract code pending Q2. |
 | **VISION/docs** | Re-word the ≤1.3× claim to match Q1 (decompression-dominated ≤1.3×; listing as peer ratios) once enforcement (Q2) is chosen. |
 

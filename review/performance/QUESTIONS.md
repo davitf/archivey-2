@@ -3,10 +3,10 @@
 Decisions this review cannot make unilaterally (per the pause-and-ask rule).
 
 > **Status (2026-07-18):** Q3, Q5, Q6 **resolved** (#136 / #139). Q1 has a
-> **maintainer direction** (#140) — implementation consequences still open
-> (listing peers, ZIP open+list toward 2–3×). **Still need a decision:** Q2
-> (wall enforcement), Q4 (verify-skip knob; perf case ~nil post-#137). See
-> `../STATUS.md`.
+> **maintainer direction** (#140) — listing peers + ZIP/TAR model-build fast paths
+> landed (this change); ZIP open+list still above the 2–3× band. **Still need a
+> decision:** Q2 (wall enforcement), Q4 (verify-skip knob; perf case ~nil
+> post-#137). See `../STATUS.md`.
 
 ## Q1 — What does "≤1.3× on common paths" cover, exactly? — DIRECTION RECORDED
 
@@ -33,16 +33,15 @@ relevant peer, not absolute numbers:**
 
 Consequences to implement:
 
-1. Harness: add `open_list` ratio cases with those peers and bands —
-   `zipfile`/`tarfile` peers exist (ZIP wired in #139); `py7zr`/`rarfile`
-   listing peers are new. Bands per backend, asserted the same way the wall
-   budget ends up asserted (Q2).
-2. This makes ZIP open+list a *live* budget miss again: measured **5–8×**
-   `zipfile` (ci and realistic scales, `budget-table.md`), vs the chosen 2–3×
-   band — so the per-member model-build cost (~45 µs/member `_to_member` etc.,
-   Track 3's deferred "dedicated change") is now in-budget work, needing
-   roughly a 2–3× reduction. 7z/RAR vs `py7zr`/`rarfile` is unmeasured — the
-   native parsers may already be at/under parity; measure before optimizing.
+1. ~~Harness: add `open_list` ratio cases with those peers and bands~~ **done** —
+   `zipfile`/`tarfile` peers + `py7zr`/`rarfile` listing peers in the harness;
+   report labels use Q1 bands (ZIP/TAR ≤3×, native ≈1.25×). Still asserted the
+   same way the wall budget ends up asserted (Q2 — informational only today).
+2. ZIP open+list: measured **~4.1–6.1×** after model-build fast paths (was
+   4.6–6.6× on this host) — still above 2–3×. Remaining cost is mostly fixed
+   per-`open()` overhead (detection + ZipReader/ZipFile setup) on small
+   archives, plus residual per-member `ArchiveMember` construction. 7z/RAR vs
+   peers measured **~2.2–3.0×** (above parity; not optimized this pass).
 3. Read/extract regimes stay as previously framed: decompression-dominated
    ≤1.3× (met for large-member ZIP after #139), extract inside the ~2× safety
    band (met at realistic scale), many-small read_all follows the listing

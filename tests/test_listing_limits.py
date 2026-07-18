@@ -154,21 +154,43 @@ def test_metadata_accounting_counts_name_and_raw_name() -> None:
         comment="hi",
         extra={"note": "x", "nested": {"k": "v"}, "opaque": object()},
     )
-    # name + raw_name + comment + extra str values (nested one-level).
+    # Non-ASCII name uses the 4×len upper bound; ASCII comment/extra use len().
     expected = (
+        4 * len("café.txt")
+        + len("caf\xe9.txt".encode("latin-1"))
+        + len("hi")
+        + len("x")
+        + len("v")
+    )
+    assert member_metadata_bytes(member) == expected
+    # Upper bound must not under-count real UTF-8 size (Unicode name-bomb safety).
+    assert member_metadata_bytes(member) >= (
         len("café.txt".encode("utf-8", "surrogateescape"))
         + len("caf\xe9.txt".encode("latin-1"))
         + len("hi".encode("utf-8", "surrogateescape"))
         + len("x".encode("utf-8", "surrogateescape"))
         + len("v".encode("utf-8", "surrogateescape"))
     )
-    assert member_metadata_bytes(member) == expected
 
 
-def test_tracker_surrogateescape_stable() -> None:
-    # Undecodable-as-strict-utf8 name still has a stable surrogateescape length.
-    name = "a\udc80b"
-    member = ArchiveMember(type=MemberType.FILE, name=name)
+def test_tracker_ascii_exact_and_nonascii_upper_bound() -> None:
+    ascii_member = ArchiveMember(type=MemberType.FILE, name="plain.txt")
     tracker = ListingLimitTracker(ListingLimits(max_metadata_bytes=10_000))
+    tracker.account_member(ascii_member)
+    assert tracker.metadata_bytes == len("plain.txt")
+
+    tracker.reset()
+    name = "a\udc80b"  # surrogateescape-style code points
+    member = ArchiveMember(type=MemberType.FILE, name=name)
     tracker.account_member(member)
-    assert tracker.metadata_bytes == len(name.encode("utf-8", "surrogateescape"))
+    assert tracker.metadata_bytes == 4 * len(name)
+    assert tracker.metadata_bytes >= len(name.encode("utf-8", "surrogateescape"))
+
+
+def test_metadata_accounting_never_undercounts_utf8() -> None:
+    # Astral + BMP non-ASCII: 4*len is a safe ceiling over real UTF-8 size.
+    name = "文件📂.txt"
+    member = ArchiveMember(type=MemberType.FILE, name=name)
+    weight = member_metadata_bytes(member)
+    assert weight == 4 * len(name)
+    assert weight >= len(name.encode("utf-8"))

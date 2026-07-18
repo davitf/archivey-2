@@ -18,7 +18,8 @@ Modes:
   gate. Sanity ceiling only (no committed wall-time baseline).
 
 Formats covered here: ZIP, TAR, gzip, tar.gz/tar.bz2 (+ accelerators), solid 7z
-(and solid RAR when the ``rar`` writer is available to build fixtures). ISO and
+(and solid RAR when the ``rar`` writer is available to build fixtures). Listing
+wall peers: ``zipfile`` / ``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands). ISO and
 directory backends are instrumented for measurement but deliberately out of
 scope for this harness — see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
 """
@@ -69,6 +70,10 @@ SEEK_BASELINE_SLACK = 8
 WALL_RATIO_BUDGET = 10.0
 WALL_RATIO_VISION = 1.3
 WALL_RATIO_VISION_SAFETY = 2.0
+# Q1 listing bands (informational in full-mode reports; not PR-gated — see Q2):
+# ZIP/TAR wrap stdlib → 2–3×/member; native 7z/RAR → ≈parity with py7zr/rarfile.
+LISTING_RATIO_ZIP_TAR = 3.0
+LISTING_RATIO_NATIVE = 1.25
 
 
 @dataclass
@@ -246,6 +251,43 @@ def _stdlib_tar_read_all(path: Path) -> None:
                 f.read()
 
 
+def _stdlib_tar_open_list(path: Path) -> None:
+    with tarfile.open(path, "r:") as tf:
+        tf.getmembers()
+
+
+def _py7zr_open_list(path: Path) -> None:
+    import py7zr
+
+    with py7zr.SevenZipFile(path, "r") as archive:
+        list(archive.list())
+
+
+def _rarfile_open_list(path: Path) -> None:
+    import rarfile
+
+    with rarfile.RarFile(path) as archive:
+        archive.infolist()
+
+
+def _py7zr_available() -> bool:
+    try:
+        import py7zr  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _rarfile_available() -> bool:
+    try:
+        import rarfile  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def _stdlib_gzip_read_all(path: Path) -> None:
     with gzip.open(path, "rb") as gf:
         gf.read()
@@ -350,6 +392,7 @@ def run_cases(
             seeks,
             stdlib_wall_s=std_wall,
             wall_ratio=(wall / std_wall) if std_wall > 0 else None,
+            notes="vs zipfile; Q1 listing band 2–3×",
         )
     )
     # Structural bytes from a measured pass; wall ratio from an unmeasured peer race.
@@ -418,10 +461,39 @@ def run_cases(
     )
 
     # --- TAR (plain / uncompressed — harness peer is tarfile r:) ---
-    wall, (bdec, seeks) = timed_with_optional_warmup(
+    _m_wall, (bdec, seeks) = timed_with_optional_warmup(
         lambda: _op_open_list(fixtures.tar_path)
     )
-    results.append(CaseResult("tar_open_list", "tar", "open_list", wall, bdec, seeks))
+
+    def _ay_tar_open_list() -> None:
+        with open_archive(fixtures.tar_path) as reader:
+            _ = reader.info
+            list(reader.members())
+
+    if warmup:
+        wall, _ignored, std_wall = _interleaved_pair_times(
+            _ay_tar_open_list,
+            lambda: _stdlib_tar_open_list(fixtures.tar_path),
+            rounds=7,
+        )
+    else:
+        wall, _ = timed_with_optional_warmup(_ay_tar_open_list)
+        std_wall, _ = timed_with_optional_warmup(
+            lambda: _stdlib_tar_open_list(fixtures.tar_path)
+        )
+    results.append(
+        CaseResult(
+            "tar_open_list",
+            "tar",
+            "open_list",
+            wall,
+            bdec,
+            seeks,
+            stdlib_wall_s=std_wall,
+            wall_ratio=(wall / std_wall) if std_wall > 0 else None,
+            notes="vs tarfile.getmembers; Q1 listing band 2–3×",
+        )
+    )
     _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
         lambda: _op_read_all(fixtures.tar_path)
     )
@@ -541,6 +613,54 @@ def run_cases(
 
     # --- Solid 7z ---
     if fixtures.solid_7z is not None:
+        _m_wall, (bdec, seeks) = timed_with_optional_warmup(
+            lambda: _op_open_list(fixtures.solid_7z)  # type: ignore[arg-type]
+        )
+        solid_7z_path = fixtures.solid_7z
+
+        def _ay_7z_open_list() -> None:
+            with open_archive(solid_7z_path) as reader:
+                _ = reader.info
+                list(reader.members())
+
+        if _py7zr_available():
+            if warmup:
+                wall, _ignored, std_wall = _interleaved_pair_times(
+                    _ay_7z_open_list,
+                    lambda: _py7zr_open_list(solid_7z_path),
+                    rounds=7,
+                )
+            else:
+                wall, _ = timed_with_optional_warmup(_ay_7z_open_list)
+                std_wall, _ = timed_with_optional_warmup(
+                    lambda: _py7zr_open_list(solid_7z_path)
+                )
+            results.append(
+                CaseResult(
+                    "sevenzip_open_list",
+                    "7z",
+                    "open_list",
+                    wall,
+                    bdec,
+                    seeks,
+                    stdlib_wall_s=std_wall,
+                    wall_ratio=(wall / std_wall) if std_wall > 0 else None,
+                    notes="vs py7zr.list; Q1 native listing target ≈parity",
+                )
+            )
+        else:
+            wall, _ = timed_with_optional_warmup(_ay_7z_open_list)
+            results.append(
+                CaseResult(
+                    "sevenzip_open_list",
+                    "7z",
+                    "open_list",
+                    wall,
+                    bdec,
+                    seeks,
+                    notes="skipped peer: py7zr not installed",
+                )
+            )
         wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
             lambda: _op_read_all(fixtures.solid_7z)  # type: ignore[arg-type]
         )
@@ -572,7 +692,59 @@ def run_cases(
             )
         )
 
-    # --- Solid RAR ---
+    # --- RAR open_list vs rarfile (committed fixture for a stable peer; independent
+    # of the optional ``rar`` writer used for solid data-path cases below) ---
+    rar_list_path = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
+    if rar_list_path.is_file():
+        _m_wall, (bdec, seeks) = timed_with_optional_warmup(
+            lambda: _op_open_list(rar_list_path)
+        )
+
+        def _ay_rar_open_list() -> None:
+            with open_archive(rar_list_path) as reader:
+                _ = reader.info
+                list(reader.members())
+
+        if _rarfile_available():
+            if warmup:
+                wall, _ignored, std_wall = _interleaved_pair_times(
+                    _ay_rar_open_list,
+                    lambda: _rarfile_open_list(rar_list_path),
+                    rounds=7,
+                )
+            else:
+                wall, _ = timed_with_optional_warmup(_ay_rar_open_list)
+                std_wall, _ = timed_with_optional_warmup(
+                    lambda: _rarfile_open_list(rar_list_path)
+                )
+            results.append(
+                CaseResult(
+                    "rar_open_list",
+                    "rar",
+                    "open_list",
+                    wall,
+                    bdec,
+                    seeks,
+                    stdlib_wall_s=std_wall,
+                    wall_ratio=(wall / std_wall) if std_wall > 0 else None,
+                    notes="vs rarfile.infolist; Q1 native listing target ≈parity",
+                )
+            )
+        else:
+            wall, _ = timed_with_optional_warmup(_ay_rar_open_list)
+            results.append(
+                CaseResult(
+                    "rar_open_list",
+                    "rar",
+                    "open_list",
+                    wall,
+                    bdec,
+                    seeks,
+                    notes="skipped peer: rarfile not installed",
+                )
+            )
+
+    # --- Solid RAR (data path; needs rar writer fixture) ---
     if fixtures.solid_rar is not None:
         wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
             lambda: _op_read_all(fixtures.solid_rar)  # type: ignore[arg-type]
@@ -686,7 +858,20 @@ def _wall_checks(
             failures.append(
                 f"{r.case}: wall_ratio={r.wall_ratio:.2f} > sanity budget {WALL_RATIO_BUDGET}"
             )
-        if enforce_vision and r.wall_ratio > WALL_RATIO_VISION_SAFETY:
+        if not enforce_vision:
+            continue
+        if r.operation == "open_list":
+            if r.format in ("zip", "tar") and r.wall_ratio > LISTING_RATIO_ZIP_TAR:
+                failures.append(
+                    f"{r.case}: wall_ratio={r.wall_ratio:.2f} > Q1 listing "
+                    f"{LISTING_RATIO_ZIP_TAR}× (ZIP/TAR peer band)"
+                )
+            elif r.format in ("7z", "rar") and r.wall_ratio > LISTING_RATIO_NATIVE:
+                failures.append(
+                    f"{r.case}: wall_ratio={r.wall_ratio:.2f} > Q1 native listing "
+                    f"parity (~{LISTING_RATIO_NATIVE}× vs py7zr/rarfile)"
+                )
+        elif r.wall_ratio > WALL_RATIO_VISION_SAFETY:
             failures.append(
                 f"{r.case}: wall_ratio={r.wall_ratio:.2f} > VISION safety "
                 f"{WALL_RATIO_VISION_SAFETY}× (target {WALL_RATIO_VISION}×)"
@@ -738,9 +923,18 @@ def _fmt_bytes(n: int | None) -> str:
     return f"{n / (1024 * 1024):.2f} MiB"
 
 
-def _vision_label(ratio: float | None) -> str:
+def _vision_label(ratio: float | None, *, operation: str = "", format: str = "") -> str:
     if ratio is None:
         return "—"
+    if operation == "open_list":
+        if format in ("zip", "tar"):
+            if ratio <= LISTING_RATIO_ZIP_TAR:
+                return f"within Q1 listing ≤{LISTING_RATIO_ZIP_TAR}×"
+            return f"above Q1 listing {LISTING_RATIO_ZIP_TAR}×"
+        if format in ("7z", "rar"):
+            if ratio <= LISTING_RATIO_NATIVE:
+                return f"within Q1 native ≤{LISTING_RATIO_NATIVE}×"
+            return f"above Q1 native parity (~{LISTING_RATIO_NATIVE}×)"
     if ratio <= WALL_RATIO_VISION:
         return f"within ≤{WALL_RATIO_VISION}×"
     if ratio <= WALL_RATIO_VISION_SAFETY:
@@ -794,7 +988,7 @@ def format_text_report(payload: dict[str, Any]) -> str:
             lines.append(
                 f"| `{r.case}` | {_fmt_seconds(r.wall_s)} | "
                 f"{_fmt_seconds(r.stdlib_wall_s or 0.0)} | {ratio} | "
-                f"{_vision_label(r.wall_ratio)} |"
+                f"{_vision_label(r.wall_ratio, operation=r.operation, format=r.format)} |"
             )
 
     lines.extend(
