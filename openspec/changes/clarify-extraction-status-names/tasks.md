@@ -42,9 +42,9 @@
       asserting filter-`None` produces **no** `ExtractionResult` (locks D1)
 - [x] 6.2 Assert a `BLOCKED` result pairs with `EXTRACTION_MEMBER_BLOCKED` /
       `status="blocked"`
-- [ ] 6.3 `uv run --no-sync pytest` for affected tests; `ruff format` / `ruff check`;
+- [x] 6.3 `uv run --no-sync pytest` for affected tests; `ruff format` / `ruff check`;
       `uv run pyrefly check` and `uv run ty check` on touched paths
 
 ## 7. Verify
 
-- [ ] 7.1 `openspec validate --strict clarify-extraction-status-names`
+- [x] 7.1 `openspec validate --strict clarify-extraction-status-names`
