@@ -451,12 +451,14 @@ def run_extract(
             hide_progress=hide_progress, stream=err
         )
         # Under STOP, extract_all raises without returning a report — track how
-        # many members completed before the stop via the progress callback (Q1.5).
-        members_completed = 0
+        # many members were extracted / blocked before the stop via progress (Q1.5).
+        members_extracted = 0
+        members_blocked = 0
 
         def on_progress(progress: ExtractionProgress) -> None:
-            nonlocal members_completed
-            members_completed = progress.members_done
+            nonlocal members_extracted, members_blocked
+            members_extracted = progress.members_extracted
+            members_blocked = progress.members_blocked
             if base_progress is not None:
                 base_progress(progress)
 
@@ -477,11 +479,13 @@ def run_extract(
                 # is reserved for a *completed* run with policy blocks and safe
                 # members on disk (blocks never abort under STOP).
                 print(exc, file=err)
-                if members_completed:
-                    print(
-                        f"{members_completed} member(s) written before the stop",
-                        file=err,
-                    )
+                parts: list[str] = []
+                if members_extracted:
+                    parts.append(f"{members_extracted} member(s) extracted")
+                if members_blocked:
+                    parts.append(f"{members_blocked} blocked")
+                if parts:
+                    print(f"{', '.join(parts)} before the stop", file=err)
                 print(
                     "extraction stopped; remaining members were not extracted",
                     file=err,

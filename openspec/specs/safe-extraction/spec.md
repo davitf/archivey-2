@@ -474,6 +474,8 @@ class ExtractionProgress:
     members_done: int
     members_total: int | None
     member_bytes_written: int
+    members_extracted: int
+    members_blocked: int
 ```
 
 `bytes_written` is cumulative for the operation. `member_bytes_written` is the
@@ -483,8 +485,11 @@ is `None` when the format lacks uncompressed size information; `members_total` i
 free member list exists and a `members` selector is provided, totals SHALL cover
 only selected members. `members_done` counts every selected member processed,
 including user-filter skips and failures, so it reaches `members_total`;
-selector-excluded members are invisible. Predicate selectors evaluated against an
-upfront index MUST be pure functions of the member.
+selector-excluded members are invisible. `members_extracted` / `members_blocked`
+are completed-outcome tallies of `EXTRACTED` / `BLOCKED` results so far (on
+intra-member reports they exclude the in-flight member); other statuses advance
+`members_done` without incrementing either. Predicate selectors evaluated against
+an upfront index MUST be pure functions of the member.
 
 For a FILE member with a streamed body, the callback MAY be invoked **more than
 once** as bytes are written: intra-member reports carry `member` = the current
@@ -509,6 +514,7 @@ frequency is bounded by the extraction copy chunk size; when `on_progress` is
 | Member with unknown `size` (late-bound / streaming) | `member_bytes_written` still reported; terminal report equals final observed byte count |
 | Format cannot provide uncompressed sizes | `total_bytes_estimated is None` |
 | Free list + selector | Totals cover selected members only; filter skips/failures still advance `members_done` |
+| Terminal report after `EXTRACTED` / `BLOCKED` | `members_extracted` / `members_blocked` match completed outcome tallies |
 | `on_progress is None` | No callback; no extra per-chunk work beyond byte counting |
 
 ### Requirement: Per-ArchiveMember ExtractionResult with Status

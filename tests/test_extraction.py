@@ -677,25 +677,13 @@ def test_on_error_stop_continues_on_policy_block(tmp_path: Path) -> None:
 def test_on_error_stop_raises_on_member_failure(tmp_path: Path) -> None:
     # Genuine member failure (CRC mismatch) still raises immediately under STOP.
     from archivey.exceptions import CorruptionError
+    from tests.zip_corrupt import zip_with_flipped_cd_crc
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("a.txt", b"hello")
-        zf.writestr("b.txt", b"world")
-    data = bytearray(buf.getvalue())
-    pos = 0
-    while True:
-        i = data.find(b"PK\x01\x02", pos)
-        if i < 0:
-            break
-        name_len = int.from_bytes(data[i + 28 : i + 30], "little")
-        name = bytes(data[i + 46 : i + 46 + name_len])
-        if name == b"b.txt":
-            data[i + 16] ^= 0xFF
-            break
-        pos = i + 4
-    src = tmp_path / "badcrc.zip"
-    src.write_bytes(bytes(data))
+    src = zip_with_flipped_cd_crc(
+        tmp_path / "badcrc.zip",
+        {"a.txt": b"hello", "b.txt": b"world"},
+        corrupt_name="b.txt",
+    )
     dest = tmp_path / "out"
     with pytest.raises(CorruptionError):
         extract(src, dest, on_error=OnError.STOP)
@@ -706,26 +694,17 @@ def test_on_error_stop_raises_on_member_failure(tmp_path: Path) -> None:
 def test_on_error_stop_blocks_then_raises_on_failure(tmp_path: Path) -> None:
     # Mixed archive under STOP: policy blocks continue; first real failure raises.
     from archivey.exceptions import CorruptionError
+    from tests.zip_corrupt import zip_with_flipped_cd_crc
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("../evil.txt", b"bad")
-        zf.writestr("good.txt", b"good")
-        zf.writestr("corrupt.txt", b"payload")
-    data = bytearray(buf.getvalue())
-    pos = 0
-    while True:
-        i = data.find(b"PK\x01\x02", pos)
-        if i < 0:
-            break
-        name_len = int.from_bytes(data[i + 28 : i + 30], "little")
-        name = bytes(data[i + 46 : i + 46 + name_len])
-        if name == b"corrupt.txt":
-            data[i + 16] ^= 0xFF
-            break
-        pos = i + 4
-    src = tmp_path / "mixed.zip"
-    src.write_bytes(bytes(data))
+    src = zip_with_flipped_cd_crc(
+        tmp_path / "mixed.zip",
+        {
+            "../evil.txt": b"bad",
+            "good.txt": b"good",
+            "corrupt.txt": b"payload",
+        },
+        corrupt_name="corrupt.txt",
+    )
     dest = tmp_path / "out"
     with pytest.raises(CorruptionError):
         extract(src, dest, on_error=OnError.STOP)

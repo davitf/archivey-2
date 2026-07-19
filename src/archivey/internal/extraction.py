@@ -337,6 +337,8 @@ class ExtractionCoordinator:
         collision_map: dict[str, Path] = {}
         orphans: list[_Orphan] = []
         members_done = 0
+        members_extracted = 0
+        members_blocked = 0
         # Explicit selection with a free member list: once every selected member has
         # been seen, stop the forward pass. Solid backends otherwise keep walking the
         # rest of the archive (and would skip-decode unread tails if positioning were
@@ -399,6 +401,8 @@ class ExtractionCoordinator:
                             # Capture counters for intra-member reports: members_done is
                             # members fully completed *before* this one.
                             done_so_far = members_done
+                            extracted_so_far = members_extracted
+                            blocked_so_far = members_blocked
                             current = original
 
                             def emit_progress() -> None:
@@ -409,6 +413,8 @@ class ExtractionCoordinator:
                                     done_so_far,
                                     members_total,
                                     member_bytes_written=tracker.member_bytes,
+                                    members_extracted=extracted_so_far,
+                                    members_blocked=blocked_so_far,
                                 )
 
                             self._emit_progress = emit_progress
@@ -484,6 +490,12 @@ class ExtractionCoordinator:
                 self._emit_progress = None
                 self._close(stream)
 
+            if results and results[-1].member is original:
+                status = results[-1].status
+                if status is ExtractionStatus.EXTRACTED:
+                    members_extracted += 1
+                elif status is ExtractionStatus.BLOCKED:
+                    members_blocked += 1
             members_done += 1
             self._report_progress(
                 original,
@@ -492,6 +504,8 @@ class ExtractionCoordinator:
                 members_done,
                 members_total,
                 member_bytes_written=(tracker.member_bytes if member_started else 0),
+                members_extracted=members_extracted,
+                members_blocked=members_blocked,
             )
             if selected_total is not None and members_done >= selected_total:
                 break
@@ -1374,6 +1388,8 @@ class ExtractionCoordinator:
         members_total: int | None,
         *,
         member_bytes_written: int = 0,
+        members_extracted: int = 0,
+        members_blocked: int = 0,
     ) -> None:
         if self._on_progress is None:
             return
@@ -1385,6 +1401,8 @@ class ExtractionCoordinator:
                 members_done=members_done,
                 members_total=members_total,
                 member_bytes_written=member_bytes_written,
+                members_extracted=members_extracted,
+                members_blocked=members_blocked,
             )
         )
 

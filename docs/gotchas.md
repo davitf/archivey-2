@@ -113,6 +113,7 @@ unless you ask.
 | Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — a collision diagnostic fires. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
 | Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `file:ads`, …). |
 | `OnError.CONTINUE` ≠ ignore bombs | Per-member failures can continue; global bomb and listing guards still stop. |
+| `OnError.STOP` is failures-only | Policy blocks are always recorded and continued; inspect the report (or exit `3` on the CLI) for `BLOCKED`. Abort-on-unsafe is a separate future opt-in. |
 | `TRUSTED` still won’t traverse | Ownership / sticky bits only when allowed; path safety stays on. |
 | Hardlinks + filters | Excluding a hardlink’s source can orphan the link (especially on streaming sources); `OnError` decides fail vs continue. |
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |

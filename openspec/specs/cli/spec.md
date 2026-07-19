@@ -126,8 +126,9 @@ allows. `--stop-on-error` SHALL restore `OnError.STOP` for that invocation —
 stopping on member **failures** only. Policy `BLOCKED` outcomes are always
 reported-and-continued (library `OnError` does not halt on blocks; see
 `stop-on-failure-not-policy`). On an early stop (STOP-path failure or
-always-stop limit), the system SHALL still report how many members were written
-before the stop.
+always-stop limit), the system SHALL still report how many members were
+**extracted** and how many were **blocked** before the stop (separate counts;
+other processed statuses are omitted from that line).
 
 #### Scenario: CLI behavior matrix
 
@@ -151,7 +152,7 @@ before the stop.
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
-| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first **failure**; reports members written before stop; policy blocks alone do not stop |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first **failure**; reports extracted/blocked counts before stop; policy blocks alone do not stop |
 | Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
 | `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
 | `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
