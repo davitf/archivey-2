@@ -2,7 +2,8 @@
 
 Triage after archiving `api-coherence/` and `stream-layering/` (parked leftovers
 recorded) and archiving completed OpenSpec changes
-`clarify-extraction-status-names` + `surface-stored-stream-digests`. Update when
+`clarify-extraction-status-names`, `surface-stored-stream-digests`, and
+`decide-strict-archive-eof-default` (TAR Option F / EOF probe, #149). Update when
 a finding is fixed or a question is decided.
 
 ## At a glance
