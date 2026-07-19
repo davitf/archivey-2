@@ -373,3 +373,61 @@ def test_failed_streaming_pass_replays_incomplete_report() -> None:
         report = reader.members_report()
         assert [m.name for m in report] == ["a.txt"]
         assert isinstance(report.error, archivey.CorruptionError)
+
+
+# --- Incomplete listing must survive a secondary link-finalize fault (double-fault) ---
+
+
+class _LinkFinalizeDoubleFaultRA(_IndexedReader):
+    """Listing recovers a symlink, then fails; link-target read also fails.
+
+    Models ZIP/7z/RAR where ``_ensure_link_target`` reads member data after a
+    partial listing. A real ZIP cannot hit mid-listing damage after the central
+    directory parse, so this synthetic reader is the regression fixture.
+    """
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        yield ArchiveMember(type=MemberType.SYMLINK, name="link", size=8)
+        raise archivey.CorruptionError("listing damaged after prefix")
+
+    def _ensure_link_target(self, member: ArchiveMember) -> None:
+        raise archivey.TruncatedError("symlink target data truncated")
+
+
+class _LinkFinalizeDoubleFaultStream(_ForwardOnlyReader):
+    """Streaming twin of ``_LinkFinalizeDoubleFaultRA``."""
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        yield ArchiveMember(type=MemberType.SYMLINK, name="link", size=8)
+        raise archivey.CorruptionError("listing damaged after prefix")
+
+    def _ensure_link_target(self, member: ArchiveMember) -> None:
+        raise archivey.TruncatedError("symlink target data truncated")
+
+
+def test_ra_incomplete_listing_survives_link_finalize_double_fault() -> None:
+    reader = _LinkFinalizeDoubleFaultRA(ArchiveFormat.ZIP, False, "x.zip")
+
+    report = reader.members_report()
+    assert [m.name for m in report] == ["link"]
+    assert isinstance(report.error, archivey.CorruptionError)
+    assert "listing damaged" in str(report.error)
+    # Secondary TruncatedError must not replace the listing error or clear the report.
+    assert reader.members_report() is report
+    with pytest.raises(archivey.CorruptionError, match="listing damaged"):
+        reader.members()
+
+
+def test_streaming_incomplete_listing_survives_link_finalize_double_fault() -> None:
+    reader = _LinkFinalizeDoubleFaultStream(ArchiveFormat.TAR, True, "x.tar")
+
+    it = iter(reader)
+    assert next(it).name == "link"
+    with pytest.raises(archivey.CorruptionError, match="listing damaged"):
+        next(it)
+
+    report = reader.members_report_if_available()
+    assert report is not None
+    assert [m.name for m in report] == ["link"]
+    assert isinstance(report.error, archivey.CorruptionError)
+    assert "listing damaged" in str(report.error)

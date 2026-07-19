@@ -792,13 +792,16 @@ class BaseArchiveReader(ArchiveReader):
                     self._index_member_name(by_name_lists, member)
                     members.append(member)
             except (CorruptionError, TruncatedError) as exc:
-                # If link finalization itself raises CorruptionError/TruncatedError
-                # (e.g. damaged ZIP symlink target data inside the recovered prefix),
-                # that escapes to the outer BaseException handler: the reader stays
-                # unmaterialized and raises instead of publishing an incomplete report.
-                # Narrow; TAR stores link targets in headers so it cannot fire there.
-                # members() would raise either way — only members_report() loses the prefix.
-                self._finalize_materialized_links(members, by_name_lists)
+                # Keep the recovered prefix even if link finalization hits a second
+                # archive-damage fault (e.g. ZIP/7z/RAR symlink target bytes in the
+                # prefix are also truncated). Prefer the original listing error on the
+                # report; leave unresolved links as-is. Without this guard the secondary
+                # fault escapes to the outer BaseException handler and members_report()
+                # loses the prefix (members() raises either way).
+                try:
+                    self._finalize_materialized_links(members, by_name_lists)
+                except (CorruptionError, TruncatedError):
+                    pass
                 holder = self._publish_materialized(
                     members,
                     by_name_lists,
@@ -1022,12 +1025,21 @@ class BaseArchiveReader(ArchiveReader):
         # scan_members drains with enforcement: refuse to publish an over-limit report.
         if self._progressive_enforce_listing_limits:
             self._listing_tracker.assert_within_limits()
-        for member in self._pass_scanned:
-            if member.is_link:
-                self._ensure_link_target(member)
-        for member in self._pass_scanned:
-            if member.is_link and member.link_target:
-                self._resolve_link(member, self._pass_by_name_lists)
+        try:
+            for member in self._pass_scanned:
+                if member.is_link:
+                    self._ensure_link_target(member)
+            for member in self._pass_scanned:
+                if member.is_link and member.link_target:
+                    self._resolve_link(member, self._pass_by_name_lists)
+        except (CorruptionError, TruncatedError):
+            # Same double-fault guard as the RA incomplete path: when finalizing after
+            # terminal listing damage, a secondary link-target fault must not wipe the
+            # recovered prefix. On a clean EOF finalize (error is None) the secondary
+            # fault still propagates — caller poisons the pass instead of publishing
+            # a false-complete report.
+            if error is None:
+                raise
         _apply_last_entry_wins_is_current(self._pass_scanned)
         self._publish_materialized(
             self._pass_scanned,
@@ -1650,10 +1662,10 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
             try:
                 self._reader._finalize_pass_links(error=exc)
             except BaseException as finalize_exc:
-                # Same double-fault degradation as RA _materialize_members: a
-                # CorruptionError/TruncatedError during link finalization leaves the
-                # pass poisoned/unmaterialized rather than publishing an incomplete
-                # report (members_report would lose the prefix; members() raises either way).
+                # Non-archive-damage finalize failures (e.g. listing-limit refusal) must
+                # not leave a half-published cache. CorruptionError/TruncatedError during
+                # link finalization after terminal listing damage is swallowed inside
+                # _finalize_pass_links so the recovered prefix stays published.
                 self._error = finalize_exc
                 raise
             raise
