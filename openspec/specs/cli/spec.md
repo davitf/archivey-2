@@ -109,6 +109,12 @@ containing `src/`) SHALL be flattened in place, not treated as a collision.
 Container-name collisions SHALL be resolved by the overwrite policy.
 Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 (`--overwrite` may select `error` / `skip` / `replace` / `rename`).
+`extract` SHALL pass `OnError.CONTINUE` by default so policy rejections and
+per-member read failures are recorded (`blocked:` / `failed:` lines plus the
+closing summary) and remaining members are still extracted where the stream
+allows. `--stop-on-error` SHALL restore `OnError.STOP` for that invocation.
+On an early stop (STOP path or always-stop limit), the system SHALL still
+report how many members were written before the stop.
 
 #### Scenario: CLI behavior matrix
 
@@ -131,6 +137,8 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
+| `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first failure; reports members written before stop |
 | Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
@@ -183,14 +191,16 @@ member-to-stdout verb does not silently change the meaning of
 | `t` | Means `test` (integrity), not create |
 | Unknown verb `hash` / `create` / `convert` / `cat` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
 
-### Requirement: exit codes are minimal and argparse-aligned
+### Requirement: exit codes are argparse-aligned with a policy-refusal code
 
 The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
-verb/flag or bad arguments — the argparse default). All operational failures
-(unreadable, unsupported, or corrupt archive; read/integrity failure; extraction
-error; incomplete listing whose `MemberListReport.error` is set) SHALL exit `1`
-in this capability. Exit codes `≥3` SHALL be reserved and MUST NOT be emitted in
-this change; documentation SHALL direct callers to treat any nonzero code other
+verb/flag or bad arguments — the argparse default). Operational failures
+(unreadable, unsupported, or corrupt archive; read/integrity failure; member
+extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set)
+SHALL exit `1`. When `extract` completes under continue-on-error with one or
+more members `BLOCKED` by safety policy and no member `FAILED`, the system
+SHALL exit `3` (refused by safety policy). Exit codes `≥4` SHALL remain
+reserved. Documentation SHALL direct callers to treat any nonzero code other
 than `2` as a failure and MUST NOT assume `1` is the only failure code.
 
 #### Scenario: exit codes
@@ -202,6 +212,9 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey list <corrupt-or-unreadable>` | Exit `1` |
 | `archivey list <archive-with-recoverable-prefix-and-terminal-error>` | Exit `1` (after printing recovered members) |
 | `archivey test <archive-with-failing-member>` | Exit `1` |
+| `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
+| `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first bad member; exit nonzero |
 
 ### Requirement: stdin archives are reserved, not supported in v1
 

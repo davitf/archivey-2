@@ -255,15 +255,44 @@ def test_extract_policy_and_dest(sample_zip: Path, tmp_path: Path) -> None:
     assert (dest / "a.txt").read_bytes() == b"hello"
 
 
-def test_extract_strict_abort_explains_stop(
+def test_extract_strict_blocks_device_name_and_continues(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Windows-reserved device names are still rejected under STRICT; OnError.STOP must
-    # say so clearly (trailing-dot names are stripped, not rejected — see #123).
+    # Windows-reserved device names are rejected under STRICT; default CONTINUE
+    # still extracts the remaining members (Q1). Trailing-dot names are stripped,
+    # not rejected — see #123.
+    from archivey.cli.exit_codes import EXIT_POLICY
+
     bad = _zip(tmp_path / "bad.zip", {"NUL": b"x", "ok.txt": b"y"})
     dest = tmp_path / "out"
     code = main(["extract", str(bad), "-d", str(dest), "--policy", "strict"])
-    assert code == EXIT_FAIL
+    assert code == EXIT_POLICY
+    err = capsys.readouterr().err
+    assert "NUL" in err
+    assert "blocked:" in err
+    assert "extraction stopped" not in err.lower()
+    assert (dest / "ok.txt").read_bytes() == b"y"
+
+
+def test_extract_strict_stop_on_error_aborts_on_device_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from archivey.cli.exit_codes import EXIT_POLICY
+
+    bad = _zip(tmp_path / "bad.zip", {"NUL": b"x", "ok.txt": b"y"})
+    dest = tmp_path / "out"
+    code = main(
+        [
+            "extract",
+            str(bad),
+            "-d",
+            str(dest),
+            "--policy",
+            "strict",
+            "--stop-on-error",
+        ]
+    )
+    assert code == EXIT_POLICY
     err = capsys.readouterr().err
     assert "NUL" in err
     assert "extraction stopped" in err.lower()
@@ -931,3 +960,89 @@ def test_stored_zipcrypto_provider_none_is_password_required(tmp_path: Path) -> 
         with open_archive(path, password=lambda _r: None) as ar:
             ar.read(next(m for m in ar.members() if m.is_file))
     assert "Wrong password" not in caught.value.message
+
+
+# --- Q1 / P1: extract continue-on-error + exit 3 + --stop-on-error -----------------------
+
+
+def test_extract_continues_after_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from archivey.cli.exit_codes import EXIT_POLICY
+
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(
+        tmp_path / "evil.tar",
+        {
+            "../escape.txt": b"bad",
+            "safe1.txt": b"ok1",
+            "safe2.txt": b"ok2",
+            "dir/nested.txt": b"ok3",
+        },
+    )
+    assert main(["extract", str(archive), "-d", "out"]) == EXIT_POLICY
+    err = capsys.readouterr().err
+    assert "blocked:" in err
+    assert "escape.txt" in err or "../escape" in err
+    assert "blocked" in err.split("→")[0]  # summary mentions blocked
+    assert (tmp_path / "out" / "safe1.txt").read_bytes() == b"ok1"
+    assert (tmp_path / "out" / "safe2.txt").read_bytes() == b"ok2"
+    assert (tmp_path / "out" / "dir" / "nested.txt").read_bytes() == b"ok3"
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_extract_stop_on_error_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from archivey.cli.exit_codes import EXIT_POLICY
+
+    monkeypatch.chdir(tmp_path)
+    # Put the traversal first so STOP aborts before safe members.
+    archive = _tar(
+        tmp_path / "evil.tar",
+        {
+            "../escape.txt": b"bad",
+            "safe.txt": b"ok",
+        },
+    )
+    code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
+    assert code == EXIT_POLICY
+    err = capsys.readouterr().err
+    assert "extraction stopped" in err
+    assert not (tmp_path / "out" / "safe.txt").exists()
+
+
+def test_extract_corrupt_member_continues_with_exit_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CRC mismatch: recoverable members extracted; exit 1 (FAILED, not policy)."""
+    monkeypatch.chdir(tmp_path)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+        zf.writestr("b.txt", b"world")
+        zf.writestr("c.txt", b"end")
+    data = bytearray(buf.getvalue())
+    # Flip the central-directory CRC for b.txt so open succeeds but extract fails.
+    pos = 0
+    while True:
+        i = data.find(b"PK\x01\x02", pos)
+        if i < 0:
+            break
+        name_len = int.from_bytes(data[i + 28 : i + 30], "little")
+        name = bytes(data[i + 46 : i + 46 + name_len])
+        if name == b"b.txt":
+            data[i + 16] ^= 0xFF
+            break
+        pos = i + 4
+    path = tmp_path / "badcrc.zip"
+    path.write_bytes(bytes(data))
+
+    assert main(["extract", str(path), "-d", "out"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "failed:" in err
+    assert "b.txt" in err
+    assert "extraction stopped" not in err
+    assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
+    assert (tmp_path / "out" / "c.txt").read_bytes() == b"end"
+    assert not (tmp_path / "out" / "b.txt").exists()

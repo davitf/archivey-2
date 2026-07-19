@@ -270,6 +270,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="rename",
         help="collision policy (CLI default: rename; library default remains error)",
     )
+    p_extract.add_argument(
+        "--stop-on-error",
+        action="store_true",
+        help=(
+            "stop at the first blocked or failed member "
+            "(default: continue and report; library OnError.STOP)"
+        ),
+    )
     _add_filter_args(p_extract)
     p_extract.set_defaults(_run="extract")
 
@@ -353,6 +361,7 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
             overwrite=args.overwrite,
             salvage=False,
             hide_progress=bool(args.hide_progress),
+            stop_on_error=bool(getattr(args, "stop_on_error", False)),
             out=out,
             err=err,
         )

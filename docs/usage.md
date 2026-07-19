@@ -220,12 +220,18 @@ archivey info photos.zip            # format / identity (alias: detect)
 ### Safer extract demo
 
 ```bash
-# Default policy=strict, overwrite=rename. With no -d, a multi-entry archive lands in
-# ./photos/ instead of splattering the current directory (tarbomb-safe).
+# Default policy=strict, overwrite=rename, on_error=continue. With no -d, a
+# multi-entry archive lands in ./photos/ instead of splattering the current
+# directory (tarbomb-safe). Hostile/corrupt members are reported and skipped;
+# remaining members are still extracted. Exit 3 if only policy blocks; 1 if
+# any member failed.
 archivey extract photos.zip
 
 # Classic unzip-into-cwd (opt-in):
 archivey extract photos.zip -d .
+
+# All-or-nothing (library STOP semantics) for scripts that need it:
+archivey extract photos.zip --stop-on-error
 
 # Filters: positionals are includes; --exclude subtracts.
 archivey extract photos.zip -d out/ '*.py' --exclude '*_test.py'
@@ -237,8 +243,9 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
 - A file whose name is a verb word (e.g. `./x`) is reached with an explicit verb:
   `archivey list ./x`.
-- Exit codes: `0` success, `1` operation failed, `2` usage error (argparse). Codes `≥3`
-  are reserved.
+- Exit codes: `0` success, `1` operation failed, `2` usage error (argparse),
+  `3` extract completed with ≥1 safety-policy block and no member failure.
+  Codes `≥4` are reserved.
 - `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are reserved for later.
 
 ## Next

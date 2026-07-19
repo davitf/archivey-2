@@ -6,35 +6,24 @@ reopened.
 
 ## Q1 — Extraction continuation: reject-and-continue for the CLI? (drives P1)
 
-Today `extract` inherits the library's `OnError.STOP`: the first rejected or
-failed member raises, nothing after it is extracted, and the already-written
-members are never reported. A traversal member means zero files extracted
-under every `--policy` — `unzip` extracts the safe files and warns, so the
-"safer unzip" is currently also the *less useful* unzip on exactly the input
-the pitch is about. The CLI already has dead plumbing for the better story
-(`rejected:`/`failed:` lines + summary counts, `cli/extract_cmd.py:315-336`).
+**Decided (2026-07-19):**
 
-Sub-decisions:
+| # | Decision |
+|---|----------|
+| 1 Semantics | Record-and-continue for **policy rejections and per-member read failures** (digest/decode), continuing where the stream allows — same shape as `test` / VISION #3. |
+| 2 Mechanism | CLI passes `OnError.CONTINUE` by default; **library default stays `STOP`**. |
+| 3 Exit code | **`3`** when the run completed with ≥1 policy `BLOCKED` and no `FAILED`; **`1`** when any member `FAILED` (or hoist/always-stop); **`0`** when clean. |
+| 4 Flag | **`--stop-on-error` now** — restores library `STOP` for that invocation (shell scripts cannot switch to the library API). |
+| 5 Stop-path reporting | Always report what was written before an early stop (count at minimum). |
 
-1. **Semantics**: should the CLI extract with record-and-continue for (a)
-   policy rejections only, or (b) rejections *and* per-member read failures
-   (digest mismatch, decode error), continuing where the stream allows?
-   Recommend (b) — it is `test`'s semantics applied to extraction, and it is
-   the VISION #3 claim.
-2. **Mechanism**: CLI passes an `OnError`-style argument (library gains/
-   exposes it), or the library default changes? Recommend: CLI-side opt-in
-   via the existing library knob if it exists/is cheap; the library default
-   staying STOP is fine for programmatic callers.
-3. **Exit code**: completed-with-rejections = 1, or break out the reserved
-   `3` ("refused by safety policy") now? The design already argued 3 is "a
-   genuinely useful distinction for the safer-unzip story" and callers were
-   told not to assume 1 is exhaustive, so it's compatible. Recommend: 3 for
-   "completed but ≥1 member rejected by policy", 1 for other failures.
-4. **Flag**: is a `--stop-on-error` opt-back needed at the same time, or
-   later on demand? Recommend later.
-5. Either way (even if STOP stays): on the stop path, report what *was*
-   extracted before the stop (count at minimum). Today even `-v` says
-   nothing.
+Rationale: without CONTINUE, `x evil.tar` extracts nothing while `unzip` delivers
+the safe members — the safer-unzip demo loses. Exit `3` was reserved in cli-v1
+Decision 12 for exactly this distinction. `--stop-on-error` keeps all-or-nothing
+available at the shell.
+
+Context that drove the call: today `extract` inherits `OnError.STOP`; the CLI
+already has dead plumbing for `blocked:`/`failed:` lines + summary counts that
+only fire under CONTINUE.
 
 ## Q2 — `--json` timing and minimal schema (drives P4)
 
@@ -79,6 +68,10 @@ replacement (prettier, lossy)? Is a `--raw` escape hatch needed for the
 pipe-to-script case, or does that wait for `--json` (where raw names are
 naturally safe)? Recommend: escape everywhere, backslash style, no `--raw`
 until someone asks — scripts get exact names via `--json` (Q2).
+
+**Partial lean (P3 landed):** escape everywhere, backslash style, no `--raw`
+yet — matching the recommendation. Q4 remains open only if we later want
+TTY-only or a `--raw` hatch.
 
 ## Q5 — Should `info` tell the cost/access story? (drives P14)
 
