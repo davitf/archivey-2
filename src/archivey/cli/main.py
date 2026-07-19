@@ -276,8 +276,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--stop-on-error",
         action="store_true",
         help=(
-            "stop at the first blocked or failed member "
-            "(default: continue and report; library OnError.STOP)"
+            "stop at the first member failure "
+            "(policy blocks are always reported and continued; "
+            "default: continue and report)"
         ),
     )
     _add_filter_args(p_extract)

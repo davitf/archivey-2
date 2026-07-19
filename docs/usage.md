@@ -231,7 +231,8 @@ archivey extract photos.zip
 # Classic unzip-into-cwd (opt-in):
 archivey extract photos.zip -d .
 
-# All-or-nothing (library STOP semantics) for scripts that need it:
+# All-or-nothing on member *failures* (library STOP). Policy blocks are still
+# reported and skipped; remaining members extract. Exit 3 if only blocks.
 archivey extract photos.zip --stop-on-error
 
 # Filters: positionals are includes; --exclude subtracts. Unmatched includes
@@ -246,10 +247,10 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
 - A file whose name is a verb word (e.g. `./x`) is reached with an explicit verb:
   `archivey list ./x`.
-- Exit codes: `0` success, `1` operation failed or extract aborted
-  (`--stop-on-error`), `2` usage error (argparse), `3` extract **completed**
-  with ≥1 safety-policy block and no member failure (safe members on disk).
-  Codes `≥4` are reserved.
+- Exit codes: `0` success, `1` operation failed or extract aborted on a member
+  failure (`--stop-on-error`), `2` usage error (argparse), `3` extract
+  **completed** with ≥1 safety-policy block and no member failure (safe members
+  on disk; under CONTINUE or STOP). Codes `≥4` are reserved.
 - `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are reserved for later.
 
 ## Next

@@ -455,7 +455,8 @@ class ExtractionCoordinator:
                     results[-1] = result
                 else:
                     results.append(result)
-                if self._on_error is OnError.STOP:
+                # OnError governs failures only; a policy BLOCKED is always continued.
+                if self._on_error is OnError.STOP and status is ExtractionStatus.FAILED:
                     raise error
                 code = (
                     DiagnosticCode.EXTRACTION_MEMBER_BLOCKED

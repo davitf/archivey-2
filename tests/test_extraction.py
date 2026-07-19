@@ -641,7 +641,7 @@ def test_no_temp_files_after_success(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# OnError policy (task 3.5)
+# OnError policy (failures-only; blocks always continue)
 # ---------------------------------------------------------------------------
 
 
@@ -658,13 +658,80 @@ def test_on_error_continue_records_rejected(tmp_path: Path) -> None:
     assert (dest / "good.txt").read_bytes() == b"good"
 
 
-def test_on_error_stop_raises(tmp_path: Path) -> None:
+def test_on_error_stop_continues_on_policy_block(tmp_path: Path) -> None:
+    # STOP governs failures only: a path-safety block is recorded and extraction
+    # continues to later members (does not raise FilterRejectionError).
     src = tmp_path / "a.zip"
     with zipfile.ZipFile(src, "w") as z:
         z.writestr("../evil.txt", b"bad")
+        z.writestr("good.txt", b"good")
     dest = tmp_path / "out"
-    with pytest.raises(PathTraversalError):
+    report = extract(src, dest, on_error=OnError.STOP)
+    statuses = {r.member.name: r.status for r in report.results}
+    assert ExtractionStatus.BLOCKED in statuses.values()
+    assert statuses["good.txt"] is ExtractionStatus.EXTRACTED
+    assert (dest / "good.txt").read_bytes() == b"good"
+    assert not any(p.name == "evil.txt" for p in dest.rglob("*"))
+
+
+def test_on_error_stop_raises_on_member_failure(tmp_path: Path) -> None:
+    # Genuine member failure (CRC mismatch) still raises immediately under STOP.
+    from archivey.exceptions import CorruptionError
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+        zf.writestr("b.txt", b"world")
+    data = bytearray(buf.getvalue())
+    pos = 0
+    while True:
+        i = data.find(b"PK\x01\x02", pos)
+        if i < 0:
+            break
+        name_len = int.from_bytes(data[i + 28 : i + 30], "little")
+        name = bytes(data[i + 46 : i + 46 + name_len])
+        if name == b"b.txt":
+            data[i + 16] ^= 0xFF
+            break
+        pos = i + 4
+    src = tmp_path / "badcrc.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    with pytest.raises(CorruptionError):
         extract(src, dest, on_error=OnError.STOP)
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert not (dest / "b.txt").exists()
+
+
+def test_on_error_stop_blocks_then_raises_on_failure(tmp_path: Path) -> None:
+    # Mixed archive under STOP: policy blocks continue; first real failure raises.
+    from archivey.exceptions import CorruptionError
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../evil.txt", b"bad")
+        zf.writestr("good.txt", b"good")
+        zf.writestr("corrupt.txt", b"payload")
+    data = bytearray(buf.getvalue())
+    pos = 0
+    while True:
+        i = data.find(b"PK\x01\x02", pos)
+        if i < 0:
+            break
+        name_len = int.from_bytes(data[i + 28 : i + 30], "little")
+        name = bytes(data[i + 46 : i + 46 + name_len])
+        if name == b"corrupt.txt":
+            data[i + 16] ^= 0xFF
+            break
+        pos = i + 4
+    src = tmp_path / "mixed.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    with pytest.raises(CorruptionError):
+        extract(src, dest, on_error=OnError.STOP)
+    assert (dest / "good.txt").read_bytes() == b"good"
+    assert not (dest / "corrupt.txt").exists()
+    assert not any(p.name == "evil.txt" for p in dest.rglob("*"))
 
 
 # ---------------------------------------------------------------------------
@@ -974,8 +1041,9 @@ def test_tar_symlink_escape_rejected(tmp_path: Path) -> None:
     src = tmp_path / "a.tar"
     src.write_bytes(_tar_bytes([("sym", "evil", "../../etc/passwd")]))
     dest = tmp_path / "out"
-    with pytest.raises(SymlinkEscapeError):
-        extract(src, dest)
+    report = extract(src, dest)  # default STOP; blocks always continue
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, SymlinkEscapeError)
     assert not (dest / "evil").exists()
 
 
@@ -1019,8 +1087,12 @@ def test_chained_symlink_attack_symlink_payload_rejected(tmp_path: Path) -> None
         )
     )
     dest = tmp_path / "out"
-    with pytest.raises((SymlinkEscapeError, PathTraversalError)):
-        extract(src, dest)
+    report = extract(src, dest)  # default STOP; blocks always continue
+    assert all(r.status is ExtractionStatus.BLOCKED for r in report.results)
+    assert all(
+        isinstance(r.error, (SymlinkEscapeError, PathTraversalError))
+        for r in report.results
+    )
     assert list(outside.iterdir()) == []  # nothing leaked outside the destination
 
 
@@ -1063,8 +1135,9 @@ def test_file_payload_through_preexisting_parent_symlink_rejected(
     os.symlink(outside, dest / "sub", target_is_directory=True)
     src = tmp_path / "a.tar"
     src.write_bytes(_tar_bytes([("file", "sub/leak.txt", b"pwned")]))
-    with pytest.raises(PathTraversalError):
-        extract(src, dest)
+    report = extract(src, dest)  # default STOP; blocks always continue
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, PathTraversalError)
     assert not (outside / "leak.txt").exists()
 
 
@@ -1082,8 +1155,9 @@ def test_symlink_payload_through_preexisting_parent_symlink_rejected(
     os.symlink(outside, dest / "sub", target_is_directory=True)
     src = tmp_path / "a.tar"
     src.write_bytes(_tar_bytes([("sym", "sub/leak", "x")]))
-    with pytest.raises(PathTraversalError):
-        extract(src, dest)
+    report = extract(src, dest)  # default STOP; blocks always continue
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, PathTraversalError)
     assert not (outside / "leak").exists()
 
 

@@ -122,9 +122,12 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 `extract` SHALL pass `OnError.CONTINUE` by default so policy rejections and
 per-member read failures are recorded (`blocked:` / `failed:` lines plus the
 closing summary) and remaining members are still extracted where the stream
-allows. `--stop-on-error` SHALL restore `OnError.STOP` for that invocation.
-On an early stop (STOP path or always-stop limit), the system SHALL still
-report how many members were written before the stop.
+allows. `--stop-on-error` SHALL restore `OnError.STOP` for that invocation —
+stopping on member **failures** only. Policy `BLOCKED` outcomes are always
+reported-and-continued (library `OnError` does not halt on blocks; see
+`stop-on-failure-not-policy`). On an early stop (STOP-path failure or
+always-stop limit), the system SHALL still report how many members were written
+before the stop.
 
 #### Scenario: CLI behavior matrix
 
@@ -148,7 +151,7 @@ report how many members were written before the stop.
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
-| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first failure; reports members written before stop |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first **failure**; reports members written before stop; policy blocks alone do not stop |
 | Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
 | `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
 | `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
@@ -229,11 +232,13 @@ The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
 verb/flag or bad arguments — the argparse default). Operational failures
 (unreadable, unsupported, or corrupt archive; read/integrity failure; member
 extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set;
-an early abort under `--stop-on-error`, including a policy block that stops the
-run) SHALL exit `1`. When `extract` **completes** under continue-on-error with
-one or more members `BLOCKED` by safety policy and no member `FAILED`, the
-system SHALL exit `3` (refused by safety policy — safe members are on disk).
-Exit `3` MUST NOT be used for an aborted STOP run. Exit codes `≥4` SHALL remain
+an early abort under `--stop-on-error` on a member **failure**, or any
+always-stop / hoist failure) SHALL exit `1`. When `extract` **completes**
+(under CONTINUE or STOP) with one or more members `BLOCKED` by safety policy
+and no member `FAILED`, the system SHALL exit `3` (refused by safety policy —
+safe members are on disk). Because `OnError.STOP` / `--stop-on-error` never
+halts on a policy block, a STOP+policy abort cannot occur; exit `3` MUST NOT
+be used for an aborted STOP-path failure. Exit codes `≥4` SHALL remain
 reserved. Documentation SHALL direct callers to treat any nonzero code other
 than `2` as a failure and MUST NOT assume `1` is the only failure code.
 
@@ -248,8 +253,9 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey test <archive-with-failing-member>` | Exit `1` |
 | `archivey test <indexed-archive>` when the member stream aborts early | Summary includes `K not tested` for the untested remainder; exit `1` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
+| `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
-| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first bad member; exit `1` |
+| `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
 
 ### Requirement: stdin archives are reserved, not supported in v1
 

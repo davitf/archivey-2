@@ -194,15 +194,19 @@ def test_adversarial_extract_has_exact_outcome(
         target = members[1] if entry.field == "link_target" else members[0]
 
         if entry.extract_outcome == "path_traversal":
-            with pytest.raises(PathTraversalError):
-                archive.extract_all(
-                    dest, members=[target], policy=ExtractionPolicy.TRUSTED
-                )
+            results = archive.extract_all(
+                dest, members=[target], policy=ExtractionPolicy.TRUSTED
+            ).results
+            assert len(results) == 1
+            assert results[0].status is ExtractionStatus.BLOCKED
+            assert isinstance(results[0].error, PathTraversalError)
         elif entry.extract_outcome == "symlink_escape":
-            with pytest.raises(SymlinkEscapeError):
-                archive.extract_all(
-                    dest, members=[target], policy=ExtractionPolicy.TRUSTED
-                )
+            results = archive.extract_all(
+                dest, members=[target], policy=ExtractionPolicy.TRUSTED
+            ).results
+            assert len(results) == 1
+            assert results[0].status is ExtractionStatus.BLOCKED
+            assert isinstance(results[0].error, SymlinkEscapeError)
         elif entry.extract_outcome == "filesystem_name_refusal":
             # A UTF-8-enforcing filesystem (e.g. APFS) refuses the surrogateescape
             # name with EILSEQ; the coordinator translates that to ExtractionError

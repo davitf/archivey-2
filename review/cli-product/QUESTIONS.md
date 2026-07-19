@@ -12,7 +12,7 @@ reopened.
 |---|----------|
 | 1 Semantics | Record-and-continue for **policy rejections and per-member read failures** (digest/decode), continuing where the stream allows — same shape as `test` / VISION #3. |
 | 2 Mechanism | CLI passes `OnError.CONTINUE` by default; **library default stays `STOP`**. |
-| 3 Exit code | **`3`** when CONTINUE **completed** with ≥1 policy `BLOCKED` and no `FAILED`; **`1`** for any `FAILED`, hoist/always-stop, or **any `--stop-on-error` abort** (incl. policy) — refined in **Q8**. |
+| 3 Exit code | **`3`** when extract **completed** with ≥1 policy `BLOCKED` and no `FAILED`; **`1`** for any `FAILED`, hoist/always-stop, or `--stop-on-error` abort on a member failure — **Q8 resolved by scoping** (STOP never halts on policy). |
 | 4 Flag | **`--stop-on-error` now** — restores library `STOP` for that invocation (shell scripts cannot switch to the library API). |
 | 5 Stop-path reporting | Always report what was written before an early stop (count at minimum). |
 
@@ -89,22 +89,20 @@ distinguishes install-vs-not-engaged when it does fire.
 
 ## Q8 — `--stop-on-error` + policy block: exit `3` or `1`? (PR #163 review)
 
-**Decided (2026-07-19): Option A.** Abort/STOP always exits `1`. Exit `3` is
-reserved exclusively for a CONTINUE run that *completed* with ≥1 policy
-`BLOCKED` and no `FAILED` (safe members on disk). Maintainer + review agree:
-`3`'s useful script meaning is partial success with only policy gaps — a STOP
-abort leaves the output incomplete and must share `1` with other aborts.
-
-Forward-compat note (not in this PR): intended end-state is failures-only
-stopping (`OnError.STOP` / `--stop-on-error` ignore policy blocks; a separate
-opt-in would abort on unsafe members). Option A stays correct once that lands;
-the contested STOP+policy→`3` rows disappear structurally.
+**Resolved by scoping (2026-07-19, change `stop-on-failure-not-policy`).**
+Supersedes the A/B framing: `OnError.STOP` / `--stop-on-error` now stop on member
+**failures** only. A policy `BLOCKED` is always recorded-and-continued, so the
+"STOP + policy block abort" rows are structurally impossible. Exit codes follow
+**Option A**: abort/STOP-path failure always exits `1`; exit `3` is reserved for
+a run that *completed* with ≥1 policy `BLOCKED` and no `FAILED` (safe members on
+disk), under CONTINUE or STOP. Aborting the whole archive on any unsafe member
+is a separate future opt-in, not part of `OnError`.
 
 | Case | Mode | On disk | Exit |
 |------|------|---------|------|
-| Clean extract | CONTINUE | all OK | `0` |
-| ≥1 `BLOCKED`, no `FAILED` | CONTINUE | safe members extracted | `3` |
+| Clean extract | CONTINUE or STOP | all OK | `0` |
+| ≥1 `BLOCKED`, no `FAILED` | CONTINUE or STOP | safe members extracted | `3` |
 | ≥1 `FAILED` (± blocks) | CONTINUE | recoverable extracted | `1` |
-| Policy block or failure (abort) | `--stop-on-error` | incomplete | `1` |
+| Member failure (abort) | `--stop-on-error` | incomplete | `1` |
 | Always-stop / hoist failure / unmatched includes | — | — | `1` |
 | Usage | — | — | `2` |
