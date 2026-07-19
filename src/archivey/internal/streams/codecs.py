@@ -514,15 +514,16 @@ class MetadataContext:
     ``probe_decompressed_size()`` returns the decompressed size from the stream
     index/trailer when cheaply available (else ``None``); ``probe_gzip_stored_crc32()``
     returns the single-member gzip trailer CRC when that is cheaply knowable (else
-    ``None``), in one seekable pass; ``probe_lzip_stored_crc32()`` returns the whole-member
-    CRC-32 derived from the seekable lzip index (combined across members) when available.
+    ``None``), in one seekable pass; ``probe_lzip_index()`` returns
+    ``(decompressed_size, combined_crc32)`` from one seekable lzip index scan when
+    available (else ``None``).
     """
 
     peek_header: Callable[[int], bytes]
     peek_trailer: Callable[[int], bytes | None]
     probe_decompressed_size: Callable[[], int | None]
     probe_gzip_stored_crc32: Callable[[], int | None]
-    probe_lzip_stored_crc32: Callable[[], int | None]
+    probe_lzip_index: Callable[[], tuple[int, int] | None]
 
 
 # --- the codec descriptors -------------------------------------------------------------
@@ -897,18 +898,19 @@ class LzipCodec(_SizedLzmaCodec):
         return LzipDecompressorStream(source, seekable=config.seekable)
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
-        """Surface decompressed size and whole-member CRC-32 from the seekable index.
+        """Surface decompressed size and whole-member CRC-32 from one seekable index scan.
 
-        Size comes from the seekable lzip index (``probe_decompressed_size``). The CRC is
-        the combine of every per-member trailer CRC-32 with that member's uncompressed
-        ``data_size`` (single-member degenerates to the trailer CRC).
+        ``probe_lzip_index`` returns both values from a single backward trailer walk.
+        The CRC is the combine of every per-member trailer CRC-32 with that member's
+        uncompressed ``data_size`` (single-member degenerates to the trailer CRC).
         """
-        member.size = ctx.probe_decompressed_size()
-        crc32 = ctx.probe_lzip_stored_crc32()
-        if crc32 is not None:
-            hashes = dict(member.hashes)
-            hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
-            member.hashes = hashes
+        summary = ctx.probe_lzip_index()
+        if summary is None:
+            return
+        member.size, crc32 = summary
+        hashes = dict(member.hashes)
+        hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
+        member.hashes = hashes
 
 
 def _alone_props_plausible(props: int) -> bool:

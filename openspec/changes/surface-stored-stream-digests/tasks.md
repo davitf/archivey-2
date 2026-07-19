@@ -23,10 +23,11 @@
 ## 4. Lzip multi-member CRC32
 
 - [x] 4.1 Retain per-member CRC32 in lzip backward index entries
-- [x] 4.2 In `extract_metadata`, combine CRCs with `data_size` via
-      `crc32_combine`; surface `HashAlgorithm.CRC32` for one- and multi-member
+- [x] 4.2 One index scan surfaces size + combined `HashAlgorithm.CRC32` for
+      one- and multi-member (`peek_index_summary` / `probe_lzip_index`)
 - [x] 4.3 Test: multi-member fixture’s surfaced CRC equals CRC of full
-      decompressed concat; single-member still matches trailer
+      decompressed concat; single-member still matches trailer; metadata open
+      performs a single backward scan
 
 ## 5. Specs, docs, sweep
 

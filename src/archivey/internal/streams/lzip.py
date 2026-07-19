@@ -120,9 +120,12 @@ def combined_crc32_from_index(members: list[_MemberBounds]) -> int:
     return crc
 
 
-def peek_combined_crc32(stream: BinaryIO, file_size: int) -> int:
-    """Scan the lzip index and return the combined whole-stream CRC-32."""
-    return combined_crc32_from_index(_read_index_backwards(stream, file_size))
+def peek_index_summary(stream: BinaryIO, file_size: int) -> tuple[int, int]:
+    """One backward index scan → ``(total_decompressed_size, combined_crc32)``."""
+    members = _read_index_backwards(stream, file_size)
+    if not members:
+        return 0, 0
+    return members[-1].decompressed_end, combined_crc32_from_index(members)
 
 
 class _LzipState:

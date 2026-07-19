@@ -96,11 +96,13 @@ decompress pass just to publish metadata digests.
 
 ### 4. Lzip: always surface combined CRC32 when index is available
 
-Whether one or many members: fold trailer CRCs with `crc32_combine` and exact
-`data_size`s. Single-member degenerates to the trailer CRC. SEEKABLE/path gate
+Whether one or many members: one backward index scan yields both total
+decompressed size and the folded trailer CRCs (`crc32_combine` + exact
+`data_size`s). Single-member degenerates to the trailer CRC. SEEKABLE/path gate
 unchanged (index already requires that). **Rejected:** exposing only the last
 member’s CRC (lies about whole synthetic member). **Rejected:** leaving
-multi-member empty forever.
+multi-member empty forever. **Rejected:** separate size probe + CRC probe (two
+I/O scans of the same trailers).
 
 ### 5. Docs: call multi-member lzip digest “derived” where it matters
 
