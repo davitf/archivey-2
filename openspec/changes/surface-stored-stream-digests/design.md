@@ -7,8 +7,9 @@ api-coherence Q6 investigated stored-digest parity for single-file compressors
 - Lzip’s `_read_index_backwards` walks every trailer (`crc32`, `data_size`,
   `member_size`) but **discards** the CRC; metadata surfaces CRC only when the
   file is a single member (`member_size == compressed_size`).
-- Zlib is documented as “no cheap whole-member CRC” — wrong: RFC 1950 stores
-  Adler-32 of uncompressed data as the last 4 bytes (network order).
+- Zlib stores Adler-32 as the last 4 bytes (RFC 1950) but has **no** size fields,
+  so a cheap whole-member peek cannot be made honest under concat/trailing junk;
+  Adler remains decompressor-checked on read.
 - XZ index knows per-block sizes + check *type* but does not read check bytes;
   default check is CRC64; SHA-256 is not combinable.
 - `zlib.crc32_combine` / `adler32_combine` exist in CPython only from 3.15;
@@ -22,13 +23,13 @@ surface. This design assumes that typing is already landed.
 
 **Goals:**
 
-- Cheap zlib `ADLER32` on seekable single-stream sources.
 - Whole-member `CRC32` for multi-member lzip via combine over index trailers.
 - Verify path can check `adler32` when expected.
-- Spec/docs/sweep matrix match reality.
+- Spec/docs/sweep matrix match reality (including zlib omit).
 
 **Non-Goals:**
 
+- Surfacing zlib Adler-32 on `member.hashes` (no reliable cheap boundary).
 - Introducing `HashAlgorithm` / migrating crc32 `int`→`bytes` (review fix).
 - Gzip multi-member combine (mid-member trailers not cheap without decompress;
   ISIZE mod 2³²).
@@ -55,7 +56,7 @@ well-known zlib `crc32_combine_` (matrix powers of the zero operator).
 
 | Format | Single-unit peek | Multi-unit combine |
 |---|---|---|
-| zlib | Last 4 bytes = Adler-32 if complete single stream | Concatenated zlib rare; omit unless we detect splits |
+| zlib | **Omit** from `member.hashes` (no size fields; last-4 lies under concat/junk; Adler still decompressor-checked) | N/A |
 | lzip | Already | Index has every CRC + exact u64 size → **do it** |
 | gzip | Already | Blocked on finding mid trailers without decompress |
 | xz | Single-block CRC32 possible later | Default CRC64; SHA-256 no; out of scope |
@@ -81,13 +82,17 @@ Add `crc32_combine` and `adler32_combine` (and tests) rather than waiting for
 3.15 or adding a native dep. **Rejected:** soft-depend on 3.15-only stdlib;
 **Rejected:** shell out / copy entire zlib C.
 
-### 3. Zlib: peek last 4 bytes, gate like gzip
+### 3. Zlib: do **not** surface Adler-32 on `member.hashes`
 
-Seekable/path, file long enough for header+deflate+Adler, treat as single
-stream (no concat detector unless we already have one). Store
-`hashes[ADLER32]` as 4 bytes big-endian (matches wire + digest convention).
-Omit on non-seekable. **Rejected:** forcing a decompress pass to “confirm”
-Adler placement.
+RFC 1950 stores Adler-32 as the last 4 bytes, but the wrapper has **no** compressed
+or uncompressed size fields — unlike lzip’s trailer — so a backward index / honest
+whole-member peek is impossible without decompressing. A last-4-byte peek lies under
+concatenated streams or trailing junk (hashes ≠ `read()` payload). **Decision:** omit
+zlib from the stored-digest matrix; Adler-32 remains verified by the decompressor on
+read. Keep `adler32` in the verify hasher table for explicitly installed expectations.
+**Rejected:** last-4 peek “complete single stream” assumption; **Rejected:** forcing a
+decompress pass just to publish metadata digests.
+
 
 ### 4. Lzip: always surface combined CRC32 when index is available
 
@@ -99,8 +104,9 @@ multi-member empty forever.
 
 ### 5. Docs: call multi-member lzip digest “derived” where it matters
 
-`docs/formats.md` matrix: zlib → `adler32`; lzip → `crc32` (combined when
-multi-member). One sentence that multi-member lzip’s value equals
+`docs/formats.md` matrix: lzip → `crc32` (combined when multi-member); zlib stays
+with formats that have no cheap `member.hashes` digest, with a note that Adler is
+decompressor-checked. One sentence that multi-member lzip’s value equals
 `crc32(concat(parts))` derived from stored per-member CRCs. **Rejected:**
 hiding the derivation (VISION: no surprises as data/docs).
 
@@ -117,9 +123,6 @@ streams) verifies instead of `DIGEST_UNVERIFIABLE`.
 
 ## Risks / Trade-offs
 
-- **[Risk] Trailing junk after zlib stream** → last-4-byte peek is wrong.
-  **Mitigation:** same class of risk as trusting gzip EOF trailer; omit if we
-  later detect trailing bytes; document “complete single zlib file” assumption.
 - **[Risk] Combined lzip CRC used for dedupe across tools that hash only the
   last member** → mismatch with naive tools.
   **Mitigation:** document derivation; value matches full decompressed concat.

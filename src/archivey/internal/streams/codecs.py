@@ -1089,26 +1089,6 @@ class ZlibCodec(_ZlibErrorCodec):
         """Recognize a zlib stream: a known CMF/FLG header (fail-fast) that then decodes."""
         return prefix[:2] in _ZLIB_HEADERS and self._decodes_sample(prefix)
 
-    def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
-        """Surface RFC 1950 Adler-32 (last 4 bytes, network order) when cheaply peekable.
-
-        Seekable/path complete single-stream files only. Non-seekable sources and
-        unrecognized headers omit the digest (no forced decode).
-        """
-        header = ctx.peek_header(2)
-        if header[:2] not in _ZLIB_HEADERS:
-            return
-        # Minimum zlib stream: CMF/FLG (2) + empty deflate block (≥2) + Adler-32 (4).
-        trailer = ctx.peek_trailer(4)
-        if trailer is None or len(trailer) < 4:
-            return
-        # Need room for a header before the Adler trailer.
-        if member.compressed_size is not None and member.compressed_size < 8:
-            return
-        hashes = dict(member.hashes)
-        hashes[HashAlgorithm.ADLER32] = trailer
-        member.hashes = hashes
-
 
 class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD

@@ -12,13 +12,13 @@
 - [x] 2.2 Unit tests: combine equals `zlib.crc32` / `zlib.adler32` of
       concatenation for empty/short/multi-chunk cases
 
-## 3. Zlib Adler-32 surfacing
+## 3. Zlib Adler-32 (omit from `member.hashes`)
 
-- [x] 3.1 Add seekable probe for last-4-byte Adler-32 (single-file reader /
-      zlib codec `extract_metadata`)
-- [x] 3.2 Set `member.hashes[HashAlgorithm.ADLER32]` as 4-byte big-endian;
-      omit on non-seekable / too-short
-- [x] 3.3 Register `adler32` in `verify.py` hasher table (`zlib.adler32`)
+- [x] 3.1 Do **not** peek/surface zlib Adler-32 on `member.hashes` (no size
+      fields → unreliable under concat/trailing junk); document omit +
+      decompressor-checked Adler
+- [x] 3.2 Register `adler32` in `verify.py` hasher table (`zlib.adler32`) for
+      explicitly installed expectations
 
 ## 4. Lzip multi-member CRC32
 
@@ -32,13 +32,13 @@
 
 - [x] 5.1 Sync main specs from this change’s deltas (`format-single-file-compressors`,
       `compressed-streams`, `testing-contract`, `documentation`)
-- [x] 5.2 Update `docs/formats.md` stored-digests table (zlib `adler32`; lzip
-      multi-member combined `crc32`; note derivation)
-- [x] 5.3 Extend corpus / focused tests for zlib + multi-lzip parity rows
+- [x] 5.2 Update `docs/formats.md` stored-digests table (lzip multi-member
+      combined `crc32`; zlib omit + decompressor note)
+- [x] 5.3 Extend corpus / focused tests for multi-lzip parity rows
 
 ## 6. Verify
 
-- [x] 6.1 Targeted tests for combine helpers, zlib Adler peek, multi-lzip CRC
+- [x] 6.1 Targeted tests for combine helpers, multi-lzip CRC, verify `adler32`
 - [x] 6.2 `uv run --no-sync pytest` for affected tests; `ruff format` / check on
       touched paths
 - [x] 6.3 `openspec validate --strict surface-stored-stream-digests`

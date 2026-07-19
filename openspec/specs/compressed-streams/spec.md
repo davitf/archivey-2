@@ -166,8 +166,9 @@ Supported computable algorithms SHALL include `crc32` (via `zlib.crc32`),
 `adler32` (via `zlib.adler32`), the `hashlib.algorithms_available` set, and
 `blake2sp` (the 8-way parallel BLAKE2s tree hash used by RAR5), computed via an
 internal zero-dependency hasher. A well-formed member carrying only a `blake2sp`
-digest SHALL therefore be verified, not skipped. A well-formed zlib member
-carrying only `adler32` SHALL likewise be verified, not skipped.
+digest SHALL therefore be verified, not skipped. When an expected `adler32` is
+installed on a verifying stream, it SHALL likewise be computed and checked (not
+skipped as unknown).
 
 When an expected digest cannot be computed because the algorithm is genuinely unknown
 or a backend is missing, the system SHALL emit `DIGEST_UNVERIFIABLE` with algorithm,
@@ -179,7 +180,7 @@ collection, logging/callback delivery, member attachment, and escalation.
 | Case | Expected |
 | --- | --- |
 | Expected `blake2sp` on a well-formed RAR5 member | Computed and verified; mismatch raises `CorruptionError` |
-| Expected `adler32` on a well-formed zlib member | Computed and verified; mismatch raises `CorruptionError` |
+| Expected `adler32` on a verifying stream | Computed and verified; mismatch raises `CorruptionError` |
 | Expected digest under a genuinely-unknown algorithm name | `DIGEST_UNVERIFIABLE` counted/retained/logged; bytes still returned without that check |
 | Full member read reaches EOF with computable digest mismatch | `CorruptionError` naming the algorithm |
 | Chunked read reaches EOF with mismatch | All valid chunks delivered; following terminal read raises |

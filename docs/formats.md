@@ -123,9 +123,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   `MemberStreams.SEEKABLE` is declared on a path source (seekable lzip backend). For
   multi-member lzip the value is derived by combining per-trailer CRCs with each
   member's uncompressed size so it equals `crc32` of the concatenated payloads.
-- Standalone zlib surfaces the RFC 1950 Adler-32 trailer as `member.hashes["adler32"]`
-  on a seekable/path complete single stream (omit when non-seekable).
-- `.bz2` / `.xz` / brotli / `.Z` have no cheap whole-member stored digest.
+- `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
+  (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
+  surfaced on `member.hashes` because the wrapper has no size fields for a reliable
+  single-stream trailer peek when concat/trailing junk is possible).
 - `.Z` (unix-compress) is core (native LZW). Truncation is best-effort: nonzero leftover
   bits after the last complete code raise `TruncatedError` on the next `read()` after
   delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
@@ -137,10 +138,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 
 `member.hashes` holds digests the archive **already stores** (or, for multi-member
 lzip, derives via CRC combine from per-member stored CRCs), keyed by
-:class:`~archivey.HashAlgorithm` (values always ``bytes`` — CRC-32 / Adler-32 are four
-big-endian bytes via :func:`~archivey.crc32_digest` for CRC-32). They are readable
-without decompressing when the backend documents them. They are **not** computed digests
-— a full `read()` still verifies through the normal path.
+:class:`~archivey.HashAlgorithm` (values always ``bytes`` — CRC-32 is four
+big-endian bytes via :func:`~archivey.crc32_digest`). They are readable without
+decompressing when the backend documents them. They are **not** computed digests —
+a full `read()` still verifies through the normal path.
 
 | Format | When present | Keys |
 | --- | --- | --- |
@@ -149,8 +150,7 @@ without decompressing when the backend documents them. They are **not** computed
 | RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
 | single-file `.gz` | single member, seekable/path | `crc32` |
 | single-file `.lz` | seekable path + `MemberStreams.SEEKABLE` (one or many members; multi-member value is combined) | `crc32` |
-| single-file zlib | seekable/path single stream | `adler32` |
-| `.bz2` / `.xz` / brotli / `.Z`, TAR, directory | — | none |
+| `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
 
 See [usage](usage.md#cheap-dedupe-with-stored-hashes) for the cheap→computed fallback recipe.
 

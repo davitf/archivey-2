@@ -300,30 +300,12 @@ def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
         assert ar.read(member) == full
 
 
-def test_zlib_exposes_stored_adler32(tmp_path: Path) -> None:
-    payload = b"zlib-adler-payload" * 5
-    path = tmp_path / "data.zz"
-    path.write_bytes(zlib.compress(payload))
-    expected = (zlib.adler32(payload) & 0xFFFFFFFF).to_bytes(4, "big")
-    with open_archive(path) as ar:
-        member = ar.members()[0]
-        assert member.hashes[HashAlgorithm.ADLER32] == expected
-        assert HashAlgorithm.CRC32 not in member.hashes
-
-
-def test_zlib_omits_adler32_on_nonseekable_source() -> None:
-    data = zlib.compress(b"pipe-zlib")
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
-        report = ar.members_report_if_available()
-        assert report is not None
-        assert HashAlgorithm.ADLER32 not in report[0].hashes
-
-
 def test_other_single_file_codecs_omit_stored_crc32(tmp_path: Path) -> None:
     payload = b"no-whole-member-crc"
     cases = {
         "data.bz2": bz2.compress(payload),
         "data.xz": lzma.compress(payload),
+        "data.zz": zlib.compress(payload),
     }
     for name, blob in cases.items():
         path = tmp_path / name

@@ -188,11 +188,12 @@ the existing path; stored/derived values are metadata only.
   `crc32(concat(member payloads))` derived by combining per-trailer CRC-32 values with
   each member's exact uncompressed `data_size` (combine algebra). Single-member
   degenerates to the trailer CRC.
-- **ZLIB:** seekable/path complete single-stream file → surface trailer `ADLER32`
-  (RFC 1950, last 4 bytes, network order). Non-seekable or unrecognized layout → omit.
 - **Non-seekable source:** omit digests that require a trailer/index peek (no forced
   decode).
-- **BZ2, XZ, BR, `.Z`:** no cheap whole-member stored digest in this change — omit.
+- **BZ2, XZ, ZLIB, BR, `.Z`:** no cheap whole-member stored digest — omit. (Zlib's
+  RFC 1950 Adler-32 trailer is verified by the decompressor on read; it is not surfaced
+  on `member.hashes` because the wrapper has no size fields for a reliable
+  single-stream boundary when concat/trailing junk is possible.)
 
 #### Scenario: stored-digest surfacing by codec
 
@@ -204,8 +205,6 @@ the existing path; stored/derived values are metadata only.
 | Single-member `.lz`, seekable lzip index | `CRC32` present (= trailer) |
 | Multi-member `.lz`, seekable lzip index | `CRC32` present (= combine of per-member trailers) |
 | `.lz` without seekable index | no digest key |
-| Standalone zlib, seekable/path single stream | `ADLER32` present |
-| zlib non-seekable | no digest key |
-| `.bz2` / `.xz` / `.br` / `.Z` | no digest key |
+| `.bz2` / `.xz` / `.zlib` / `.br` / `.Z` | no digest key |
 | Any of the above, full `read()` | verification unchanged; hashes are metadata only |
 

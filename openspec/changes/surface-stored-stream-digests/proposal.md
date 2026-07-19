@@ -1,26 +1,29 @@
 ## Why
 
-VISION’s “hashes without decompression” path is incomplete for single-file
-compressors: docs/specs claim zlib has no cheap stored digest (false — RFC 1950
-Adler-32 trailer), and multi-member lzip already walks every trailer CRC+size in
-its index but discards the CRCs instead of combining them into one whole-member
-digest. Filling those gaps is additive parity work, separate from the
+VISION’s “hashes without decompression” path is incomplete for multi-member lzip:
+the seekable index already walks every trailer CRC+size but previously discarded the
+CRCs (or surfaced only the single-member case) instead of combining them into one
+whole-member digest. Filling that gap is additive parity work, separate from the
 api-coherence **type** cleanup (`HashAlgorithm` + `bytes` values).
+
+Standalone zlib’s RFC 1950 Adler-32 trailer is **not** surfaced on `member.hashes`:
+the wrapper has no size fields, so a last-4-byte peek cannot reliably mean “whole
+synthetic member” under concat/trailing junk. Adler-32 remains checked by the
+decompressor on read; the verify hasher table still recognizes `adler32` when an
+expected digest is installed explicitly.
 
 ## What Changes
 
-- Surface standalone **zlib** Adler-32 as `member.hashes[HashAlgorithm.ADLER32]`
-  when cheaply peekable (seekable/path, single complete stream).
 - Surface **lzip** whole-member `CRC32` for **multi-member** streams by combining
   per-trailer CRCs with known uncompressed lengths (`crc32_combine`), not only
   the single-member case.
-- Teach the shared verify hasher table to compute/compare `adler32` (stdlib
-  `zlib.adler32`) so surfaced values stay consistent with read-path checks.
+- Add pure-Python `crc32_combine` / `adler32_combine` helpers (3.11 has no stdlib
+  combine); register `adler32` in the verify hasher table.
 - Update `format-single-file-compressors` / formats docs / corpus assertions for
-  the new matrix rows.
-- **Out of scope here:** `HashAlgorithm` enum introduction and crc32 `int`→`bytes`
-  migration (api-coherence Q6 review fix). gzip/xz multi-unit combine (hard to
-  acquire mid-unit trailers / CRC64 default) — deferred; single-unit-only stays.
+  multi-member lzip; keep zlib in the “no cheap stored digest” row with an explicit
+  note that Adler is decompressor-checked only.
+- **Out of scope:** zlib Adler peek on `member.hashes`; `HashAlgorithm` enum /
+  crc32 `int`→`bytes` migration (api-coherence); gzip/xz multi-unit combine.
 
 ## Capabilities
 
@@ -30,22 +33,22 @@ api-coherence **type** cleanup (`HashAlgorithm` + `bytes` values).
 
 ### Modified Capabilities
 
-- `format-single-file-compressors` — stored-digest surfacing matrix (zlib Adler-32;
-  lzip multi-member combined CRC32)
+- `format-single-file-compressors` — stored-digest surfacing matrix (lzip
+  multi-member combined CRC32; zlib remains omit)
 - `compressed-streams` — verify path recognizes `adler32` as a computable digest
-- `testing-contract` — cross-format stored-digest expectations for zlib / multi-lzip
-- `documentation` — `docs/formats.md` stored-digests table (zlib / lzip rows)
+- `testing-contract` — cross-format stored-digest expectations for multi-lzip
+- `documentation` — `docs/formats.md` stored-digests table (lzip multi-member;
+  zlib omit + decompressor note)
 
 ## Impact
 
-- Modules: `codecs.py` (zlib/lzip `extract_metadata`), `single_file_reader.py`
-  (probes), `lzip.py` (retain trailer CRCs in index), new small
-  `crc32_combine`/`adler32_combine` helpers (3.11 has no stdlib combine),
-  `verify.py` hasher registry.
-- Public API: additive `hashes` keys/values only (after `HashAlgorithm` lands);
-  no signature breaks in this change.
+- Modules: `codecs.py` (lzip `extract_metadata`), `single_file_reader.py`
+  (lzip CRC probe), `lzip.py` (retain trailer CRCs in index),
+  `crc32_combine`/`adler32_combine` helpers, `verify.py` hasher registry.
+- Public API: additive `hashes` values for multi-member lzip only; no zlib
+  `ADLER32` key from this change.
 - Extras/deps: none (stdlib `zlib`).
-- Tests: unit tests for combine helpers; single-file metadata tests for zlib
-  Adler-32 and multi-member lzip; update formats matrix / sweep expectations.
+- Tests: unit tests for combine helpers; multi-member lzip metadata; corpus/docs
+  parity.
 - **Prerequisite:** api-coherence Q6 hashes typing (`Mapping[HashAlgorithm, bytes]`)
-  merged or stacked first so this change writes enum keys, not stringly `"crc32"`.
+  merged or stacked first.

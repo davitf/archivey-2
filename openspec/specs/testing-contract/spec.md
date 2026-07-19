@@ -413,9 +413,7 @@ The asserted matrix SHALL match the documented policy:
 | single-file GZIP | multi-member or non-seekable | digest keys absent |
 | single-file LZIP | seekable lzip index (one or many members) | `crc32` present |
 | single-file LZIP | no seekable index | digest keys absent |
-| single-file ZLIB | seekable/path single stream | `adler32` present |
-| single-file ZLIB | non-seekable | digest keys absent |
-| single-file BZ2/XZ/BR/`.Z`, TAR, directory | any | no stored-digest key |
+| single-file BZ2/XZ/ZLIB/BR/`.Z`, TAR, directory | any | no stored-digest key |
 
 #### Scenario: parity sweep
 

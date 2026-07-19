@@ -280,13 +280,11 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
             assert member.modified is not None
             assert int(member.modified.timestamp()) == payload.mtime
         # Stored-digest parity: single-member gzip always (path source); lzip only with
-        # declared SEEKABLE (same gate as size); zlib Adler-32 on seekable/path; others omit.
+        # declared SEEKABLE (same gate as size); other codecs omit (zlib Adler-32 is
+        # checked by the decompressor, not surfaced on member.hashes).
         if key in ("gz", "gz-meta"):
             assert HashAlgorithm.CRC32 in member.hashes
         elif key == "lz":
-            assert HashAlgorithm.CRC32 not in member.hashes
-        elif key == "zz":
-            assert HashAlgorithm.ADLER32 in member.hashes
             assert HashAlgorithm.CRC32 not in member.hashes
         else:
             assert HashAlgorithm.CRC32 not in member.hashes
