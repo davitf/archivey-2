@@ -42,6 +42,7 @@ def run_test(
 
     ok = 0
     failed = 0
+    members_total: int | None = None
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
         indexed = reader.members_report_if_available()
         if patterns:
@@ -55,7 +56,6 @@ def run_test(
                 return EXIT_FAIL
 
         total_bytes: int | None = None
-        members_total: int | None = None
         if indexed is not None:
             selected = [m for m in indexed if pred is None or pred(m)]
             file_members = [m for m in selected if m.is_file]
@@ -73,7 +73,7 @@ def run_test(
             # Manual iteration so open-time failures (wrong password, corrupt header)
             # count as FAIL and still reach the summary (F4). Once the generator raises,
             # further next() yields StopIteration — remaining members are lost (library
-            # limitation for solid / poisoned streams).
+            # limitation for solid / poisoned streams); report them as "not tested" (P8).
             it = iter(reader.stream_members(pred))
             while True:
                 try:
@@ -141,5 +141,16 @@ def run_test(
             if on_progress is not None:
                 on_progress.close()
 
-    print(f"{ok} OK, {failed} failed", file=err)
+    print(_test_summary(ok=ok, failed=failed, members_total=members_total), file=err)
     return EXIT_FAIL if failed else EXIT_OK
+
+
+def _test_summary(*, ok: int, failed: int, members_total: int | None) -> str:
+    """Format the quiet test summary, including untested remainder when known (P8)."""
+    base = f"{ok} OK, {failed} failed"
+    if members_total is None:
+        return base
+    not_tested = members_total - ok - failed
+    if not_tested <= 0:
+        return base
+    return f"{base}, {not_tested} not tested"

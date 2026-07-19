@@ -10,7 +10,7 @@ a finding is fixed or a question is decided.
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
-| `cli-product/` | yes (#144) | **P1–P3/P5–P7/P9–P14/D1 done** (Q1–Q3/Q5–Q6 decided; P4 deferred); **P8** polish remains | no |
+| `cli-product/` | yes (#144) | **P1–P3/P5–P14/D1 done** (Q1–Q3/Q5–Q6 decided; P4 deferred) | yes (after merge) |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
 `archive/2026-07-19-stream-layering/`.
@@ -33,8 +33,10 @@ Archived this pass: `archive/2026-07-19-api-coherence/`,
 | **P2** | No-match include warnings + extract/test exit 1 + `-d` hint (Q3). | **done** |
 | **P4** | `--json` for scripting audience. | **deferred** (Q2) — wait for `hash` / member schema |
 | **P14** | `info` access/cost line + `--version -v` capability matrix (Q5/Q6). | **done** |
+| **P8** | `test` summary reports `K not tested` when an indexed stream aborts early. | **done** |
 
-Still waiting: **P8** polish remains.
+cli-product code/docs follow-ups from #144 are complete for this pass (**P4**
+deferred by Q2).
 
 ### From `performance/`
 

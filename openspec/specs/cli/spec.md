@@ -84,7 +84,10 @@ Members with no stored digest SHALL count as OK when fully readable without
 error. `test` MUST NOT require emitting computed content hashes. By default
 `test` SHALL be quiet — printing only failures and a one-line summary
 (`N OK, M failed`) to stderr — and SHALL exit non-zero if any member fails;
-`-v` / `--verbose` SHALL add a per-member OK/FAIL line.
+`-v` / `--verbose` SHALL add a per-member OK/FAIL line. When a cheap member
+index is available and the stream ends before every selected file member has
+been counted OK or failed (archive-wide error or solid/poisoned abort), the
+summary SHALL append `, K not tested` where `K` is the untested remainder.
 
 `extract` SHALL use safe-extraction defaults and SHALL expose
 `--policy {strict,standard,trusted}` mapping to `ExtractionPolicy` (CLI default
@@ -241,6 +244,7 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey list <corrupt-or-unreadable>` | Exit `1` |
 | `archivey list <archive-with-recoverable-prefix-and-terminal-error>` | Exit `1` (after printing recovered members) |
 | `archivey test <archive-with-failing-member>` | Exit `1` |
+| `archivey test <indexed-archive>` when the member stream aborts early | Summary includes `K not tested` for the untested remainder; exit `1` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first bad member; exit nonzero |

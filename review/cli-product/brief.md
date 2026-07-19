@@ -1,8 +1,8 @@
 # Brief — The `archivey` CLI as a product (UX / ergonomics)
 
-> **Status (2026-07-19):** findings delivered in **#144**. Unambiguous fixes
-> (P3/P5–P7/P9–P13/D1) + **Q1/P1** + **Q3/P2** + **Q5–Q6/P14** implemented;
-> **Q2/P4** deferred (`hash`/schema). Still open: **P8**. Triage: `../STATUS.md`.
+> **Status (2026-07-19):** findings delivered in **#144**. Follow-ups
+> implemented except **Q2/P4** (`--json` deferred until `hash`/schema). Triage:
+> `../STATUS.md`.
 
 Read `review/README.md` (conventions, VISION tie-breakers, deliverable shape). This
 is a **product** review — the CLI seen through a user's eyes — **not** a code-correctness

@@ -598,6 +598,7 @@ def test_test_open_failure_still_prints_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Open-time failures must count as FAIL and still reach the summary (F4).
+    # Indexed archives also report untested remainder (P8).
     from archivey.exceptions import ReadError
     from archivey.internal.base_reader import BaseArchiveReader
 
@@ -609,7 +610,43 @@ def test_test_open_failure_still_prints_summary(
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert "FAIL:" in err
-    assert "0 OK, 1 failed" in err
+    # sample_zip has 3 file members; archive-wide FAIL consumes one slot.
+    assert "0 OK, 1 failed, 2 not tested" in err
+
+
+def test_test_early_abort_reports_not_tested(
+    sample_zip: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After one OK, a poisoned stream leaves remaining indexed files as not tested."""
+    from archivey.exceptions import ReadError
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    real = BaseArchiveReader.stream_members
+
+    def _one_then_die(self: BaseArchiveReader, members: object = None) -> object:
+        yielded = False
+        for item in real(self, members):
+            if yielded:
+                raise ReadError("simulated solid abort")
+            yielded = True
+            yield item
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _one_then_die)
+    assert main(["test", str(sample_zip)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "1 OK, 1 failed, 1 not tested" in err
+
+
+def test_test_summary_helper() -> None:
+    from archivey.cli.test_cmd import _test_summary
+
+    assert _test_summary(ok=4, failed=0, members_total=4) == "4 OK, 0 failed"
+    assert (
+        _test_summary(ok=0, failed=1, members_total=4) == "0 OK, 1 failed, 3 not tested"
+    )
+    assert _test_summary(ok=0, failed=1, members_total=None) == "0 OK, 1 failed"
 
 
 def test_archive_stem_uses_format_extension() -> None:

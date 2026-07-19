@@ -1,8 +1,8 @@
 # CLI-as-a-product review — SUMMARY
 
-> **Status (2026-07-19):** findings in #144; **P1–P3/P5–P7/P9–P14/D1 landed**
-> (Q1–Q3/Q5–Q6 decided; **P4/`--json` deferred** until `hash`/schema). **P8**
-> polish remains. See `../STATUS.md` §1.
+> **Status (2026-07-19):** findings in #144; **P1–P3/P5–P14/D1 landed**
+> (Q1–Q3/Q5–Q6 decided; **P4/`--json` deferred** until `hash`/schema). See
+> `../STATUS.md` §1.
 
 Deep review per `brief.md`: the merged `src/archivey/cli/` on `main` (post-#120,
 post-#131 fixes), judged as a **product** — muscle memory, output, errors, exit
@@ -82,7 +82,7 @@ public 0.2.0; polish = after.
 | P5 | **M** | `cli/password.py:19` | Ctrl-D (EOF) at the `Password:` prompt → uncaught `EOFError`, full traceback, exit 1. Catch → treat as "no password given". | blocker (small) |
 | P6 | **M** | `cli/main.py:362-364` | Missing file and verb typos surface as raw errno reprs: `archivey lsit a.zip` → `[Errno 2] No such file or directory: 'lsit'`. No prose, no "did you mean a verb?" even though the signature (open failed + leftover pattern args) is detectable. | blocker (message), hint = polish |
 | P7 | **M** | library messages, `cli/info_cmd.py:16` | Exception/enum reprs leak into user prose: truncated zip → `Could not open ZIP archive: BadZipFile('File is not a zip file')` (misleading *and* repr-y); suffixes like `format=ArchiveFormat.ZIP`; `info` prints `SEVEN_Z`; zstd message says `Format ArchiveFormat.TAR_ZST is not available`; zipcrypto with **no** password says "Wrong password" (#131 D8 residue). | partial (worst cases) |
-| P8 | **M** | `cli/test_cmd.py:56-73,127` | Archive-wide failures under-report: missing `unrar` on a 4-member RAR → `0 OK, 1 failed` (one FAIL line for a whole-archive condition; solid-abort loses the remaining members with no "N not tested" note). The pass/fail exit contract is right; the *counts* aren't honest. | polish |
+| P8 | **M** | `cli/test_cmd.py:56-73,127` | Archive-wide failures under-report: missing `unrar` on a 4-member RAR → `0 OK, 1 failed` (one FAIL line for a whole-archive condition; solid-abort loses the remaining members with no "N not tested" note). The pass/fail exit contract is right; the *counts* aren't honest. | **done** — append `, K not tested` when indexed remainder known |
 | P9 | **L** | `internal/streams/archive_stream.py:408` (library, CLI-visible) | Tripped bug: `[all]` install, `x src.tar.gz` warns "Install the 'seekable' extra (rapidgzip)" — rapidgzip **is** installed; the AUTO size-gate declined it, and the warning text doesn't know that. Misleading advice on the flagship demo path. | polish (fix text) |
 | P10 | **L** | `cli/main.py` help | `--help` is clean but example-free: smart-dest, `-d .`, filter grammar, `--exclude` are invisible until the man-page moment. One epilog with 4 examples fixes it. | polish |
 | P11 | **L** | `cli/extract_cmd.py:268,324-336` | Hoist/summary micro-copy: `extracting into src/` … `moved to src/` reads as a no-op; single-root reuse says `→ .` when everything actually landed in `./project/`. | polish |
