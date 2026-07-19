@@ -44,21 +44,16 @@ Recommend 1 if any slack exists, else 2. Naming: `--json` (tool-standard) vs
 
 ## Q3 — No-match filters: warning + which exit code? (drives P2)
 
-Agreed shape (P2): stderr warning per unmatched include pattern; the open
-question is the exit code when zero members matched on `extract`/`test`:
+**Decided (2026-07-19):**
 
-1. Warn, exit 0 (gentlest; scripts still blind).
-2. Warn, exit 1 (recommended — "the operation did not do what was asked";
-   matches `tar`'s nonzero).
-3. Warn, dedicated code in the reserved ≥3 space (unzip's 11-style
-   "no files matched"); most script-friendly, spends a reserved code.
+| Piece | Decision |
+|-------|----------|
+| Warning | stderr per unmatched include pattern: `warning: pattern matched no members: '…'` |
+| `extract` / `test` zero matches | warn + exit **1** (not a dedicated ≥4 code — exit 11 is unzip/PKWARE-only, not a broader convention) |
+| `list` zero matches | warn + exit **0** (listing nothing is a valid answer) |
+| Dest hint | When a sole unmatched extract pattern names an existing directory or ends with `/`, add `(did you mean -d PATTERN?)` |
 
-And for `list` with no matches: silent-0 (grep-like it is not), or the same
-warning with exit 0? Recommend warning + exit 0 for `list` (listing nothing
-is an answer), warning + nonzero for `extract`/`test`.
-
-Also: adopt the `(did you mean -d out?)` hint when a sole unmatched extract
-pattern names an existing directory / ends with `/`?
+Rationale: silence-as-success on `x a.zip out` / `x a.zip project` is the muscle-memory trap; exit 1 matches `tar`'s nonzero. Spending another reserved code on unzip's 11 would be ZIP-specific mimicry next to our `0/1/2/3` map.
 
 ## Q4 — Control-byte quoting style for member names (drives P3)
 

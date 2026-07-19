@@ -19,7 +19,12 @@ from archivey import (
 )
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
-from archivey.cli.filters import member_predicate
+from archivey.cli.filters import (
+    count_selected,
+    member_predicate,
+    unmatched_include_patterns,
+    warn_unmatched_includes,
+)
 from archivey.cli.format import escape_member_name
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
@@ -417,6 +422,17 @@ def run_extract(
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
+        if patterns:
+            indexed = reader.members_report_if_available()
+            members_for_filter = (
+                list(indexed) if indexed is not None else list(reader.members_report())
+            )
+            unmatched = unmatched_include_patterns(patterns, members_for_filter)
+            if unmatched:
+                warn_unmatched_includes(unmatched, err=err, dest_hint=True)
+            if count_selected(members_for_filter, pred) == 0:
+                return EXIT_FAIL
+
         may_hoist = False
         if dest is not None:
             target = Path(dest)

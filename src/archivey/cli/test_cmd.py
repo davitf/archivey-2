@@ -6,7 +6,13 @@ import sys
 from typing import TextIO
 
 from archivey.cli.common import open_for_cli, reject_salvage
-from archivey.cli.filters import member_predicate
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
+from archivey.cli.filters import (
+    count_selected,
+    member_predicate,
+    unmatched_include_patterns,
+    warn_unmatched_includes,
+)
 from archivey.cli.format import escape_member_name
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
@@ -38,6 +44,16 @@ def run_test(
     failed = 0
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
         indexed = reader.members_report_if_available()
+        if patterns:
+            members_for_filter = (
+                list(indexed) if indexed is not None else list(reader.members_report())
+            )
+            unmatched = unmatched_include_patterns(patterns, members_for_filter)
+            if unmatched:
+                warn_unmatched_includes(unmatched, err=err)
+            if count_selected(members_for_filter, pred) == 0:
+                return EXIT_FAIL
+
         total_bytes: int | None = None
         members_total: int | None = None
         if indexed is not None:
@@ -126,4 +142,4 @@ def run_test(
                 on_progress.close()
 
     print(f"{ok} OK, {failed} failed", file=err)
-    return 1 if failed else 0
+    return EXIT_FAIL if failed else EXIT_OK

@@ -48,11 +48,18 @@ selected when it matches any positional, or when no positional is given).
 `--exclude PATTERN` (repeatable, long-form only — no short flag) SHALL remove
 matching members; a member SHALL be processed when it matches an include (or none
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
-`--include` flag. Each invocation SHALL accept exactly **one** archive positional
-(multi-archive is out of scope for this capability). `--password` SHALL be
-accepted for encrypted archives; when an encrypted archive is opened, no
-`--password` was supplied, and stdin is a TTY, the system SHALL prompt for the
-password without echoing it.
+`--include` flag. When one or more include patterns are given, each pattern that
+matches no member SHALL produce a stderr warning
+(`warning: pattern matched no members: '…'`). When every include misses on
+`extract` or `test`, the command SHALL exit `1` after the warning(s). On `list`,
+the same warnings SHALL be emitted but the exit code SHALL remain `0` when the
+archive otherwise listed successfully. On `extract`, when there is exactly one
+unmatched include that names an existing directory or ends with `/`, the warning
+SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL accept
+exactly **one** archive positional (multi-archive is out of scope for this
+capability). `--password` SHALL be accepted for encrypted archives; when an
+encrypted archive is opened, no `--password` was supplied, and stdin is a TTY,
+the system SHALL prompt for the password without echoing it.
 
 Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
@@ -140,6 +147,9 @@ report how many members were written before the stop.
 | `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
 | `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first failure; reports members written before stop |
 | Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
+| `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
+| `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
+| `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |

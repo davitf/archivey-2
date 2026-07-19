@@ -10,7 +10,7 @@ a finding is fixed or a question is decided.
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
-| `cli-product/` | yes (#144) | **P1/P3/P5–P7/P9–P13/D1 done** (Q1 decided); still open: P2/P4/P8/P14 + Q2–Q6 | no |
+| `cli-product/` | yes (#144) | **P1–P3/P5–P7/P9–P13/D1 done** (Q1/Q3 decided); still open: P4/P8/P14 + Q2/Q5–Q6 | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
 `archive/2026-07-19-stream-layering/`.
@@ -30,8 +30,9 @@ Archived this pass: `archive/2026-07-19-api-coherence/`,
 | **P10–P13** | Help examples; hoist micro-copy; argparse `patterns` wording; reserved-flag asymmetry. | **done** |
 | **D1** | List marks for `ANTI` / non-current (from archived api-coherence). | **done** |
 | **P1** | Extract CONTINUE + `--stop-on-error` + exit 3 (Q1). | **done** |
+| **P2** | No-match include warnings + extract/test exit 1 + `-d` hint (Q3). | **done** |
 
-Still waiting on Q2–Q3 / Q5–Q6: **P2**, **P4**, **P14**. **P8** polish remains.
+Still waiting on Q2 / Q5–Q6: **P4**, **P14**. **P8** polish remains.
 
 ### From `performance/`
 
@@ -51,7 +52,7 @@ Still waiting on Q2–Q3 / Q5–Q6: **P2**, **P4**, **P14**. **P8** polish remai
 |---|---------|--------|
 | **Q1** | **P1** extract abort-on-first-error | **decided** — CONTINUE (+ `--stop-on-error`); exit 3 for policy-only blocks |
 | **Q2** | **P4** `--json` timing | open |
-| **Q3** | **P2** no-match filters exit code | open |
+| **Q3** | **P2** no-match filters exit code | **decided** — warn; extract/test exit 1; list exit 0; `-d` hint |
 | **Q4** | **P3** control-byte quoting style | lean applied (escape everywhere / backslash); `--raw`/TTY-only still open |
 | **Q5 / Q6** | **P14** `info` cost line / install capability view | open |
 | **Q7** | P7/P9 library vs CLI ownership | **done** (library) |

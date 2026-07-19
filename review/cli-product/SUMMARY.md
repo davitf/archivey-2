@@ -1,8 +1,8 @@
 # CLI-as-a-product review — SUMMARY
 
-> **Status (2026-07-19):** findings in #144; **unambiguous fixes + Q1/P1 landed**
-> (P1/P3/P5–P7/P9–P13/D1). Still need maintainer answers for **Q2–Q3** (and Q5–Q6
-> for P14). See `../STATUS.md` §1.
+> **Status (2026-07-19):** findings in #144; **P1–P3/P5–P7/P9–P13/D1 landed**
+> (Q1/Q3 decided). Still need **Q2** (P4 `--json`) and **Q5–Q6** (P14). See
+> `../STATUS.md` §1.
 
 Deep review per `brief.md`: the merged `src/archivey/cli/` on `main` (post-#120,
 post-#131 fixes), judged as a **product** — muscle memory, output, errors, exit
@@ -76,7 +76,7 @@ public 0.2.0; polish = after.
 | # | Sev | Where | One-liner | 0.2.0 |
 |---|-----|-------|-----------|-------|
 | P1 | **H** | `cli/extract_cmd.py` (+ library `OnError`) | One bad/hostile member aborts the whole extraction under STOP. | **done** — CLI defaults to `CONTINUE`; `--stop-on-error`; exit 3 for policy-only blocks (Q1) |
-| P2 | **H** | `cli/filters.py:11`, `cli/extract_cmd.py:406`, `cli/list_cmd.py:36` | Include patterns that match nothing succeed **silently with exit 0** — and this is exactly what the `unzip a.zip out` positional-dest reflex and the `tar`-style bare-dir-name reflex (`x a.zip project` vs `project/*`) produce. `unzip` prints "filename not matched" and exits 11. | blocker |
+| P2 | **H** | `cli/filters.py`, extract/list/test | Include patterns that match nothing succeed silently with exit 0. | **done** — warn per pattern; extract/test exit 1; list exit 0; `-d` hint (Q3) |
 | P3 | **M** | `cli/format.py:52-85`, `cli/test_cmd.py`, `cli/extract_cmd.py` notices, tqdm desc | Member names print raw to the terminal: ANSI escapes render (demo'd red text) and `\r` rewrites the line (`line1\rOK  everything fine.txt`). A safety-branded tool should quote control bytes like `ls`/GNU `tar` do. | blocker |
 | P4 | **M** | (absent) | No `--json`/`--porcelain` anywhere; the "iterate members and hash" scripting audience must parse aligned human columns with no stability promise. Deliberately deferred in `cli-v1` design (needs a member schema) — but it is the wedge gap for one of VISION's two named audiences. | Q2 (recommend: first 0.2.x) |
 | P5 | **M** | `cli/password.py:19` | Ctrl-D (EOF) at the `Password:` prompt → uncaught `EOFError`, full traceback, exit 1. Catch → treat as "no password given". | blocker (small) |

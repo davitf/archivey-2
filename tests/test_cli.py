@@ -1046,3 +1046,67 @@ def test_extract_corrupt_member_continues_with_exit_fail(
     assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
     assert (tmp_path / "out" / "c.txt").read_bytes() == b"end"
     assert not (tmp_path / "out" / "b.txt").exists()
+
+
+def test_extract_dest_before_patterns_still_filters(
+    sample_zip: Path, tmp_path: Path
+) -> None:
+    """Documented ``x ARCHIVE -d DEST PATTERN`` must not drop the pattern (argparse)."""
+    dest = tmp_path / "dest"
+    assert main(["x", str(sample_zip), "-d", str(dest), "a.txt"]) == EXIT_OK
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert not (dest / "b").exists()
+
+
+def test_extract_unmatched_include_exits_one(
+    sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    assert main(["x", str(sample_zip), "-d", str(dest), "*.missing"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: '*.missing'" in err
+    assert list(dest.iterdir()) == []
+
+
+def test_extract_unmatched_dir_pattern_hints_dash_d(
+    sample_zip: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    assert main(["x", str(sample_zip), "out"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: 'out'" in err
+    assert "(did you mean -d out?)" in err
+
+
+def test_extract_partial_unmatched_still_extracts(
+    sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dest = tmp_path / "dest"
+    assert main(["x", str(sample_zip), "-d", str(dest), "a.txt", "nope.txt"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: 'nope.txt'" in err
+    assert (dest / "a.txt").read_bytes() == b"hello"
+
+
+def test_list_unmatched_include_warns_exit_zero(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["list", str(sample_zip), "*.rs"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert "warning: pattern matched no members: '*.rs'" in captured.err
+    assert captured.out == ""
+
+
+def test_test_unmatched_include_exits_one(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["t", str(sample_zip), "missing"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: 'missing'" in err
+    assert "OK," not in err

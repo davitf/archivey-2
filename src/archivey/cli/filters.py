@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 from collections.abc import Callable, Sequence
+from typing import TextIO
 
 from archivey.types import ArchiveMember
 
@@ -32,3 +34,59 @@ def member_predicate(
         return True
 
     return matches
+
+
+def unmatched_include_patterns(
+    includes: Sequence[str],
+    members: Sequence[ArchiveMember],
+) -> list[str]:
+    """Return include patterns that match no member names (order preserved)."""
+    if not includes:
+        return []
+    hit = dict.fromkeys(includes, False)
+    for member in members:
+        name = member.name
+        for pattern, matched in hit.items():
+            if not matched and fnmatch.fnmatchcase(name, pattern):
+                hit[pattern] = True
+        if all(hit.values()):
+            break
+    return [pattern for pattern, matched in hit.items() if not matched]
+
+
+def warn_unmatched_includes(
+    unmatched: Sequence[str],
+    *,
+    err: TextIO,
+    dest_hint: bool = False,
+) -> None:
+    """Print stderr warnings for unmatched include patterns (cli-product P2 / Q3).
+
+    When ``dest_hint`` is true and there is exactly one unmatched pattern that
+    names an existing directory or ends with ``/``, append a ``-d`` suggestion
+    (the unzip/7z positional-dest reflex).
+    """
+    for pattern in unmatched:
+        extra = ""
+        if (
+            dest_hint
+            and len(unmatched) == 1
+            and (pattern.endswith("/") or os.path.isdir(pattern))
+        ):
+            # Strip a trailing slash for the suggested -d argument display.
+            suggested = pattern.rstrip("/") or pattern
+            extra = f" (did you mean -d {suggested}?)"
+        print(
+            f"warning: pattern matched no members: {pattern!r}{extra}",
+            file=err,
+        )
+
+
+def count_selected(
+    members: Sequence[ArchiveMember],
+    pred: Callable[[ArchiveMember], bool] | None,
+) -> int:
+    """How many members the include/exclude predicate selects."""
+    if pred is None:
+        return len(members)
+    return sum(1 for member in members if pred(member))

@@ -389,6 +389,30 @@ def _format_os_error(exc: OSError) -> str:
     return f"archivey: {detail}"
 
 
+def _parse_cli_args(
+    parser: argparse.ArgumentParser, argv_list: list[str]
+) -> argparse.Namespace:
+    """Parse argv, folding leftover positionals into ``patterns``.
+
+    argparse leaves include patterns in the "unknown" remainder when optional
+    flags like ``-d`` appear before a ``nargs='*'`` patterns positional
+    (``archivey x a.zip -d out '*.py'``). Fold those tokens back so the
+    documented flag/pattern order works.
+    """
+    args, rest = parser.parse_known_args(argv_list)
+    if rest and rest[0] == "--":
+        rest = rest[1:]
+    if not rest:
+        return args
+    unknown_opts = [tok for tok in rest if tok.startswith("-") and tok != "-"]
+    if unknown_opts:
+        parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
+    if not hasattr(args, "patterns"):
+        parser.error(f"unrecognized arguments: {' '.join(rest)}")
+    args.patterns = list(args.patterns or ()) + list(rest)
+    return args
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -407,7 +431,7 @@ def main(
     argv_list = _inject_default_list(raw)
     parser = build_parser()
     try:
-        args = parser.parse_args(argv_list)
+        args = _parse_cli_args(parser, argv_list)
     except SystemExit as exc:
         code = exc.code
         if code is None:
