@@ -227,9 +227,9 @@ class TarReader(BaseArchiveReader):
         self._eof_probe_stream: _EofProbeStream | None = None
         self._eof_header_rejected: bool = False
         # A stream we open and therefore must close: the decompression stream (compressed
-        # tars) or, for random-access plain-tar paths, the file handle we open ourselves to
-        # carry the EOF probe. Only a forward-only plain-tar path leaves the handle to
-        # tarfile (opened via name=, closed by tar.close()).
+        # tars) or the plain-tar path handle we open ourselves (always fileobj=, so tarfile
+        # never owns the fp — RA needs that for the EOF probe; streaming shares the same
+        # ownership/close path for consistency).
         self._owned_stream: BinaryIO | None = None
         # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
         # streaming readers also take a lock (exclusive / normally uncontended) so the
@@ -250,7 +250,20 @@ class TarReader(BaseArchiveReader):
             # Only tarfile's own (format) errors are translated; a genuine OSError from the
             # underlying handle propagates unchanged (see error-handling: "Genuine runtime
             # and I/O errors are not reclassified").
+            # Release before re-raising: the exception traceback keeps this frame alive and
+            # would otherwise pin the owned fp until the caller drops the exception
+            # (inventory/fuzz catch-and-continue loops).
+            self._release_owned_stream()
             raise self._translate_open_error(exc) from exc
+        except BaseException:
+            self._release_owned_stream()
+            raise
+
+    def _release_owned_stream(self) -> None:
+        """Close a stream this reader opened, if any. Safe to call more than once."""
+        if self._owned_stream is not None:
+            self._owned_stream.close()
+            self._owned_stream = None
 
     def _open_tarfile(
         self,
@@ -290,13 +303,12 @@ class TarReader(BaseArchiveReader):
                 streaming=streaming,
             )
         if isinstance(source, Path):
-            if not self._measure and streaming:
-                # Forward-only from a path with no measurement: let tarfile own and close
-                # the handle. The EOF probe only applies to random access, so nothing is
-                # lost by keeping this fast path.
-                return self._tarfile_open(name=str(source), streaming=streaming)
-            # Open the handle ourselves so random access can carry the EOF probe (and, when
-            # measuring, the seek instrumentation); we own the fp for close.
+            # Always open ourselves and pass fileobj= (never name=-only). Random access
+            # needs the handle for the EOF probe; streaming does not, but sharing one
+            # ownership/close path avoids a second mode and the init-failure leak that
+            # name= vs fileobj= divergence invited. name= is still passed for display.
+            # Do NOT slurp the path into a BytesIO — that would force the whole archive
+            # (and any compressed payload) into memory up front.
             fp: BinaryIO = open(source, "rb")
             if self._measure:
                 fp = cast("BinaryIO", self._track_source_seeks(fp))
@@ -694,12 +706,8 @@ class TarReader(BaseArchiveReader):
         with self._handle_guard():
             self._tar.close()
             # tarfile never closes an external fileobj, so close the stream we opened
-            # ourselves — the decompression stream (which in turn closes a path source it
-            # owns) or a random-access plain-tar handle. Only a forward-only plain-tar path
-            # is opened by tarfile via name= and closed by tar.close() above.
-            if self._owned_stream is not None:
-                self._owned_stream.close()
-                self._owned_stream = None
+            # ourselves — decompression stream or plain-tar path handle.
+            self._release_owned_stream()
 
 
 class TarReadBackend(ReadBackend):

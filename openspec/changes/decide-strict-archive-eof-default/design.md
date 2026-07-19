@@ -54,7 +54,10 @@ stays ambiguous until native TAR (P3); that residual is what the opt-in flag sti
 
 ## Investigations
 
-### Current behavior (verified in tree)
+### Current behavior (pre-Option-F inventory; superseded by Decision 2)
+
+At the time of the option survey, `_verify_tar_eof` treated every trailer failure the
+same (warn by default / `TruncatedError` under strict), with no probe:
 
 | Case | Default (`False`) | `strict_archive_eof=True` |
 | --- | --- | --- |
@@ -64,8 +67,9 @@ stays ambiguous until native TAR (P3); that residual is what the opt-in flag sti
 | Mid-archive corrupt header (stdlib silent EOF) | Same WARNING path if trailer check fails | Same `TruncatedError` |
 | Diagnostic code `IGNORE` + strict True | Count increments; still `TruncatedError` | (specced precedence) |
 
-Tests: `tests/test_tar.py` (EOF section), `tests/test_archivey_config.py`,
-`tests/test_diagnostics.py` (IGNORE vs strict).
+Tests at survey time: `tests/test_tar.py` (EOF section), `tests/test_archivey_config.py`,
+`tests/test_diagnostics.py` (IGNORE vs strict). Post-Option-F behavior is the matrix under
+"Where the flag and the reader actually change the outcome" below.
 
 ### Why default-True hurts extract
 
@@ -109,10 +113,11 @@ Two facts make `nonzero` a trustworthy hard-fail trigger:
    is a non-trailer block sitting where a header/trailer should be — i.e. `tarfile` gave up
    early. GNU tar flags the same shapes ("A lone zero block", "Skipping to next header").
 2. When `tarfile` stops on a corrupt non-first header it leaves the handle positioned in live
-   data, so the trailer read picks up that data → `nonzero`. (It inspects the block *after*
-   the one that stopped `tarfile`, so detection is an off-by-one proxy: reliable for
-   mid-archive corruption; a corrupt header in the file's final block degrades to `absent` —
-   acceptable, no worse than today.)
+   data, so the trailer read picks up that data → `nonzero`. (The trailing-block check
+   inspects the block *after* the one that stopped `tarfile`, so as a *proxy* it is reliable
+   for mid-archive corruption but misses a corrupt header in the file's final block —
+   that case degrades to `absent` under the trailing check alone.) Random access closes that
+   final-block gap with `_EofProbeStream` (Decision 2); streaming still has the gap.
 
 So `nonzero` ≈ "the tar iteration finished early on an invalid block" — exactly the case
 worth raising on by default. `absent`/`short` remain the irreducibly ambiguous bucket that

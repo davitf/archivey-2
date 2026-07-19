@@ -840,6 +840,42 @@ def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
         open_archive(missing, format=ArchiveFormat.TAR)
 
 
+def test_corrupt_path_open_releases_owned_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Path opens always use fileobj= with an owned fp for the EOF probe. On open failure
+    # the owned handle must be closed before re-raising — otherwise the exception
+    # traceback pins the frame (and the fd) until the caller drops the exception.
+    import builtins
+
+    path = tmp_path / "bad.tar"
+    path.write_bytes(b"\xff" * 1024)
+    closed: list[bool] = []
+    real_open = builtins.open
+
+    def tracking_open(file: object, *args: object, **kwargs: object) -> object:
+        f = real_open(file, *args, **kwargs)  # type: ignore[arg-type]
+        if Path(file) == path:  # type: ignore[arg-type]
+            inner_close = f.close
+
+            def close() -> None:
+                closed.append(True)
+                inner_close()
+
+            f.close = close  # type: ignore[method-assign]
+        return f
+
+    monkeypatch.setattr(builtins, "open", tracking_open)
+    kept: list[Exception] = []
+    with pytest.raises(CorruptionError) as excinfo:
+        open_archive(path, format=ArchiveFormat.TAR)
+    kept.append(
+        excinfo.value
+    )  # keep the traceback alive, as a catch-and-continue loop would
+    assert closed == [True], "owned path handle must close before open failure escapes"
+    del kept
+
+
 def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> None:
     # A gzip-wrapped tar whose deflate body is mangled: the corruption surfaces through the
     # codec layer as a CorruptionError while scanning/reading (not a raw zlib.error).
