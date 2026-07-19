@@ -11,15 +11,28 @@ and should be decided explicitly before v1 docs teach the wrong story.
 
 ## What Changes
 
-- **Decision (open):** pick a default / split / soft-fail policy for `strict_archive_eof`
-  among the options in `design.md` (keep False; True everywhere; True for random-access
-  only; keep False + Gotchas/CLI; True + soft extract). **BREAKING** if the library default
-  becomes `True` (or RA-only True).
-- **Specs / docs / CLI follow the chosen option** — provisional deltas below assume the
-  recommended Option D (keep default False; teach + CLI strict path); replace them if
-  another option wins.
-- **Not in scope:** implementing a native TAR header walker (post-v1); that is the structural
-  fix that can eventually distinguish “missing trailer” from “corrupt-shortened listing.”
+- **Decision (LOCKED — Option F, "signal-aware default"):** split the TAR EOF diagnostic on
+  the `observed_kind` signal `_verify_tar_eof` already computes, instead of on one monolithic
+  bool (full option survey + rationale in `design.md`):
+  - **Default (`strict_archive_eof=False`, unchanged):** `absent`/`short` trailer → warn
+    (Phase 5 / GNU-tar compatible); **`nonzero` trailer → raise `CorruptionError`** — a
+    high-confidence early-stop / silent-shorten that a conformant tar never produces.
+  - **`strict_archive_eof=True`:** all three buckets escalate — `absent`/`short` →
+    `TruncatedError`, `nonzero` → `CorruptionError` — for inventory / dedupe / validators.
+  - The escalation surfaces via the member-list report model landed in
+    `partial-members-and-errors` (#157): `members()` / `scan_members()` complete-or-raise;
+    `members_report()` returns the recovered prefix plus the terminal `error`; `__iter__`
+    yields the recovered members then raises. For `extract_all`, random access **fails closed**
+    (extract-prep materializes the list before writing, so it raises before any output),
+    while streaming writes the salvageable members then raises. No soft-extract report field.
+- **Minor BREAKING:** genuinely-malformed (`nonzero`) tars change from warn to raise by
+  default; the common trailer-less / `cat`-joined corpus is unaffected. `config.py` default
+  and the `archive-reading` config signature are **unchanged**, so no `archive-reading` delta.
+- **Not in scope:** implementing a native TAR header walker (post-v1, open-issues P3) — the
+  structural fix that can eventually make the ambiguous `absent`/`short` residual (complete
+  trailer-less vs. truncated-at-boundary) archivey's own decision; and a salvage / best-effort
+  read mode (`IDEAS.md`) — the future escape for callers who want to read a `nonzero` tar
+  without an exception.
 
 ## Capabilities
 
@@ -29,22 +42,28 @@ None.
 
 ### Modified Capabilities
 
-- `format-tar` — document stdlib silent mid-archive EOF as the same diagnostic; default
-  stays False under provisional Option D (replace if B/C/E wins).
-- `documentation` — formats + Gotchas teach the opt-in (or the new default’s escape
-  hatch); post-v1 native ZIP/TAR limitations framed as “may improve later.”
+- `format-tar` — split the EOF diagnostic on `observed_kind`: `nonzero` raises
+  `CorruptionError` regardless of the flag; `absent`/`short` warn by default and escalate to
+  `TruncatedError` under strict. Terminal escalation flows through the `partial-members-and-errors`
+  report model (RA extract fails closed; streaming writes-then-raises; `members_report()`
+  exposes the prefix).
+- `documentation` — formats + Gotchas teach the new signal-aware default and the narrowed
+  job of `strict_archive_eof=True` (escalate the ambiguous `absent`/`short` residual);
+  post-v1 native ZIP/TAR limitations framed as “may improve later.”
 
-If Option B/C/E wins before apply: also modify `archive-reading` (config default and/or
-RA vs streaming split) and possibly extract-report semantics (Option E). CLI strict-EOF
-wedge is a cross-note for `cli-v1` (not owned here).
+CLI strict-EOF wedge (`archivey test` strict by default) is a cross-note for `cli-v1` (not
+owned here). No `archive-reading` delta — config default/signature unchanged.
 
 ## Impact
 
-- **Public API:** possibly `ArchiveyConfig.strict_archive_eof` default; extract/`members()`
-  end-of-pass failure mode under Options B/C/E.
-- **Modules:** `config.py`, `tar_reader._verify_tar_eof`, tests under `test_tar.py` /
-  `test_archivey_config.py` / diagnostics; user docs (`formats.md`, future Gotchas); CLI
-  when present.
-- **Tests:** default-config expectations flip under B/C/E; Option D mostly docs + CLI +
-  maybe one recipe test.
+- **Public API:** TAR `members()` / `__iter__` now raise `CorruptionError` at end-of-pass on a
+  `nonzero` trailer under the default config (surfaced via the `partial-members-and-errors`
+  report — `members_report()` returns the prefix + error; RA extract fails closed; streaming
+  writes-then-raises). `ArchiveyConfig.strict_archive_eof` default is **unchanged** (`False`).
+- **Modules:** `tar_reader._verify_tar_eof` (the behavior change lives here); tests under
+  `test_tar.py` / `test_archivey_config.py` / `test_diagnostics.py`; user docs (`formats.md`,
+  future Gotchas); CLI when present. `config.py` unchanged.
+- **Tests:** new `nonzero`→`CorruptionError` default case; `absent`/`short` stay warn;
+  strict-mode `absent`/`short`→`TruncatedError` vs `nonzero`→`CorruptionError`; `tar -b1` +
+  trailing-padding regression (no false-positive `nonzero`).
 - **No extras/deps.**

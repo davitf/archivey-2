@@ -10,14 +10,27 @@
 a corrupt member header anywhere later is swallowed and iteration simply ends — so
 mid-archive corruption produces a **silently shortened listing**, never a
 `CorruptionError`. Confirmed against a corrupted-checksum fixture and a corrupted
-`.tar.gz` whose garbage decode parses as an invalid header (deep review W1). Archivey's
-backstop is the end-of-archive marker check in `TarReader._verify_tar_eof`: a
-corruption-shortened listing almost never sits on a valid two-block null trailer, so it
-fires `ARCHIVE_EOF_MARKER_MISSING` (WARNING by default; `strict_archive_eof=True`
-escalates to `TruncatedError`). The diagnostic message names both possibilities. A
-native TAR header walker (the 7z/RAR strategy applied to TAR) would make this
-archivey's own decision instead of tarfile's; until then the leniency is documented in
-`docs/formats.md`.
+`.tar.gz` whose garbage decode parses as an invalid header (deep review W1).
+
+Archivey's backstop is the end-of-archive check in `TarReader._verify_tar_eof`
+(`decide-strict-archive-eof-default`, Option F). When the stopped scan lands on a
+**rejected (non-null) header block**, archivey raises `CorruptionError` **by default**;
+a tar that merely ended on a member boundary without the two-block null trailer is warned
+via `ARCHIVE_EOF_MARKER_MISSING` (WARNING by default; `strict_archive_eof=True` escalates
+to `TruncatedError`). In random-access mode the rejected-header detection uses
+`_EofProbeStream`: after the header scan it inspects the block tarfile's final header
+attempt returned (always one more `next()` before stop), so it catches the case **even
+when the bad header is the archive's final block** — including after a GNU sparse member —
+without seeking back (no re-decompression on a compressed source).
+
+**Streaming limitation (open).** In forward-only streaming (`streaming=True`), tarfile's
+`_Stream` hides its header reads, so `_EofProbeStream` is unavailable and detection falls
+back to the trailing-block check. A rejected **final** header (a corrupt header as the
+archive's last block, nothing after) is therefore misclassified as `observed_kind="absent"`
+and surfaces as a missing-trailer warning, not `CorruptionError`. Random access catches
+this case. A native TAR header walker (the 7z/RAR strategy applied to TAR, open-issues P3)
+would validate each header at its offset and close the streaming gap. Documented for users
+in `docs/formats.md` and `docs/gotchas.md`.
 
 ## Importing the ISO backend patches pycdlib process-globally (by design)
 

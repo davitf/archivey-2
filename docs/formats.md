@@ -60,11 +60,21 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
   corrupt member header *after the first* as a clean end of archive — no exception is
   raised; iteration just stops early. Archivey backstops this with its end-of-archive
-  marker check: a listing cut short by corruption almost never lands on a valid
-  two-block null trailer, so it surfaces as the `ARCHIVE_EOF_MARKER_MISSING` diagnostic
-  (a warning by default). When a provably complete listing matters (inventory/dedupe
-  sweeps), set `ArchiveyConfig(strict_archive_eof=True)` to escalate that diagnostic to
-  `TruncatedError`.
+  marker check:
+    - When the shortened scan stops on a **rejected (non-null) header block**, archivey
+      raises `CorruptionError` **by default** — a well-formed tar never ends that way. In
+      random-access reads this holds even when the bad header is the archive's *final*
+      block.
+    - A tar that merely **ends cleanly on a member boundary without the two-block null
+      trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
+      boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
+      not raised. When a provably complete listing matters (inventory/dedupe sweeps), set
+      `ArchiveyConfig(strict_archive_eof=True)` to escalate that warning to `TruncatedError`.
+    - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
+      regardless of the flag.
+  - **Streaming caveat:** a corrupt header as the *final* block is caught in random-access
+    reads but not in forward-only streaming, where it surfaces as the missing-trailer
+    warning instead. A future native TAR reader may close this gap.
 
 ## 7z
 
