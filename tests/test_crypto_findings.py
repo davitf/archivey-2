@@ -544,6 +544,7 @@ def test_f5_check_rar5_password_accepts_and_rejects() -> None:
         _check_rar5_password(check_value, kdf_shift, salt, "nope")
 
 
+@requires("cryptography")
 @requires_binary("unrar")
 def test_f5_encrypted_header_fixture_still_opens() -> None:
     path = _rar_fixture("encrypted_header__.rar")
