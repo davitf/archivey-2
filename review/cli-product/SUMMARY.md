@@ -1,8 +1,8 @@
 # CLI-as-a-product review — SUMMARY
 
-> **Status (2026-07-19):** findings in #144; **P1–P3/P5–P7/P9–P13/D1 landed**
-> (Q1–Q3 decided; **P4/`--json` deferred** until `hash`/schema). Still need
-> **Q5–Q6** (P14) and **P8** polish. See `../STATUS.md` §1.
+> **Status (2026-07-19):** findings in #144; **P1–P3/P5–P7/P9–P14/D1 landed**
+> (Q1–Q3/Q5–Q6 decided; **P4/`--json` deferred** until `hash`/schema). **P8**
+> polish remains. See `../STATUS.md` §1.
 
 Deep review per `brief.md`: the merged `src/archivey/cli/` on `main` (post-#120,
 post-#131 fixes), judged as a **product** — muscle memory, output, errors, exit
@@ -88,7 +88,7 @@ public 0.2.0; polish = after.
 | P11 | **L** | `cli/extract_cmd.py:268,324-336` | Hoist/summary micro-copy: `extracting into src/` … `moved to src/` reads as a no-op; single-root reuse says `→ .` when everything actually landed in `./project/`. | polish |
 | P12 | **L** | argparse positionals | `archivey x` → "the following arguments are required: archive, patterns" — `patterns` is not required. | polish |
 | P13 | **L** | `cli/main.py:134-139` | Reserved-surface asymmetry: `--salvage` pre-verb is `unrecognized arguments` (globals otherwise work pre-verb); `-x`/`-l` get no "verbs are bare words — did you mean `x`?" hint. | polish |
-| P14 | **L** | `cli/main.py:158-162`, `cli/info_cmd.py` | No capability/dependency view: `--version` prints only the version (design Decision 10 mentioned a dependency matrix); `info` answers "what is this file" but not "can *this install* read it / what will it cost" (no `CostReceipt` story). | Q5/Q6 |
+| P14 | **L** | `cli/main.py:158-162`, `cli/info_cmd.py` | No capability/dependency view: `--version` prints only the version (design Decision 10 mentioned a dependency matrix); `info` answers "what is this file" but not "can *this install* read it / what will it cost" (no `CostReceipt` story). | **done** — `access:` from CostReceipt; `--version -v` format matrix (Q5/Q6) |
 | D1 | **L** | `cli/format.py` (from api-coherence) | List line has no mark for `ANTI` (falls to `"?"`, same as `OTHER`) and no non-current / superseded indicator — the member model's own distinctions are invisible in the first consumer. Folded here from api-coherence when that review archived. | polish |
 
 ## What is actually fine

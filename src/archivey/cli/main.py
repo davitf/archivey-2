@@ -9,9 +9,11 @@ from collections.abc import Sequence
 from typing import NoReturn, TextIO
 
 import archivey
+from archivey import format_availability, list_known_formats
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import run_extract
+from archivey.cli.format import format_format_label
 from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
@@ -202,8 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version",
-        action="version",
-        version=f"archivey {archivey.__version__}",
+        action="store_true",
+        help="print version and exit (-v adds format availability)",
     )
 
     sub = parser.add_subparsers(
@@ -310,7 +312,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_version(*, verbose: bool, out: TextIO) -> None:
+    """``--version`` / ``--version -v`` (Q6 / P14)."""
+    print(f"archivey {archivey.__version__}", file=out)
+    if not verbose:
+        return
+    print(file=out)
+    print("formats:", file=out)
+    for fmt in list_known_formats():
+        avail = format_availability(fmt)
+        label = format_format_label(fmt)
+        if avail.missing:
+            missing = "; ".join(f"{m.name} ({m.install_hint})" for m in avail.missing)
+            print(f"  {label}: {avail.support.value} — missing {missing}", file=out)
+        else:
+            print(f"  {label}: {avail.support.value}", file=out)
+
+
 def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
+    if bool(getattr(args, "version", False)):
+        _print_version(verbose=bool(getattr(args, "verbose", False)), out=out)
+        return EXIT_OK
+
     if bool(getattr(args, "salvage", False)):
         raise CliError("--salvage is not implemented yet", code=EXIT_USAGE)
 

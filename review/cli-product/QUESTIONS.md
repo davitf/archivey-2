@@ -66,28 +66,18 @@ hatch for scripts that need exact names before machine output exists.
 
 ## Q5 — Should `info` tell the cost/access story? (drives P14)
 
-`info` answers "what is this file" but not the library's signature "what
-will it cost" claim. Minimal version: one derived `access:` line (e.g.
-`random (indexed central directory)` / `sequential-only (solid; reading one
-member decodes its folder prefix)` / `sequential (no gzip index; install
-[seekable] for random access)`). Is that in-scope for the CLI, or does it
-wait for a `CostReceipt`-shaped public surface in the library? The CLI can
-derive today's version from `info.is_solid` + format + accelerator presence
-without new public API.
+**Decided (2026-07-19):** ship now. `archivey info` prints an `access:` line
+derived from the existing `ArchiveInfo.cost` / `CostReceipt` (no new library
+API). With `-v`, also print the raw axes (`listing`, `access_cost`, `stream`,
+`solid_blocks`). Accelerator install/AUTO-gate state stays out of this line
+(not on the frozen receipt; can extend later).
 
 ## Q6 — A "what can this install read" view (drives P14)
 
-Design Decision 10 listed `--version` as "version + optional dependency
-matrix"; shipped `--version` prints only the version string. The per-failure
-messages ("install the 'crypto' extra") are excellent but reactive. Options:
-`--version -v`, `archivey info` with no argument, or a future `archivey
-formats`/`doctor`. Any preference, or defer entirely? (Cheap and high-demo
-value: the maintainer's own "why can't I open this" debugging tool.)
-
-**Lean (2026-07-19):** prefer **`--version -v`** (or equivalent verbose
-version). Bare `archivey info` (no archive) feels unintuitive. Still open:
-ship in this pass vs defer; exact matrix shape (formats via
-`format_availability` / extras / both).
+**Decided (2026-07-19):** **`--version -v`** (not bare `info`). Prints
+`archivey <version>` then a `formats:` matrix from `list_known_formats()` /
+`format_availability()` (support level + missing install hints). Plain
+`--version` stays one line.
 
 ## Q7 — Two library-side message fixes surfaced here (P7, P9) — confirm owners
 

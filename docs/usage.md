@@ -214,7 +214,8 @@ archivey photos.zip                 # same as: archivey list photos.zip
 archivey l photos.zip               # list (alias)
 archivey t photos.zip               # full-read integrity check
 archivey x photos.zip               # safe extract (alias for extract)
-archivey info photos.zip            # format / identity (alias: detect)
+archivey info photos.zip            # format / identity + access cost (alias: detect)
+archivey --version -v               # version + format availability for this install
 ```
 
 ### Safer extract demo

@@ -91,8 +91,19 @@ def test_bare_invocation_is_usage() -> None:
     assert main([]) == EXIT_USAGE
 
 
-def test_version() -> None:
+def test_version(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--version"]) == EXIT_OK
+    assert capsys.readouterr().out.strip().startswith("archivey ")
+
+
+def test_version_verbose_lists_formats(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--version", "-v"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("archivey ")
+    assert "formats:" in out
+    assert "zip:" in out
+    assert main(["-v", "--version"]) == EXIT_OK
+    assert "formats:" in capsys.readouterr().out
 
 
 def test_default_list_dispatch(
@@ -347,7 +358,40 @@ def test_info_and_detect(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -
     assert "format:      zip" in out or "format:" in out and "zip" in out
     assert "ArchiveFormat.ZIP" not in out
     assert "SEVEN_Z" not in out
+    assert "access:      random (indexed)" in out
     assert main(["detect", str(sample_zip)]) == EXIT_OK
+
+
+def test_info_verbose_prints_cost_axes(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["info", "-v", str(sample_zip)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "access:      random (indexed)" in out
+    assert "listing:     indexed" in out
+    assert "access_cost: direct" in out
+    assert "stream:      seekable" in out
+
+
+def test_info_access_solid_for_tar_gz(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import gzip
+    import io
+    import tarfile
+
+    tar_path = tmp_path / "a.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        info = tarfile.TarInfo("hello.txt")
+        info.size = 5
+        tf.addfile(info, io.BytesIO(b"hello"))
+    gz_path = tmp_path / "a.tar.gz"
+    gz_path.write_bytes(gzip.compress(tar_path.read_bytes()))
+
+    assert main(["info", str(gz_path)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "access:      solid (" in out
+    assert "listing requires decompression" in out
 
 
 def test_info_track_io_is_explicit_na(
@@ -862,13 +906,25 @@ def test_password_eof_treated_as_no_password(
     assert "Password required" in text
 
 
-def test_escape_member_name_controls() -> None:
-    from archivey.cli.format import escape_member_name
+def test_format_access_summary() -> None:
+    from archivey.cli.format import format_access_summary
+    from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 
-    assert escape_member_name("ok.txt") == "ok.txt"
-    assert "\\x1b" in escape_member_name("evil\x1b[31mRED\x1b[0m.txt")
-    assert "\\r" in escape_member_name("line1\rOK  fine.txt")
-    assert "\\\\" in escape_member_name("a\\b")
+    indexed = CostReceipt(
+        listing_cost=ListingCost.INDEXED,
+        access_cost=AccessCost.DIRECT,
+        stream_capability=StreamCapability.SEEKABLE,
+    )
+    assert format_access_summary(indexed) == "random (indexed)"
+
+    solid = CostReceipt(
+        listing_cost=ListingCost.REQUIRES_DECOMPRESSION,
+        access_cost=AccessCost.SOLID,
+        stream_capability=StreamCapability.SEEKABLE,
+        solid_block_count=1,
+    )
+    assert "solid (" in format_access_summary(solid)
+    assert "1 solid block" in format_access_summary(solid)
 
 
 def test_list_escapes_control_bytes_in_names(

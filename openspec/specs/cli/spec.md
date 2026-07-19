@@ -161,15 +161,34 @@ report how many members were written before the stop.
 The system SHALL provide `archivey info` (alias `detect`) that reports detected
 and/or opened format identity for a path without listing every member. It SHALL
 be suitable for answering "what does archivey think this file is?" including
-failure cases with a typed/clear error.
+failure cases with a typed/clear error. After a successful open, `info` SHALL
+print an `access:` line summarizing the archive's `CostReceipt` (listing /
+member-access / stream axes) in human prose. With `-v` / `--verbose`, it SHALL
+also print the raw cost axes (`listing`, `access_cost`, `stream`,
+`solid_blocks`).
 
 #### Scenario: info vs list
 
 | Case | Expected |
 | --- | --- |
-| `archivey info <archive>` / `archivey detect <archive>` | Prints format/identity summary; does not dump full member listing |
+| `archivey info <archive>` / `archivey detect <archive>` | Prints format/identity summary including `access:`; does not dump full member listing |
+| `archivey info -v <indexed-zip>` | Includes `access: random (indexed)` and raw cost axes |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
+
+### Requirement: version reports package identity and optional format matrix
+
+`--version` SHALL print `archivey <version>` and exit. With `-v` / `--verbose`,
+it SHALL also print a `formats:` matrix from the registry availability API
+(`list_known_formats` / `format_availability`), including missing-component
+install hints when support is not full.
+
+#### Scenario: version
+
+| Case | Expected |
+| --- | --- |
+| `archivey --version` | One line: `archivey <version>`; exit `0` |
+| `archivey --version -v` / `archivey -v --version` | Version line plus `formats:` availability matrix |
 
 ### Requirement: salvage flag reserved without behavior
 

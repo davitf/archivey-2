@@ -10,7 +10,7 @@ a finding is fixed or a question is decided.
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
-| `cli-product/` | yes (#144) | **P1–P3/P5–P7/P9–P13/D1 done** (Q1–Q3 decided; P4 deferred); still open: P8/P14 + Q5–Q6 | no |
+| `cli-product/` | yes (#144) | **P1–P3/P5–P7/P9–P14/D1 done** (Q1–Q3/Q5–Q6 decided; P4 deferred); **P8** polish remains | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
 `archive/2026-07-19-stream-layering/`.
@@ -32,8 +32,9 @@ Archived this pass: `archive/2026-07-19-api-coherence/`,
 | **P1** | Extract CONTINUE + `--stop-on-error` + exit 3 (Q1). | **done** |
 | **P2** | No-match include warnings + extract/test exit 1 + `-d` hint (Q3). | **done** |
 | **P4** | `--json` for scripting audience. | **deferred** (Q2) — wait for `hash` / member schema |
+| **P14** | `info` access/cost line + `--version -v` capability matrix (Q5/Q6). | **done** |
 
-Still waiting on Q5–Q6: **P14**. **P8** polish remains.
+Still waiting: **P8** polish remains.
 
 ### From `performance/`
 
@@ -55,7 +56,7 @@ Still waiting on Q5–Q6: **P14**. **P8** polish remains.
 | **Q2** | **P4** `--json` timing | **decided** — wait for `hash` / member schema (no minimal JSON in 0.2.0) |
 | **Q3** | **P2** no-match filters exit code | **decided** — warn; extract/test exit 1; list exit 0; `-d` hint |
 | **Q4** | **P3** control-byte quoting style | lean applied (escape everywhere / backslash); `--raw`/TTY-only still open |
-| **Q5 / Q6** | **P14** `info` cost line / install capability view | open |
+| **Q5 / Q6** | **P14** `info` cost line / install capability view | **decided** — `info` prints `access:` from `CostReceipt`; `--version -v` format matrix |
 | **Q7** | P7/P9 library vs CLI ownership | **done** (library) |
 
 ### `performance/QUESTIONS.md`

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from archivey.types import ArchiveMember, MemberType
+from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+from archivey.types import ArchiveFormat, ArchiveMember, MemberType
 
 _TYPE_MARK = {
     MemberType.FILE: "f",
@@ -22,6 +23,14 @@ _CONTROL_ESCAPE = {
     "\t": "\\t",
     "\\": "\\\\",
 }
+
+
+def format_format_label(fmt: ArchiveFormat) -> str:
+    """Human format name (``zip``, ``7z``, ``tar.gz``) rather than enum spellings."""
+    ext = fmt.file_extension()
+    if ext:
+        return ext
+    return fmt.display_name.lower().replace("_", "-")
 
 
 def escape_member_name(name: str) -> str:
@@ -125,3 +134,36 @@ def format_member_line(
             line = f"{line}  ({diag})"
 
     return line
+
+
+def format_access_summary(cost: CostReceipt) -> str:
+    """One-line human summary of ``CostReceipt`` for ``archivey info`` (Q5 / P14).
+
+    Derived from the public open-time axes only — not accelerator install state
+    (that lives in config / diagnostics, not the frozen receipt).
+    """
+    if cost.access_cost is AccessCost.SOLID:
+        bits: list[str] = []
+        if cost.listing_cost is ListingCost.REQUIRES_DECOMPRESSION:
+            bits.append("listing requires decompression")
+        elif cost.listing_cost is ListingCost.REQUIRES_SCANNING:
+            bits.append("listing requires scan")
+        elif cost.listing_cost is ListingCost.INDEXED:
+            bits.append("reading one member may decode earlier members in its block")
+        if cost.solid_block_count is not None:
+            n = cost.solid_block_count
+            bits.append(f"{n} solid block{'s' if n != 1 else ''}")
+        if cost.stream_capability is StreamCapability.FORWARD_ONLY:
+            bits.append("forward-only source")
+        return f"solid ({'; '.join(bits)})" if bits else "solid"
+
+    if cost.listing_cost is ListingCost.INDEXED:
+        head = "random (indexed)"
+    elif cost.listing_cost is ListingCost.REQUIRES_SCANNING:
+        head = "random (listing requires scan)"
+    else:
+        head = "random (listing requires decompression)"
+
+    if cost.stream_capability is StreamCapability.FORWARD_ONLY:
+        return f"{head}; forward-only source"
+    return head
