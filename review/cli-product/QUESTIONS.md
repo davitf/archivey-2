@@ -84,6 +84,11 @@ messages ("install the 'crypto' extra") are excellent but reactive. Options:
 formats`/`doctor`. Any preference, or defer entirely? (Cheap and high-demo
 value: the maintainer's own "why can't I open this" debugging tool.)
 
+**Lean (2026-07-19):** prefer **`--version -v`** (or equivalent verbose
+version). Bare `archivey info` (no archive) feels unintuitive. Still open:
+ship in this pass vs defer; exact matrix shape (formats via
+`format_availability` / extras / both).
+
 ## Q7 — Two library-side message fixes surfaced here (P7, P9) — confirm owners
 
 **Done (library-owned, as recommended):** truncated/corrupt zip prose (no
