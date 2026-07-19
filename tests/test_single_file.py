@@ -261,6 +261,7 @@ def test_gzip_metadata_omits_crc_without_gzip_magic() -> None:
         peek_trailer=lambda _n: b"\x11\x22\x33\x44\x55\x66\x77\x88",
         probe_decompressed_size=lambda: None,
         probe_gzip_stored_crc32=boom,
+        probe_lzip_index=lambda: None,
     )
     GzipCodec().extract_metadata(ctx, member)
     assert HashAlgorithm.CRC32 not in member.hashes
@@ -280,13 +281,40 @@ def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
     path.write_bytes(make_lzip_member(payload))
     with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
         member = ar.members()[0]
+        assert member.size == len(payload)
         assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
-    # Same gate as size: without declared SEEKABLE, omit the trailer CRC.
+    # Same gate as size: without declared SEEKABLE, omit size and trailer CRC.
     with open_archive(path) as ar:
-        assert HashAlgorithm.CRC32 not in ar.members()[0].hashes
+        member = ar.members()[0]
+        assert member.size is None
+        assert HashAlgorithm.CRC32 not in member.hashes
 
 
-def test_other_single_file_codecs_omit_stored_crc32(tmp_path: Path) -> None:
+def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    import archivey.internal.streams.lzip as lzip_mod
+    from tests.streams_util import make_multi_member_lzip
+
+    parts = [b"alpha-payload", b"beta" * 20, b"gamma"]
+    path = tmp_path / "multi.lz"
+    path.write_bytes(make_multi_member_lzip(parts))
+    full = b"".join(parts)
+
+    with patch.object(
+        lzip_mod, "_read_index_backwards", wraps=lzip_mod._read_index_backwards
+    ) as scanned:
+        with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
+            member = ar.members()[0]
+            assert scanned.call_count == 1, (
+                "size + CRC must share one backward index scan"
+            )
+            assert member.size == len(full)
+            assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(full))
+            assert ar.read(member) == full
+
+
+def test_other_single_file_codecs_omit_stored_digests(tmp_path: Path) -> None:
     payload = b"no-whole-member-crc"
     cases = {
         "data.bz2": bz2.compress(payload),
@@ -298,6 +326,21 @@ def test_other_single_file_codecs_omit_stored_crc32(tmp_path: Path) -> None:
         path.write_bytes(blob)
         with open_archive(path) as ar:
             assert HashAlgorithm.CRC32 not in ar.members()[0].hashes, name
+            assert HashAlgorithm.ADLER32 not in ar.members()[0].hashes, name
+
+
+def test_zlib_omits_hashes_but_verifies_adler_on_read(tmp_path: Path) -> None:
+    """Adler-32 is not on member.hashes, but a corrupt trailer still fails on read."""
+    path = tmp_path / "bad-adler.zz"
+    blob = bytearray(zlib.compress(b"zlib-adler-payload" * 5))
+    blob[-1] ^= 0xFF
+    path.write_bytes(blob)
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        assert HashAlgorithm.ADLER32 not in member.hashes
+        assert HashAlgorithm.CRC32 not in member.hashes
+        with pytest.raises(CorruptionError):
+            ar.read(member)
 
 
 def test_stored_gzip_crc32_does_not_change_read_or_verification(tmp_path: Path) -> None:

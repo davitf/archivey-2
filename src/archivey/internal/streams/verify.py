@@ -83,11 +83,28 @@ class _Crc32Hasher:
         return (self._value & 0xFFFFFFFF).to_bytes(self.digest_size, "big")
 
 
+class _Adler32Hasher:
+    """A ``hashlib``-shaped wrapper over ``zlib.adler32`` (RFC 1950 / standalone zlib)."""
+
+    digest_size = 4
+
+    def __init__(self) -> None:
+        self._value = 1  # zlib.adler32(b"")
+
+    def update(self, data: bytes, /) -> None:
+        self._value = zlib.adler32(data, self._value)
+
+    def digest(self) -> bytes:
+        return (self._value & 0xFFFFFFFF).to_bytes(self.digest_size, "big")
+
+
 def _make_hasher(algorithm: Any) -> Callable[[], _IncrementalHasher] | None:
     """Return a zero-arg factory for an incremental hasher, or ``None`` if unavailable."""
     name = _algo_key(algorithm)
     if name == "crc32":
         return _Crc32Hasher
+    if name == "adler32":
+        return _Adler32Hasher
     if name == "blake2sp":
         # RAR5 BLAKE2sp — not in hashlib; zero-dep tree hash on blake2s (see hashing/).
         return Blake2sp

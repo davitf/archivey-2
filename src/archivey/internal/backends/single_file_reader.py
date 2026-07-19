@@ -41,6 +41,7 @@ from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
+    Codec,
     MetadataContext,
     gzip_has_additional_member,
     open_codec_stream,
@@ -48,6 +49,7 @@ from archivey.internal.streams.codecs import (
     stream_codec_for_format,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
+from archivey.internal.streams.lzip import peek_index_summary
 from archivey.internal.streams.streamtools import (
     SharedSource,
     is_seekable,
@@ -183,6 +185,7 @@ class SingleFileReader(BaseArchiveReader):
             peek_trailer=self._peek_trailer,
             probe_decompressed_size=self._probe_decompressed_size,
             probe_gzip_stored_crc32=self._probe_gzip_stored_crc32,
+            probe_lzip_index=self._probe_lzip_index,
         )
 
     def _peek_header(self, length: int) -> bytes:
@@ -273,6 +276,28 @@ class SingleFileReader(BaseArchiveReader):
             if len(trailer) < 8:
                 return None
             return struct.unpack_from("<I", trailer, 0)[0]
+
+        return self._with_seekable_source(probe)
+
+    def _probe_lzip_index(self) -> tuple[int, int] | None:
+        """Decompressed size + combined CRC-32 from one seekable lzip index scan.
+
+        Same gate as size historically: path source with declared SEEKABLE so the index
+        scan is enabled. Returns ``None`` when the index is unavailable or corrupt.
+        """
+        if self._codec is not Codec.LZIP:
+            return None
+        if not isinstance(self._source, Path) or not self._codec_config.seekable:
+            return None
+
+        def probe(f: BinaryIO) -> tuple[int, int] | None:
+            size = f.seek(0, io.SEEK_END)
+            if size < 26:  # header(6) + trailer(20)
+                return None
+            try:
+                return peek_index_summary(f, size)
+            except ArchiveyError:
+                return None
 
         return self._with_seekable_source(probe)
 

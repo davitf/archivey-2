@@ -514,13 +514,16 @@ class MetadataContext:
     ``probe_decompressed_size()`` returns the decompressed size from the stream
     index/trailer when cheaply available (else ``None``); ``probe_gzip_stored_crc32()``
     returns the single-member gzip trailer CRC when that is cheaply knowable (else
-    ``None``), in one seekable pass.
+    ``None``), in one seekable pass; ``probe_lzip_index()`` returns
+    ``(decompressed_size, combined_crc32)`` from one seekable lzip index scan when
+    available (else ``None``).
     """
 
     peek_header: Callable[[int], bytes]
     peek_trailer: Callable[[int], bytes | None]
     probe_decompressed_size: Callable[[], int | None]
     probe_gzip_stored_crc32: Callable[[], int | None]
+    probe_lzip_index: Callable[[], tuple[int, int] | None]
 
 
 # --- the codec descriptors -------------------------------------------------------------
@@ -895,24 +898,19 @@ class LzipCodec(_SizedLzmaCodec):
         return LzipDecompressorStream(source, seekable=config.seekable)
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
-        """Surface decompressed size and the trailer CRC-32 under the same cheap gate.
+        """Surface decompressed size and whole-member CRC-32 from one seekable index scan.
 
-        Size comes from the seekable lzip index (``probe_decompressed_size``). The trailer
-        CRC is surfaced only when that probe succeeds *and* the file is a single lzip
-        member (``member_size`` equals the compressed source size) — a multi-member ``.lz``
-        has no single whole-stream stored CRC for the one synthetic archive member.
+        ``probe_lzip_index`` returns both values from a single backward trailer walk.
+        The CRC is the combine of every per-member trailer CRC-32 with that member's
+        uncompressed ``data_size`` (single-member degenerates to the trailer CRC).
         """
-        member.size = ctx.probe_decompressed_size()
-        if member.size is None or member.compressed_size is None:
+        summary = ctx.probe_lzip_index()
+        if summary is None:
             return
-        trailer = ctx.peek_trailer(20)
-        if trailer is None or len(trailer) < 20:
-            return
-        crc32, _data_size, member_size = struct.unpack_from("<IQQ", trailer, 0)
-        if member_size == member.compressed_size:
-            hashes = dict(member.hashes)
-            hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
-            member.hashes = hashes
+        member.size, crc32 = summary
+        hashes = dict(member.hashes)
+        hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
+        member.hashes = hashes
 
 
 def _alone_props_plausible(props: int) -> bool:
@@ -1214,7 +1212,6 @@ class UnixCompressCodec(StreamCodec):
 
 def _parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
     """Parse 7z PPMd var.H coder properties → ``(order, mem_size)``."""
-    import struct
 
     if properties is None:
         raise ValueError("PPMd requires coder properties (order + mem size)")
