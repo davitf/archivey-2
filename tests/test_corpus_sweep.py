@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import zlib
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,7 @@ from archivey import (
     format_availability,
     open_archive,
 )
-from archivey.types import HashAlgorithm
+from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import _has_zstd_backend
 from tests.sample_archives import (
     BUILDER_BINARIES,
@@ -292,4 +293,7 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
             assert HashAlgorithm.ADLER32 not in member.hashes
     if key == "lz":
         with open_archive(source, member_streams=MemberStreams.SEEKABLE) as ar:
-            assert HashAlgorithm.CRC32 in ar.members()[0].hashes
+            member = ar.members()[0]
+            assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(
+                zlib.crc32(payload.contents)
+            )

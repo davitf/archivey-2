@@ -329,6 +329,20 @@ def test_other_single_file_codecs_omit_stored_digests(tmp_path: Path) -> None:
             assert HashAlgorithm.ADLER32 not in ar.members()[0].hashes, name
 
 
+def test_zlib_omits_hashes_but_verifies_adler_on_read(tmp_path: Path) -> None:
+    """Adler-32 is not on member.hashes, but a corrupt trailer still fails on read."""
+    path = tmp_path / "bad-adler.zz"
+    blob = bytearray(zlib.compress(b"zlib-adler-payload" * 5))
+    blob[-1] ^= 0xFF
+    path.write_bytes(blob)
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        assert HashAlgorithm.ADLER32 not in member.hashes
+        assert HashAlgorithm.CRC32 not in member.hashes
+        with pytest.raises(CorruptionError):
+            ar.read(member)
+
+
 def test_stored_gzip_crc32_does_not_change_read_or_verification(tmp_path: Path) -> None:
     payload = b"verify-unchanged"
     path = tmp_path / "ok.gz"

@@ -2,8 +2,9 @@
 
 These match zlib's ``crc32_combine_`` / ``adler32_combine_``: given digests of
 ``a`` and ``b`` plus ``len(b)``, return the digest of ``a + b`` without seeing the
-bytes. Used to surface whole-stream digests from per-unit trailers (multi-member
-lzip).
+bytes. ``crc32_combine`` surfaces whole-stream digests from per-unit trailers
+(multi-member lzip). ``adler32_combine`` is the paired helper (same algebra; no
+current production caller — kept so 3.11 has both without waiting on 3.15).
 """
 
 from __future__ import annotations
