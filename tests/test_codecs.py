@@ -561,10 +561,11 @@ def test_verify_matching_adler32_passes() -> None:
 
 
 def test_verify_adler32_mismatch_raises() -> None:
-    bad = (zlib.adler32(CONTENT) ^ 0xFFFF).to_bytes(4, "big")
+    bad = ((zlib.adler32(CONTENT) & 0xFFFFFFFF) ^ 0xFFFF).to_bytes(4, "big")
     stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.ADLER32: bad})
+    assert stream.read() == CONTENT  # data delivered first
     with pytest.raises(CorruptionError, match="adler32"):
-        stream.read()
+        stream.read()  # terminal empty read verifies
 
 
 def test_verify_multiple_algorithms() -> None:

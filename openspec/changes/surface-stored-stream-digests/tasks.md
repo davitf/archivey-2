@@ -38,7 +38,7 @@
 
 ## 6. Verify
 
-- [ ] 6.1 Targeted tests for combine helpers, zlib Adler peek, multi-lzip CRC
-- [ ] 6.2 `uv run --no-sync pytest` for affected tests; `ruff format` / check on
+- [x] 6.1 Targeted tests for combine helpers, zlib Adler peek, multi-lzip CRC
+- [x] 6.2 `uv run --no-sync pytest` for affected tests; `ruff format` / check on
       touched paths
-- [ ] 6.3 `openspec validate --strict surface-stored-stream-digests`
+- [x] 6.3 `openspec validate --strict surface-stored-stream-digests`
