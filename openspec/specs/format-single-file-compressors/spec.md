@@ -169,35 +169,43 @@ readable without adding another `ReadBackend` subclass.
 | Register a new standalone codec descriptor | Existing backend reads it through the descriptor |
 | Required codec backend is missing | Format availability reports `NONE`, not a separate backend failure |
 
-### Requirement: Surface the stored decompressed CRC without decompression
+### Requirement: Surface stored decompressed digests without decompression
 
-The single-file backend SHALL surface a codec's stored decompressed-content CRC-32 as
-`member.hashes["crc32"]` when it is cheaply readable from the source without
-decompressing, and SHALL omit it otherwise. This serves cheap dedupe (`VISION.md`
-"hashes without decompression") and never triggers a decompression pass.
+The single-file backend SHALL surface a codec's stored (or cheaply derived-from-stored)
+decompressed-content digest(s) on `member.hashes` when readable without decompressing,
+and SHALL omit them otherwise. This serves cheap dedupe (`VISION.md` "hashes without
+decompression") and never triggers a decompression pass.
 
-- **GZIP:** the 8-byte trailer's CRC-32 SHALL be surfaced only when the stream contains
-  exactly one member and the source is seekable/path (peek the trailer). For concatenated
-  multi-member gzip the trailer CRC covers only the last member, so `crc32` SHALL be
-  omitted. Reuse the member-count detection already used by the truncation backstop.
-- **LZIP:** the per-member trailer CRC-32 SHALL be surfaced via the seekable lzip backend
-  (which already reads the trailer for size); omitted when that backend/source is
-  unavailable.
-- **Non-seekable source:** `crc32` SHALL be omitted (no forced decode); callers compute it
-  while reading.
-- **BZ2, XZ, ZLIB, BR, `.Z`:** no cheap whole-member stored CRC — `crc32` SHALL be absent.
+Keys and value types follow the public `HashAlgorithm` / `bytes` contract (api-coherence
+hashes typing). Surfacing SHALL NOT change read behavior: a full read still verifies via
+the existing path; stored/derived values are metadata only.
 
-Surfacing the stored CRC SHALL NOT change read behavior or verification: a full read still
-verifies via the existing path, and the stored value is metadata only.
+- **GZIP:** trailer `CRC32` only when exactly one member and the source is seekable/path.
+  Multi-member → omit (trailer covers only the last member; mid-member trailers are not
+  cheap without decompress).
+- **LZIP:** when the seekable lzip index is available, surface `CRC32` of the whole
+  synthetic member. For multi-member files, the value SHALL equal
+  `crc32(concat(member payloads))` derived by combining per-trailer CRC-32 values with
+  each member's exact uncompressed `data_size` (combine algebra). Single-member
+  degenerates to the trailer CRC.
+- **ZLIB:** seekable/path complete single-stream file → surface trailer `ADLER32`
+  (RFC 1950, last 4 bytes, network order). Non-seekable or unrecognized layout → omit.
+- **Non-seekable source:** omit digests that require a trailer/index peek (no forced
+  decode).
+- **BZ2, XZ, BR, `.Z`:** no cheap whole-member stored digest in this change — omit.
 
-#### Scenario: stored CRC surfacing by codec
+#### Scenario: stored-digest surfacing by codec
 
-| Case | `member.hashes["crc32"]` |
+| Case | `member.hashes` |
 | --- | --- |
-| Single-member `.gz`, seekable/path source | Present (trailer CRC-32) |
-| Multi-member `.gz` | Absent (trailer covers only last member) |
-| `.gz` on a non-seekable source | Absent (no forced decode) |
-| `.lz` via seekable lzip backend | Present (per-member trailer CRC-32) |
-| `.bz2` / `.xz` / `.zlib` / `.br` / `.Z` | Absent (no cheap whole-member stored CRC) |
-| Any of the above, full `read()` | Verification unchanged; stored value is metadata only |
+| Single-member `.gz`, seekable/path | `CRC32` present |
+| Multi-member `.gz` | no digest key |
+| `.gz` non-seekable | no digest key |
+| Single-member `.lz`, seekable lzip index | `CRC32` present (= trailer) |
+| Multi-member `.lz`, seekable lzip index | `CRC32` present (= combine of per-member trailers) |
+| `.lz` without seekable index | no digest key |
+| Standalone zlib, seekable/path single stream | `ADLER32` present |
+| zlib non-seekable | no digest key |
+| `.bz2` / `.xz` / `.br` / `.Z` | no digest key |
+| Any of the above, full `read()` | verification unchanged; hashes are metadata only |
 

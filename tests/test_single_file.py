@@ -261,6 +261,7 @@ def test_gzip_metadata_omits_crc_without_gzip_magic() -> None:
         peek_trailer=lambda _n: b"\x11\x22\x33\x44\x55\x66\x77\x88",
         probe_decompressed_size=lambda: None,
         probe_gzip_stored_crc32=boom,
+        probe_lzip_stored_crc32=lambda: None,
     )
     GzipCodec().extract_metadata(ctx, member)
     assert HashAlgorithm.CRC32 not in member.hashes
@@ -286,18 +287,50 @@ def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
         assert HashAlgorithm.CRC32 not in ar.members()[0].hashes
 
 
+def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
+    from tests.streams_util import make_multi_member_lzip
+
+    parts = [b"alpha-payload", b"beta" * 20, b"gamma"]
+    path = tmp_path / "multi.lz"
+    path.write_bytes(make_multi_member_lzip(parts))
+    full = b"".join(parts)
+    with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
+        member = ar.members()[0]
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(full))
+        assert ar.read(member) == full
+
+
+def test_zlib_exposes_stored_adler32(tmp_path: Path) -> None:
+    payload = b"zlib-adler-payload" * 5
+    path = tmp_path / "data.zz"
+    path.write_bytes(zlib.compress(payload))
+    expected = (zlib.adler32(payload) & 0xFFFFFFFF).to_bytes(4, "big")
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        assert member.hashes[HashAlgorithm.ADLER32] == expected
+        assert HashAlgorithm.CRC32 not in member.hashes
+
+
+def test_zlib_omits_adler32_on_nonseekable_source() -> None:
+    data = zlib.compress(b"pipe-zlib")
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+        report = ar.members_report_if_available()
+        assert report is not None
+        assert HashAlgorithm.ADLER32 not in report[0].hashes
+
+
 def test_other_single_file_codecs_omit_stored_crc32(tmp_path: Path) -> None:
     payload = b"no-whole-member-crc"
     cases = {
         "data.bz2": bz2.compress(payload),
         "data.xz": lzma.compress(payload),
-        "data.zz": zlib.compress(payload),
     }
     for name, blob in cases.items():
         path = tmp_path / name
         path.write_bytes(blob)
         with open_archive(path) as ar:
             assert HashAlgorithm.CRC32 not in ar.members()[0].hashes, name
+            assert HashAlgorithm.ADLER32 not in ar.members()[0].hashes, name
 
 
 def test_stored_gzip_crc32_does_not_change_read_or_verification(tmp_path: Path) -> None:

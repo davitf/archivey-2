@@ -514,13 +514,15 @@ class MetadataContext:
     ``probe_decompressed_size()`` returns the decompressed size from the stream
     index/trailer when cheaply available (else ``None``); ``probe_gzip_stored_crc32()``
     returns the single-member gzip trailer CRC when that is cheaply knowable (else
-    ``None``), in one seekable pass.
+    ``None``), in one seekable pass; ``probe_lzip_stored_crc32()`` returns the whole-member
+    CRC-32 derived from the seekable lzip index (combined across members) when available.
     """
 
     peek_header: Callable[[int], bytes]
     peek_trailer: Callable[[int], bytes | None]
     probe_decompressed_size: Callable[[], int | None]
     probe_gzip_stored_crc32: Callable[[], int | None]
+    probe_lzip_stored_crc32: Callable[[], int | None]
 
 
 # --- the codec descriptors -------------------------------------------------------------
@@ -895,21 +897,15 @@ class LzipCodec(_SizedLzmaCodec):
         return LzipDecompressorStream(source, seekable=config.seekable)
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
-        """Surface decompressed size and the trailer CRC-32 under the same cheap gate.
+        """Surface decompressed size and whole-member CRC-32 from the seekable index.
 
-        Size comes from the seekable lzip index (``probe_decompressed_size``). The trailer
-        CRC is surfaced only when that probe succeeds *and* the file is a single lzip
-        member (``member_size`` equals the compressed source size) — a multi-member ``.lz``
-        has no single whole-stream stored CRC for the one synthetic archive member.
+        Size comes from the seekable lzip index (``probe_decompressed_size``). The CRC is
+        the combine of every per-member trailer CRC-32 with that member's uncompressed
+        ``data_size`` (single-member degenerates to the trailer CRC).
         """
         member.size = ctx.probe_decompressed_size()
-        if member.size is None or member.compressed_size is None:
-            return
-        trailer = ctx.peek_trailer(20)
-        if trailer is None or len(trailer) < 20:
-            return
-        crc32, _data_size, member_size = struct.unpack_from("<IQQ", trailer, 0)
-        if member_size == member.compressed_size:
+        crc32 = ctx.probe_lzip_stored_crc32()
+        if crc32 is not None:
             hashes = dict(member.hashes)
             hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
             member.hashes = hashes
@@ -1093,6 +1089,26 @@ class ZlibCodec(_ZlibErrorCodec):
         """Recognize a zlib stream: a known CMF/FLG header (fail-fast) that then decodes."""
         return prefix[:2] in _ZLIB_HEADERS and self._decodes_sample(prefix)
 
+    def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
+        """Surface RFC 1950 Adler-32 (last 4 bytes, network order) when cheaply peekable.
+
+        Seekable/path complete single-stream files only. Non-seekable sources and
+        unrecognized headers omit the digest (no forced decode).
+        """
+        header = ctx.peek_header(2)
+        if header[:2] not in _ZLIB_HEADERS:
+            return
+        # Minimum zlib stream: CMF/FLG (2) + empty deflate block (≥2) + Adler-32 (4).
+        trailer = ctx.peek_trailer(4)
+        if trailer is None or len(trailer) < 4:
+            return
+        # Need room for a header before the Adler trailer.
+        if member.compressed_size is not None and member.compressed_size < 8:
+            return
+        hashes = dict(member.hashes)
+        hashes[HashAlgorithm.ADLER32] = trailer
+        member.hashes = hashes
+
 
 class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD
@@ -1214,7 +1230,6 @@ class UnixCompressCodec(StreamCodec):
 
 def _parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
     """Parse 7z PPMd var.H coder properties → ``(order, mem_size)``."""
-    import struct
 
     if properties is None:
         raise ValueError("PPMd requires coder properties (order + mem size)")

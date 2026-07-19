@@ -410,9 +410,12 @@ The asserted matrix SHALL match the documented policy:
 | RAR5 | FILE with CRC32 | `crc32` present |
 | RAR5 | FILE with Blake2sp only | `blake2sp` present, `crc32` absent |
 | single-file GZIP | single member, seekable | `crc32` present |
-| single-file GZIP | multi-member or non-seekable | `crc32` absent |
-| single-file LZIP | via seekable lzip backend | `crc32` present |
-| single-file BZ2/XZ/ZLIB/BR/`.Z`, TAR, directory | any | no stored-digest key |
+| single-file GZIP | multi-member or non-seekable | digest keys absent |
+| single-file LZIP | seekable lzip index (one or many members) | `crc32` present |
+| single-file LZIP | no seekable index | digest keys absent |
+| single-file ZLIB | seekable/path single stream | `adler32` present |
+| single-file ZLIB | non-seekable | digest keys absent |
+| single-file BZ2/XZ/BR/`.Z`, TAR, directory | any | no stored-digest key |
 
 #### Scenario: parity sweep
 
@@ -421,6 +424,7 @@ The asserted matrix SHALL match the documented policy:
 | Backend surfaces its documented stored digest for an applicable member | Sweep passes |
 | A backend stops populating a documented digest | Sweep fails |
 | A backend populates a digest the format does not store | Sweep fails |
+| Multi-member lzip combined `crc32` matches `crc32` of full decompressed concat | Sweep or focused unit test passes |
 
 
 ### Requirement: BLAKE2sp verification is tested with KATs and a RAR5 oracle

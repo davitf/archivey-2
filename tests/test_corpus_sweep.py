@@ -140,7 +140,11 @@ def _check_listing(ar, entry: CorpusEntry, key: str) -> None:
 def _assert_stored_digest_parity(member, key: str) -> None:
     """Assert documented stored-digest keys are present/absent (testing-contract)."""
     keys = set(member.hashes)
-    digest_keys = keys & {HashAlgorithm.CRC32, HashAlgorithm.BLAKE2SP}
+    digest_keys = keys & {
+        HashAlgorithm.CRC32,
+        HashAlgorithm.BLAKE2SP,
+        HashAlgorithm.ADLER32,
+    }
     if key == "zip":
         if member.type in (MemberType.FILE, MemberType.SYMLINK):
             # AE-2 (WinZip AES) stores CRC as 0 and relies on the HMAC — no crc32 digest.
@@ -276,14 +280,18 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
             assert member.modified is not None
             assert int(member.modified.timestamp()) == payload.mtime
         # Stored-digest parity: single-member gzip always (path source); lzip only with
-        # declared SEEKABLE (same gate as size); other codecs omit.
+        # declared SEEKABLE (same gate as size); zlib Adler-32 on seekable/path; others omit.
         if key in ("gz", "gz-meta"):
             assert HashAlgorithm.CRC32 in member.hashes
         elif key == "lz":
             assert HashAlgorithm.CRC32 not in member.hashes
+        elif key == "zz":
+            assert HashAlgorithm.ADLER32 in member.hashes
+            assert HashAlgorithm.CRC32 not in member.hashes
         else:
             assert HashAlgorithm.CRC32 not in member.hashes
             assert HashAlgorithm.BLAKE2SP not in member.hashes
+            assert HashAlgorithm.ADLER32 not in member.hashes
     if key == "lz":
         with open_archive(source, member_streams=MemberStreams.SEEKABLE) as ar:
             assert HashAlgorithm.CRC32 in ar.members()[0].hashes

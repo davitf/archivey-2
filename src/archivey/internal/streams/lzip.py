@@ -26,6 +26,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.hashing import crc32_combine
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -50,6 +51,7 @@ class _MemberBounds:
     decompressed_start: int
     compressed_size: int
     decompressed_size: int
+    crc32: int
 
     @property
     def decompressed_end(self) -> int:
@@ -65,9 +67,10 @@ def _read_index_backwards(
     """Build the member index by scanning trailers backwards (no decompression).
 
     A 4-byte magic check at each computed member start catches a corrupt ``member_size``
-    before it cascades into wrong offsets for every earlier member.
+    before it cascades into wrong offsets for every earlier member. Each entry retains the
+    trailer CRC-32 so callers can combine a whole-stream digest without decompressing.
     """
-    entries: list[tuple[int, int, int]] = []
+    entries: list[tuple[int, int, int, int]] = []
     compressed_end = file_size
 
     while compressed_end > stop_at:
@@ -77,7 +80,7 @@ def _read_index_backwards(
         trailer = stream.read(_TRAILER_SIZE)
         if len(trailer) < _TRAILER_SIZE:
             raise CorruptionError("Lzip file truncated during backward index scan")
-        _, data_size, member_size = struct.unpack_from("<IQQ", trailer, 0)
+        crc32, data_size, member_size = struct.unpack_from("<IQQ", trailer, 0)
         if member_size < _HEADER_SIZE + _TRAILER_SIZE:
             raise CorruptionError(
                 f"Lzip member_size {member_size} in trailer is too small to be valid"
@@ -94,17 +97,32 @@ def _read_index_backwards(
                 f"Lzip magic not found at expected member start {compressed_start} "
                 f"(got {magic!r}); member_size in trailer may be corrupt"
             )
-        entries.append((compressed_start, int(data_size), int(member_size)))
+        entries.append((compressed_start, int(data_size), int(member_size), int(crc32)))
         compressed_end = compressed_start
 
     result: list[_MemberBounds] = []
     decompressed_offset = start_decompressed_offset
-    for comp_start, decomp_size, comp_size in reversed(entries):
+    for comp_start, decomp_size, comp_size, crc32 in reversed(entries):
         result.append(
-            _MemberBounds(comp_start, decompressed_offset, comp_size, decomp_size)
+            _MemberBounds(
+                comp_start, decompressed_offset, comp_size, decomp_size, crc32
+            )
         )
         decompressed_offset += decomp_size
     return result
+
+
+def combined_crc32_from_index(members: list[_MemberBounds]) -> int:
+    """Whole-stream CRC-32 = ``crc32(concat(payloads))`` via trailer combine."""
+    crc = 0
+    for member in members:
+        crc = crc32_combine(crc, member.crc32, member.decompressed_size)
+    return crc
+
+
+def peek_combined_crc32(stream: BinaryIO, file_size: int) -> int:
+    """Scan the lzip index and return the combined whole-stream CRC-32."""
+    return combined_crc32_from_index(_read_index_backwards(stream, file_size))
 
 
 class _LzipState:
