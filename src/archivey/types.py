@@ -13,21 +13,28 @@ if TYPE_CHECKING:
 
 
 class MemberStreams(Flag):
-    """Declared member-stream capabilities for :func:`archivey.open_archive`.
+    """Opt-in member-stream capabilities for :func:`archivey.open_archive`.
 
-    Default (no bits) is forward-only streams with at most one live member stream.
-    Combine with ``|``::
+    Default (no bits set — ``MemberStreams(0)``) is the cheap contract:
+
+    - at most one live member stream at a time
+    - streams are forward-only (``seek()`` raises)
+
+    Combine flags with ``|``::
 
         MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
 
-    ``CONCURRENT`` unlocks a supported worker seam: concurrent first-touch
-    materialization is coordinated (one build, waiters share the published snapshot),
-    then concurrent ``open()`` and independent stream I/O on different members are
-    correct under cooperative use and are exercised on free-threaded CPython by the
-    Linux ``3.13t`` ``free-threaded-concurrency`` CI job. ``close()`` drains in-flight
-    worker calls before closing; escaped streams keep the lifecycle-lease contract.
-    Callers still synchronize their own shared stream objects; distinct reader-wide
-    passes (``__iter__`` / ``stream_members`` / ``extract_all``) remain single-owner.
+    ``CONCURRENT``
+        Multiple overlapping ``open()`` calls are allowed. First-touch member
+        materialization is coordinated (one build; waiters share the snapshot);
+        ``close()`` drains in-flight worker calls. Callers still synchronize any
+        *shared* stream objects they hand around. Reader-wide passes
+        (``__iter__`` / ``stream_members`` / ``extract_all``) remain single-owner.
+        Does **not** remove solid open-order cost — see :class:`~archivey.AccessCost`.
+
+    ``SEEKABLE``
+        Member streams support ``seek()`` where the backend can position
+        (often via an index or accelerator). Without this flag, seek raises.
     """
 
     CONCURRENT = auto()
@@ -61,11 +68,18 @@ class StreamFormat(str, Enum):
 
 @dataclass(frozen=True)
 class ArchiveFormat:
+    """A ``(container, stream)`` pair identifying how an archive is packaged.
+
+    Prefer the named class attributes (``ArchiveFormat.ZIP``, ``ArchiveFormat.TAR_GZ``,
+    …) over constructing pairs by hand. Those names are assigned immediately below
+    the class body; the ``ClassVar`` declarations exist so type checkers see them
+    without per-use suppressions. ``_FORMAT_NAMES`` is built from the same
+    assignments so ``repr`` / ``display_name`` stay in sync automatically.
+    """
+
     container: ContainerFormat
     stream: StreamFormat
 
-    # Named instances, populated just after the class definition. Declared here as
-    # ClassVars so both type checkers know they exist (no per-use `type: ignore`).
     ZIP: ClassVar[ArchiveFormat]
     TAR: ClassVar[ArchiveFormat]
     TAR_GZ: ClassVar[ArchiveFormat]
@@ -170,11 +184,12 @@ _FORMAT_NAMES: dict[ArchiveFormat, str] = {
 
 @dataclass(frozen=True)
 class MissingComponent:
-    """A package / extra / external tool a format is missing, and what it unlocks.
+    """A package, extra, or external tool required for a format (or a codec inside it).
 
-    Lives here (a leaf module) rather than in the registry so the codec descriptors that
-    declare a codec's ``requirement`` can reference it without a registry↔codecs import
-    cycle. Re-exported from ``internal.registry`` for the public API.
+    Appears on :class:`~archivey.FormatAvailability` when something is absent, and as
+    the ``requirement`` on internal codec/backend descriptors. Defined in this leaf
+    module (not the registry) so codec descriptors can reference it without a
+    registry ↔ codecs import cycle.
     """
 
     name: str  # e.g. "pycdlib", "[7z]", "unrar"
@@ -185,12 +200,11 @@ class MissingComponent:
 
 
 class MagicSignature(NamedTuple):
-    """One exact magic-byte signal a backend declares as data, with the format it implies.
+    """Exact magic-byte match declared by a backend/codec descriptor (not end-user API).
 
-    A match is accepted on the byte comparison alone. Formats too unspecific for an exact
-    magic (zlib's 2-byte CMF/FLG header) or with no signature at all (Brotli) are recognized
-    by a content probe instead — see the codec descriptor's ``content_probe`` and
-    ``format-detection``.
+    Detection accepts a match on the byte comparison alone. Formats too unspecific
+    for an exact magic (zlib's 2-byte CMF/FLG header) or with no signature (Brotli)
+    use a content probe instead — see codec ``content_probe`` and ``format-detection``.
     """
 
     offset: int
@@ -199,6 +213,13 @@ class MagicSignature(NamedTuple):
 
 
 class MemberType(Enum):
+    """Kind of archive entry.
+
+    ``ANTI`` is a deletion/tombstone (solid 7z incremental updates), not a payload
+    file — ``is_file`` is false and extraction skips it. ``OTHER`` covers device
+    nodes, FIFOs, sockets, etc., and is always rejected by safe extraction.
+    """
+
     FILE = "file"
     DIRECTORY = "directory"
     SYMLINK = "symlink"
@@ -243,9 +264,12 @@ class CompressionAlgorithm(Enum):
 
 @dataclass(frozen=True)
 class CompressionMethod:
-    """A single codec in a member's compression chain. Members store a
-    ``tuple[CompressionMethod, ...]`` to model multi-codec filter chains (e.g. a 7z
-    ``(BCJ2, LZMA2)`` chain)."""
+    """One codec in a member's filter chain.
+
+    Members store ``tuple[CompressionMethod, ...]``. Order matches the compress /
+    pack direction: pre-filters first, packing codec last (closest to the stored
+    bytes). Example: 7z ``(BCJ2, LZMA2)`` — decompress by applying LZMA2, then BCJ2.
+    """
 
     algo: CompressionAlgorithm
     level: int | None = None  # compression level, if the format records it
@@ -286,7 +310,12 @@ EXTRA_IS_JUNCTION = "is_junction"
 
 @dataclass(slots=True)
 class ArchiveMember:
-    """Represents a single archive entry. Mutable; callers must treat as read-only."""
+    """One archive entry.
+
+    Mutable on purpose: backends fill late-bound fields in place after the member
+    is first constructed (``link_target_member``, digests, attached diagnostics).
+    Callers must treat instances as read-only — use :meth:`replace` for edits.
+    """
 
     type: MemberType
     """What kind of entry this is (file, directory, symlink, …)."""
@@ -330,17 +359,23 @@ class ArchiveMember:
     link_target: str | None = None
     """For a symlink/hardlink, the raw target path string as stored."""
 
+    # compare=False: identity is path/type/metadata, not the resolved peer object
+    # (resolution is late-bound and would make equality order-dependent).
     link_target_member: "ArchiveMember | None" = field(default=None, compare=False)
     """For a link, the resolved target member within this archive, if found."""
 
     compression: tuple[CompressionMethod, ...] = field(default_factory=tuple)
-    """The codec chain applied to this member (outermost last)."""
+    """Codec chain in compress order — pre-filters first, packing codec last."""
 
     is_encrypted: bool = False
     """Whether this member's data is encrypted."""
 
     is_current: bool = True
-    """Whether this member is the live final state of its path (last-entry-wins)."""
+    """Last-entry-wins: ``True`` for the live final state of this path.
+
+    Duplicate names keep earlier rows with ``is_current=False`` (history /
+    superseded). :meth:`~archivey.ArchiveReader.get` returns the current one.
+    """
 
     is_sparse: bool = False
     """Whether this member is stored as a sparse file."""
@@ -354,12 +389,15 @@ class ArchiveMember:
     windows_attrs: int | None = None
     """Raw Windows file-attribute bitmask, if recorded."""
 
+    # compare=False: digests may be filled after first construction; equality is
+    # about the entry identity, not verification state (see archive-data-model).
     hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
     """Stored content digests keyed by :class:`HashAlgorithm` (values always ``bytes``).
 
     CRC-32 is four big-endian bytes (:func:`crc32_digest`). Excluded from equality.
     """
 
+    # compare=False: format-specific bags must not affect logical identity.
     extra: dict[str, Any] = field(default_factory=dict, compare=False)
     """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality."""
 

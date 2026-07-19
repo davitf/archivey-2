@@ -32,11 +32,18 @@ MemberSelector = (
 class ArchiveReader(ABC):
     """The public, read-only interface to an open archive.
 
-    This is the type returned by :func:`archivey.open_archive` and the one programs
-    should annotate against. It declares **only** the public contract; the concrete
-    machinery (and the internal hooks format backends implement) lives in the
-    ``BaseArchiveReader`` helper, which every real reader extends. Implements the
-    context-manager protocol, so use it in a ``with`` block.
+    Returned by :func:`archivey.open_archive`. Annotate against this type; concrete
+    machinery lives in the internal ``BaseArchiveReader`` helper. Use in a ``with``
+    block.
+
+    **Listing APIs** (easy to mix up):
+
+    - :meth:`members` — complete list or raise; random-access only (fails on streaming).
+    - :meth:`members_report` — always returns a report; check ``error is None`` for
+      completeness (preferred for damaged archives).
+    - :meth:`scan_members` — like ``members``, but also finishes a streaming forward
+      pass so you can obtain a full list after a partial iteration.
+    - :meth:`members_report_if_available` — never scans; ``None`` if not yet cached.
     """
 
     @property

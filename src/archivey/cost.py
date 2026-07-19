@@ -16,13 +16,13 @@ class ListingCost(Enum):
     """How expensive it is to *enumerate* all members (list names + metadata)."""
 
     INDEXED = "indexed"
-    """An index / central directory is present (ZIP central directory, 7z header, ISO
-    directory tree parsed at open); members can be enumerated without scanning header-to-header
-    or decompressing payload. A filesystem directory is NOT indexed — its walk is a scan
-    (`REQUIRES_SCANNING`). RAR is ``INDEXED``: the reader walks all file headers at open
-    time to build the member table (the optional Quick Open record is parsed but not
-    relied on as the sole source), so by the time ``members()`` is called the list is
-    already in memory at O(1) cost."""
+    """Members can be listed without scanning header-to-header or decompressing payload.
+
+    Examples: ZIP central directory, 7z header, ISO directory tree at open. A
+    filesystem directory is **not** indexed (its walk is ``REQUIRES_SCANNING``).
+    RAR is ``INDEXED`` because the reader walks all file headers at open and caches
+    the table — by ``members()`` time the list is already in memory.
+    """
 
     REQUIRES_SCANNING = "requires_scanning"
     """No index, but members can be enumerated by seeking/scanning header-to-header

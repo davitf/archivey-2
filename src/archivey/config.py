@@ -120,10 +120,10 @@ ListingLimits.UNLIMITED = ListingLimits(
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
-    """Library tuning knobs passed explicitly as ``config=`` to :func:`open_archive` / :func:`extract`.
+    """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`extract`.
 
     Per-call operationals (``format``, ``streaming``, ``password``, extraction's
-    ``members``/``filter``/``policy``/…) stay keyword arguments — not part of this object.
+    ``members``/``filter``/``policy``/…) stay keyword arguments — not fields here.
     """
 
     # Tri-state for the [seekable] rapidgzip accelerator (gzip / zlib / raw deflate).
@@ -132,6 +132,8 @@ class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     # Tri-state for rapidgzip's bundled bzip2 random-access backend.
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    # When True, a missing TAR (etc.) end-of-archive marker becomes TruncatedError
+    # instead of ARCHIVE_EOF_MARKER_MISSING (see gotchas / strict_archive_eof).
     strict_archive_eof: bool = False
     # Legacy encoding for a ZIP member name stored without the UTF-8 flag whose bytes are
     # also not valid UTF-8 (the sniff prefers UTF-8 first). Default cp437 per APPNOTE; set a
@@ -163,3 +165,4 @@ PasswordProvider = Callable[[PasswordRequest], str | bytes | None]
 """Callable consulted when static password candidates fail for an encrypted unit."""
 
 PasswordInput = str | bytes | Sequence[str | bytes] | PasswordProvider | None
+"""Accepted ``password=`` shapes: one value, an ordered candidate list, a provider, or None."""

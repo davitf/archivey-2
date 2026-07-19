@@ -1,4 +1,16 @@
-"""Archivey exception hierarchy."""
+"""Archivey exception hierarchy.
+
+Two roots (intentional):
+
+- :class:`ArchiveyError` — archive / environment / format problems. Safe to catch
+  broadly when wrapping untrusted input.
+- :class:`ArchiveyUsageError` — caller API misuse. Deliberately **outside** the
+  ``ArchiveyError`` tree so ``except ArchiveyError`` does not hide bugs in calling
+  code.
+
+Under ``ArchiveyError``, names track the failing phase: open → read → extract,
+plus feature/package/resource limits.
+"""
 
 from __future__ import annotations
 

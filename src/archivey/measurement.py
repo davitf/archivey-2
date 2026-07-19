@@ -16,6 +16,10 @@ Enable performance counters by wrapping ``open_archive()`` in
 Counters stay at zero (and :meth:`~archivey.ArchiveReader.io_stats` returns
 ``None``) unless the reader was opened inside an :func:`enable_measurement`
 context — zero overhead on the hot path when measurement is off.
+
+``IoStats`` is defined here (public value type). ``enable_measurement`` is
+implemented under ``archivey.internal.measurement`` and re-exported so callers
+have a single public import path.
 """
 
 from __future__ import annotations
