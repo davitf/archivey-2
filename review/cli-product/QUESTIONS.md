@@ -27,20 +27,15 @@ only fire under CONTINUE.
 
 ## Q2 — `--json` timing and minimal schema (drives P4)
 
-Design (Open Question 7) deferred `--json` pending a stable member schema —
-correctly, for the *full* `ArchiveMember` model. But the CLI needs only the
-fields it already prints: name, type, size, mtime, mode, encrypted,
-link_target, hashes. Options:
+**Decided (2026-07-19):** option **3** — wait for the `hash` verb / a designed
+member schema. Do **not** ship a minimal `--json` in 0.2.0 or as a quick
+0.2.x follow-up. Scripting remains human-column only until that design lands;
+prefer designing the stable contract once over an additive-but-provisional
+JSON-lines surface. Flag name when it lands: **`--json`** (not `--porcelain`).
 
-1. Ship minimal `--json` (JSON-lines) on `list` + `info` in 0.2.0 with an
-   additive-only promise on those fields.
-2. First 0.2.x follow-up (recommended if 0.2.0 is time-boxed — but then say
-   so in docs so the scripting audience knows it's coming and doesn't
-   scrape).
-3. Wait for the `hash` verb / full schema work.
-
-Recommend 1 if any slack exists, else 2. Naming: `--json` (tool-standard) vs
-`--porcelain` (git-ism) — recommend `--json`.
+Context (options considered): (1) minimal JSON-lines on `list`/`info` in
+0.2.0; (2) first 0.2.x with a "coming" note in docs; (3) wait for full schema.
+Rationale: lower priority than Q1/Q3 product traps; worth designing right.
 
 ## Q3 — No-match filters: warning + which exit code? (drives P2)
 
@@ -65,8 +60,9 @@ naturally safe)? Recommend: escape everywhere, backslash style, no `--raw`
 until someone asks — scripts get exact names via `--json` (Q2).
 
 **Partial lean (P3 landed):** escape everywhere, backslash style, no `--raw`
-yet — matching the recommendation. Q4 remains open only if we later want
-TTY-only or a `--raw` hatch.
+yet — matching the recommendation. With Q2 deferred (no `--json` until
+`hash`/schema), Q4 remains open only if we later want TTY-only or a `--raw`
+hatch for scripts that need exact names before machine output exists.
 
 ## Q5 — Should `info` tell the cost/access story? (drives P14)
 
