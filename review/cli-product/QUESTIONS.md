@@ -86,3 +86,31 @@ API). With `-v`, also print the raw axes (`listing`, `access_cost`, `stream`,
 uses `file_extension()` labels; STORED zipcrypto + provider-None → "Password
 required"; rewind warning stays quiet below the rapidgzip AUTO size gate and
 distinguishes install-vs-not-engaged when it does fire.
+
+## Q8 — `--stop-on-error` + policy block: exit `3` or `1`? (PR #163 review)
+
+**Open.** Q1 decided exit `3` when extract *completed* under CONTINUE with
+≥1 `BLOCKED` and no `FAILED`. The STOP path currently also returns `3` for a
+`FilterRejectionError` (first blocked member aborts). Spec only requires STOP
+→ “exit nonzero”; tests lock in `3`.
+
+| Case | Mode | Outcome on disk | Current exit | Suggested (option A) | Suggested (option B: keep) |
+|------|------|-----------------|--------------|----------------------|----------------------------|
+| Clean extract | CONTINUE (default) | all OK | `0` | `0` | `0` |
+| ≥1 `BLOCKED`, no `FAILED` | CONTINUE | safe members extracted; blocked reported | `3` | `3` | `3` |
+| ≥1 `FAILED` (and any blocks) | CONTINUE | recoverable extracted; failures reported | `1` | `1` | `1` |
+| First member policy-blocked | `--stop-on-error` | nothing after the block; 0+ earlier OK | `3` | **`1`** | `3` |
+| First member read/failed | `--stop-on-error` | nothing after the failure | `1` | `1` | `1` |
+| Policy block after N OK | `--stop-on-error` | N written; remainder skipped | `3` | **`1`** | `3` |
+| Always-stop (bomb / diagnostic raise) | either | partial; hard stop | `1` | `1` | `1` |
+| Hoist collision failure | CONTINUE | partial layout | `1` | `1` | `1` |
+| Unmatched includes / nothing selected | — | nothing extracted | `1` | `1` | `1` |
+| Usage / argparse | — | — | `2` | `2` | `2` |
+
+**Option A (review lean):** reserve `3` for “finished with policy refusals”
+(CONTINUE completed). STOP is always `1` — scripts can treat `3` as partial
+success with blocks, and `1` as aborted/failed.
+
+**Option B (status quo):** `3` means “a policy refusal was involved” whether
+or not the run completed; STOP+policy stays `3`. Simpler message (“policy
+touched the run”) but `3` no longer implies remaining members were extracted.

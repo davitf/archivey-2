@@ -5,9 +5,13 @@ from __future__ import annotations
 import fnmatch
 import os
 from collections.abc import Callable, Sequence
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 
+from archivey.cost import StreamCapability
 from archivey.types import ArchiveMember
+
+if TYPE_CHECKING:
+    from archivey.reader import ArchiveReader
 
 
 def member_predicate(
@@ -90,3 +94,20 @@ def count_selected(
     if pred is None:
         return len(members)
     return sum(1 for member in members if pred(member))
+
+
+def members_for_include_check(reader: ArchiveReader) -> list[ArchiveMember] | None:
+    """Member list for unmatched-include / empty-selection checks, if safe.
+
+    Prefer a cheap index. On a forward-only (streaming) reader, return ``None``
+    instead of calling :meth:`~archivey.reader.ArchiveReader.members_report` —
+    that would consume the sole forward pass and break a following
+    ``extract_all`` / ``stream_members``. Callers then defer empty-selection
+    handling to the operation outcome.
+    """
+    indexed = reader.members_report_if_available()
+    if indexed is not None:
+        return list(indexed)
+    if reader.cost.stream_capability is StreamCapability.FORWARD_ONLY:
+        return None
+    return list(reader.members_report())

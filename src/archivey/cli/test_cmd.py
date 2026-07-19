@@ -10,6 +10,7 @@ from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import (
     count_selected,
     member_predicate,
+    members_for_include_check,
     unmatched_include_patterns,
     warn_unmatched_includes,
 )
@@ -45,10 +46,9 @@ def run_test(
     members_total: int | None = None
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
         indexed = reader.members_report_if_available()
-        if patterns:
-            members_for_filter = (
-                list(indexed) if indexed is not None else list(reader.members_report())
-            )
+        # None on forward-only readers: do not consume the sole pass before streaming.
+        members_for_filter = members_for_include_check(reader) if patterns else None
+        if patterns and members_for_filter is not None:
             unmatched = unmatched_include_patterns(patterns, members_for_filter)
             if unmatched:
                 warn_unmatched_includes(unmatched, err=err)
@@ -69,6 +69,7 @@ def run_test(
         )
         bytes_done = 0
         files_done = 0
+        saw_selected = False
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
             # count as FAIL and still reach the summary (F4). Once the generator raises,
@@ -89,6 +90,7 @@ def run_test(
                     print(f"FAIL: {exc}", file=err)
                     continue
 
+                saw_selected = True
                 if stream is None:
                     # Directories / links / non-file: no body to verify — omit from counts
                     # so "N OK" matches unzip -t style (files only).
@@ -140,6 +142,11 @@ def run_test(
         finally:
             if on_progress is not None:
                 on_progress.close()
+
+        # Streaming + patterns: no pre-scan — empty selection if nothing was yielded.
+        if patterns and members_for_filter is None and not saw_selected:
+            warn_unmatched_includes(patterns, err=err)
+            return EXIT_FAIL
 
     print(_test_summary(ok=ok, failed=failed, members_total=members_total), file=err)
     return EXIT_FAIL if failed else EXIT_OK

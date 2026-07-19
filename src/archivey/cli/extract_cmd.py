@@ -22,6 +22,7 @@ from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
 from archivey.cli.filters import (
     count_selected,
     member_predicate,
+    members_for_include_check,
     unmatched_include_patterns,
     warn_unmatched_includes,
 )
@@ -422,11 +423,9 @@ def run_extract(
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
-        if patterns:
-            indexed = reader.members_report_if_available()
-            members_for_filter = (
-                list(indexed) if indexed is not None else list(reader.members_report())
-            )
+        # None on forward-only readers: do not consume the sole pass before extract.
+        members_for_filter = members_for_include_check(reader) if patterns else None
+        if patterns and members_for_filter is not None:
             unmatched = unmatched_include_patterns(patterns, members_for_filter)
             if unmatched:
                 warn_unmatched_includes(unmatched, err=err, dest_hint=True)
@@ -486,6 +485,10 @@ def run_extract(
                 )
                 if isinstance(exc, FilterRejectionError):
                     return EXIT_POLICY
+                return EXIT_FAIL
+            # Streaming + patterns: empty report means nothing matched (no pre-scan).
+            if patterns and members_for_filter is None and len(report) == 0:
+                warn_unmatched_includes(patterns, err=err, dest_hint=True)
                 return EXIT_FAIL
             hoist = _HoistResult(target)
             if may_hoist:

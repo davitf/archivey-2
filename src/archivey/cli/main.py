@@ -421,15 +421,21 @@ def _parse_cli_args(
     flags like ``-d`` appear before a ``nargs='*'`` patterns positional
     (``archivey x a.zip -d out '*.py'``). Fold those tokens back so the
     documented flag/pattern order works.
+
+    Tokens after an explicit ``--`` are always positionals — including names
+    that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
     """
     args, rest = parser.parse_known_args(argv_list)
-    if rest and rest[0] == "--":
+    after_double_dash = bool(rest and rest[0] == "--")
+    if after_double_dash:
         rest = rest[1:]
     if not rest:
         return args
-    unknown_opts = [tok for tok in rest if tok.startswith("-") and tok != "-"]
-    if unknown_opts:
-        parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
+    if not after_double_dash:
+        # Without ``--``, dash-prefixed leftovers are unknown options (not patterns).
+        unknown_opts = [tok for tok in rest if tok.startswith("-") and tok != "-"]
+        if unknown_opts:
+            parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
     if not hasattr(args, "patterns"):
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
     args.patterns = list(args.patterns or ()) + list(rest)

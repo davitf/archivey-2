@@ -1203,3 +1203,74 @@ def test_test_unmatched_include_exits_one(
     err = capsys.readouterr().err
     assert "warning: pattern matched no members: 'missing'" in err
     assert "OK," not in err
+
+
+def test_extract_dest_before_dash_named_pattern(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``-d`` before patterns must still accept ``-- -file.txt`` (fold + ``--``)."""
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "dash.zip", {"-file.txt": b"x", "ok.txt": b"y"})
+    dest = tmp_path / "out"
+    assert main(["x", str(z), "-d", str(dest), "--", "-file.txt"]) == EXIT_OK
+    assert (dest / "-file.txt").read_bytes() == b"x"
+    assert not (dest / "ok.txt").exists()
+
+
+def test_extract_stop_on_error_reports_members_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Q1.5: STOP after a successful member still reports how many were written."""
+    from archivey.cli.exit_codes import EXIT_POLICY
+
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(
+        tmp_path / "evil.tar",
+        {
+            "safe.txt": b"ok",
+            "../escape.txt": b"bad",
+            "later.txt": b"late",
+        },
+    )
+    code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
+    assert code == EXIT_POLICY
+    err = capsys.readouterr().err
+    assert "1 member(s) written before the stop" in err
+    assert "extraction stopped" in err
+    assert (tmp_path / "out" / "safe.txt").read_bytes() == b"ok"
+    assert not (tmp_path / "out" / "later.txt").exists()
+
+
+def test_members_for_include_check_skips_forward_only(
+    tmp_path: Path,
+) -> None:
+    """Forward-only readers must not be pre-scanned (would burn the sole pass)."""
+    import io
+    import tarfile
+
+    from archivey import open_archive
+    from archivey.cli.filters import members_for_include_check
+    from archivey.cost import StreamCapability
+
+    tar_path = tmp_path / "a.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        tf.addfile(info, io.BytesIO(b"x"))
+
+    class _NonSeekable(io.BytesIO):
+        def seekable(self) -> bool:
+            return False
+
+        def seek(self, *args: object, **kwargs: object) -> int:
+            raise OSError("not seekable")
+
+        def tell(self) -> int:
+            raise OSError("not seekable")
+
+    with open_archive(_NonSeekable(tar_path.read_bytes()), streaming=True) as reader:
+        assert reader.cost.stream_capability is StreamCapability.FORWARD_ONLY
+        assert members_for_include_check(reader) is None
+        # Sole pass still available for extract/test.
+        pairs = list(reader.stream_members())
+        assert [m.name for m, _ in pairs] == ["a.txt"]
