@@ -19,8 +19,12 @@ and should be decided explicitly before v1 docs teach the wrong story.
     high-confidence early-stop / silent-shorten that a conformant tar never produces.
   - **`strict_archive_eof=True`:** all three buckets escalate — `absent`/`short` →
     `TruncatedError`, `nonzero` → `CorruptionError` — for inventory / dedupe / validators.
-  - Extract raises **after** writing every salvageable member (raise-at-end); no soft-extract
-    report field.
+  - The escalation surfaces via the member-list report model landed in
+    `partial-members-and-errors` (#157): `members()` / `scan_members()` complete-or-raise;
+    `members_report()` returns the recovered prefix plus the terminal `error`; `__iter__`
+    yields the recovered members then raises. For `extract_all`, random access **fails closed**
+    (extract-prep materializes the list before writing, so it raises before any output),
+    while streaming writes the salvageable members then raises. No soft-extract report field.
 - **Minor BREAKING:** genuinely-malformed (`nonzero`) tars change from warn to raise by
   default; the common trailer-less / `cat`-joined corpus is unaffected. `config.py` default
   and the `archive-reading` config signature are **unchanged**, so no `archive-reading` delta.
@@ -40,7 +44,9 @@ None.
 
 - `format-tar` — split the EOF diagnostic on `observed_kind`: `nonzero` raises
   `CorruptionError` regardless of the flag; `absent`/`short` warn by default and escalate to
-  `TruncatedError` under strict; extract raises at end after salvageable writes.
+  `TruncatedError` under strict. Terminal escalation flows through the `partial-members-and-errors`
+  report model (RA extract fails closed; streaming writes-then-raises; `members_report()`
+  exposes the prefix).
 - `documentation` — formats + Gotchas teach the new signal-aware default and the narrowed
   job of `strict_archive_eof=True` (escalate the ambiguous `absent`/`short` residual);
   post-v1 native ZIP/TAR limitations framed as “may improve later.”
@@ -50,9 +56,10 @@ owned here). No `archive-reading` delta — config default/signature unchanged.
 
 ## Impact
 
-- **Public API:** TAR `members()` / iteration now raise `CorruptionError` at end-of-pass on a
-  `nonzero` trailer under the default config; extract raises at end after writing salvageable
-  members. `ArchiveyConfig.strict_archive_eof` default is **unchanged** (`False`).
+- **Public API:** TAR `members()` / `__iter__` now raise `CorruptionError` at end-of-pass on a
+  `nonzero` trailer under the default config (surfaced via the `partial-members-and-errors`
+  report — `members_report()` returns the prefix + error; RA extract fails closed; streaming
+  writes-then-raises). `ArchiveyConfig.strict_archive_eof` default is **unchanged** (`False`).
 - **Modules:** `tar_reader._verify_tar_eof` (the behavior change lives here); tests under
   `test_tar.py` / `test_archivey_config.py` / `test_diagnostics.py`; user docs (`formats.md`,
   future Gotchas); CLI when present. `config.py` unchanged.

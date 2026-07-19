@@ -226,8 +226,10 @@ class TarReader(BaseArchiveReader):
         # snapshotted into ``_eof_header_rejected`` right after the header scan.
         self._eof_probe_stream: _EofProbeStream | None = None
         self._eof_header_rejected: bool = False
-        # A decompression stream we open and therefore must close (compressed tars only);
-        # for a plain tar from a path, tarfile owns and closes the file handle itself.
+        # A stream we open and therefore must close: the decompression stream (compressed
+        # tars) or, for random-access plain-tar paths, the file handle we open ourselves to
+        # carry the EOF probe. Only a forward-only plain-tar path leaves the handle to
+        # tarfile (opened via name=, closed by tar.close()).
         self._owned_stream: BinaryIO | None = None
         # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
         # streaming readers also take a lock (exclusive / normally uncontended) so the
@@ -691,8 +693,9 @@ class TarReader(BaseArchiveReader):
     def _close_archive(self) -> None:
         with self._handle_guard():
             self._tar.close()
-            # tarfile never closes an external fileobj, so close the decompression stream we
-            # opened ourselves (which in turn closes a path source it owns). A plain-tar path
+            # tarfile never closes an external fileobj, so close the stream we opened
+            # ourselves — the decompression stream (which in turn closes a path source it
+            # owns) or a random-access plain-tar handle. Only a forward-only plain-tar path
             # is opened by tarfile via name= and closed by tar.close() above.
             if self._owned_stream is not None:
                 self._owned_stream.close()

@@ -218,11 +218,12 @@ Classify the end-of-archive on what tarfile actually stopped on, not a single mo
 - **Detectable truncation is out of scope** — truncation inside member data or across a
   partial header already raises `TruncatedError` during iteration (stdlib "unexpected end of
   data"), in both modes, flag-independent.
-- **Extract:** the corruption surfaces where the check runs — during the member scan. Random
-  access materializes the member list before writing (extract-prep), so a corrupt archive
-  **fails closed** (raises before any file is written — no partial output). Streaming verifies
-  at the end of the forward pass, so it writes salvageable members then raises. No
-  soft-extract report field (that stays Option E / a future salvage change).
+- **Surfacing (via `partial-members-and-errors` / #157):** the escalation is a terminal
+  listing error. `members()` / `scan_members()` raise it (complete-or-raise); `members_report()`
+  returns the recovered prefix + `error`; `__iter__` yields the prefix then raises. `extract_all`
+  on random access **fails closed** (extract-prep materializes the list before writing → raises
+  before any output), while streaming writes salvageable members then raises. No soft-extract
+  report field (that stays Option E / a future salvage change).
 **Pros:** Closes the *detectable*-corruption slice of the inventory-honesty gap (P1) without a
 native TAR walker; does **not** break trailer-less / `cat`-joined tars; keeps the flag for the
 ambiguous residual; no `config.py` default change, no signature change; random-access extract
@@ -295,7 +296,7 @@ on `nonzero`, keep flag for the `absent`/`short` residual)"; point back at this 
 | --- | --- |
 | `nonzero`→raise breaks a caller relying on reading a malformed tar | Narrow blast radius (excludes trailer-less/`cat`-joined); release note; salvage mode tracked in `IDEAS.md` as the future escape |
 | A false-positive `nonzero` on a legit archive | Analysis shows conformant tars never reach `nonzero` (≥2 null trailer blocks stop the check first); guard with a `tar -b1` + trailing-padding regression fixture |
-| Extract-at-end raise after successful `nonzero` writes surprises callers | Streaming writes salvageable members then raises (documented). Random-access extract **fails closed** (materializes before any write). RA `members()` raises with no caller-visible list; streaming `__iter__` yields then raises. |
+| Extract-at-end raise after successful `nonzero` writes surprises callers | Surfaced via `partial-members-and-errors` (#157): `members_report()` exposes the recovered prefix + error; `__iter__` yields then raises (both modes); RA `extract_all` fails closed (materializes before any write); streaming writes salvageable members then raises. |
 | `absent`/`short` truncation still silently shortens inventory | Explicit residual; `strict_archive_eof=True` escalates it; native TAR (P3) is the structural fix |
 | Docs teach the new default then it changes again | This change owns the decision; docs cite the `observed_kind` split + config field, not "archivey always warns" |
 

@@ -51,16 +51,20 @@ Escalation (either `CorruptionError` or `TruncatedError`) SHALL take precedence 
 `DiagnosticRaisedError`, including when the diagnostic disposition is `IGNORE` or
 `RAISE`. Logging-handler or callback exceptions propagate at their earlier ordered step.
 
-The archive-level EOF check runs at the end of the member scan, so its escalation
-surfaces there. For **listing** (`members()` / random-access `__iter__`), materialization
-drains the scan before returning, so a rejected-header escalation raises with **no
-caller-visible member list** (fail closed on the listing). Streaming `__iter__` /
-`stream_members` yields salvageable members first, then raises. For **`extract_all`**,
-random access materializes the member list before writing (extract-prep), so a
-corrupt/truncated archive **fails closed** — the escalation raises before any member is
-written and no partial output is left on disk. Streaming verifies at the end of the
-forward pass, so it writes the salvageable members first and then raises. The check
-SHALL NOT record the archive-level EOF only on a report field.
+The archive-level EOF check runs at the end of the member scan, so its escalation is a
+terminal listing error carried through the `partial-members-and-errors` report model:
+
+- `members()` / `scan_members()` are complete-or-raise — they raise the stored escalation.
+- `members_report()` (and `members_report_if_available()`) return the recovered prefix plus
+  the terminal `error`, so a caller can still inspect the salvageable members.
+- `__iter__` (both access modes) yields the recovered members, then raises.
+- `extract_all` on **random access fails closed** — extract-prep materializes the member
+  list (complete-or-raise) before writing, so a corrupt/truncated archive raises before any
+  member is written and leaves no partial output. **Streaming** `extract_all` verifies at the
+  end of the forward pass, so it writes the salvageable members first and then raises.
+
+The check SHALL raise the escalation from the member scan (so the report model records it as
+`error`); it SHALL NOT record the archive-level EOF only on a separate report field.
 
 Truncation *inside* a member's data or across a partial header block is out of scope of
 this end-of-marker check: it already raises `TruncatedError` **during iteration** (stdlib

@@ -42,9 +42,11 @@ same change when relevant.
   `CorruptionError` **by default**, catching the *detectable* slice of stdlib's "corrupt
   non-first header = clean EOF." The ambiguous `absent`/`short` residual (complete-trailer-less
   vs. truncated-at-boundary) warns by default and escalates to `TruncatedError` only under
-  `strict_archive_eof=True`. Random-access extract **fails closed** (raises before any write);
-  streaming writes salvageable members then raises. Random-access listing raises with no
-  caller-visible member list; streaming `__iter__` yields salvageable members then raises.
+  `strict_archive_eof=True`. Terminal escalation flows through the `partial-members-and-errors`
+  report model (#157): `members()` / `scan_members()` complete-or-raise; `members_report()`
+  returns the recovered prefix + `error`; `__iter__` yields the prefix then raises. RA
+  `extract_all` **fails closed** (extract-prep materializes before any write); streaming writes
+  salvageable members then raises.
 - **Why Option F:** honors Phase 5 warn-by-default for trailer-less / `cat`-joined tars (those
   are `absent`) while still hard-failing the corruption we *can* detect, without a native TAR
   walker and without breaking the common corpus. The `absent`/`short` residual is the piece

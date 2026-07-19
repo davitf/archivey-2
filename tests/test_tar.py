@@ -110,53 +110,50 @@ def _tar_content_end(data: bytes) -> int:
     return end
 
 
-def _tar_sparse_gnu(tmp_path: Path) -> bytes:
-    """A GNU sparse tar whose logical size ≫ packed size (holes).
+def _tar_sparse_gnu() -> bytes:
+    """A hand-built old-GNU-format sparse tar whose logical size ≫ packed size.
 
-    Built with system ``tar --sparse`` when available. The physical next-header offset
-    after the sparse member is far smaller than ``offset_data + roundup(size)``, which is
-    exactly the layout that used to false-negative the RA EOF probe.
+    Constructed in pure Python (no system ``tar``, so it runs identically on every OS —
+    BSD/Windows ``tar`` reject ``--sparse``). One 3-byte sparse region carried by a 1 MiB
+    logical file: the physical next-header offset (``offset_data + roundup(3)``) is far
+    below ``offset_data + roundup(logical size)``, which is exactly the layout that used to
+    false-negative the RA EOF probe. Verified read back through stdlib ``tarfile``.
     """
-    import shutil
-    import subprocess
+    physical = b"xyz"
+    logical = 1024 * 1024
 
-    if shutil.which("tar") is None:
-        pytest.skip("system tar not available for GNU sparse fixture")
-    blob = tmp_path / "sparse.bin"
-    # 1 MiB logical file with a single trailing data byte → large hole, tiny packed body.
-    with open(blob, "wb") as f:
-        f.seek(1024 * 1024 - 1)
-        f.write(b"x")
-    out = tmp_path / "sparse.tar"
-    subprocess.run(
-        [
-            "tar",
-            "--sparse",
-            "-cf",
-            str(out),
-            "-C",
-            str(tmp_path),
-            blob.name,
-        ],
-        check=True,
-        capture_output=True,
-    )
-    data = out.read_bytes()
-    # Confirm we actually got a sparse member (otherwise the regression is vacuous).
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as t:
+    def octal(value: int, width: int) -> bytes:
+        return ("%0*o" % (width - 1, value)).encode() + b"\x00"
+
+    h = bytearray(512)
+    h[0:10] = b"sparse.bin"
+    h[100:108] = octal(0o644, 8)
+    h[108:116] = octal(0, 8)  # uid
+    h[116:124] = octal(0, 8)  # gid
+    h[124:136] = octal(len(physical), 12)  # PHYSICAL size (logical goes in realsize)
+    h[136:148] = octal(0, 12)  # mtime
+    h[156:157] = b"S"  # GNUTYPE_SPARSE
+    h[257:265] = b"ustar  \x00"  # GNU magic + version
+    h[386:398] = octal(0, 12)  # sparse region: logical offset
+    h[398:410] = octal(len(physical), 12)  # sparse region: numbytes
+    h[482] = 0  # isextended
+    h[483:495] = octal(logical, 12)  # realsize (logical)
+    h[148:156] = b" " * 8
+    h[148:156] = ("%06o" % sum(h)).encode() + b"\x00 "  # checksum
+    full = bytes(h) + physical.ljust(512, b"\x00") + b"\x00" * 1024
+
+    # Guard the fixture's premise: a real sparse member whose logical/physical ends diverge.
+    with tarfile.open(fileobj=io.BytesIO(full), mode="r:") as t:
         member = t.getmembers()[0]
         assert member.type == tarfile.GNUTYPE_SPARSE
         logical_end = member.offset_data + ((member.size + 511) & ~511)
-        physical_end = _tar_content_end(data)
-        assert physical_end < logical_end, (
-            "fixture must diverge logical vs physical end to exercise the probe bug"
-        )
-    return data
+        assert _tar_content_end(full) < logical_end
+    return full
 
 
-def _tar_corrupt_final_header_sparse(tmp_path: Path) -> bytes:
+def _tar_corrupt_final_header_sparse() -> bytes:
     """Sparse member + rejected final header (nothing after) — the probe false-negative."""
-    full = _tar_sparse_gnu(tmp_path)
+    full = _tar_sparse_gnu()
     eof_start = _tar_content_end(full)
     return full[:eof_start] + b"\xff" * 512
 
@@ -716,21 +713,19 @@ def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
     assert not (dest / "hello.txt").exists()
 
 
-def test_corrupt_final_header_sparse_raises_corruption(tmp_path: Path) -> None:
+def test_corrupt_final_header_sparse_raises_corruption() -> None:
     # Regression: logical size ≫ packed size used to make the probe's
     # offset_data+roundup(size) check miss the stop block, so a rejected final header
     # after a GNU sparse member warned as absent instead of raising CorruptionError.
-    data = _tar_corrupt_final_header_sparse(tmp_path)
+    data = _tar_corrupt_final_header_sparse()
     with pytest.raises(CorruptionError):
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
 
 
-def test_sparse_tar_eof_no_false_positive(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_sparse_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> None:
     # A well-formed GNU sparse tar with a valid trailer must stay silent.
-    data = _tar_sparse_gnu(tmp_path)
+    data = _tar_sparse_gnu()
     with caplog.at_level(logging.WARNING, logger="archivey.backends"):
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             members = ar.members()

@@ -5,8 +5,8 @@
       `TruncatedError` under strict)
 - [x] 1.2 Deltas rewritten for Option F (`specs/format-tar`, `specs/documentation`); no
       `archive-reading` delta (config default/signature unchanged)
-- [ ] 1.3 Record CLI strict-EOF intent for `cli-v1` (Open Question 2) as a one-line cross-link
-      — do not implement CLI here
+- [x] 1.3 CLI strict-EOF intent recorded for `cli-v1` in `design.md` Open Question 2
+      (`archivey test` defaults to strict EOF); not implemented here
 
 ## 2. Implement Option F in `tar_reader`
 
@@ -40,6 +40,6 @@
       compressed corrupt final; `strict=True`/IGNORE + nonzero still `CorruptionError`;
       streaming extract salvage-then-raise; existing warn/strict + minimal-trailer cases
       still pass
-- [ ] 4.2 Run the suite in all three dependency configs (`[all]`, `[all-lowest]`,
-      `[core-only]`) per `CONTRIBUTING.md`
-- [ ] 4.3 `openspec validate --strict decide-strict-archive-eof-default`
+- [x] 4.2 Suite green in all three dependency configs (`[all]` full 1759 passed; `[all-lowest]`
+      and `[core-only]` on the affected areas) after rebasing onto `main` (incl. #157)
+- [x] 4.3 `openspec validate --strict decide-strict-archive-eof-default` clean
