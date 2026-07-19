@@ -12,7 +12,7 @@ reopened.
 |---|----------|
 | 1 Semantics | Record-and-continue for **policy rejections and per-member read failures** (digest/decode), continuing where the stream allows — same shape as `test` / VISION #3. |
 | 2 Mechanism | CLI passes `OnError.CONTINUE` by default; **library default stays `STOP`**. |
-| 3 Exit code | **`3`** when the run completed with ≥1 policy `BLOCKED` and no `FAILED`; **`1`** when any member `FAILED` (or hoist/always-stop); **`0`** when clean. |
+| 3 Exit code | **`3`** when CONTINUE **completed** with ≥1 policy `BLOCKED` and no `FAILED`; **`1`** for any `FAILED`, hoist/always-stop, or **any `--stop-on-error` abort** (incl. policy) — refined in **Q8**. |
 | 4 Flag | **`--stop-on-error` now** — restores library `STOP` for that invocation (shell scripts cannot switch to the library API). |
 | 5 Stop-path reporting | Always report what was written before an early stop (count at minimum). |
 
@@ -89,28 +89,22 @@ distinguishes install-vs-not-engaged when it does fire.
 
 ## Q8 — `--stop-on-error` + policy block: exit `3` or `1`? (PR #163 review)
 
-**Open.** Q1 decided exit `3` when extract *completed* under CONTINUE with
-≥1 `BLOCKED` and no `FAILED`. The STOP path currently also returns `3` for a
-`FilterRejectionError` (first blocked member aborts). Spec only requires STOP
-→ “exit nonzero”; tests lock in `3`.
+**Decided (2026-07-19): Option A.** Abort/STOP always exits `1`. Exit `3` is
+reserved exclusively for a CONTINUE run that *completed* with ≥1 policy
+`BLOCKED` and no `FAILED` (safe members on disk). Maintainer + review agree:
+`3`'s useful script meaning is partial success with only policy gaps — a STOP
+abort leaves the output incomplete and must share `1` with other aborts.
 
-| Case | Mode | Outcome on disk | Current exit | Suggested (option A) | Suggested (option B: keep) |
-|------|------|-----------------|--------------|----------------------|----------------------------|
-| Clean extract | CONTINUE (default) | all OK | `0` | `0` | `0` |
-| ≥1 `BLOCKED`, no `FAILED` | CONTINUE | safe members extracted; blocked reported | `3` | `3` | `3` |
-| ≥1 `FAILED` (and any blocks) | CONTINUE | recoverable extracted; failures reported | `1` | `1` | `1` |
-| First member policy-blocked | `--stop-on-error` | nothing after the block; 0+ earlier OK | `3` | **`1`** | `3` |
-| First member read/failed | `--stop-on-error` | nothing after the failure | `1` | `1` | `1` |
-| Policy block after N OK | `--stop-on-error` | N written; remainder skipped | `3` | **`1`** | `3` |
-| Always-stop (bomb / diagnostic raise) | either | partial; hard stop | `1` | `1` | `1` |
-| Hoist collision failure | CONTINUE | partial layout | `1` | `1` | `1` |
-| Unmatched includes / nothing selected | — | nothing extracted | `1` | `1` | `1` |
-| Usage / argparse | — | — | `2` | `2` | `2` |
+Forward-compat note (not in this PR): intended end-state is failures-only
+stopping (`OnError.STOP` / `--stop-on-error` ignore policy blocks; a separate
+opt-in would abort on unsafe members). Option A stays correct once that lands;
+the contested STOP+policy→`3` rows disappear structurally.
 
-**Option A (review lean):** reserve `3` for “finished with policy refusals”
-(CONTINUE completed). STOP is always `1` — scripts can treat `3` as partial
-success with blocks, and `1` as aborted/failed.
-
-**Option B (status quo):** `3` means “a policy refusal was involved” whether
-or not the run completed; STOP+policy stays `3`. Simpler message (“policy
-touched the run”) but `3` no longer implies remaining members were extracted.
+| Case | Mode | On disk | Exit |
+|------|------|---------|------|
+| Clean extract | CONTINUE | all OK | `0` |
+| ≥1 `BLOCKED`, no `FAILED` | CONTINUE | safe members extracted | `3` |
+| ≥1 `FAILED` (± blocks) | CONTINUE | recoverable extracted | `1` |
+| Policy block or failure (abort) | `--stop-on-error` | incomplete | `1` |
+| Always-stop / hoist failure / unmatched includes | — | — | `1` |
+| Usage | — | — | `2` |

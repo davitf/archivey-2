@@ -60,7 +60,7 @@ deferred by Q2).
 | **Q4** | **P3** control-byte quoting style | lean applied (escape everywhere / backslash); `--raw`/TTY-only still open |
 | **Q5 / Q6** | **P14** `info` cost line / install capability view | **decided** — `info` prints `access:` from `CostReceipt`; `--version -v` format matrix |
 | **Q7** | P7/P9 library vs CLI ownership | **done** (library) |
-| **Q8** | STOP+policy exit `3` vs `1` | **open** — see `cli-product/QUESTIONS.md` Q8 table |
+| **Q8** | STOP+policy exit `3` vs `1` | **decided** — Option A: STOP always `1`; `3` only for completed CONTINUE + policy blocks |
 
 ### `performance/QUESTIONS.md`
 

@@ -288,8 +288,6 @@ def test_extract_strict_blocks_device_name_and_continues(
 def test_extract_strict_stop_on_error_aborts_on_device_name(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from archivey.cli.exit_codes import EXIT_POLICY
-
     bad = _zip(tmp_path / "bad.zip", {"NUL": b"x", "ok.txt": b"y"})
     dest = tmp_path / "out"
     code = main(
@@ -303,11 +301,11 @@ def test_extract_strict_stop_on_error_aborts_on_device_name(
             "--stop-on-error",
         ]
     )
-    assert code == EXIT_POLICY
+    # Q8: STOP aborts → exit 1 (exit 3 only for completed CONTINUE + policy blocks).
+    assert code == EXIT_FAIL
     err = capsys.readouterr().err
     assert "NUL" in err
     assert "extraction stopped" in err.lower()
-    assert "remaining members" in err.lower()
     assert not (dest / "ok.txt").exists()
 
 
@@ -1087,8 +1085,6 @@ def test_extract_continues_after_traversal(
 def test_extract_stop_on_error_aborts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from archivey.cli.exit_codes import EXIT_POLICY
-
     monkeypatch.chdir(tmp_path)
     # Put the traversal first so STOP aborts before safe members.
     archive = _tar(
@@ -1099,7 +1095,8 @@ def test_extract_stop_on_error_aborts(
         },
     )
     code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
-    assert code == EXIT_POLICY
+    # Q8: incomplete extract under STOP → 1, not 3.
+    assert code == EXIT_FAIL
     err = capsys.readouterr().err
     assert "extraction stopped" in err
     assert not (tmp_path / "out" / "safe.txt").exists()
@@ -1221,8 +1218,6 @@ def test_extract_stop_on_error_reports_members_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Q1.5: STOP after a successful member still reports how many were written."""
-    from archivey.cli.exit_codes import EXIT_POLICY
-
     monkeypatch.chdir(tmp_path)
     archive = _tar(
         tmp_path / "evil.tar",
@@ -1233,7 +1228,7 @@ def test_extract_stop_on_error_reports_members_written(
         },
     )
     code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
-    assert code == EXIT_POLICY
+    assert code == EXIT_FAIL  # Q8: abort → 1
     err = capsys.readouterr().err
     assert "1 member(s) written before the stop" in err
     assert "extraction stopped" in err

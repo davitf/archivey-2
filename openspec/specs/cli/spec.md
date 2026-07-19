@@ -228,10 +228,12 @@ member-to-stdout verb does not silently change the meaning of
 The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
 verb/flag or bad arguments — the argparse default). Operational failures
 (unreadable, unsupported, or corrupt archive; read/integrity failure; member
-extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set)
-SHALL exit `1`. When `extract` completes under continue-on-error with one or
-more members `BLOCKED` by safety policy and no member `FAILED`, the system
-SHALL exit `3` (refused by safety policy). Exit codes `≥4` SHALL remain
+extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set;
+an early abort under `--stop-on-error`, including a policy block that stops the
+run) SHALL exit `1`. When `extract` **completes** under continue-on-error with
+one or more members `BLOCKED` by safety policy and no member `FAILED`, the
+system SHALL exit `3` (refused by safety policy — safe members are on disk).
+Exit `3` MUST NOT be used for an aborted STOP run. Exit codes `≥4` SHALL remain
 reserved. Documentation SHALL direct callers to treat any nonzero code other
 than `2` as a failure and MUST NOT assume `1` is the only failure code.
 
@@ -247,7 +249,7 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey test <indexed-archive>` when the member stream aborts early | Summary includes `K not tested` for the untested remainder; exit `1` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
-| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first bad member; exit nonzero |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first bad member; exit `1` |
 
 ### Requirement: stdin archives are reserved, not supported in v1
 

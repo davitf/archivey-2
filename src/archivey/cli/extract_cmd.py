@@ -30,7 +30,7 @@ from archivey.cli.format import escape_member_name
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
-from archivey.exceptions import ArchiveyError, FilterRejectionError
+from archivey.exceptions import ArchiveyError
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
@@ -473,6 +473,8 @@ def run_extract(
             except (ArchiveyError, OSError) as exc:
                 # STOP / always-stop (bomb guards, DiagnosticRaisedError): report
                 # what was already written, then the stop notice.
+                # Exit 1 always on abort (Q8): exit 3 is reserved for CONTINUE
+                # runs that *completed* with policy blocks and safe members on disk.
                 print(exc, file=err)
                 if members_completed:
                     print(
@@ -483,8 +485,6 @@ def run_extract(
                     "extraction stopped; remaining members were not extracted",
                     file=err,
                 )
-                if isinstance(exc, FilterRejectionError):
-                    return EXIT_POLICY
                 return EXIT_FAIL
             # Streaming + patterns: empty report means nothing matched (no pre-scan).
             if patterns and members_for_filter is None and len(report) == 0:
