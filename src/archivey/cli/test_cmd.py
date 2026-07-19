@@ -7,6 +7,7 @@ from typing import TextIO
 
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.filters import member_predicate
+from archivey.cli.format import escape_member_name
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
@@ -76,7 +77,7 @@ def run_test(
                     # Directories / links / non-file: no body to verify — omit from counts
                     # so "N OK" matches unzip -t style (files only).
                     if verbose:
-                        print(f"skip {member.name}", file=err)
+                        print(f"skip {escape_member_name(member.name)}", file=err)
                     continue
                 member_written = 0
                 try:
@@ -113,13 +114,13 @@ def run_test(
                             )
                         )
                     if verbose:
-                        print(f"OK   {member.name}", file=err)
+                        print(f"OK   {escape_member_name(member.name)}", file=err)
                 except ArchiveyError as exc:
                     failed += 1
-                    print(f"FAIL {member.name}: {exc}", file=err)
+                    print(f"FAIL {escape_member_name(member.name)}: {exc}", file=err)
                 except OSError as exc:
                     failed += 1
-                    print(f"FAIL {member.name}: {exc}", file=err)
+                    print(f"FAIL {escape_member_name(member.name)}: {exc}", file=err)
         finally:
             if on_progress is not None:
                 on_progress.close()

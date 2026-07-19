@@ -258,6 +258,32 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
     )
 
 
+def _rapidgzip_rewind_warning(
+    codec_name: str, config: StreamConfig
+) -> RewindWarning | None:
+    """Rewind diagnostic for DEFLATE-family codecs that rapidgzip can accelerate.
+
+    Below the AUTO size threshold the rewind is cheap enough that warning (and
+    especially telling the user to install an already-present package) is noise —
+    stay quiet. Otherwise name the accelerator and say whether to install it or
+    that it was present but not engaged.
+    """
+    if _deflate_family_uses_accelerator(config):
+        return None
+    size = config.compressed_input_size
+    if (
+        config.use_rapidgzip is AcceleratorMode.AUTO
+        and size is not None
+        and size < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    ):
+        return None
+    return RewindWarning(
+        codec_name,
+        accelerator="rapidgzip",
+        suggest_install=_rapidgzip is None,
+    )
+
+
 def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO:
     """Bound accelerated output to ``expected_decompressed_size`` when known.
 
@@ -725,9 +751,7 @@ class GzipCodec(StreamCodec):
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         # The accelerator gives indexed random access; only the stdlib fallback rewinds slowly.
-        if _deflate_family_uses_accelerator(config):
-            return None
-        return RewindWarning("gzip", accelerator="rapidgzip")
+        return _rapidgzip_rewind_warning("gzip", config)
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the rapidgzip accelerator's exceptions to the library's error types."""
@@ -813,7 +837,11 @@ class Bzip2Codec(StreamCodec):
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         if _bzip2_uses_accelerator(config):
             return None
-        return RewindWarning("bzip2", accelerator="rapidgzip")
+        return RewindWarning(
+            "bzip2",
+            accelerator="rapidgzip",
+            suggest_install=_rapidgzip_bzip2 is None,
+        )
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the indexed_bzip2 accelerator's exceptions to the library's error types."""
@@ -1046,9 +1074,7 @@ class DeflateCodec(_ZlibErrorCodec):
         return self.translate
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        if _deflate_family_uses_accelerator(config):
-            return None
-        return RewindWarning("deflate", accelerator="rapidgzip")
+        return _rapidgzip_rewind_warning("deflate", config)
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         return _translate_rapidgzip(exc, "deflate")
@@ -1080,9 +1106,7 @@ class ZlibCodec(_ZlibErrorCodec):
         return self.translate
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        if _deflate_family_uses_accelerator(config):
-            return None
-        return RewindWarning("zlib", accelerator="rapidgzip")
+        return _rapidgzip_rewind_warning("zlib", config)
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         return _translate_rapidgzip(exc, "zlib")

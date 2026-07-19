@@ -1,8 +1,7 @@
 # Brief — The `archivey` CLI as a product (UX / ergonomics)
 
-> **Status (2026-07-19):** findings delivered in **#144**. **No code follow-ups
-> yet** — P1–P14 + Q1–Q7 still open. Api-coherence **D1** (ANTI / non-current
-> list marks) folded into this review's SUMMARY when api-coherence archived.
+> **Status (2026-07-19):** findings delivered in **#144**. Unambiguous fixes
+> (P3/P5–P7/P9–P13/D1) implemented; **Q1–Q6** (and P1/P2/P4/P8/P14) still open.
 > Triage: `../STATUS.md`.
 
 Read `review/README.md` (conventions, VISION tie-breakers, deliverable shape). This

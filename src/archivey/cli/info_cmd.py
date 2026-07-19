@@ -14,8 +14,11 @@ from archivey.types import ArchiveFormat
 
 
 def _format_label(fmt: ArchiveFormat) -> str:
-    """Human format name (``ZIP``) rather than ``ArchiveFormat.ZIP``."""
-    return fmt.display_name
+    """Human format name (``zip``, ``7z``, ``tar.gz``) rather than enum spellings."""
+    ext = fmt.file_extension()
+    if ext:
+        return ext
+    return fmt.display_name.lower().replace("_", "-")
 
 
 def _line(key: str, value: object, out: TextIO) -> None:

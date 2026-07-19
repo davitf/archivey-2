@@ -18,6 +18,7 @@ from archivey import (
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import member_predicate
+from archivey.cli.format import escape_member_name
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
@@ -265,8 +266,35 @@ def maybe_hoist_single_root(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
         )
     is_dir = result.target.is_dir() and not result.target.is_symlink()
-    print(f"moved to {result.target}{'/' if is_dir else ''}", file=err)
+    label = f"{result.target}{'/' if is_dir else ''}"
+    if result.target == wrapper:
+        # In-place flatten (src.tar → src/ containing src/): name unchanged.
+        print(f"removed wrapper; content at {label}", file=err)
+    else:
+        print(f"moved to {label}", file=err)
     return result
+
+
+def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
+    """Closing summary destination; prefer the single extracted top when dest is cwd."""
+    if target != Path("."):
+        if target.is_dir():
+            return f"{target}/"
+        return str(target)
+    tops: set[str] = set()
+    for result in report:
+        if result.status is not ExtractionStatus.EXTRACTED:
+            continue
+        name = result.member.name.strip("/")
+        if name:
+            tops.add(name.split("/", 1)[0])
+    if len(tops) == 1:
+        only = next(iter(tops))
+        on_disk = Path(only)
+        if on_disk.is_dir() and not on_disk.is_symlink():
+            return f"{only}/"
+        return only
+    return "."
 
 
 def _report_extraction(
@@ -306,31 +334,38 @@ def _report_extraction(
                     file=err,
                 )
             elif verbose:
-                print(f"extracted: {result.member.name}", file=err)
+                print(
+                    f"extracted: {escape_member_name(result.member.name)}",
+                    file=err,
+                )
         elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
             # Overwrite-skips change outcomes under --overwrite skip; always note.
-            where = result.requested_path or result.member.name
+            where = result.requested_path or escape_member_name(result.member.name)
             print(f"not overwritten: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
             if verbose:
-                print(f"superseded: {result.member.name}", file=err)
+                print(
+                    f"superseded: {escape_member_name(result.member.name)}",
+                    file=err,
+                )
         elif status is ExtractionStatus.BLOCKED:
             blocked += 1
             detail = f": {result.error}" if result.error is not None else ""
-            print(f"blocked: {result.member.name}{detail}", file=err)
+            print(
+                f"blocked: {escape_member_name(result.member.name)}{detail}",
+                file=err,
+            )
         elif status is ExtractionStatus.FAILED:
             failed += 1
             detail = f": {result.error}" if result.error is not None else ""
-            print(f"failed: {result.member.name}{detail}", file=err)
+            print(
+                f"failed: {escape_member_name(result.member.name)}{detail}",
+                file=err,
+            )
 
-    if target == Path("."):
-        dest_label = "."
-    elif target.is_dir():
-        dest_label = f"{target}/"
-    else:
-        dest_label = str(target)
+    dest_label = _summary_dest_label(target, report)
     print(
         f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
         f"{f', {blocked} blocked' if blocked else ''}"

@@ -438,8 +438,13 @@ class ZipReader(BaseArchiveReader):
                     archive_name=archive_name,
                     source_format=ArchiveFormat.ZIP,
                 ) from exc
+            # stdlib often says "File is not a zip file" for truncated/corrupt
+            # archives that already matched ZIP magic — prefer actionable prose.
+            detail = str(exc).strip() or exc.__class__.__name__
+            if "not a zip file" in detail.lower():
+                detail = "truncated or corrupt ZIP (central directory unreadable)"
             raise CorruptionError(
-                f"Could not open ZIP archive: {exc!r}",
+                f"Could not open ZIP archive: {detail}",
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             ) from exc
@@ -1258,7 +1263,9 @@ class ZipReader(BaseArchiveReader):
             self._stamp_error_context(ambiguous, member_name)
             raise ambiguous from ambiguous_failure
 
-        if not self._passwords.has_passwords():
+        # A provider that exists but returned None without yielding a candidate
+        # must not read as "wrong password" (cli-product P7 / #131 D8 residue).
+        if not tried:
             required = EncryptionError("Password required to read this ZIP member")
             self._stamp_error_context(required, member_name)
             raise required

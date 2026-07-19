@@ -54,12 +54,14 @@ class RewindWarning:
     Carried by :class:`ArchiveStream` so the public stream handle can warn once, on the first
     rewinding seek, that random access is O(n) here. ``codec_name`` names the format; when an
     ``accelerator`` package (the ``[seekable]`` extra) would provide indexed random access, the
-    warning names it. Codecs with a native random-access index (or an active accelerator) carry
-    no ``RewindWarning``.
+    warning names it. ``suggest_install`` is True when that package is absent (tell the user to
+    install it) and False when it is present but was not engaged for this stream. Codecs with a
+    native random-access index (or an active accelerator) carry no ``RewindWarning``.
     """
 
     codec_name: str
     accelerator: str | None = None
+    suggest_install: bool = True
 
 
 def _noop_stamp(_exc: ArchiveyError) -> None:
@@ -406,12 +408,20 @@ class ArchiveStream(ReadOnlyIOStream):
             return
         self._rewind_warned = True
         if warning.accelerator is not None:
-            message = (
-                f"Seeking backward in a {warning.codec_name} stream without a "
-                f"random-access accelerator re-decompresses from the start "
-                f"(O(n) per rewind). Install the 'seekable' extra "
-                f"({warning.accelerator}) for indexed random access."
-            )
+            if warning.suggest_install:
+                message = (
+                    f"Seeking backward in a {warning.codec_name} stream without a "
+                    f"random-access accelerator re-decompresses from the start "
+                    f"(O(n) per rewind). Install the 'seekable' extra "
+                    f"({warning.accelerator}) for indexed random access."
+                )
+            else:
+                message = (
+                    f"Seeking backward in a {warning.codec_name} stream without "
+                    f"indexed random access re-decompresses from the start "
+                    f"(O(n) per rewind). The '{warning.accelerator}' accelerator "
+                    f"is installed but was not engaged for this stream."
+                )
         else:
             message = (
                 f"Seeking backward in a {warning.codec_name} stream re-decompresses "

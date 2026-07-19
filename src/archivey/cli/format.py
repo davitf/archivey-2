@@ -11,8 +11,44 @@ _TYPE_MARK = {
     MemberType.DIRECTORY: "d",
     MemberType.SYMLINK: "l",
     MemberType.HARDLINK: "h",
+    MemberType.ANTI: "A",
     MemberType.OTHER: "?",
 }
+
+# C0 controls, DEL, and C1 controls — never emit raw into a terminal.
+_CONTROL_ESCAPE = {
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\\": "\\\\",
+}
+
+
+def escape_member_name(name: str) -> str:
+    """Backslash-escape control bytes in a member name for safe terminal display.
+
+    Archive member names are attacker-controlled; raw ANSI / ``\\r`` would let a
+    hostile archive spoof listing lines. GNU ``ls`` / ``tar`` quote for the same
+    reason. Style follows the cli-product recommendation (Q4 lean): escape
+    everywhere, lossless backslash form, no ``--raw`` yet.
+    """
+    out: list[str] = []
+    for ch in name:
+        if ch in _CONTROL_ESCAPE:
+            out.append(_CONTROL_ESCAPE[ch])
+            continue
+        if ch.isprintable():
+            out.append(ch)
+            continue
+        code = ord(ch)
+        if 0xDC00 <= code <= 0xDFFF:
+            # surrogateescape of a single byte — show the underlying octet.
+            out.append(f"\\x{code & 0xFF:02x}")
+        elif code <= 0xFF:
+            out.append(f"\\x{code:02x}")
+        else:
+            out.append(f"\\u{code:04x}")
+    return "".join(out)
 
 
 def format_mode(mode: int | None) -> str:
@@ -58,15 +94,20 @@ def format_member_line(
 ) -> str:
     """Layer-1 listing line; optional stored digests and verbose extras."""
     mark = _TYPE_MARK.get(member.type, "?")
-    enc = "E" if member.is_encrypted else "-"
+    if member.is_encrypted:
+        status = "E"
+    elif not member.is_current:
+        status = "~"  # superseded / non-current revision
+    else:
+        status = "-"
     mode = format_mode(member.mode)
     size = format_size(member.size)
     mtime = format_mtime(member.modified)
-    name = member.name
+    name = escape_member_name(member.name)
     if member.is_link and member.link_target is not None:
-        name = f"{name} -> {member.link_target}"
+        name = f"{name} -> {escape_member_name(member.link_target)}"
 
-    parts = [f"{mark}{enc}", mode, f"{size:>10}", mtime, name]
+    parts = [f"{mark}{status}", mode, f"{size:>10}", mtime, name]
     line = "  ".join(parts)
 
     if digests and member.hashes:

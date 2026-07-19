@@ -341,7 +341,8 @@ def test_gzip_accelerator_off_warns_on_rewind_but_still_seeks(
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0  # rewind → slow re-decompression
             assert stream.read(10) == CONTENT[:10]  # still returns correct data
-    assert sum("seekable" in r.getMessage() for r in caplog.records) == 1
+    assert sum("re-decompresses" in r.getMessage() for r in caplog.records) == 1
+    assert any("rapidgzip" in r.getMessage() for r in caplog.records)
 
 
 def test_bzip2_accelerator_off_warns_on_rewind(
@@ -380,11 +381,11 @@ def test_zlib_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
             assert stream.seek(0) == 0  # rewind → re-decode from start
             assert stream.read(10) == CONTENT[:10]  # still correct
     msgs = [r.getMessage() for r in caplog.records]
-    assert sum("seekable" in m and "rapidgzip" in m for m in msgs) == 1
+    assert sum("rapidgzip" in m and "re-decompresses" in m for m in msgs) == 1
 
 
 def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
-    """Stdlib-fallback raw deflate names the ``[seekable]`` accelerator on rewind."""
+    """Stdlib-fallback raw deflate names the rapidgzip accelerator on rewind."""
     co = zlib.compressobj(wbits=-15)
     compressed = co.compress(CONTENT) + co.flush()
     config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
@@ -397,7 +398,7 @@ def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
             assert stream.read(10) == CONTENT[:10]
     assert (
         sum(
-            "seekable" in r.getMessage() and "rapidgzip" in r.getMessage()
+            "rapidgzip" in r.getMessage() and "re-decompresses" in r.getMessage()
             for r in caplog.records
         )
         == 1

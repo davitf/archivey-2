@@ -189,6 +189,7 @@ def test_reserved_verbs(sample_zip: Path) -> None:
 
 def test_salvage_reserved(sample_zip: Path) -> None:
     assert main(["list", str(sample_zip), "--salvage"]) == EXIT_USAGE
+    assert main(["--salvage", "list", str(sample_zip)]) == EXIT_USAGE
     assert (
         main(
             [
@@ -314,9 +315,9 @@ def test_extract_dest_dot_splatter(
 def test_info_and_detect(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["info", str(sample_zip)]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "ZIP" in out
-    assert "format:" in out
+    assert "format:      zip" in out or "format:" in out and "zip" in out
     assert "ArchiveFormat.ZIP" not in out
+    assert "SEVEN_Z" not in out
     assert main(["detect", str(sample_zip)]) == EXIT_OK
 
 
@@ -633,7 +634,7 @@ def _tar(path: Path, entries: dict[str, bytes]) -> Path:
 
 
 def test_hoist_root_named_like_wrapper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # src.tar containing src/ — the "collision" is the wrapper itself; flatten in
     # place instead of renaming away (H2) or deleting extracted data (H1).
@@ -641,6 +642,9 @@ def test_hoist_root_named_like_wrapper(
     archive = _tar(tmp_path / "src.tar", {"src/f.txt": b"data"})
     for overwrite in ("rename", "replace", "error", "skip"):
         assert main(["extract", str(archive), "--overwrite", overwrite]) == EXIT_OK
+        err = capsys.readouterr().err
+        assert "removed wrapper; content at src/" in err
+        assert "moved to src/" not in err
         assert (tmp_path / "src" / "f.txt").read_bytes() == b"data"
         assert not (tmp_path / "src (1)").exists()
         import shutil
@@ -759,3 +763,171 @@ def test_cli_logging_leaves_no_global_state(sample_zip: Path) -> None:
     assert root.handlers == []
     assert root.propagate is True
     assert root.level == logging.NOTSET
+
+
+# --- cli-product review follow-ups (P3 / P5 / P6 / P10–P13 / D1) -------------------------
+
+
+def test_missing_archive_uses_prose_not_errno_repr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "nope.zip"
+    assert main(["list", str(missing)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "cannot open" in err
+    assert "no such file or directory" in err.lower()
+    assert "[Errno" not in err
+
+
+def test_extract_missing_archive_only_requires_archive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["x"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "required: archive" in err
+    assert "patterns" not in err.split("required:")[-1]
+
+
+def test_dash_x_hints_bare_verb(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["-x", "a.zip"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: -x" in err
+    assert "bare words" in err
+    assert "archivey x ARCHIVE" in err
+
+
+def test_help_includes_examples(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--help"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "examples:" in out
+    assert "archivey x archive.zip" in out
+
+
+def test_password_eof_treated_as_no_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.cli import password as password_mod
+    from archivey.config import PasswordRequest
+    from tests.zipcrypto import build_zipcrypto_zip
+
+    blob = build_zipcrypto_zip(b"secret", b"zc.txt", b"hello")
+    path = tmp_path / "zc.zip"
+    path.write_bytes(blob)
+
+    monkeypatch.setattr(password_mod.sys.stdin, "isatty", lambda: True)
+
+    def _eof(_prompt: str = "") -> str:
+        raise EOFError
+
+    monkeypatch.setattr(password_mod.getpass, "getpass", _eof)
+    provider = password_mod.resolve_password(None)
+    assert callable(provider)
+    assert provider(PasswordRequest(member=None, attempt=1)) is None
+
+    # End-to-end: EOF at prompt must not dump a traceback (P5).
+    err = io.StringIO()
+    assert main(["t", str(path)], out=io.StringIO(), err=err) == EXIT_FAIL
+    text = err.getvalue()
+    assert "Traceback" not in text
+    assert "EOFError" not in text
+    assert "Password required" in text
+
+
+def test_escape_member_name_controls() -> None:
+    from archivey.cli.format import escape_member_name
+
+    assert escape_member_name("ok.txt") == "ok.txt"
+    assert "\\x1b" in escape_member_name("evil\x1b[31mRED\x1b[0m.txt")
+    assert "\\r" in escape_member_name("line1\rOK  fine.txt")
+    assert "\\\\" in escape_member_name("a\\b")
+
+
+def test_list_escapes_control_bytes_in_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    z = _zip(
+        tmp_path / "hostile.zip", {"evil\x1b[31m.txt": b"x", "line1\rok.txt": b"y"}
+    )
+    assert main(["list", str(z)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "\\x1b" in out
+    assert "\\r" in out
+
+
+def test_list_marks_anti_and_non_current() -> None:
+    from datetime import datetime
+
+    from archivey.cli.format import format_member_line
+    from archivey.types import ArchiveMember, MemberType
+
+    anti = ArchiveMember(type=MemberType.ANTI, name="gone.txt")
+    assert format_member_line(anti).startswith("A-")
+
+    old = ArchiveMember(
+        type=MemberType.FILE,
+        name="a.txt",
+        size=1,
+        modified=datetime(2026, 1, 1),
+        is_current=False,
+    )
+    assert format_member_line(old).startswith("f~")
+
+    enc = ArchiveMember(
+        type=MemberType.FILE,
+        name="a.txt",
+        size=1,
+        is_encrypted=True,
+        is_current=False,
+    )
+    assert format_member_line(enc).startswith("fE")
+
+
+def test_extract_summary_names_single_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "one.zip", {"root/a.txt": b"a", "root/b.txt": b"b"})
+    assert main(["extract", str(z)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "→ root/" in err
+    assert "→ ." not in err
+
+
+def test_truncated_zip_message_is_prose_not_repr(tmp_path: Path) -> None:
+    import zipfile as zf
+
+    from archivey import open_archive
+    from archivey.exceptions import CorruptionError
+
+    buf = io.BytesIO()
+    with zf.ZipFile(buf, "w") as archive:
+        archive.writestr("a.txt", "hello")
+    path = tmp_path / "truncated.zip"
+    path.write_bytes(buf.getvalue()[:20])
+    with pytest.raises(CorruptionError) as caught:
+        open_archive(path)
+    msg = str(caught.value)
+    assert "BadZipFile" not in msg
+    assert "ArchiveFormat.ZIP" not in msg
+    assert "format=ZIP" in msg
+    assert "truncated" in msg.lower() or "corrupt" in msg.lower()
+
+
+def test_stored_zipcrypto_provider_none_is_password_required(tmp_path: Path) -> None:
+    import zipfile as zf
+
+    from archivey import open_archive
+    from archivey.exceptions import EncryptionError
+    from tests.zipcrypto import build_zipcrypto_zip
+
+    blob = build_zipcrypto_zip(
+        b"secret", b"zc.txt", b"hello world", compression=zf.ZIP_STORED
+    )
+    path = tmp_path / "zc_stored.zip"
+    path.write_bytes(blob)
+
+    with pytest.raises(EncryptionError, match="Password required") as caught:
+        with open_archive(path, password=lambda _r: None) as ar:
+            ar.read(next(m for m in ar.members() if m.is_file))
+    assert "Wrong password" not in caught.value.message

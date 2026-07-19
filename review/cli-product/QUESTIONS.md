@@ -102,15 +102,8 @@ value: the maintainer's own "why can't I open this" debugging tool.)
 
 ## Q7 — Two library-side message fixes surfaced here (P7, P9) — confirm owners
 
-Not CLI decisions, but they land in library code and deserve issues/changes:
-
-1. Truncated/corrupt zip: `BadZipFile('File is not a zip file')` repr (and
-   the misleading "not a zip file" for a magic-matched truncated file);
-   enum-name leaks (`ArchiveFormat.TAR_ZST`, `SEVEN_Z` label in `info`,
-   `format=ArchiveFormat.ZIP` suffixes); zipcrypto "Wrong password" when no
-   password was supplied (#131 D8 residue).
-2. The backward-seek warning firing with rapidgzip installed but size-gated
-   off, telling the user to install what they have
-   (`archive_stream.py:408` + `codecs.py:239-251`) — text should
-   distinguish "not installed" from "not engaged", and arguably not fire
-   below the size threshold at all.
+**Done (library-owned, as recommended):** truncated/corrupt zip prose (no
+`BadZipFile` repr); `format=` / registry messages use `display_name`; `info`
+uses `file_extension()` labels; STORED zipcrypto + provider-None → "Password
+required"; rewind warning stays quiet below the rapidgzip AUTO size gate and
+distinguishes install-vs-not-engaged when it does fire.

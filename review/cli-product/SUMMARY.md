@@ -1,9 +1,8 @@
 # CLI-as-a-product review — SUMMARY
 
-> **Status (2026-07-19):** findings in #144; **no fixes landed yet.** Blockers
-> needing maintainer answers first: **Q1–Q3** (and Q4 for P3 style). Small
-> actionable items + folded **D1** (ANTI / non-current list marks) listed in
-> `../STATUS.md` §1.
+> **Status (2026-07-19):** findings in #144; **unambiguous fixes landed**
+> (P3/P5–P7/P9–P13/D1). Still need maintainer answers for **Q1–Q3** (and Q4
+> polish / Q5–Q6 for P14). See `../STATUS.md` §1.
 
 Deep review per `brief.md`: the merged `src/archivey/cli/` on `main` (post-#120,
 post-#131 fixes), judged as a **product** — muscle memory, output, errors, exit

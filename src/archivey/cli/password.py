@@ -16,6 +16,10 @@ def resolve_password(cli_password: str | None) -> PasswordInput:
     def provider(_request: PasswordRequest) -> str | None:
         if not sys.stdin.isatty():
             return None
-        return getpass.getpass("Password: ")
+        try:
+            return getpass.getpass("Password: ")
+        except EOFError:
+            # Ctrl-D / end-of-input at the prompt → treat as "no password given".
+            return None
 
     return provider

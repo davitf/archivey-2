@@ -23,7 +23,7 @@ recorded (see `backlog.md` / `IDEAS.md`). Remaining:
 
 | Dir | Review | Status (2026-07-19) |
 |-----|--------|---------------------|
-| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | Findings in (#144); **no fixes yet** — Q1–Q7 open; D1 folded from api-coherence |
+| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | Findings in (#144); **P3/P5–P7/P9–P13/D1 done**; Q1–Q6 / P1/P2/P4/P8/P14 still open |
 | `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4** still open |
 
 **Live triage:** [`STATUS.md`](STATUS.md).

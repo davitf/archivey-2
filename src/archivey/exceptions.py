@@ -33,7 +33,8 @@ class ArchiveyError(Exception):
         if self.member_name:
             parts.append(f"member={self.member_name!r}")
         if self.source_format:
-            parts.append(f"format={self.source_format!r}")
+            # Human label (ZIP / TAR_GZ / SEVEN_Z), not ArchiveFormat.ZIP repr.
+            parts.append(f"format={self.source_format.display_name}")
         if len(parts) == 1:
             return self.message
         return f"{self.message} ({', '.join(parts[1:])})"

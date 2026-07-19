@@ -10,7 +10,7 @@ a finding is fixed or a question is decided.
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
-| `cli-product/` | yes (#144) | **none yet** — P1–P14 + Q1–Q7 open; D1 folded in from api-coherence | no |
+| `cli-product/` | yes (#144) | **P3/P5–P7/P9–P13/D1 done**; still open: P1/P2/P4/P8/P14 + Q1–Q6 | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
 `archive/2026-07-19-stream-layering/`.
@@ -19,18 +19,18 @@ Archived this pass: `archive/2026-07-19-api-coherence/`,
 
 ## 1. Actionable right now
 
-### From `cli-product/` (findings in #144 — no code yet)
+### From `cli-product/` (findings in #144)
 
-Small / unambiguous items that don't wait on Q1–Q3:
+| ID | Action | Status |
+|----|--------|--------|
+| **P5** | Ctrl-D at password prompt → catch `EOFError`. | **done** |
+| **P3** | Escape control bytes in member names (backslash style; Q4 style still open for `--raw`/TTY-only). | **done** (recommended style) |
+| **P6 (message)** | Prose instead of raw errno for missing file / bad path. | **done** |
+| **P7 / P9** | Library/CLI message cleanup (truncated-zip prose, enum leaks, zipcrypto no-password; rapidgzip AUTO-gate warning text). | **done** |
+| **P10–P13** | Help examples; hoist micro-copy; argparse `patterns` wording; reserved-flag asymmetry. | **done** |
+| **D1** | List marks for `ANTI` / non-current (from archived api-coherence). | **done** |
 
-| ID | Action |
-|----|--------|
-| **P5** | Ctrl-D at password prompt → catch `EOFError`. |
-| **P3** | Escape control bytes in member names (style still Q4). |
-| **P6 (message)** | Prose instead of raw errno for missing file / bad path. |
-| **P7 / P9** | Library/CLI message cleanup (truncated-zip prose, enum leaks, zipcrypto no-password; rapidgzip AUTO-gate warning text). |
-| **P10–P13** | Help examples; hoist micro-copy; argparse `patterns` wording; reserved-flag asymmetry. |
-| **D1** | List marks for `ANTI` / non-current (from archived api-coherence). |
+Still waiting on Q1–Q3 / Q5–Q6: **P1**, **P2**, **P4**, **P14**. **P8** polish remains.
 
 ### From `performance/`
 
