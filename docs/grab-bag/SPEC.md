@@ -152,7 +152,7 @@ class ArchiveReader:
     def close(self) -> None: ...
 ```
 
-**Constraint:** calling `get`, or random `extract_all(members=[name])`, on a reader opened with `streaming=True` raises `UnsupportedOperationError`. `members()` likewise raises under `streaming=True`, since it requires materializing all members. The enforcement is **uniform** — it does not depend on whether a backend happens to have an index loaded — so streaming behaviour is deterministic across formats. (`get_members_if_available()` is exempt: it never scans, so it stays callable.)
+**Constraint:** calling `get`, or random `extract_all(members=[name])`, on a reader opened with `streaming=True` raises `UnsupportedOperationError`. `members()` likewise raises under `streaming=True`, since it requires materializing all members. The enforcement is **uniform** — it does not depend on whether a backend happens to have an index loaded — so streaming behaviour is deterministic across formats. (`members_report_if_available()` is exempt: it never scans, so it stays callable.)
 
 **Two sequential access patterns — different memory profiles:**
 

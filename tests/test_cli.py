@@ -109,6 +109,53 @@ def test_list_alias(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> Non
     assert "a.txt" in capsys.readouterr().out
 
 
+def test_list_incomplete_members_report_exits_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI list prints recovered members then exits 1 when members_report.error is set."""
+    from contextlib import contextmanager
+
+    from archivey.cli import list_cmd
+    from archivey.diagnostics import DiagnosticSummary, MemberListReport
+    from archivey.exceptions import TruncatedError
+    from archivey.types import ArchiveMember, MemberType
+
+    member = ArchiveMember(type=MemberType.FILE, name="recovered.txt", size=4)
+    report = MemberListReport(
+        members=(member,),
+        error=TruncatedError("truncated for test"),
+        diagnostics=DiagnosticSummary.empty(),
+    )
+
+    class _FakeReader:
+        def members_report(self) -> MemberListReport:
+            return report
+
+    @contextmanager
+    def fake_open(*_args: object, **_kwargs: object):
+        yield _FakeReader()
+
+    monkeypatch.setattr(list_cmd, "open_for_cli", fake_open)
+    archive = tmp_path / "dummy.tar"
+    archive.write_bytes(b"x")
+    assert (
+        list_cmd.run_list(
+            archive=str(archive),
+            patterns=[],
+            exclude=[],
+            digests=False,
+            verbose=False,
+            salvage=False,
+            password=None,
+            track_io=False,
+        )
+        == EXIT_FAIL
+    )
+    captured = capsys.readouterr()
+    assert "recovered.txt" in captured.out
+    assert "truncated for test" in captured.err
+
+
 def test_verb_named_file_known_verb_wins(tmp_path: Path) -> None:
     # A file named "x" collides with the extract alias; known-verb-wins dispatches extract.
     # Escape hatch: archivey list ./x

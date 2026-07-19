@@ -257,13 +257,18 @@ Everything else (`__iter__`, `get`, `read`, `open`, `stream_members`, `extract`,
 
 `scan_members()` returns the **fully-resolved** member list in either access mode. In random-access mode it is equivalent to `members()` and does not consume the reader. On a streaming reader it finishes the single forward pass (running it, or completing an interrupted one) and returns the resolved list.
 
-`get_members_if_available()` is an **index-only** peek: it returns the list when the backend has an upfront index (`_MEMBER_LIST_UPFRONT`) or after a completed forward pass has materialized the cache; otherwise `None`. It never scans, never reads member data, and never consumes the forward pass. Link targets stored in member data (ZIP symlinks) may be unset — use `members()` or `scan_members()` for resolved links.
+`members_report_if_available()` is a **report peek**: it returns a stored
+`MemberListReport` (complete or incomplete) when one exists without scanning, or
+an upfront index as a complete report when `_MEMBER_LIST_UPFRONT` is set;
+otherwise `None`. It never scans, never reads member data, and never consumes the
+forward pass. Link targets stored in member data (ZIP symlinks) may be unset —
+use `members()` / `scan_members()` / `members_report()` for resolved links.
 
-**Streaming one-pass rule:** on a `streaming=True` reader, `__iter__`, `stream_members()`, and `extract_all()` each run at most once; a second call raises `UnsupportedOperationError`. There is no `__iter__` replay from cache in streaming mode (link-resolution semantics differ at yield time vs. after finalization). `scan_members()` is the finish exception: it may complete an interrupted pass or return the cache after completion.
+**Streaming one-pass rule:** on a `streaming=True` reader, `__iter__`, `stream_members()`, and `extract_all()` each run at most once; a second call raises `UnsupportedOperationError`. There is no `__iter__` replay from cache in streaming mode (link-resolution semantics differ at yield time vs. after finalization). `scan_members()` is the finish exception: it may complete an interrupted pass or return the cache after completion. `members_report()` may likewise finish the pass and return a report (including an incomplete one).
 
-After a completed streaming pass, `_register_progressively` finalization fills `link_target_member` in place on objects already yielded, and populates `_members_cache` so `get_members_if_available()` returns the resolved list.
+After a completed streaming pass, progressive finalization fills `link_target_member` in place on objects already yielded, and stores a `MemberListReport` so `members_report_if_available()` returns it (`error is None` when complete).
 
-Random-access `__iter__` serves from `_members_cache` once materialized (avoids re-reading on second iteration).
+Random-access `__iter__` serves from the stored report once materialized (avoids re-reading on second iteration; yields then raises when `error` is set).
 
 ### 2.5 PeekableStream for non-seekable sources
 

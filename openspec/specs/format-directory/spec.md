@@ -31,7 +31,7 @@ The directory reader SHALL expose these properties:
 | Listing cost | `ListingCost.REQUIRES_SCANNING` — enumeration walks the tree (`os.scandir` recursion); there is no O(1) index |
 | Access cost | `AccessCost.DIRECT` — each file is independently addressable |
 | Stream capability | `StreamCapability.SEEKABLE` |
-| Member list upfront | No — `get_members_if_available()` returns `None` (the walk is a scan, run once under materialization, not on every peek) |
+| Member list upfront | No — `members_report_if_available()` returns `None` (the walk is a scan, run once under materialization, not on every peek) |
 | Write support | No |
 | Seek requirement | No archive source seek needed; files open directly |
 
@@ -43,7 +43,7 @@ The directory reader SHALL expose these properties:
 | Iterate reader | One `ArchiveMember` per file/subdirectory found under the root |
 | Inspect member metadata | Mode, timestamps, uid/gid, uname/gname reflect filesystem state |
 | Inspect `cost` | `REQUIRES_SCANNING`, `DIRECT`, `SEEKABLE` |
-| `get_members_if_available()` before any pass | `None` (no upfront index; the walk is a scan) |
+| `members_report_if_available()` before any pass | `None` (no upfront index; the walk is a scan) |
 
 ### Requirement: Treat scan races as diagnostics and genuine errors as errors
 

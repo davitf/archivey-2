@@ -119,7 +119,7 @@ def resolve_smart_dest(
     if fmt.container == ContainerFormat.RAW_STREAM:
         return _SmartDestPlan(Path("."), may_hoist=False)
 
-    indexed = reader.get_members_if_available()
+    indexed = reader.members_report_if_available()
     if indexed is None:
         return _SmartDestPlan(
             _enclosing_dir(archive, format=fmt, overwrite=overwrite),

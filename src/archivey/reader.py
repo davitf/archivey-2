@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Callable, Collection, Iterator
 
 from archivey.config import ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
-from archivey.diagnostics import DiagnosticSummary, ExtractionReport
+from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
     ExtractionProgress,
@@ -72,7 +72,19 @@ class ArchiveReader(ABC):
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``UnsupportedOperationError``
         on a streaming reader (use :meth:`scan_members` or
-        :meth:`get_members_if_available` there)."""
+        :meth:`members_report_if_available` there). Raises terminal archive-level listing
+        errors instead of returning an incomplete list."""
+        ...
+
+    @abstractmethod
+    def members_report(self) -> MemberListReport:
+        """Materialize the member listing and return a report.
+
+        ``report.error is None`` means ``report.members`` is complete. A non-``None``
+        error means the tuple is the recovered prefix and the error is the terminal
+        archive-level listing damage. Unlike :meth:`members`, this returns the report
+        instead of raising for those terminal archive-damage errors.
+        """
         ...
 
     @abstractmethod
@@ -87,8 +99,8 @@ class ArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def get_members_if_available(self) -> list[ArchiveMember] | None:
-        """The full member list if it is available without scanning, else ``None``.
+    def members_report_if_available(self) -> MemberListReport | None:
+        """A member-list report if available without scanning, else ``None``.
         Never scans or consumes the forward pass, so it is safe to call on any reader
         (including a streaming one)."""
         ...

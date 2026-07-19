@@ -155,11 +155,11 @@ def test_random_access_read_by_name(plain_tar: Path) -> None:
 
 
 def test_member_list_not_available_without_scan(plain_tar: Path) -> None:
-    # TAR has no upfront index: get_members_if_available is None until a scan materializes it.
+    # TAR has no upfront index: members_report_if_available is None until a scan materializes it.
     with open_archive(plain_tar) as ar:
-        assert ar.get_members_if_available() is None
+        assert ar.members_report_if_available() is None
         ar.members()  # forces the scan
-        assert ar.get_members_if_available() is not None
+        assert ar.members_report_if_available() is not None
 
 
 def test_stream_members(plain_tar: Path) -> None:
@@ -451,6 +451,48 @@ def test_missing_eof_blocks_strict_archive_eof_raises() -> None:
             config=ArchiveyConfig(strict_archive_eof=True),
         ) as ar:
             ar.members()
+
+
+def test_members_report_recovers_prefix_on_strict_eof() -> None:
+    """Q7: members_report returns prefix + error; members() raises; iter yields then raises."""
+    data = _tar_missing_eof_block()
+    config = ArchiveyConfig(strict_archive_eof=True)
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR, config=config) as ar:
+        report = ar.members_report()
+        assert report.error is not None
+        assert isinstance(report.error, TruncatedError)
+        names = [m.name for m in report.members]
+        assert names == ["hello.txt", "dir/nested.txt", "dir/", "link.txt"]
+        assert ar.members_report_if_available() is report
+        with pytest.raises(TruncatedError):
+            ar.members()
+        yielded: list[str] = []
+        with pytest.raises(TruncatedError):
+            for member in ar:
+                yielded.append(member.name)
+        assert yielded == names
+        first = report.members[0]
+        assert first in ar
+        assert ar.open(first).read() == b"hello world"
+
+
+def test_members_report_streaming_strict_eof_yield_then_raise() -> None:
+    data = _tar_missing_eof_block()
+    config = ArchiveyConfig(strict_archive_eof=True)
+    with open_archive(
+        NonSeekableBytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=True,
+        config=config,
+    ) as ar:
+        yielded: list[str] = []
+        with pytest.raises(TruncatedError):
+            for member, _stream in ar.stream_members():
+                yielded.append(member.name)
+        assert yielded == ["hello.txt", "dir/nested.txt", "dir/", "link.txt"]
+        report = ar.members_report()
+        assert isinstance(report.error, TruncatedError)
+        assert [m.name for m in report.members] == yielded
 
 
 def test_missing_eof_blocks_streaming_warns(
@@ -804,9 +846,9 @@ def test_streaming_iter_materializes_resolved_cache() -> None:
             if member.name == "forward_link":
                 collected.append(member)
                 assert member.link_target_member is None
-        members = ar.get_members_if_available()
-        assert members is not None
-        link = next(m for m in members if m.name == "forward_link")
+        report = ar.members_report_if_available()
+        assert report is not None
+        link = next(m for m in report if m.name == "forward_link")
         assert link.link_target_member is not None
         assert link.link_target_member.name == "target.txt"
         assert collected[0].link_target_member.name == "target.txt"
@@ -819,9 +861,9 @@ def test_streaming_stream_members_materializes_resolved_cache() -> None:
         for member, _stream in ar.stream_members():
             if member.name == "forward_link":
                 collected.append(member)
-        members = ar.get_members_if_available()
-        assert members is not None
-        link = next(m for m in members if m.name == "forward_link")
+        report = ar.members_report_if_available()
+        assert report is not None
+        link = next(m for m in report if m.name == "forward_link")
         assert link.link_target_member is not None
         assert collected[0].link_target_member.name == "target.txt"
 
@@ -851,7 +893,7 @@ def test_abandoned_partial_pass_leaves_get_members_none() -> None:
         for member in ar:
             if member.name == "forward_link":
                 break
-        assert ar.get_members_if_available() is None
+        assert ar.members_report_if_available() is None
 
 
 def test_streaming_second_pass_raises_tar_and_zip(
@@ -932,14 +974,14 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
         ) -> None:
             super().__init__(ArchiveFormat.TAR, streaming=False, archive_name=None)
             self._payloads = payloads
-            self._members_cache = members
             by_name_lists: dict[str, list[ArchiveMember]] = {}
             for m in members:
                 BaseArchiveReader._index_member_name(by_name_lists, m)
-            self._members_by_name_lists = by_name_lists
+            self._publish_materialized(members, by_name_lists, error=None)
 
         def _iter_members(self):
-            return iter(self._members_cache or [])
+            materialized = self._materialized
+            return iter(materialized.report.members if materialized is not None else ())
 
         def _open_member(self, member: ArchiveMember) -> BinaryIO:
             return io.BytesIO(self._payloads[member.name])
@@ -1019,4 +1061,4 @@ def test_error_mid_streaming_pass_poisons_scan_members() -> None:
         assert seen == ["a.bin", "b.bin"]
         with pytest.raises(ReadError, match="previously failed"):
             reader.scan_members()
-        assert reader.get_members_if_available() is None
+        assert reader.members_report_if_available() is None

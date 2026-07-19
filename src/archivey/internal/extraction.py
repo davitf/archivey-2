@@ -1,7 +1,7 @@
 """The extraction coordinator and decompression-bomb tracker.
 
 ``ExtractionCoordinator`` is a **pull-based sink**: it drives the reader
-(``get_members_if_available()``, ``_iter_with_data()``, ``compressed_source_size``) and
+(``members_report_if_available()``, ``_iter_with_data()``, ``compressed_source_size``) and
 selects an algorithm, rather than a push-model helper that buffers deferred link state.
 Per member it runs the universal safety check on the original, applies the policy
 transform (and optional user filter) to a transient copy, and writes FILE / DIR / SYMLINK
@@ -297,14 +297,15 @@ class ExtractionCoordinator:
         # estimate matches the selected output. The user `filter` runs only during
         # extraction and cannot be pre-applied, so members it skips still count as
         # processed below. Streaming readers with no free list report None totals.
-        all_members = reader.get_members_if_available()
+        members_report = reader.members_report_if_available()
+        all_members = list(members_report) if members_report is not None else None
         if all_members is not None and selector is not None:
             all_members = [m for m in all_members if selector(m)]
         members_total = len(all_members) if all_members is not None else None
         total_estimate = self._estimate_total_bytes(all_members)
 
         # Extract-prep materialization: enforce ListingLimits before writing.
-        # Indexed backends may already have been peeked via get_members_if_available();
+        # Indexed backends may already have been peeked via members_report_if_available();
         # scan-required backends (TAR, directory) would otherwise walk via unguarded
         # stream_members() and never hit listing caps.
         if not forward_only:

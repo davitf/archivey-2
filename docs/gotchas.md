@@ -36,6 +36,16 @@ opening members out of order can decode the same block repeatedly.
 
 See [Access costs — solid archives](costs.md#solid-archives-prefer-one-forward-pass).
 
+## Listing completeness vs damage
+
+- `members()` / `scan_members()` — complete listing or raise.
+- `members_report()` — always returns `MemberListReport`; check `error`
+  (`None` means complete). Use this for inventory of messy archives.
+- Iteration yields recovered members then raises on terminal archive listing
+  damage (either access mode). Incomplete materialization is not treated as a
+  successful complete list.
+- Not the same as `--salvage` / best-effort resync (still future).
+
 ## Streaming mode is one pass
 
 With `streaming=True`, the first of `__iter__` / `stream_members` / `extract_all`

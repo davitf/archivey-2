@@ -63,16 +63,18 @@ archivey-owned byte ranges still go through `SharedSource.view`.
 
 ## 2. Member-cache one-time-build safety
 
-`BaseArchiveReader._get_members_registered` publishes `_members_cache` /
-`_members_by_name_lists` once. After population the caches are read-mostly; the race is
-only the first build.
+`BaseArchiveReader._materialize_members` publishes a single `_Materialized`
+holder (`MemberListReport` + name index) once. After population the report is
+read-mostly; the race is only the first build.
 
 **Active design (`reader-concurrency-coordination`):** under `MemberStreams.CONCURRENT`,
 overlapping first-touch callers block on a condition while exactly one owner builds
-members/name indexes locally, completes link resolution, then publishes both atomically.
-Waiters proceed against the published snapshot (no `ArchiveyUsageError` for the overlap).
-A failed attempt returns to `UNMATERIALIZED`, wakes waiters, and never publishes a partial
-snapshot. Heavy work runs outside the reader-state lock. Default (non-`CONCURRENT`) and
+members/name indexes locally, completes link resolution, then publishes the holder
+atomically. Waiters proceed against the published snapshot (no `ArchiveyUsageError`
+for the overlap). A failed attempt (limits / interrupts — not terminal archive
+damage) returns to `UNMATERIALIZED`, wakes waiters, and never publishes. Terminal
+listing damage publishes an incomplete report (`error` set) instead. Heavy work
+runs outside the reader-state lock. Default (non-`CONCURRENT`) and
 uncontended paths stay unchanged. Distinct passes and shared streams remain single-owner.
 
 ---

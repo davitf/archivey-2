@@ -73,7 +73,7 @@ redundant decompression.
 
 **Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
 `stream_members`, `extract_all`) and `scan_members` /
-`get_members_if_available` initialization remain single-owner and cannot overlap
+`members_report_if_available` initialization remain single-owner and cannot overlap
 one another or the random worker seam. Under `CONCURRENT`, first-touch
 materialization is coordinated (wait/share) and `reader.close()` drains
 in-flight worker calls rather than rejecting them. The base reader SHALL

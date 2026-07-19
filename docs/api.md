@@ -48,6 +48,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.DiagnosticSummary
 ::: archivey.OnDiagnostic
 ::: archivey.ExtractionReport
+::: archivey.MemberListReport
 
 ## Extraction
 

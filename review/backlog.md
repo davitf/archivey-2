@@ -141,8 +141,8 @@ OpenSpec change), not something a review finds. Flagged here only so it doesn't 
 lost among the review topics — it likely outranks both topics above in product value,
 and `--salvage` is already reserved in the CLI grammar waiting for it.
 
-**Partial members + honest error accessor (api-coherence Q7)** — adjacent to salvage
-but narrower: a uniform way for scan-required formats to return a *prefix* listing
-together with a terminal archive error, without silencing either side. Surfaced from
-#149 Option F; **deferred to a next review round** (not the 0.2.0 freeze). See
-`api-coherence/QUESTIONS.md` §Q7.
+**Partial members + honest error accessor (api-coherence Q7)** — **decided / in
+progress** as OpenSpec change `partial-members-and-errors`: `members_report()` →
+`MemberListReport`, complete-or-raise `members()`/`scan_members()`, RA
+yield-then-raise, `members_report_if_available` rename. Adjacent to salvage but
+narrower (no resync past damage). See `api-coherence/QUESTIONS.md` §Q7.

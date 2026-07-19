@@ -1,19 +1,4 @@
-# Command-Line Interface
-
-## Purpose
-
-Shell interface for inspecting, verifying, and extracting archives with fnmatch filters and optional I/O instrumentation; CLI-only deps stay out of core.
-
-## Related specs
-
-| Spec | Relationship |
-| --- | --- |
-| `archive-reading` | Listing, member filtering, digest verification reads |
-| `safe-extraction` | Default safe extraction policy used by `extract` |
-| `packaging-and-extras` | `[cli]` extra supplies `tqdm`; core remains importable without it |
-| `access-mode-and-cost` | Optional I/O instrumentation/cost reporting |
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: archivey command with list, test, and extract subcommands
 
@@ -138,51 +123,6 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |
 | `archivey -x <archive>` (dash-prefixed verb) | Usage error — verbs are bare words (`x`), not options; `-x` is not a mode selector |
 
-### Requirement: info and detect summarize archive identity
-
-The system SHALL provide `archivey info` (alias `detect`) that reports detected
-and/or opened format identity for a path without listing every member. It SHALL
-be suitable for answering "what does archivey think this file is?" including
-failure cases with a typed/clear error.
-
-#### Scenario: info vs list
-
-| Case | Expected |
-| --- | --- |
-| `archivey info <archive>` / `archivey detect <archive>` | Prints format/identity summary; does not dump full member listing |
-| Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
-| `archivey list <archive>` | Member listing; not a substitute for info's format summary |
-
-### Requirement: salvage flag reserved without behavior
-
-The system SHALL accept `--salvage` on `list`, `test`, and `extract` (and on
-future `hash` / `convert` when those verbs exist) but MUST NOT implement salvage
-semantics in this change. Passing `--salvage` SHALL fail fast with a clear
-not-implemented message so callers cannot assume best-effort reads.
-
-#### Scenario: salvage reserved
-
-| Case | Expected |
-| --- | --- |
-| `archivey list <archive> --salvage` | Non-zero exit; message indicates salvage is not implemented |
-| `archivey extract <archive> --salvage` | Same |
-
-### Requirement: reserved verbs do not collide with future write/hash UX
-
-The system SHALL NOT reuse a verb letter that commonly means create/compress for
-integrity checking (in particular `c` MUST NOT mean "check"; leave it for a
-future `create`). Help text MAY mention `hash`, `create`, `convert`, and `cat`
-as forthcoming without implementing them. `cat` SHALL be reserved now so a later
-member-to-stdout verb does not silently change the meaning of
-`archivey cat` for a same-named archive file.
-
-#### Scenario: flag hygiene
-
-| Case | Expected |
-| --- | --- |
-| `t` | Means `test` (integrity), not create |
-| Unknown verb `hash` / `create` / `convert` / `cat` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
-
 ### Requirement: exit codes are minimal and argparse-aligned
 
 The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
@@ -202,16 +142,3 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey list <corrupt-or-unreadable>` | Exit `1` |
 | `archivey list <archive-with-recoverable-prefix-and-terminal-error>` | Exit `1` (after printing recovered members) |
 | `archivey test <archive-with-failing-member>` | Exit `1` |
-
-### Requirement: stdin archives are reserved, not supported in v1
-
-The system SHALL treat `-` as a reserved token meaning "read archive from stdin"
-and SHALL fail fast with a clear "not supported yet" message rather than opening a
-filesystem entry literally named `-`.
-
-#### Scenario: stdin reserved
-
-| Case | Expected |
-| --- | --- |
-| `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
-| `archivey extract -` | Same |

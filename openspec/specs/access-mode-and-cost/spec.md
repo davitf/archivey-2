@@ -25,7 +25,7 @@ block count). This spec is the **canonical** access-mode × method table;
 | Mode | Meaning |
 | --- | --- |
 | `streaming=False` (default) | **Random access.** Load indexes when available. Fail fast at open if the source is non-seekable and the format cannot adapt — never silently degrade to forward-only. Seek points for single-stream formats are built **lazily** on first `seek()`. |
-| `streaming=True` | **Forward-only, single pass.** Disable index loading where possible; works on non-seekable sources. Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `get_members_if_available()` stays callable (never scans). |
+| `streaming=True` | **Forward-only, single pass.** Disable index loading where possible; works on non-seekable sources. Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `members_report_if_available()` stays callable (never scans). |
 
 Non-seekable sources are never given random access: with `streaming=False` the
 library fails fast at open when the format needs seek (it does not buffer the
@@ -54,7 +54,14 @@ Member selection for extraction is `extract_all(members=...)` (`safe-extraction`
 
 `scan_members()` MAY run before the pass (starts+finishes it), after an interrupted
 pass (drains remainder), or after completion (returns cache). Starting the pass
-consumes it. `get_members_if_available()` never begins/advances/consumes the pass.
+consumes it. `members_report()` MAY likewise start or finish the pass and consumes
+it; it returns `MemberListReport` instead of raising on terminal archive-level
+listing errors (`archive-reading`). `members_report_if_available()` never
+begins/advances/consumes the pass.
+
+On both access modes, `__iter__` and `stream_members` SHALL yield every
+recovered member before propagating a terminal archive-level listing error
+(yield-then-raise). `members()` / `scan_members()` remain complete-or-raise.
 
 #### Scenario: streaming enforcement matrix
 
@@ -62,26 +69,34 @@ consumes it. `get_members_if_available()` never begins/advances/consumes the pas
 | --- | --- |
 | `get` / `members` / `open` / `read` on `streaming=True` | `UnsupportedOperationError` |
 | First `__iter__` or `stream_members` | Yields in archive order |
+| Terminal archive error after prefix (either mode) | Prefix yielded; then raise |
 | Second forward-pass method after begin/complete | `UnsupportedOperationError` (all formats) |
-| Early `break` then `scan_members()` | Drains remainder; fully-resolved list; later pass methods raise |
-| `scan_members()` then `stream_members()` on fresh streaming reader | List returned; subsequent pass raises (any index topology) |
+| Early `break` then `scan_members()` | Drains remainder; fully-resolved list or raise; later pass methods raise |
+| `scan_members()` then `stream_members()` on fresh streaming reader | List returned when complete; subsequent pass raises (any index topology) |
+| `members_report()` on streaming with terminal archive error after prefix | Report with prefix + `error`; pass consumed; no raise from `members_report` |
 
-### Requirement: get_members_if_available() — an index-only member list
+### Requirement: members_report_if_available() — a report peek
 
-`get_members_if_available() -> list[ArchiveMember] | None` is **index-only**: no
-forward scan, no member-data reads, never consumes the pass. Returns the list from
-an upfront index or already-materialized cache; else `None`. Guaranteed
-fully-resolved list → `members()` (RA) or `scan_members()` (either mode).
+`members_report_if_available() -> MemberListReport | None` is a **report peek**:
+no forward scan, no member-data reads, never consumes the pass. It returns the
+stored `MemberListReport` (complete or incomplete) when one exists without scanning,
+or the upfront index as a complete report for backends that carry one; else `None`.
+Guaranteed fully-resolved complete list → `members()` (RA) or `scan_members()`
+(either mode).
 
 | Index topology | Availability |
 | --- | --- |
-| Leading (directory, ISO) | Both modes |
-| Trailing (ZIP CD, 7z EOF header) | Both modes today (those backends require seekable sources; `SUPPORTS_STREAMING_NON_SEEKABLE` is false). Future trailing+non-seekable → `None` on non-seekable |
-| No-index (TAR) | `None` until a completed forward pass / `scan_members` / `members` |
+| Leading (directory, ISO) | Both modes, as complete report |
+| Trailing (ZIP CD, 7z EOF header) | Both modes today, as complete report (those backends require seekable sources; `SUPPORTS_STREAMING_NON_SEEKABLE` is false). Future trailing+non-seekable → `None` on non-seekable |
+| No-index (TAR), no prior materialization/pass | `None` |
+| No-index after completed successful pass / `scan_members` / `members` | Complete report |
+| No-index after a terminal archive error was stored after a recoverable prefix | Incomplete report (`members` is prefix, `error` set); count is a floor |
 
 Index-only listings SHALL leave data-stored link targets unset (`link_target` /
 `link_target_member`); resolving them needs member-data reads that
-`members()`/`scan_members()` perform.
+`members()`/`scan_members()` perform. Returning an incomplete report to a caller
+MUST NOT change the complete-or-raise behaviour of `members()` / `scan_members()` /
+`get(name)`; the report self-labels via `error` and those methods still raise.
 
 #### Scenario: index-only listing matrix
 
@@ -89,8 +104,9 @@ Index-only listings SHALL leave data-stored link targets unset (`link_target` /
 | --- | --- |
 | Streaming ZIP (upfront index) | Full list; no scan/data read; forward pass still available |
 | No-index, not yet iterated | `None` |
-| No-index after completed pass / `scan_members` | Fully-resolved materialized list |
-| ZIP symlink via `get_members_if_available` | Link fields unset; `members`/`scan_members` resolve them |
+| No-index after completed pass / `scan_members` | Complete fully-resolved report |
+| No-index after incomplete pass already ran | Incomplete report with recovered prefix and `error` |
+| ZIP symlink via `members_report_if_available` | Link fields unset; `members`/`scan_members` resolve them |
 
 ### Requirement: Access mode × method behaviour summary
 
@@ -99,13 +115,14 @@ The system SHALL behave per this canonical table (`✅` allowed,
 
 | Method | `streaming=False` | `streaming=True` |
 | --- | --- | --- |
-| `__iter__` | ✅ repeatable (cache after first) | ✅ **once** (no replay) |
-| `stream_members` | ✅ | ✅ once |
-| `extract_all` | ✅ | ✅ once |
-| `scan_members` | ✅ (= `members`) | ✅ finishes/returns pass |
-| `get_members_if_available` | ✅ index-only (may be `None`) | ✅ index-only, no-consume |
-| `members` / `get` / `open` / `read` | ✅ | ⛔ |
-| `in` (identity) | ✅ no scan | ✅ no scan |
+| `__iter__` | ✅ repeatable after **successful** complete cache; yield-then-raise on terminal archive error | ✅ **once** (no replay); yield-then-raise on terminal archive error |
+| `stream_members` | ✅; yield-then-raise on terminal archive error | ✅ once; yield-then-raise |
+| `extract_all` | ✅; RA extract-prep fail-closed on terminal listing error | ✅ once; streaming write-then-raise |
+| `scan_members` | ✅ (= `members`); complete-or-raise | ✅ finishes/returns pass; complete-or-raise |
+| `members_report` | ✅ always returns `MemberListReport` | ✅ may consume pass; always returns report |
+| `members_report_if_available` | ✅ report peek: stored report (complete or incomplete) / upfront index / `None`; never scans | ✅ report peek, no-consume |
+| `members` / `get` / `open` / `read` | ✅; `members`/`get` complete-or-raise | ⛔ |
+| `in` (identity) | ✅ no scan (incl. recovered report members) | ✅ no scan |
 | `cost` / `info` / `format` / `close` / CM | ✅ | ✅ |
 | at `open_archive()` | fail fast if source not RA-capable | any source |
 
@@ -117,8 +134,10 @@ composes with — does not replace — these rules.
 
 | Case | Expected |
 | --- | --- |
-| `scan_members()` either mode | Fully-resolved list (RA ≡ `members()`; streaming finishes pass) |
+| `scan_members()` either mode on clean archive | Fully-resolved list (RA ≡ `members()`; streaming finishes pass) |
 | Full streaming `__iter__`, then iterate again | Second → `UnsupportedOperationError` |
+| RA `__iter__` on TAR rejected-header after prefix | Yields prefix members, then `CorruptionError` |
+| `members_report()` row present either mode | ✅ returns report |
 
 ### Requirement: Exposing a CostReceipt describing access costs
 

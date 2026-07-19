@@ -86,6 +86,7 @@ Independent convergence from two directions is good evidence these are the right
 with open_archive("a.7z", streaming=False, pwd=..., config=...) as ar:
     ar.get_members()                      # list, may scan
     ar.get_members_if_available()         # list | None, never scans
+    # (v2: members() / members_report_if_available() -> MemberListReport | None)
     ar.iter_members_with_streams(members=..., filter=...)  # (member, stream|None)
     ar.open(name_or_member, pwd=...)
     ar.extract(member, path), ar.extractall(path, members=..., filter=...)

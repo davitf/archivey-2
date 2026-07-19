@@ -36,7 +36,7 @@ def run_test(
     ok = 0
     failed = 0
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
-        indexed = reader.get_members_if_available()
+        indexed = reader.members_report_if_available()
         total_bytes: int | None = None
         members_total: int | None = None
         if indexed is not None:
