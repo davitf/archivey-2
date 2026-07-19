@@ -18,30 +18,19 @@ completed changes out of `changes/`.
 ## In flight
 
 Round commissioned 2026-07-17 — the **non-security** pass toward the first public
-`0.2.0`, after the three security-adjacent reviews archived below. See each `brief.md`:
+`0.2.0`. Two of four reviews archived 2026-07-19 after parked leftovers were
+recorded (see `backlog.md` / `IDEAS.md`). Remaining:
 
-| Dir | Review | Status (2026-07-18) |
+| Dir | Review | Status (2026-07-19) |
 |-----|--------|---------------------|
-| `api-coherence/` | Public API & member-model coherence / ergonomics (incl. cross-backend parity) | Findings in (#133); **Q1–Q6 decided + implemented**; digest fill → `surface-stored-stream-digests`; Q7 → next round |
-| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | **Brief only** — review not run |
-| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Findings + partial fixes (#134/#136/#137/#139/#140/#141); P1/P2/P6/P7 + Q2/Q4 remain |
-| `stream-layering/` | Stream wrapper stack — are the checks correct, and can slicing+verification collapse into one stream under `ArchiveStream`? | **Essentially done** (#137); park Q4 then archive |
+| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | Findings in (#144); **no fixes yet** — Q1–Q7 open; D1 folded from api-coherence |
+| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4** still open |
 
-**Live triage of remaining action items / decisions / future copy-targets:**
-[`STATUS.md`](STATUS.md).
+**Live triage:** [`STATUS.md`](STATUS.md).
 
-The first three run against `main` with the CLI (PR #120) merged in — the CLI is the
-library's first real second consumer, so it sharpens all three: `api-coherence` reads
-the CLI's use of the public surface as evidence of gaps, `performance` benchmarks the
-CLI's `list`/`test`/`extract` as real workloads, and `cli-product` reviews it directly.
-
-`stream-layering/` was commissioned after the performance review (PR #134) attributed
-part of the missed budget to the per-member wrapper stack; it pairs a correctness audit
-of the slice/verify/outer wrappers with a collapse-for-performance design question.
-
-`backlog.md` holds two more (test-strategy; structural-cleanliness / zero-tech-debt)
-deferred to a lighter follow-on pass, plus Topics 6–7 (decode-engine perf; outside-in
-adoption capstone).
+`backlog.md` holds Topics 4–5 (test-strategy; structural-cleanliness), Topic 6
+(decode-engine perf, + parked stream-layering Q4), Topic 7 (outside-in
+adoption capstone), and the parked-from-archive table.
 
 ## Archive (complete & addressed)
 
@@ -52,6 +41,8 @@ adoption capstone).
 | `archive/2026-07-16-crypto/` | Native decryption/KDF/verification correctness (PR #115) | F1–F5 fixed in #127. |
 | `archive/2026-07-16-stream-decoder/` | Post-#96 decoder layer, accelerators, vendored LZW (PR #122) | F1–F6 fixed in #128. |
 | `archive/2026-07-17-cli/` | CLI design + implementation (PR #131 → #120) | F1–F12 + D1–D8 addressed in #120; R1–R4 and hoist H1–H3 / D4 logging follow-ups fixed before merge. |
+| `archive/2026-07-19-stream-layering/` | Stream wrapper stack correctness + verify fusion | F1/F2/D1/D2 done (#137); Q4 parked → Topic 6. |
+| `archive/2026-07-19-api-coherence/` | Public API & member-model coherence | Q1–Q7 decided + implemented (#153–#157); digest fill done (#160); Q5 → `IDEAS.md`; D1 → `cli-product/`. |
 
 ## Conventions every brief inherits
 

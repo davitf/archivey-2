@@ -1,5 +1,10 @@
 # CLI-as-a-product review — SUMMARY
 
+> **Status (2026-07-19):** findings in #144; **no fixes landed yet.** Blockers
+> needing maintainer answers first: **Q1–Q3** (and Q4 for P3 style). Small
+> actionable items + folded **D1** (ANTI / non-current list marks) listed in
+> `../STATUS.md` §1.
+
 Deep review per `brief.md`: the merged `src/archivey/cli/` on `main` (post-#120,
 post-#131 fixes), judged as a **product** — muscle memory, output, errors, exit
 codes, discoverability — not re-reviewing implementation correctness.
@@ -85,6 +90,7 @@ public 0.2.0; polish = after.
 | P12 | **L** | argparse positionals | `archivey x` → "the following arguments are required: archive, patterns" — `patterns` is not required. | polish |
 | P13 | **L** | `cli/main.py:134-139` | Reserved-surface asymmetry: `--salvage` pre-verb is `unrecognized arguments` (globals otherwise work pre-verb); `-x`/`-l` get no "verbs are bare words — did you mean `x`?" hint. | polish |
 | P14 | **L** | `cli/main.py:158-162`, `cli/info_cmd.py` | No capability/dependency view: `--version` prints only the version (design Decision 10 mentioned a dependency matrix); `info` answers "what is this file" but not "can *this install* read it / what will it cost" (no `CostReceipt` story). | Q5/Q6 |
+| D1 | **L** | `cli/format.py` (from api-coherence) | List line has no mark for `ANTI` (falls to `"?"`, same as `OTHER`) and no non-current / superseded indicator — the member model's own distinctions are invisible in the first consumer. Folded here from api-coherence when that review archived. | polish |
 
 ## What is actually fine
 
