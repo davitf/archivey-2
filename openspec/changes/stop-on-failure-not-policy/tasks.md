@@ -54,7 +54,7 @@
 
 ## 5. Verify
 
-- [ ] 5.1 `uv run pytest tests/ -k "extraction or on_error or cli"` (and the full suite
+- [x] 5.1 `uv run pytest tests/ -k "extraction or on_error or cli"` (and the full suite
       before push) across `[all]`, `[all-lowest]`, and `[core-only]` per CONTRIBUTING.
-- [ ] 5.2 `uv run pyrefly check` and `uv run ty check`; `uv run ruff format` + `ruff check`.
-- [ ] 5.3 `openspec validate --strict stop-on-failure-not-policy`.
+- [x] 5.2 `uv run pyrefly check` and `uv run ty check`; `uv run ruff format` + `ruff check`.
+- [x] 5.3 `openspec validate --strict stop-on-failure-not-policy`.
