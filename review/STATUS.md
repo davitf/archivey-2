@@ -10,7 +10,7 @@ a finding is fixed or a question is decided.
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
-| `cli-product/` | yes (#144) | **none yet** — P1–P14 + Q1–Q7 open; D1 folded in from api-coherence | no |
+| `cli-product/` | yes (#144) | **P1–P3/P5–P14/D1 done** (Q1–Q3/Q5–Q6 decided; P4 deferred) | yes (after merge) |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
 `archive/2026-07-19-stream-layering/`.
@@ -19,18 +19,24 @@ Archived this pass: `archive/2026-07-19-api-coherence/`,
 
 ## 1. Actionable right now
 
-### From `cli-product/` (findings in #144 — no code yet)
+### From `cli-product/` (findings in #144)
 
-Small / unambiguous items that don't wait on Q1–Q3:
+| ID | Action | Status |
+|----|--------|--------|
+| **P5** | Ctrl-D at password prompt → catch `EOFError`. | **done** |
+| **P3** | Escape control bytes in member names (backslash style; Q4 style still open for `--raw`/TTY-only). | **done** (recommended style) |
+| **P6 (message)** | Prose instead of raw errno for missing file / bad path. | **done** |
+| **P7 / P9** | Library/CLI message cleanup (truncated-zip prose, enum leaks, zipcrypto no-password; rapidgzip AUTO-gate warning text). | **done** |
+| **P10–P13** | Help examples; hoist micro-copy; argparse `patterns` wording; reserved-flag asymmetry. | **done** |
+| **D1** | List marks for `ANTI` / non-current (from archived api-coherence). | **done** |
+| **P1** | Extract CONTINUE + `--stop-on-error` + exit 3 (Q1). | **done** |
+| **P2** | No-match include warnings + extract/test exit 1 + `-d` hint (Q3). | **done** |
+| **P4** | `--json` for scripting audience. | **deferred** (Q2) — wait for `hash` / member schema |
+| **P14** | `info` access/cost line + `--version -v` capability matrix (Q5/Q6). | **done** |
+| **P8** | `test` summary reports `K not tested` when an indexed stream aborts early. | **done** |
 
-| ID | Action |
-|----|--------|
-| **P5** | Ctrl-D at password prompt → catch `EOFError`. |
-| **P3** | Escape control bytes in member names (style still Q4). |
-| **P6 (message)** | Prose instead of raw errno for missing file / bad path. |
-| **P7 / P9** | Library/CLI message cleanup (truncated-zip prose, enum leaks, zipcrypto no-password; rapidgzip AUTO-gate warning text). |
-| **P10–P13** | Help examples; hoist micro-copy; argparse `patterns` wording; reserved-flag asymmetry. |
-| **D1** | List marks for `ANTI` / non-current (from archived api-coherence). |
+cli-product code/docs follow-ups from #144 are complete for this pass (**P4**
+deferred by Q2).
 
 ### From `performance/`
 
@@ -44,16 +50,17 @@ Small / unambiguous items that don't wait on Q1–Q3:
 
 ## 2. Still needs decisions
 
-### `cli-product/QUESTIONS.md` (all open)
+### `cli-product/QUESTIONS.md`
 
-| Q | Finding |
-|---|---------|
-| **Q1** | **P1** extract abort-on-first-error (continue vs STOP; exit codes) |
-| **Q2** | **P4** `--json` timing |
-| **Q3** | **P2** no-match filters exit code |
-| **Q4** | **P3** control-byte quoting style |
-| **Q5 / Q6** | **P14** `info` cost line / install capability view |
-| **Q7** | P7/P9 library vs CLI ownership |
+| Q | Finding | Status |
+|---|---------|--------|
+| **Q1** | **P1** extract abort-on-first-error | **decided** — CONTINUE (+ `--stop-on-error`); exit 3 for policy-only blocks |
+| **Q2** | **P4** `--json` timing | **decided** — wait for `hash` / member schema (no minimal JSON in 0.2.0) |
+| **Q3** | **P2** no-match filters exit code | **decided** — warn; extract/test exit 1; list exit 0; `-d` hint |
+| **Q4** | **P3** control-byte quoting style | lean applied (escape everywhere / backslash); `--raw`/TTY-only still open |
+| **Q5 / Q6** | **P14** `info` cost line / install capability view | **decided** — `info` prints `access:` from `CostReceipt`; `--version -v` format matrix |
+| **Q7** | P7/P9 library vs CLI ownership | **done** (library) |
+| **Q8** | STOP+policy exit `3` vs `1` | **decided** — Option A: STOP always `1`; `3` only for completed CONTINUE + policy blocks |
 
 ### `performance/QUESTIONS.md`
 

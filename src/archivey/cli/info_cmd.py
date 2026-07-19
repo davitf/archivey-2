@@ -7,19 +7,31 @@ from typing import TextIO
 
 from archivey import detect_format, open_archive
 from archivey.cli.common import reject_stdin_token
+from archivey.cli.format import format_access_summary, format_format_label
 from archivey.cli.password import resolve_password
 from archivey.config import PasswordInput
+from archivey.cost import CostReceipt
 from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveFormat
 
 
 def _format_label(fmt: ArchiveFormat) -> str:
-    """Human format name (``ZIP``) rather than ``ArchiveFormat.ZIP``."""
-    return fmt.display_name
+    return format_format_label(fmt)
 
 
 def _line(key: str, value: object, out: TextIO) -> None:
     print(f"{key + ':':<12} {value}", file=out)
+
+
+def _print_cost_axes(cost: CostReceipt, out: TextIO) -> None:
+    """Verbose breakdown of the three CostReceipt axes (plus solid_block_count)."""
+    _line("listing", cost.listing_cost.value, out)
+    _line("access_cost", cost.access_cost.value, out)
+    _line("stream", cost.stream_capability.value, out)
+    blocks = cost.solid_block_count
+    _line("solid_blocks", blocks if blocks is not None else "-", out)
+    for note in cost.notes:
+        _line("cost_note", note, out)
 
 
 def run_info(
@@ -51,6 +63,9 @@ def run_info(
             info = reader.info
             _line("version", info.format_version or "-", out)
             _line("solid", info.is_solid, out)
+            _line("access", format_access_summary(info.cost), out)
+            if verbose:
+                _print_cost_axes(info.cost, out)
             _line("encrypted", info.is_encrypted, out)
             _line("multivolume", info.is_multivolume, out)
             _line(

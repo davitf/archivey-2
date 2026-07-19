@@ -6,6 +6,7 @@ import sys
 from collections.abc import Callable
 from typing import Protocol, TextIO, cast
 
+from archivey.cli.format import escape_member_name
 from archivey.internal.extraction_types import ExtractionProgress
 
 
@@ -41,15 +42,16 @@ class ProgressCallback:
                 unit_divisor=1024,
                 file=self._display,
                 leave=True,
-                desc=progress.member.name,
+                desc=escape_member_name(progress.member.name),
                 mininterval=0,
                 miniters=1,
                 dynamic_ncols=True,
                 disable=False,
             )
             self._bar = bar
-        if bar.desc != progress.member.name:
-            bar.set_description(progress.member.name, refresh=False)
+        safe_name = escape_member_name(progress.member.name)
+        if bar.desc != safe_name:
+            bar.set_description(safe_name, refresh=False)
         if total is not None and bar.total != total:
             bar.total = total
         delta = progress.bytes_written - int(bar.n)

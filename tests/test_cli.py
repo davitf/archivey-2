@@ -91,8 +91,19 @@ def test_bare_invocation_is_usage() -> None:
     assert main([]) == EXIT_USAGE
 
 
-def test_version() -> None:
+def test_version(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--version"]) == EXIT_OK
+    assert capsys.readouterr().out.strip().startswith("archivey ")
+
+
+def test_version_verbose_lists_formats(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--version", "-v"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("archivey ")
+    assert "formats:" in out
+    assert "zip:" in out
+    assert main(["-v", "--version"]) == EXIT_OK
+    assert "formats:" in capsys.readouterr().out
 
 
 def test_default_list_dispatch(
@@ -189,6 +200,7 @@ def test_reserved_verbs(sample_zip: Path) -> None:
 
 def test_salvage_reserved(sample_zip: Path) -> None:
     assert main(["list", str(sample_zip), "--salvage"]) == EXIT_USAGE
+    assert main(["--salvage", "list", str(sample_zip)]) == EXIT_USAGE
     assert (
         main(
             [
@@ -254,19 +266,46 @@ def test_extract_policy_and_dest(sample_zip: Path, tmp_path: Path) -> None:
     assert (dest / "a.txt").read_bytes() == b"hello"
 
 
-def test_extract_strict_abort_explains_stop(
+def test_extract_strict_blocks_device_name_and_continues(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Windows-reserved device names are still rejected under STRICT; OnError.STOP must
-    # say so clearly (trailing-dot names are stripped, not rejected — see #123).
+    # Windows-reserved device names are rejected under STRICT; default CONTINUE
+    # still extracts the remaining members (Q1). Trailing-dot names are stripped,
+    # not rejected — see #123.
+    from archivey.cli.exit_codes import EXIT_POLICY
+
     bad = _zip(tmp_path / "bad.zip", {"NUL": b"x", "ok.txt": b"y"})
     dest = tmp_path / "out"
     code = main(["extract", str(bad), "-d", str(dest), "--policy", "strict"])
+    assert code == EXIT_POLICY
+    err = capsys.readouterr().err
+    assert "NUL" in err
+    assert "blocked:" in err
+    assert "extraction stopped" not in err.lower()
+    assert (dest / "ok.txt").read_bytes() == b"y"
+
+
+def test_extract_strict_stop_on_error_aborts_on_device_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = _zip(tmp_path / "bad.zip", {"NUL": b"x", "ok.txt": b"y"})
+    dest = tmp_path / "out"
+    code = main(
+        [
+            "extract",
+            str(bad),
+            "-d",
+            str(dest),
+            "--policy",
+            "strict",
+            "--stop-on-error",
+        ]
+    )
+    # Q8: STOP aborts → exit 1 (exit 3 only for completed CONTINUE + policy blocks).
     assert code == EXIT_FAIL
     err = capsys.readouterr().err
     assert "NUL" in err
     assert "extraction stopped" in err.lower()
-    assert "remaining members" in err.lower()
     assert not (dest / "ok.txt").exists()
 
 
@@ -314,10 +353,43 @@ def test_extract_dest_dot_splatter(
 def test_info_and_detect(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["info", str(sample_zip)]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "ZIP" in out
-    assert "format:" in out
+    assert "format:      zip" in out or "format:" in out and "zip" in out
     assert "ArchiveFormat.ZIP" not in out
+    assert "SEVEN_Z" not in out
+    assert "access:      random (indexed)" in out
     assert main(["detect", str(sample_zip)]) == EXIT_OK
+
+
+def test_info_verbose_prints_cost_axes(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["info", "-v", str(sample_zip)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "access:      random (indexed)" in out
+    assert "listing:     indexed" in out
+    assert "access_cost: direct" in out
+    assert "stream:      seekable" in out
+
+
+def test_info_access_solid_for_tar_gz(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import gzip
+    import io
+    import tarfile
+
+    tar_path = tmp_path / "a.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        info = tarfile.TarInfo("hello.txt")
+        info.size = 5
+        tf.addfile(info, io.BytesIO(b"hello"))
+    gz_path = tmp_path / "a.tar.gz"
+    gz_path.write_bytes(gzip.compress(tar_path.read_bytes()))
+
+    assert main(["info", str(gz_path)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "access:      solid (" in out
+    assert "listing requires decompression" in out
 
 
 def test_info_track_io_is_explicit_na(
@@ -524,6 +596,7 @@ def test_test_open_failure_still_prints_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Open-time failures must count as FAIL and still reach the summary (F4).
+    # Indexed archives also report untested remainder (P8).
     from archivey.exceptions import ReadError
     from archivey.internal.base_reader import BaseArchiveReader
 
@@ -535,7 +608,43 @@ def test_test_open_failure_still_prints_summary(
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert "FAIL:" in err
-    assert "0 OK, 1 failed" in err
+    # sample_zip has 3 file members; archive-wide FAIL consumes one slot.
+    assert "0 OK, 1 failed, 2 not tested" in err
+
+
+def test_test_early_abort_reports_not_tested(
+    sample_zip: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After one OK, a poisoned stream leaves remaining indexed files as not tested."""
+    from archivey.exceptions import ReadError
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    real = BaseArchiveReader.stream_members
+
+    def _one_then_die(self: BaseArchiveReader, members: object = None) -> object:
+        yielded = False
+        for item in real(self, members):
+            if yielded:
+                raise ReadError("simulated solid abort")
+            yielded = True
+            yield item
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _one_then_die)
+    assert main(["test", str(sample_zip)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "1 OK, 1 failed, 1 not tested" in err
+
+
+def test_test_summary_helper() -> None:
+    from archivey.cli.test_cmd import _test_summary
+
+    assert _test_summary(ok=4, failed=0, members_total=4) == "4 OK, 0 failed"
+    assert (
+        _test_summary(ok=0, failed=1, members_total=4) == "0 OK, 1 failed, 3 not tested"
+    )
+    assert _test_summary(ok=0, failed=1, members_total=None) == "0 OK, 1 failed"
 
 
 def test_archive_stem_uses_format_extension() -> None:
@@ -633,7 +742,7 @@ def _tar(path: Path, entries: dict[str, bytes]) -> Path:
 
 
 def test_hoist_root_named_like_wrapper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # src.tar containing src/ — the "collision" is the wrapper itself; flatten in
     # place instead of renaming away (H2) or deleting extracted data (H1).
@@ -641,6 +750,9 @@ def test_hoist_root_named_like_wrapper(
     archive = _tar(tmp_path / "src.tar", {"src/f.txt": b"data"})
     for overwrite in ("rename", "replace", "error", "skip"):
         assert main(["extract", str(archive), "--overwrite", overwrite]) == EXIT_OK
+        err = capsys.readouterr().err
+        assert "removed wrapper; content at src/" in err
+        assert "moved to src/" not in err
         assert (tmp_path / "src" / "f.txt").read_bytes() == b"data"
         assert not (tmp_path / "src (1)").exists()
         import shutil
@@ -759,3 +871,401 @@ def test_cli_logging_leaves_no_global_state(sample_zip: Path) -> None:
     assert root.handlers == []
     assert root.propagate is True
     assert root.level == logging.NOTSET
+
+
+# --- cli-product review follow-ups (P3 / P5 / P6 / P10–P13 / D1) -------------------------
+
+
+def test_missing_archive_uses_prose_not_errno_repr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "nope.zip"
+    assert main(["list", str(missing)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "cannot open" in err
+    assert "no such file or directory" in err.lower()
+    assert "[Errno" not in err
+
+
+def test_extract_missing_archive_only_requires_archive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["x"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "required: archive" in err
+    assert "patterns" not in err.split("required:")[-1]
+
+
+def test_dash_x_hints_bare_verb(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["-x", "a.zip"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: -x" in err
+    assert "bare words" in err
+    assert "archivey x ARCHIVE" in err
+
+
+def test_help_includes_examples(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--help"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "examples:" in out
+    assert "archivey x archive.zip" in out
+
+
+def test_password_eof_treated_as_no_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.cli import password as password_mod
+    from archivey.config import PasswordRequest
+    from tests.zipcrypto import build_zipcrypto_zip
+
+    blob = build_zipcrypto_zip(b"secret", b"zc.txt", b"hello")
+    path = tmp_path / "zc.zip"
+    path.write_bytes(blob)
+
+    monkeypatch.setattr(password_mod.sys.stdin, "isatty", lambda: True)
+
+    def _eof(_prompt: str = "") -> str:
+        raise EOFError
+
+    monkeypatch.setattr(password_mod.getpass, "getpass", _eof)
+    provider = password_mod.resolve_password(None)
+    assert callable(provider)
+    assert provider(PasswordRequest(member=None, attempt=1)) is None
+
+    # End-to-end: EOF at prompt must not dump a traceback (P5).
+    err = io.StringIO()
+    assert main(["t", str(path)], out=io.StringIO(), err=err) == EXIT_FAIL
+    text = err.getvalue()
+    assert "Traceback" not in text
+    assert "EOFError" not in text
+    assert "Password required" in text
+
+
+def test_format_access_summary() -> None:
+    from archivey.cli.format import format_access_summary
+    from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+
+    indexed = CostReceipt(
+        listing_cost=ListingCost.INDEXED,
+        access_cost=AccessCost.DIRECT,
+        stream_capability=StreamCapability.SEEKABLE,
+    )
+    assert format_access_summary(indexed) == "random (indexed)"
+
+    solid = CostReceipt(
+        listing_cost=ListingCost.REQUIRES_DECOMPRESSION,
+        access_cost=AccessCost.SOLID,
+        stream_capability=StreamCapability.SEEKABLE,
+        solid_block_count=1,
+    )
+    assert "solid (" in format_access_summary(solid)
+    assert "1 solid block" in format_access_summary(solid)
+
+
+def test_list_escapes_control_bytes_in_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    z = _zip(
+        tmp_path / "hostile.zip", {"evil\x1b[31m.txt": b"x", "line1\rok.txt": b"y"}
+    )
+    assert main(["list", str(z)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "\\x1b" in out
+    assert "\\r" in out
+
+
+def test_list_marks_anti_and_non_current() -> None:
+    from datetime import datetime
+
+    from archivey.cli.format import format_member_line
+    from archivey.types import ArchiveMember, MemberType
+
+    anti = ArchiveMember(type=MemberType.ANTI, name="gone.txt")
+    assert format_member_line(anti).startswith("A-")
+
+    old = ArchiveMember(
+        type=MemberType.FILE,
+        name="a.txt",
+        size=1,
+        modified=datetime(2026, 1, 1),
+        is_current=False,
+    )
+    assert format_member_line(old).startswith("f~")
+
+    enc = ArchiveMember(
+        type=MemberType.FILE,
+        name="a.txt",
+        size=1,
+        is_encrypted=True,
+        is_current=False,
+    )
+    assert format_member_line(enc).startswith("fE")
+
+
+def test_extract_summary_names_single_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "one.zip", {"root/a.txt": b"a", "root/b.txt": b"b"})
+    assert main(["extract", str(z)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "→ root/" in err
+    assert "→ ." not in err
+
+
+def test_truncated_zip_message_is_prose_not_repr(tmp_path: Path) -> None:
+    import zipfile as zf
+
+    from archivey import open_archive
+    from archivey.exceptions import CorruptionError
+
+    buf = io.BytesIO()
+    with zf.ZipFile(buf, "w") as archive:
+        archive.writestr("a.txt", "hello")
+    path = tmp_path / "truncated.zip"
+    path.write_bytes(buf.getvalue()[:20])
+    with pytest.raises(CorruptionError) as caught:
+        open_archive(path)
+    msg = str(caught.value)
+    assert "BadZipFile" not in msg
+    assert "ArchiveFormat.ZIP" not in msg
+    assert "format=ZIP" in msg
+    assert "truncated" in msg.lower() or "corrupt" in msg.lower()
+
+
+def test_stored_zipcrypto_provider_none_is_password_required(tmp_path: Path) -> None:
+    import zipfile as zf
+
+    from archivey import open_archive
+    from archivey.exceptions import EncryptionError
+    from tests.zipcrypto import build_zipcrypto_zip
+
+    blob = build_zipcrypto_zip(
+        b"secret", b"zc.txt", b"hello world", compression=zf.ZIP_STORED
+    )
+    path = tmp_path / "zc_stored.zip"
+    path.write_bytes(blob)
+
+    with pytest.raises(EncryptionError, match="Password required") as caught:
+        with open_archive(path, password=lambda _r: None) as ar:
+            ar.read(next(m for m in ar.members() if m.is_file))
+    assert "Wrong password" not in caught.value.message
+
+
+# --- Q1 / P1: extract continue-on-error + exit 3 + --stop-on-error -----------------------
+
+
+def test_extract_continues_after_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from archivey.cli.exit_codes import EXIT_POLICY
+
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(
+        tmp_path / "evil.tar",
+        {
+            "../escape.txt": b"bad",
+            "safe1.txt": b"ok1",
+            "safe2.txt": b"ok2",
+            "dir/nested.txt": b"ok3",
+        },
+    )
+    assert main(["extract", str(archive), "-d", "out"]) == EXIT_POLICY
+    err = capsys.readouterr().err
+    assert "blocked:" in err
+    assert "escape.txt" in err or "../escape" in err
+    assert "blocked" in err.split("→")[0]  # summary mentions blocked
+    assert (tmp_path / "out" / "safe1.txt").read_bytes() == b"ok1"
+    assert (tmp_path / "out" / "safe2.txt").read_bytes() == b"ok2"
+    assert (tmp_path / "out" / "dir" / "nested.txt").read_bytes() == b"ok3"
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_extract_stop_on_error_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    # Put the traversal first so STOP aborts before safe members.
+    archive = _tar(
+        tmp_path / "evil.tar",
+        {
+            "../escape.txt": b"bad",
+            "safe.txt": b"ok",
+        },
+    )
+    code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
+    # Q8: incomplete extract under STOP → 1, not 3.
+    assert code == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "extraction stopped" in err
+    assert not (tmp_path / "out" / "safe.txt").exists()
+
+
+def test_extract_corrupt_member_continues_with_exit_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CRC mismatch: recoverable members extracted; exit 1 (FAILED, not policy)."""
+    monkeypatch.chdir(tmp_path)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+        zf.writestr("b.txt", b"world")
+        zf.writestr("c.txt", b"end")
+    data = bytearray(buf.getvalue())
+    # Flip the central-directory CRC for b.txt so open succeeds but extract fails.
+    pos = 0
+    while True:
+        i = data.find(b"PK\x01\x02", pos)
+        if i < 0:
+            break
+        name_len = int.from_bytes(data[i + 28 : i + 30], "little")
+        name = bytes(data[i + 46 : i + 46 + name_len])
+        if name == b"b.txt":
+            data[i + 16] ^= 0xFF
+            break
+        pos = i + 4
+    path = tmp_path / "badcrc.zip"
+    path.write_bytes(bytes(data))
+
+    assert main(["extract", str(path), "-d", "out"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "failed:" in err
+    assert "b.txt" in err
+    assert "extraction stopped" not in err
+    assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
+    assert (tmp_path / "out" / "c.txt").read_bytes() == b"end"
+    assert not (tmp_path / "out" / "b.txt").exists()
+
+
+def test_extract_dest_before_patterns_still_filters(
+    sample_zip: Path, tmp_path: Path
+) -> None:
+    """Documented ``x ARCHIVE -d DEST PATTERN`` must not drop the pattern (argparse)."""
+    dest = tmp_path / "dest"
+    assert main(["x", str(sample_zip), "-d", str(dest), "a.txt"]) == EXIT_OK
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert not (dest / "b").exists()
+
+
+def test_extract_unmatched_include_exits_one(
+    sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    assert main(["x", str(sample_zip), "-d", str(dest), "*.missing"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: '*.missing'" in err
+    assert list(dest.iterdir()) == []
+
+
+def test_extract_unmatched_dir_pattern_hints_dash_d(
+    sample_zip: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    assert main(["x", str(sample_zip), "out"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: 'out'" in err
+    assert "(did you mean -d out?)" in err
+
+
+def test_extract_partial_unmatched_still_extracts(
+    sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dest = tmp_path / "dest"
+    assert main(["x", str(sample_zip), "-d", str(dest), "a.txt", "nope.txt"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: 'nope.txt'" in err
+    assert (dest / "a.txt").read_bytes() == b"hello"
+
+
+def test_list_unmatched_include_warns_exit_zero(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["list", str(sample_zip), "*.rs"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert "warning: pattern matched no members: '*.rs'" in captured.err
+    assert captured.out == ""
+
+
+def test_test_unmatched_include_exits_one(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["t", str(sample_zip), "missing"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: 'missing'" in err
+    assert "OK," not in err
+
+
+def test_extract_dest_before_dash_named_pattern(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``-d`` before patterns must still accept ``-- -file.txt`` (fold + ``--``)."""
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "dash.zip", {"-file.txt": b"x", "ok.txt": b"y"})
+    dest = tmp_path / "out"
+    assert main(["x", str(z), "-d", str(dest), "--", "-file.txt"]) == EXIT_OK
+    assert (dest / "-file.txt").read_bytes() == b"x"
+    assert not (dest / "ok.txt").exists()
+
+
+def test_extract_stop_on_error_reports_members_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Q1.5: STOP after a successful member still reports how many were written."""
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(
+        tmp_path / "evil.tar",
+        {
+            "safe.txt": b"ok",
+            "../escape.txt": b"bad",
+            "later.txt": b"late",
+        },
+    )
+    code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
+    assert code == EXIT_FAIL  # Q8: abort → 1
+    err = capsys.readouterr().err
+    assert "1 member(s) written before the stop" in err
+    assert "extraction stopped" in err
+    assert (tmp_path / "out" / "safe.txt").read_bytes() == b"ok"
+    assert not (tmp_path / "out" / "later.txt").exists()
+
+
+def test_members_for_include_check_skips_forward_only(
+    tmp_path: Path,
+) -> None:
+    """Forward-only readers must not be pre-scanned (would burn the sole pass)."""
+    import io
+    import tarfile
+
+    from archivey import open_archive
+    from archivey.cli.filters import members_for_include_check
+    from archivey.cost import StreamCapability
+
+    tar_path = tmp_path / "a.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        tf.addfile(info, io.BytesIO(b"x"))
+
+    class _NonSeekable(io.BytesIO):
+        def seekable(self) -> bool:
+            return False
+
+        def seek(self, *args: object, **kwargs: object) -> int:
+            raise OSError("not seekable")
+
+        def tell(self) -> int:
+            raise OSError("not seekable")
+
+    with open_archive(_NonSeekable(tar_path.read_bytes()), streaming=True) as reader:
+        assert reader.cost.stream_capability is StreamCapability.FORWARD_ONLY
+        assert members_for_include_check(reader) is None
+        # Sole pass still available for extract/test.
+        pairs = list(reader.stream_members())
+        assert [m.name for m, _ in pairs] == ["a.txt"]

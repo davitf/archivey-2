@@ -1,9 +1,8 @@
 # Brief — The `archivey` CLI as a product (UX / ergonomics)
 
-> **Status (2026-07-19):** findings delivered in **#144**. **No code follow-ups
-> yet** — P1–P14 + Q1–Q7 still open. Api-coherence **D1** (ANTI / non-current
-> list marks) folded into this review's SUMMARY when api-coherence archived.
-> Triage: `../STATUS.md`.
+> **Status (2026-07-19):** findings delivered in **#144**. Follow-ups
+> implemented except **Q2/P4** (`--json` deferred until `hash`/schema). Triage:
+> `../STATUS.md`.
 
 Read `review/README.md` (conventions, VISION tie-breakers, deliverable shape). This
 is a **product** review — the CLI seen through a user's eyes — **not** a code-correctness

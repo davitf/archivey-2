@@ -11,13 +11,22 @@ from typing import TextIO
 
 from archivey import (
     ExtractionPolicy,
+    ExtractionProgress,
     ExtractionReport,
     ExtractionStatus,
+    OnError,
     OverwritePolicy,
 )
 from archivey.cli.common import open_for_cli, reject_salvage
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
-from archivey.cli.filters import member_predicate
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
+from archivey.cli.filters import (
+    count_selected,
+    member_predicate,
+    members_for_include_check,
+    unmatched_include_patterns,
+    warn_unmatched_includes,
+)
+from archivey.cli.format import escape_member_name
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
@@ -265,8 +274,35 @@ def maybe_hoist_single_root(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
         )
     is_dir = result.target.is_dir() and not result.target.is_symlink()
-    print(f"moved to {result.target}{'/' if is_dir else ''}", file=err)
+    label = f"{result.target}{'/' if is_dir else ''}"
+    if result.target == wrapper:
+        # In-place flatten (src.tar → src/ containing src/): name unchanged.
+        print(f"removed wrapper; content at {label}", file=err)
+    else:
+        print(f"moved to {label}", file=err)
     return result
+
+
+def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
+    """Closing summary destination; prefer the single extracted top when dest is cwd."""
+    if target != Path("."):
+        if target.is_dir():
+            return f"{target}/"
+        return str(target)
+    tops: set[str] = set()
+    for result in report:
+        if result.status is not ExtractionStatus.EXTRACTED:
+            continue
+        name = result.member.name.strip("/")
+        if name:
+            tops.add(name.split("/", 1)[0])
+    if len(tops) == 1:
+        only = next(iter(tops))
+        on_disk = Path(only)
+        if on_disk.is_dir() and not on_disk.is_symlink():
+            return f"{only}/"
+        return only
+    return "."
 
 
 def _report_extraction(
@@ -277,12 +313,14 @@ def _report_extraction(
     err: TextIO,
     extra_renamed: int = 0,
     extra_skipped: int = 0,
-) -> None:
+) -> tuple[int, int]:
     """Print rename notices + a closing summary from the library report (F3/D2).
 
     ``extra_renamed`` / ``extra_skipped`` fold in collisions resolved during the
     post-extract hoist (the library report covers only the wrapper extraction,
     which is collision-free by construction).
+
+    Returns ``(blocked_count, failed_count)`` for exit-code selection (Q1).
     """
     extracted = 0
     renamed = extra_renamed
@@ -306,31 +344,38 @@ def _report_extraction(
                     file=err,
                 )
             elif verbose:
-                print(f"extracted: {result.member.name}", file=err)
+                print(
+                    f"extracted: {escape_member_name(result.member.name)}",
+                    file=err,
+                )
         elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
             # Overwrite-skips change outcomes under --overwrite skip; always note.
-            where = result.requested_path or result.member.name
+            where = result.requested_path or escape_member_name(result.member.name)
             print(f"not overwritten: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
             if verbose:
-                print(f"superseded: {result.member.name}", file=err)
+                print(
+                    f"superseded: {escape_member_name(result.member.name)}",
+                    file=err,
+                )
         elif status is ExtractionStatus.BLOCKED:
             blocked += 1
             detail = f": {result.error}" if result.error is not None else ""
-            print(f"blocked: {result.member.name}{detail}", file=err)
+            print(
+                f"blocked: {escape_member_name(result.member.name)}{detail}",
+                file=err,
+            )
         elif status is ExtractionStatus.FAILED:
             failed += 1
             detail = f": {result.error}" if result.error is not None else ""
-            print(f"failed: {result.member.name}{detail}", file=err)
+            print(
+                f"failed: {escape_member_name(result.member.name)}{detail}",
+                file=err,
+            )
 
-    if target == Path("."):
-        dest_label = "."
-    elif target.is_dir():
-        dest_label = f"{target}/"
-    else:
-        dest_label = str(target)
+    dest_label = _summary_dest_label(target, report)
     print(
         f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
         f"{f', {blocked} blocked' if blocked else ''}"
@@ -338,6 +383,16 @@ def _report_extraction(
         f" → {dest_label}",
         file=err,
     )
+    return blocked, failed
+
+
+def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
+    """Map extract outcomes to exit codes (Q1): FAILED→1, policy-only BLOCKED→3."""
+    if not hoist_ok or failed:
+        return EXIT_FAIL
+    if blocked:
+        return EXIT_POLICY
+    return EXIT_OK
 
 
 def run_extract(
@@ -353,6 +408,7 @@ def run_extract(
     track_io: bool,
     hide_progress: bool,
     verbose: bool,
+    stop_on_error: bool = False,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -363,9 +419,19 @@ def run_extract(
     pred = member_predicate(patterns, exclude)
     policy_enum = ExtractionPolicy(policy)
     overwrite_enum = OverwritePolicy(overwrite)
+    on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
+        # None on forward-only readers: do not consume the sole pass before extract.
+        members_for_filter = members_for_include_check(reader) if patterns else None
+        if patterns and members_for_filter is not None:
+            unmatched = unmatched_include_patterns(patterns, members_for_filter)
+            if unmatched:
+                warn_unmatched_includes(unmatched, err=err, dest_hint=True)
+            if count_selected(members_for_filter, pred) == 0:
+                return EXIT_FAIL
+
         may_hoist = False
         if dest is not None:
             target = Path(dest)
@@ -381,9 +447,19 @@ def run_extract(
             if target != Path("."):
                 print(f"extracting into {target}/", file=err)
 
-        on_progress: ProgressCallback | None = make_progress_callback(
+        base_progress: ProgressCallback | None = make_progress_callback(
             hide_progress=hide_progress, stream=err
         )
+        # Under STOP, extract_all raises without returning a report — track how
+        # many members completed before the stop via the progress callback (Q1.5).
+        members_completed = 0
+
+        def on_progress(progress: ExtractionProgress) -> None:
+            nonlocal members_completed
+            members_completed = progress.members_done
+            if base_progress is not None:
+                base_progress(progress)
+
         try:
             try:
                 report = reader.extract_all(
@@ -391,23 +467,35 @@ def run_extract(
                     members=pred,
                     policy=policy_enum,
                     overwrite=overwrite_enum,
+                    on_error=on_error,
                     on_progress=on_progress,
                 )
             except (ArchiveyError, OSError) as exc:
-                # OnError.STOP (library default) re-raises the first member failure.
-                # OSError (disk full, perms) must get the same stop notice (F10).
+                # STOP / always-stop (bomb guards, DiagnosticRaisedError): report
+                # what was already written, then the stop notice.
+                # Exit 1 always on abort (Q8): exit 3 is reserved for CONTINUE
+                # runs that *completed* with policy blocks and safe members on disk.
                 print(exc, file=err)
+                if members_completed:
+                    print(
+                        f"{members_completed} member(s) written before the stop",
+                        file=err,
+                    )
                 print(
                     "extraction stopped; remaining members were not extracted",
                     file=err,
                 )
+                return EXIT_FAIL
+            # Streaming + patterns: empty report means nothing matched (no pre-scan).
+            if patterns and members_for_filter is None and len(report) == 0:
+                warn_unmatched_includes(patterns, err=err, dest_hint=True)
                 return EXIT_FAIL
             hoist = _HoistResult(target)
             if may_hoist:
                 hoist = maybe_hoist_single_root(
                     target, overwrite=overwrite_enum, err=err
                 )
-            _report_extraction(
+            blocked, failed = _report_extraction(
                 report,
                 target=hoist.target,
                 verbose=verbose,
@@ -415,9 +503,7 @@ def run_extract(
                 extra_renamed=hoist.renamed,
                 extra_skipped=hoist.skipped,
             )
-            if not hoist.ok:
-                return EXIT_FAIL
+            return _exit_for_outcomes(blocked=blocked, failed=failed, hoist_ok=hoist.ok)
         finally:
-            if on_progress is not None:
-                on_progress.close()
-    return EXIT_OK
+            if base_progress is not None:
+                base_progress.close()

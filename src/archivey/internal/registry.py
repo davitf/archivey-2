@@ -226,14 +226,14 @@ class BackendRegistry:
             backend_cls = self._readers.get(fmt)
             if backend_cls is None:
                 raise UnsupportedFormatError(
-                    f"No read backend registered for format {fmt!r}",
+                    f"No read backend registered for format {fmt.display_name}",
                     source_format=fmt,
                 )
             hints = "; ".join(
                 f"{m.name} ({m.install_hint})" for m in availability.missing
             )
             raise UnsupportedFormatError(
-                f"Format {fmt!r} is not available: missing {hints}",
+                f"Format {fmt.display_name} is not available: missing {hints}",
                 source_format=fmt,
             )
         return self._readers[fmt]
@@ -241,7 +241,7 @@ class BackendRegistry:
     def writer_for_format(self, fmt: ArchiveFormat) -> type[WriteBackend]:
         if fmt not in self._writers:
             raise UnsupportedOperationError(
-                f"No write backend registered for format {fmt!r}",
+                f"No write backend registered for format {fmt.display_name}",
                 source_format=fmt,
             )
         return self._writers[fmt]

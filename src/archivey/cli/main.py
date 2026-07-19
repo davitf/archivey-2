@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import sys
 from collections.abc import Sequence
-from typing import TextIO
+from typing import NoReturn, TextIO
 
 import archivey
+from archivey import format_availability, list_known_formats
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import run_extract
+from archivey.cli.format import format_format_label
 from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
@@ -48,6 +51,30 @@ _VALUE_OPTIONS = frozenset(
     }
 )
 
+_TOP_EPILOG = """\
+examples:
+  archivey archive.zip                  list members
+  archivey x archive.zip                extract safely (into ./archive/ if needed)
+  archivey x archive.zip -d out '*.py'  extract *.py into out/
+  archivey t archive.zip                verify integrity
+"""
+
+_EXTRACT_EPILOG = """\
+examples:
+  archivey x archive.zip                extract safely (into ./archive/ if needed)
+  archivey x archive.zip -d out         extract into out/ (use -d . for cwd)
+  archivey x archive.zip '*.py'         extract matching members only
+  archivey x archive.zip --exclude 't*' extract all except exclude patterns
+"""
+
+# Classic tar-style flag spellings that are not options here (verbs are bare words).
+_VERB_FLAG_HINTS = {
+    "-x": "x",
+    "-l": "l",
+    "-t": "t",
+    "-i": "i",
+}
+
 
 def _inject_default_list(argv: list[str]) -> list[str]:
     """If the first positional is not a known verb, insert ``list`` (known-verb-wins)."""
@@ -76,14 +103,31 @@ def _inject_default_list(argv: list[str]) -> list[str]:
     return argv
 
 
-def _common_parent(*, suppress_defaults: bool) -> argparse.ArgumentParser:
+class _ArchiveyArgumentParser(argparse.ArgumentParser):
+    """argparse tweaks for product-facing error messages (P12 / P13)."""
+
+    def error(self, message: str) -> NoReturn:
+        # bpo-26240: nargs='*' positionals are wrongly listed as required.
+        if "the following arguments are required:" in message:
+            message = message.replace(", patterns", "").replace("patterns, ", "")
+        # Tar users type -x/-l/-t; verbs here are bare words.
+        for flag, verb in _VERB_FLAG_HINTS.items():
+            if flag in message and "unrecognized arguments" in message:
+                message = (
+                    f"{message} (verbs are bare words — try 'archivey {verb} ARCHIVE')"
+                )
+                break
+        super().error(message)
+
+
+def _common_parent(*, suppress_defaults: bool) -> _ArchiveyArgumentParser:
     """Shared flags available before or after the verb.
 
     Build *two* instances (see ``build_parser``): the top-level copy carries real
     defaults; the subparser copy uses ``SUPPRESS`` so an absent post-verb flag cannot
     clobber a value the main parser already set (argparse shared-parents pitfall).
     """
-    p = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    p = _ArchiveyArgumentParser(add_help=False, allow_abbrev=False)
     default_none: object = argparse.SUPPRESS if suppress_defaults else None
     default_false: object = argparse.SUPPRESS if suppress_defaults else False
     p.add_argument(
@@ -113,6 +157,14 @@ def _common_parent(*, suppress_defaults: bool) -> argparse.ArgumentParser:
             "(bytes decompressed, compressed consumed, seeks)"
         ),
     )
+    # Pre-verb globals include reserved --salvage so it gets the same "not yet"
+    # message as post-verb (P13), not argparse's "unrecognized arguments".
+    p.add_argument(
+        "--salvage",
+        action="store_true",
+        default=default_false,
+        help="reserved: best-effort reads (not implemented yet)",
+    )
     return p
 
 
@@ -120,6 +172,7 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "patterns",
         nargs="*",
+        metavar="pattern",
         help="fnmatch include patterns (omit to select all members)",
     )
     parser.add_argument(
@@ -131,37 +184,35 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_salvage_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--salvage",
-        action="store_true",
-        help="reserved: best-effort reads (not implemented yet)",
-    )
-
-
 def build_parser() -> argparse.ArgumentParser:
     # Two parent instances: action objects are shared if the same instance is reused,
     # so SUPPRESS on a single parent would also wipe the main parser's defaults.
     common = _common_parent(suppress_defaults=False)
     common_sub = _common_parent(suppress_defaults=True)
-    parser = argparse.ArgumentParser(
+    parser = _ArchiveyArgumentParser(
         prog="archivey",
         description=(
             "Inspect, verify, and safely extract archives. "
             "Bare invocation defaults to list. "
             "Forthcoming: hash, create, convert, cat."
         ),
+        epilog=_TOP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[common],
         conflict_handler="resolve",
         allow_abbrev=False,
     )
     parser.add_argument(
         "--version",
-        action="version",
-        version=f"archivey {archivey.__version__}",
+        action="store_true",
+        help="print version and exit (-v adds format availability)",
     )
 
-    sub = parser.add_subparsers(dest="verb", metavar="VERB")
+    sub = parser.add_subparsers(
+        dest="verb",
+        metavar="VERB",
+        parser_class=_ArchiveyArgumentParser,
+    )
 
     p_list = sub.add_parser(
         "list",
@@ -178,7 +229,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show stored member digests (no body read)",
     )
-    _add_salvage_arg(p_list)
     p_list.set_defaults(_run="list")
 
     p_test = sub.add_parser(
@@ -191,7 +241,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_test.add_argument("archive", help="archive path")
     _add_filter_args(p_test)
-    _add_salvage_arg(p_test)
     p_test.set_defaults(_run="test")
 
     p_extract = sub.add_parser(
@@ -200,6 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common_sub],
         conflict_handler="resolve",
         allow_abbrev=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_EXTRACT_EPILOG,
         help="safely extract members",
     )
     p_extract.add_argument("archive", help="archive path")
@@ -221,8 +272,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="rename",
         help="collision policy (CLI default: rename; library default remains error)",
     )
+    p_extract.add_argument(
+        "--stop-on-error",
+        action="store_true",
+        help=(
+            "stop at the first blocked or failed member "
+            "(default: continue and report; library OnError.STOP)"
+        ),
+    )
     _add_filter_args(p_extract)
-    _add_salvage_arg(p_extract)
     p_extract.set_defaults(_run="extract")
 
     p_info = sub.add_parser(
@@ -254,7 +312,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_version(*, verbose: bool, out: TextIO) -> None:
+    """``--version`` / ``--version -v`` (Q6 / P14)."""
+    print(f"archivey {archivey.__version__}", file=out)
+    if not verbose:
+        return
+    print(file=out)
+    print("formats:", file=out)
+    for fmt in list_known_formats():
+        avail = format_availability(fmt)
+        label = format_format_label(fmt)
+        if avail.missing:
+            missing = "; ".join(f"{m.name} ({m.install_hint})" for m in avail.missing)
+            print(f"  {label}: {avail.support.value} — missing {missing}", file=out)
+        else:
+            print(f"  {label}: {avail.support.value}", file=out)
+
+
 def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
+    if bool(getattr(args, "version", False)):
+        _print_version(verbose=bool(getattr(args, "verbose", False)), out=out)
+        return EXIT_OK
+
+    if bool(getattr(args, "salvage", False)):
+        raise CliError("--salvage is not implemented yet", code=EXIT_USAGE)
+
     run = getattr(args, "_run", None)
     if run is None:
         build_parser().print_help(err)
@@ -272,7 +354,7 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
             patterns=list(args.patterns),
             exclude=list(args.exclude),
             digests=bool(args.digests),
-            salvage=bool(args.salvage),
+            salvage=False,
             out=out,
             err=err,
         )
@@ -284,7 +366,7 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
             verbose=bool(args.verbose),
             patterns=list(args.patterns),
             exclude=list(args.exclude),
-            salvage=bool(args.salvage),
+            salvage=False,
             hide_progress=bool(args.hide_progress),
             out=out,
             err=err,
@@ -300,8 +382,9 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
             exclude=list(args.exclude),
             policy=args.policy,
             overwrite=args.overwrite,
-            salvage=bool(args.salvage),
+            salvage=False,
             hide_progress=bool(args.hide_progress),
+            stop_on_error=bool(getattr(args, "stop_on_error", False)),
             out=out,
             err=err,
         )
@@ -316,6 +399,47 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
         )
 
     raise CliError(f"unknown verb {run!r}", code=EXIT_USAGE)
+
+
+def _format_os_error(exc: OSError) -> str:
+    """Human prose for missing paths / I/O errors (cli-product P6)."""
+    path = exc.filename
+    detail = exc.strerror or str(exc)
+    if path is not None:
+        if exc.errno == errno.ENOENT:
+            return f"archivey: cannot open {path!r}: no such file or directory"
+        return f"archivey: cannot open {path!r}: {detail}"
+    return f"archivey: {detail}"
+
+
+def _parse_cli_args(
+    parser: argparse.ArgumentParser, argv_list: list[str]
+) -> argparse.Namespace:
+    """Parse argv, folding leftover positionals into ``patterns``.
+
+    argparse leaves include patterns in the "unknown" remainder when optional
+    flags like ``-d`` appear before a ``nargs='*'`` patterns positional
+    (``archivey x a.zip -d out '*.py'``). Fold those tokens back so the
+    documented flag/pattern order works.
+
+    Tokens after an explicit ``--`` are always positionals — including names
+    that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
+    """
+    args, rest = parser.parse_known_args(argv_list)
+    after_double_dash = bool(rest and rest[0] == "--")
+    if after_double_dash:
+        rest = rest[1:]
+    if not rest:
+        return args
+    if not after_double_dash:
+        # Without ``--``, dash-prefixed leftovers are unknown options (not patterns).
+        unknown_opts = [tok for tok in rest if tok.startswith("-") and tok != "-"]
+        if unknown_opts:
+            parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
+    if not hasattr(args, "patterns"):
+        parser.error(f"unrecognized arguments: {' '.join(rest)}")
+    args.patterns = list(args.patterns or ()) + list(rest)
+    return args
 
 
 def main(
@@ -336,7 +460,7 @@ def main(
     argv_list = _inject_default_list(raw)
     parser = build_parser()
     try:
-        args = parser.parse_args(argv_list)
+        args = _parse_cli_args(parser, argv_list)
     except SystemExit as exc:
         code = exc.code
         if code is None:
@@ -360,7 +484,7 @@ def main(
         _silence_broken_pipe()
         return EXIT_OK
     except OSError as exc:
-        print(exc, file=err_stream)
+        print(_format_os_error(exc), file=err_stream)
         return EXIT_FAIL
     except KeyboardInterrupt:
         print("interrupted", file=err_stream)

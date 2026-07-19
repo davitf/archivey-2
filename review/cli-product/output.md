@@ -84,7 +84,9 @@ a display format. A minimal contract — `--json` on `list`/`info` emitting one
 object per line (name, type, size, mtime, mode, encrypted, link_target,
 hashes) with a documented "fields may be added, not renamed" promise — is
 cheap (stdlib json, the CLI already has every value in hand) and doesn't
-block on the full `ArchiveMember` schema question. Timing decision at Q2.
+block on the full `ArchiveMember` schema question. **Q2 decided:** wait for
+`hash` / full schema (no minimal JSON in 0.2.0); flag name when it lands:
+`--json`.
 
 ## `info`: answers "what is it", not yet "can I read it / what will it cost"
 

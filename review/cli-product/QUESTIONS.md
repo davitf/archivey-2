@@ -6,70 +6,49 @@ reopened.
 
 ## Q1 — Extraction continuation: reject-and-continue for the CLI? (drives P1)
 
-Today `extract` inherits the library's `OnError.STOP`: the first rejected or
-failed member raises, nothing after it is extracted, and the already-written
-members are never reported. A traversal member means zero files extracted
-under every `--policy` — `unzip` extracts the safe files and warns, so the
-"safer unzip" is currently also the *less useful* unzip on exactly the input
-the pitch is about. The CLI already has dead plumbing for the better story
-(`rejected:`/`failed:` lines + summary counts, `cli/extract_cmd.py:315-336`).
+**Decided (2026-07-19):**
 
-Sub-decisions:
+| # | Decision |
+|---|----------|
+| 1 Semantics | Record-and-continue for **policy rejections and per-member read failures** (digest/decode), continuing where the stream allows — same shape as `test` / VISION #3. |
+| 2 Mechanism | CLI passes `OnError.CONTINUE` by default; **library default stays `STOP`**. |
+| 3 Exit code | **`3`** when CONTINUE **completed** with ≥1 policy `BLOCKED` and no `FAILED`; **`1`** for any `FAILED`, hoist/always-stop, or **any `--stop-on-error` abort** (incl. policy) — refined in **Q8**. |
+| 4 Flag | **`--stop-on-error` now** — restores library `STOP` for that invocation (shell scripts cannot switch to the library API). |
+| 5 Stop-path reporting | Always report what was written before an early stop (count at minimum). |
 
-1. **Semantics**: should the CLI extract with record-and-continue for (a)
-   policy rejections only, or (b) rejections *and* per-member read failures
-   (digest mismatch, decode error), continuing where the stream allows?
-   Recommend (b) — it is `test`'s semantics applied to extraction, and it is
-   the VISION #3 claim.
-2. **Mechanism**: CLI passes an `OnError`-style argument (library gains/
-   exposes it), or the library default changes? Recommend: CLI-side opt-in
-   via the existing library knob if it exists/is cheap; the library default
-   staying STOP is fine for programmatic callers.
-3. **Exit code**: completed-with-rejections = 1, or break out the reserved
-   `3` ("refused by safety policy") now? The design already argued 3 is "a
-   genuinely useful distinction for the safer-unzip story" and callers were
-   told not to assume 1 is exhaustive, so it's compatible. Recommend: 3 for
-   "completed but ≥1 member rejected by policy", 1 for other failures.
-4. **Flag**: is a `--stop-on-error` opt-back needed at the same time, or
-   later on demand? Recommend later.
-5. Either way (even if STOP stays): on the stop path, report what *was*
-   extracted before the stop (count at minimum). Today even `-v` says
-   nothing.
+Rationale: without CONTINUE, `x evil.tar` extracts nothing while `unzip` delivers
+the safe members — the safer-unzip demo loses. Exit `3` was reserved in cli-v1
+Decision 12 for exactly this distinction. `--stop-on-error` keeps all-or-nothing
+available at the shell.
+
+Context that drove the call: today `extract` inherits `OnError.STOP`; the CLI
+already has dead plumbing for `blocked:`/`failed:` lines + summary counts that
+only fire under CONTINUE.
 
 ## Q2 — `--json` timing and minimal schema (drives P4)
 
-Design (Open Question 7) deferred `--json` pending a stable member schema —
-correctly, for the *full* `ArchiveMember` model. But the CLI needs only the
-fields it already prints: name, type, size, mtime, mode, encrypted,
-link_target, hashes. Options:
+**Decided (2026-07-19):** option **3** — wait for the `hash` verb / a designed
+member schema. Do **not** ship a minimal `--json` in 0.2.0 or as a quick
+0.2.x follow-up. Scripting remains human-column only until that design lands;
+prefer designing the stable contract once over an additive-but-provisional
+JSON-lines surface. Flag name when it lands: **`--json`** (not `--porcelain`).
 
-1. Ship minimal `--json` (JSON-lines) on `list` + `info` in 0.2.0 with an
-   additive-only promise on those fields.
-2. First 0.2.x follow-up (recommended if 0.2.0 is time-boxed — but then say
-   so in docs so the scripting audience knows it's coming and doesn't
-   scrape).
-3. Wait for the `hash` verb / full schema work.
-
-Recommend 1 if any slack exists, else 2. Naming: `--json` (tool-standard) vs
-`--porcelain` (git-ism) — recommend `--json`.
+Context (options considered): (1) minimal JSON-lines on `list`/`info` in
+0.2.0; (2) first 0.2.x with a "coming" note in docs; (3) wait for full schema.
+Rationale: lower priority than Q1/Q3 product traps; worth designing right.
 
 ## Q3 — No-match filters: warning + which exit code? (drives P2)
 
-Agreed shape (P2): stderr warning per unmatched include pattern; the open
-question is the exit code when zero members matched on `extract`/`test`:
+**Decided (2026-07-19):**
 
-1. Warn, exit 0 (gentlest; scripts still blind).
-2. Warn, exit 1 (recommended — "the operation did not do what was asked";
-   matches `tar`'s nonzero).
-3. Warn, dedicated code in the reserved ≥3 space (unzip's 11-style
-   "no files matched"); most script-friendly, spends a reserved code.
+| Piece | Decision |
+|-------|----------|
+| Warning | stderr per unmatched include pattern: `warning: pattern matched no members: '…'` |
+| `extract` / `test` zero matches | warn + exit **1** (not a dedicated ≥4 code — exit 11 is unzip/PKWARE-only, not a broader convention) |
+| `list` zero matches | warn + exit **0** (listing nothing is a valid answer) |
+| Dest hint | When a sole unmatched extract pattern names an existing directory or ends with `/`, add `(did you mean -d PATTERN?)` |
 
-And for `list` with no matches: silent-0 (grep-like it is not), or the same
-warning with exit 0? Recommend warning + exit 0 for `list` (listing nothing
-is an answer), warning + nonzero for `extract`/`test`.
-
-Also: adopt the `(did you mean -d out?)` hint when a sole unmatched extract
-pattern names an existing directory / ends with `/`?
+Rationale: silence-as-success on `x a.zip out` / `x a.zip project` is the muscle-memory trap; exit 1 matches `tar`'s nonzero. Spending another reserved code on unzip's 11 would be ZIP-specific mimicry next to our `0/1/2/3` map.
 
 ## Q4 — Control-byte quoting style for member names (drives P3)
 
@@ -80,37 +59,52 @@ pipe-to-script case, or does that wait for `--json` (where raw names are
 naturally safe)? Recommend: escape everywhere, backslash style, no `--raw`
 until someone asks — scripts get exact names via `--json` (Q2).
 
+**Partial lean (P3 landed):** escape everywhere, backslash style, no `--raw`
+yet — matching the recommendation. With Q2 deferred (no `--json` until
+`hash`/schema), Q4 remains open only if we later want TTY-only or a `--raw`
+hatch for scripts that need exact names before machine output exists.
+
 ## Q5 — Should `info` tell the cost/access story? (drives P14)
 
-`info` answers "what is this file" but not the library's signature "what
-will it cost" claim. Minimal version: one derived `access:` line (e.g.
-`random (indexed central directory)` / `sequential-only (solid; reading one
-member decodes its folder prefix)` / `sequential (no gzip index; install
-[seekable] for random access)`). Is that in-scope for the CLI, or does it
-wait for a `CostReceipt`-shaped public surface in the library? The CLI can
-derive today's version from `info.is_solid` + format + accelerator presence
-without new public API.
+**Decided (2026-07-19):** ship now. `archivey info` prints an `access:` line
+derived from the existing `ArchiveInfo.cost` / `CostReceipt` (no new library
+API). With `-v`, also print the raw axes (`listing`, `access_cost`, `stream`,
+`solid_blocks`). Accelerator install/AUTO-gate state stays out of this line
+(not on the frozen receipt; can extend later).
 
 ## Q6 — A "what can this install read" view (drives P14)
 
-Design Decision 10 listed `--version` as "version + optional dependency
-matrix"; shipped `--version` prints only the version string. The per-failure
-messages ("install the 'crypto' extra") are excellent but reactive. Options:
-`--version -v`, `archivey info` with no argument, or a future `archivey
-formats`/`doctor`. Any preference, or defer entirely? (Cheap and high-demo
-value: the maintainer's own "why can't I open this" debugging tool.)
+**Decided (2026-07-19):** **`--version -v`** (not bare `info`). Prints
+`archivey <version>` then a `formats:` matrix from `list_known_formats()` /
+`format_availability()` (support level + missing install hints). Plain
+`--version` stays one line.
 
 ## Q7 — Two library-side message fixes surfaced here (P7, P9) — confirm owners
 
-Not CLI decisions, but they land in library code and deserve issues/changes:
+**Done (library-owned, as recommended):** truncated/corrupt zip prose (no
+`BadZipFile` repr); `format=` / registry messages use `display_name`; `info`
+uses `file_extension()` labels; STORED zipcrypto + provider-None → "Password
+required"; rewind warning stays quiet below the rapidgzip AUTO size gate and
+distinguishes install-vs-not-engaged when it does fire.
 
-1. Truncated/corrupt zip: `BadZipFile('File is not a zip file')` repr (and
-   the misleading "not a zip file" for a magic-matched truncated file);
-   enum-name leaks (`ArchiveFormat.TAR_ZST`, `SEVEN_Z` label in `info`,
-   `format=ArchiveFormat.ZIP` suffixes); zipcrypto "Wrong password" when no
-   password was supplied (#131 D8 residue).
-2. The backward-seek warning firing with rapidgzip installed but size-gated
-   off, telling the user to install what they have
-   (`archive_stream.py:408` + `codecs.py:239-251`) — text should
-   distinguish "not installed" from "not engaged", and arguably not fire
-   below the size threshold at all.
+## Q8 — `--stop-on-error` + policy block: exit `3` or `1`? (PR #163 review)
+
+**Decided (2026-07-19): Option A.** Abort/STOP always exits `1`. Exit `3` is
+reserved exclusively for a CONTINUE run that *completed* with ≥1 policy
+`BLOCKED` and no `FAILED` (safe members on disk). Maintainer + review agree:
+`3`'s useful script meaning is partial success with only policy gaps — a STOP
+abort leaves the output incomplete and must share `1` with other aborts.
+
+Forward-compat note (not in this PR): intended end-state is failures-only
+stopping (`OnError.STOP` / `--stop-on-error` ignore policy blocks; a separate
+opt-in would abort on unsafe members). Option A stays correct once that lands;
+the contested STOP+policy→`3` rows disappear structurally.
+
+| Case | Mode | On disk | Exit |
+|------|------|---------|------|
+| Clean extract | CONTINUE | all OK | `0` |
+| ≥1 `BLOCKED`, no `FAILED` | CONTINUE | safe members extracted | `3` |
+| ≥1 `FAILED` (± blocks) | CONTINUE | recoverable extracted | `1` |
+| Policy block or failure (abort) | `--stop-on-error` | incomplete | `1` |
+| Always-stop / hoist failure / unmatched includes | — | — | `1` |
+| Usage | — | — | `2` |

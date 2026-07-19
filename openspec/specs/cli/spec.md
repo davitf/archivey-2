@@ -48,11 +48,18 @@ selected when it matches any positional, or when no positional is given).
 `--exclude PATTERN` (repeatable, long-form only — no short flag) SHALL remove
 matching members; a member SHALL be processed when it matches an include (or none
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
-`--include` flag. Each invocation SHALL accept exactly **one** archive positional
-(multi-archive is out of scope for this capability). `--password` SHALL be
-accepted for encrypted archives; when an encrypted archive is opened, no
-`--password` was supplied, and stdin is a TTY, the system SHALL prompt for the
-password without echoing it.
+`--include` flag. When one or more include patterns are given, each pattern that
+matches no member SHALL produce a stderr warning
+(`warning: pattern matched no members: '…'`). When every include misses on
+`extract` or `test`, the command SHALL exit `1` after the warning(s). On `list`,
+the same warnings SHALL be emitted but the exit code SHALL remain `0` when the
+archive otherwise listed successfully. On `extract`, when there is exactly one
+unmatched include that names an existing directory or ends with `/`, the warning
+SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL accept
+exactly **one** archive positional (multi-archive is out of scope for this
+capability). `--password` SHALL be accepted for encrypted archives; when an
+encrypted archive is opened, no `--password` was supplied, and stdin is a TTY,
+the system SHALL prompt for the password without echoing it.
 
 Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
@@ -77,7 +84,10 @@ Members with no stored digest SHALL count as OK when fully readable without
 error. `test` MUST NOT require emitting computed content hashes. By default
 `test` SHALL be quiet — printing only failures and a one-line summary
 (`N OK, M failed`) to stderr — and SHALL exit non-zero if any member fails;
-`-v` / `--verbose` SHALL add a per-member OK/FAIL line.
+`-v` / `--verbose` SHALL add a per-member OK/FAIL line. When a cheap member
+index is available and the stream ends before every selected file member has
+been counted OK or failed (archive-wide error or solid/poisoned abort), the
+summary SHALL append `, K not tested` where `K` is the untested remainder.
 
 `extract` SHALL use safe-extraction defaults and SHALL expose
 `--policy {strict,standard,trusted}` mapping to `ExtractionPolicy` (CLI default
@@ -109,6 +119,12 @@ containing `src/`) SHALL be flattened in place, not treated as a collision.
 Container-name collisions SHALL be resolved by the overwrite policy.
 Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 (`--overwrite` may select `error` / `skip` / `replace` / `rename`).
+`extract` SHALL pass `OnError.CONTINUE` by default so policy rejections and
+per-member read failures are recorded (`blocked:` / `failed:` lines plus the
+closing summary) and remaining members are still extracted where the stream
+allows. `--stop-on-error` SHALL restore `OnError.STOP` for that invocation.
+On an early stop (STOP path or always-stop limit), the system SHALL still
+report how many members were written before the stop.
 
 #### Scenario: CLI behavior matrix
 
@@ -131,7 +147,12 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
+| `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first failure; reports members written before stop |
 | Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
+| `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
+| `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
+| `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
@@ -143,15 +164,34 @@ Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 The system SHALL provide `archivey info` (alias `detect`) that reports detected
 and/or opened format identity for a path without listing every member. It SHALL
 be suitable for answering "what does archivey think this file is?" including
-failure cases with a typed/clear error.
+failure cases with a typed/clear error. After a successful open, `info` SHALL
+print an `access:` line summarizing the archive's `CostReceipt` (listing /
+member-access / stream axes) in human prose. With `-v` / `--verbose`, it SHALL
+also print the raw cost axes (`listing`, `access_cost`, `stream`,
+`solid_blocks`).
 
 #### Scenario: info vs list
 
 | Case | Expected |
 | --- | --- |
-| `archivey info <archive>` / `archivey detect <archive>` | Prints format/identity summary; does not dump full member listing |
+| `archivey info <archive>` / `archivey detect <archive>` | Prints format/identity summary including `access:`; does not dump full member listing |
+| `archivey info -v <indexed-zip>` | Includes `access: random (indexed)` and raw cost axes |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
+
+### Requirement: version reports package identity and optional format matrix
+
+`--version` SHALL print `archivey <version>` and exit. With `-v` / `--verbose`,
+it SHALL also print a `formats:` matrix from the registry availability API
+(`list_known_formats` / `format_availability`), including missing-component
+install hints when support is not full.
+
+#### Scenario: version
+
+| Case | Expected |
+| --- | --- |
+| `archivey --version` | One line: `archivey <version>`; exit `0` |
+| `archivey --version -v` / `archivey -v --version` | Version line plus `formats:` availability matrix |
 
 ### Requirement: salvage flag reserved without behavior
 
@@ -183,14 +223,18 @@ member-to-stdout verb does not silently change the meaning of
 | `t` | Means `test` (integrity), not create |
 | Unknown verb `hash` / `create` / `convert` / `cat` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
 
-### Requirement: exit codes are minimal and argparse-aligned
+### Requirement: exit codes are argparse-aligned with a policy-refusal code
 
 The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
-verb/flag or bad arguments — the argparse default). All operational failures
-(unreadable, unsupported, or corrupt archive; read/integrity failure; extraction
-error; incomplete listing whose `MemberListReport.error` is set) SHALL exit `1`
-in this capability. Exit codes `≥3` SHALL be reserved and MUST NOT be emitted in
-this change; documentation SHALL direct callers to treat any nonzero code other
+verb/flag or bad arguments — the argparse default). Operational failures
+(unreadable, unsupported, or corrupt archive; read/integrity failure; member
+extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set;
+an early abort under `--stop-on-error`, including a policy block that stops the
+run) SHALL exit `1`. When `extract` **completes** under continue-on-error with
+one or more members `BLOCKED` by safety policy and no member `FAILED`, the
+system SHALL exit `3` (refused by safety policy — safe members are on disk).
+Exit `3` MUST NOT be used for an aborted STOP run. Exit codes `≥4` SHALL remain
+reserved. Documentation SHALL direct callers to treat any nonzero code other
 than `2` as a failure and MUST NOT assume `1` is the only failure code.
 
 #### Scenario: exit codes
@@ -202,6 +246,10 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey list <corrupt-or-unreadable>` | Exit `1` |
 | `archivey list <archive-with-recoverable-prefix-and-terminal-error>` | Exit `1` (after printing recovered members) |
 | `archivey test <archive-with-failing-member>` | Exit `1` |
+| `archivey test <indexed-archive>` when the member stream aborts early | Summary includes `K not tested` for the untested remainder; exit `1` |
+| `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
+| `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first bad member; exit `1` |
 
 ### Requirement: stdin archives are reserved, not supported in v1
 
