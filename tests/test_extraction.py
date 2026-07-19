@@ -1088,12 +1088,15 @@ def test_chained_symlink_attack_symlink_payload_rejected(tmp_path: Path) -> None
     )
     dest = tmp_path / "out"
     report = extract(src, dest)  # default STOP; blocks always continue
-    assert all(r.status is ExtractionStatus.BLOCKED for r in report.results)
-    assert all(
-        isinstance(r.error, (SymlinkEscapeError, PathTraversalError))
-        for r in report.results
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["sub"] is ExtractionStatus.BLOCKED
+    assert isinstance(
+        next(r.error for r in report.results if r.member.name == "sub"),
+        SymlinkEscapeError,
     )
+    # Parent escape never planted, so the payload symlink resolves inside dest.
     assert list(outside.iterdir()) == []  # nothing leaked outside the destination
+    assert not (dest / "sub").is_symlink()
 
 
 def test_chained_symlink_attack_file_payload_rejected(tmp_path: Path) -> None:
