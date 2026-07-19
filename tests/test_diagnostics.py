@@ -416,7 +416,8 @@ def test_directory_scan_race_diagnostic(
         assert DiagnosticCode.SCAN_ENTRY_VANISHED in reader.diagnostics.counts
 
 
-def test_extraction_blocked_emits_diagnostic(tmp_path: Path) -> None:
+@pytest.mark.parametrize("on_error", [OnError.CONTINUE, OnError.STOP])
+def test_extraction_blocked_emits_diagnostic(tmp_path: Path, on_error: OnError) -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("../escape.txt", b"x")
@@ -425,7 +426,7 @@ def test_extraction_blocked_emits_diagnostic(tmp_path: Path) -> None:
     report = extract(
         io.BytesIO(buf.getvalue()),
         dest,
-        on_error=OnError.CONTINUE,
+        on_error=on_error,
     )
     blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
     assert blocked

@@ -37,7 +37,7 @@ archivey.extract(
     "out/",
     policy=ExtractionPolicy.STRICT,       # default
     overwrite=OverwritePolicy.ERROR,      # or REPLACE / SKIP
-    on_error=OnError.STOP,                # or CONTINUE
+    on_error=OnError.STOP,                # or CONTINUE — failures only
     limits=ExtractionLimits(...),         # or ExtractionLimits.UNLIMITED
 )
 
@@ -48,6 +48,14 @@ with archivey.open_archive(
     reader.members()  # ResourceLimitError if the central directory is larger
 
 ```
+
+`OnError` governs per-member **failures** (corrupt/truncated data, write errors,
+overwrite conflicts under `ERROR`). A policy **block** — an unsafe member refused by a
+universal path-safety check or a policy filter — is always recorded as `BLOCKED` and
+extraction continues, under either `STOP` or `CONTINUE`. Aborting the whole archive on
+the first unsafe member (fail-closed strict security) is a separate, future opt-in; until
+then, inspect the returned `ExtractionReport` for `BLOCKED` results if you need to raise
+yourself.
 
 | Policy | Intent |
 | --- | --- |

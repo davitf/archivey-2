@@ -285,9 +285,12 @@ def test_extract_strict_blocks_device_name_and_continues(
     assert (dest / "ok.txt").read_bytes() == b"y"
 
 
-def test_extract_strict_stop_on_error_aborts_on_device_name(
+def test_extract_strict_stop_on_error_continues_on_device_name(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # --stop-on-error = library STOP = failures only; policy blocks continue.
+    from archivey.cli.exit_codes import EXIT_POLICY
+
     bad = _zip(tmp_path / "bad.zip", {"NUL": b"x", "ok.txt": b"y"})
     dest = tmp_path / "out"
     code = main(
@@ -301,12 +304,12 @@ def test_extract_strict_stop_on_error_aborts_on_device_name(
             "--stop-on-error",
         ]
     )
-    # Q8: STOP aborts → exit 1 (exit 3 only for completed CONTINUE + policy blocks).
-    assert code == EXIT_FAIL
+    assert code == EXIT_POLICY
     err = capsys.readouterr().err
     assert "NUL" in err
-    assert "extraction stopped" in err.lower()
-    assert not (dest / "ok.txt").exists()
+    assert "blocked:" in err
+    assert "extraction stopped" not in err.lower()
+    assert (dest / "ok.txt").read_bytes() == b"y"
 
 
 def test_extract_zip_root_slash_under_default_strict(tmp_path: Path) -> None:
@@ -549,6 +552,8 @@ def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -
             members_done=0,
             members_total=1,
             member_bytes_written=40,
+            members_extracted=0,
+            members_blocked=0,
         )
     )
     cb(
@@ -559,6 +564,8 @@ def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -
             members_done=1,
             members_total=1,
             member_bytes_written=100,
+            members_extracted=1,
+            members_blocked=0,
         )
     )
     assert len(created) == 1
@@ -1082,11 +1089,13 @@ def test_extract_continues_after_traversal(
     assert not (tmp_path / "escape.txt").exists()
 
 
-def test_extract_stop_on_error_aborts(
+def test_extract_stop_on_error_continues_on_policy_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from archivey.cli.exit_codes import EXIT_POLICY
+
     monkeypatch.chdir(tmp_path)
-    # Put the traversal first so STOP aborts before safe members.
+    # Policy block under --stop-on-error: continue, extract safe members, exit 3.
     archive = _tar(
         tmp_path / "evil.tar",
         {
@@ -1095,11 +1104,34 @@ def test_extract_stop_on_error_aborts(
         },
     )
     code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
-    # Q8: incomplete extract under STOP → 1, not 3.
+    assert code == EXIT_POLICY
+    err = capsys.readouterr().err
+    assert "blocked:" in err
+    assert "extraction stopped" not in err
+    assert (tmp_path / "out" / "safe.txt").read_bytes() == b"ok"
+
+
+def test_extract_stop_on_error_aborts_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--stop-on-error aborts on a genuine member failure (CRC), not a policy block."""
+    monkeypatch.chdir(tmp_path)
+    from tests.zip_corrupt import zip_with_flipped_cd_crc
+
+    path = zip_with_flipped_cd_crc(
+        tmp_path / "badcrc.zip",
+        {"a.txt": b"hello", "b.txt": b"world", "c.txt": b"end"},
+        corrupt_name="b.txt",
+    )
+
+    code = main(["extract", str(path), "-d", "out", "--stop-on-error"])
     assert code == EXIT_FAIL
     err = capsys.readouterr().err
     assert "extraction stopped" in err
-    assert not (tmp_path / "out" / "safe.txt").exists()
+    assert "1 member(s) extracted before the stop" in err
+    assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
+    assert not (tmp_path / "out" / "b.txt").exists()
+    assert not (tmp_path / "out" / "c.txt").exists()
 
 
 def test_extract_corrupt_member_continues_with_exit_fail(
@@ -1107,26 +1139,13 @@ def test_extract_corrupt_member_continues_with_exit_fail(
 ) -> None:
     """CRC mismatch: recoverable members extracted; exit 1 (FAILED, not policy)."""
     monkeypatch.chdir(tmp_path)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("a.txt", b"hello")
-        zf.writestr("b.txt", b"world")
-        zf.writestr("c.txt", b"end")
-    data = bytearray(buf.getvalue())
-    # Flip the central-directory CRC for b.txt so open succeeds but extract fails.
-    pos = 0
-    while True:
-        i = data.find(b"PK\x01\x02", pos)
-        if i < 0:
-            break
-        name_len = int.from_bytes(data[i + 28 : i + 30], "little")
-        name = bytes(data[i + 46 : i + 46 + name_len])
-        if name == b"b.txt":
-            data[i + 16] ^= 0xFF
-            break
-        pos = i + 4
-    path = tmp_path / "badcrc.zip"
-    path.write_bytes(bytes(data))
+    from tests.zip_corrupt import zip_with_flipped_cd_crc
+
+    path = zip_with_flipped_cd_crc(
+        tmp_path / "badcrc.zip",
+        {"a.txt": b"hello", "b.txt": b"world", "c.txt": b"end"},
+        corrupt_name="b.txt",
+    )
 
     assert main(["extract", str(path), "-d", "out"]) == EXIT_FAIL
     err = capsys.readouterr().err
@@ -1214,23 +1233,51 @@ def test_extract_dest_before_dash_named_pattern(
     assert not (dest / "ok.txt").exists()
 
 
-def test_extract_stop_on_error_reports_members_written(
+def test_extract_stop_on_error_reports_extracted_and_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Q1.5: STOP after a successful member still reports how many were written."""
+    """Q1.5: STOP abort reports extracted vs blocked counts separately."""
     monkeypatch.chdir(tmp_path)
-    archive = _tar(
-        tmp_path / "evil.tar",
+    from tests.zip_corrupt import zip_with_flipped_cd_crc
+
+    path = zip_with_flipped_cd_crc(
+        tmp_path / "partial.zip",
         {
             "safe.txt": b"ok",
-            "../escape.txt": b"bad",
+            "../evil.txt": b"bad",
+            "corrupt.txt": b"payload",
             "later.txt": b"late",
         },
+        corrupt_name="corrupt.txt",
     )
-    code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
+
+    code = main(["extract", str(path), "-d", "out", "--stop-on-error"])
     assert code == EXIT_FAIL  # Q8: abort → 1
     err = capsys.readouterr().err
-    assert "1 member(s) written before the stop" in err
+    assert "1 member(s) extracted, 1 blocked before the stop" in err
+    assert "extraction stopped" in err
+    assert (tmp_path / "out" / "safe.txt").read_bytes() == b"ok"
+    assert not (tmp_path / "out" / "later.txt").exists()
+
+
+def test_extract_stop_on_error_reports_members_extracted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Q1.5: STOP after a successful member still reports how many were extracted."""
+    monkeypatch.chdir(tmp_path)
+    from tests.zip_corrupt import zip_with_flipped_cd_crc
+
+    path = zip_with_flipped_cd_crc(
+        tmp_path / "partial.zip",
+        {"safe.txt": b"ok", "corrupt.txt": b"bad", "later.txt": b"late"},
+        corrupt_name="corrupt.txt",
+    )
+
+    code = main(["extract", str(path), "-d", "out", "--stop-on-error"])
+    assert code == EXIT_FAIL  # Q8: abort → 1
+    err = capsys.readouterr().err
+    assert "1 member(s) extracted before the stop" in err
+    assert "blocked" not in err.split("before the stop")[0]
     assert "extraction stopped" in err
     assert (tmp_path / "out" / "safe.txt").read_bytes() == b"ok"
     assert not (tmp_path / "out" / "later.txt").exists()

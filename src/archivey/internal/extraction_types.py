@@ -71,9 +71,16 @@ class OverwritePolicy(Enum):
 
 
 class OnError(Enum):
-    """What to do when an individual member cannot be extracted."""
+    """What to do when an individual member cannot be extracted.
 
-    STOP = "stop"  # default: raise the first failure and halt
+    Governs per-member *failures* only (corrupt/truncated/undecodable data,
+    write ``OSError``, overwrite ``ERROR``, etc.). A policy ``BLOCKED`` outcome
+    (``FilterRejectionError`` from a universal path-safety check or a policy
+    filter) is always recorded and continued, under either value. Aborting the
+    whole extraction on the first unsafe member is a separate future opt-in.
+    """
+
+    STOP = "stop"  # default: raise the first member failure and halt
     CONTINUE = "continue"  # record the failure, clean up, proceed to the next member
 
 
@@ -104,6 +111,11 @@ class ExtractionProgress:
     members_done: int
     members_total: int | None  # None when the count would require a full scan
     member_bytes_written: int  # output bytes written for the current member so far
+    # Completed-outcome tallies so far (exclude the in-flight member on intra-member
+    # reports). ``members_done`` still counts every processed member; these split
+    # successful writes from policy blocks for stop-path reporting.
+    members_extracted: int
+    members_blocked: int
 
 
 @dataclass(frozen=True)
@@ -118,8 +130,9 @@ class ExtractionResult:
     member: ArchiveMember
     path: Path | None  # the written path, or None if the member was not written
     status: ExtractionStatus
-    # The failure, for FAILED/BLOCKED under OnError.CONTINUE; an OSError when the failure
-    # is a filesystem read/write error on this member (not translated to an ArchiveyError).
+    # Populated for FAILED/BLOCKED when the run continues past that member (including
+    # STOP + policy block). An OSError when the failure is a filesystem read/write
+    # error on this member (not translated to an ArchiveyError).
     error: ArchiveyError | OSError | None = None
     # The destination the coordinator intended before overwrite/rename resolution. For an
     # ordinary write it equals ``path``; under ``OverwritePolicy.RENAME`` a collided member

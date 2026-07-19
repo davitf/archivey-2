@@ -116,6 +116,8 @@ def run_test(
                                         members_done=files_done,
                                         members_total=members_total,
                                         member_bytes_written=member_written,
+                                        members_extracted=0,
+                                        members_blocked=0,
                                     )
                                 )
                     ok += 1
@@ -129,6 +131,8 @@ def run_test(
                                 members_done=files_done,
                                 members_total=members_total,
                                 member_bytes_written=member_written,
+                                members_extracted=0,
+                                members_blocked=0,
                             )
                         )
                     if verbose:
