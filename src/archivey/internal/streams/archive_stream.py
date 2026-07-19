@@ -69,11 +69,24 @@ def _noop_stamp(_exc: ArchiveyError) -> None:
 
 
 class ArchiveStream(ReadOnlyIOStream):
-    """Translate exceptions from an underlying binary stream into ``ArchiveyError``s.
+    """Public member/codec stream handle (exception translation + optional verify).
 
-    The wrapped stream may be opened lazily (on first use) so callers can hand out a
-    handle cheaply; ``seekable()`` answers from the ``seekable`` hint until the stream is
-    actually opened.
+    Responsibilities (one class, several optional knobs):
+
+    1. **Translate + stamp** — raw codec/OS errors → ``ArchiveyError`` with archive
+       context (``translate`` / ``stamp``).
+    2. **Lazy open** — ``open_fn`` may run on first read; ``seekable`` is answered from
+       the hint until then.
+    3. **Collapse nested ``ArchiveStream``s** — ``stream_members`` / codec opens often
+       return another ``ArchiveStream``; ``_collapse_nested`` flattens to one wrapper
+       while composing translators and adopting fused verification.
+    4. **Fused verify** — optional ``MemberVerifier`` (digests / ``expected_size``) runs
+       in ``read`` / ``close``. Distinct from bare ``size=`` (fsspec attribute only —
+       does **not** enable length checks).
+    5. **Lease / finalizer** — ``on_close`` releases reader live-stream state; a
+       weakref finalizer is a safety net if the caller never ``close()``s.
+
+    Prefer constructing via backends / ``open_codec_stream`` rather than by hand.
     """
 
     def __init__(

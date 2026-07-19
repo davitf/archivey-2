@@ -2,14 +2,14 @@
 consumes it.
 
 Format detection needs to inspect the leading bytes of a source, but a non-seekable
-stream (a socket or pipe) cannot be rewound after that inspection. The opener wraps
-such a source in a :class:`PeekableStream` **once**, runs detection through
-:meth:`PeekableStream.peek`, and hands the *same* wrapper to the backend; reads then
-replay the buffered prefix before falling through to the underlying stream, so no bytes
-are dropped (see the ``format-detection`` capability).
+stream (a socket or pipe) cannot be rewound after that inspection. ``open_archive`` /
+``open_stream`` wrap such a source in a :class:`PeekableStream` **once**, run
+detection through :meth:`PeekableStream.peek`, and hand the *same* wrapper to the
+backend; reads then replay the buffered prefix before falling through to the
+underlying stream (see ``format-detection``).
 
-This is the fresh v2 replacement for DEV's ``RecordableStream`` /
-``RewindableStreamWrapper``.
+Lives in this package (not under detection) because it is a stream adapter; the
+opener owns the "when to wrap" policy.
 """
 
 from __future__ import annotations

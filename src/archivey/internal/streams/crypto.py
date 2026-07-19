@@ -1,15 +1,19 @@
-"""The single, wrapped crypto backend (AES decrypt stage).
+"""AES decrypt stage via the ``[crypto]`` extra (``cryptography`` package).
 
-Per the ``compressed-streams`` spec, Archivey standardises on the ``cryptography``
-package (the ``[crypto]`` extra) as its one crypto backend, reached **only** through this
-internal abstraction so format parsers never import ``cryptography`` directly and the
-backend stays swappable. AES decryption is modelled as a *stage* that composes ahead of a
-decompressor in a pipeline (e.g. AES → LZMA2 for an encrypted 7z folder).
+Format parsers must not import ``cryptography`` directly — only this module does
+(the backend stays swappable). AES is a *pipeline stage* ahead of a decompressor
+(e.g. AES → LZMA2 for an encrypted 7z folder).
 
-The format-agnostic AES-CBC decrypt stage lives here. The 7z SHA-256 KDF is 7z-specific
-(RAR and WinZip-AES derive keys differently), so it lives as a local helper beside this
-module rather than on the generic ``CryptoBackend`` surface — see
-:func:`derive_sevenzip_aes_key` and :class:`SevenZipKeyCache`.
+Layers here:
+
+- :class:`DecryptStage` / :func:`open_aes_decrypt_stage` — feed ciphertext chunks,
+  get plaintext (used when composing inside a larger open).
+- :class:`AesDecryptStream` / :func:`open_aes_decrypt_stream` — pull ``BinaryIO``
+  wrapper over a ciphertext source.
+- :func:`derive_sevenzip_aes_key` / :func:`parse_sevenzip_aes_properties` —
+  **7z-local** KDF helpers. RAR and WinZip-AES derive keys differently, so these
+  are not on the generic :class:`CryptoBackend` surface; they live beside it for
+  the 7z reader only.
 """
 
 from __future__ import annotations

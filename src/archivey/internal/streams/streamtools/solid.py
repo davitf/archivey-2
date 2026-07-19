@@ -3,20 +3,18 @@
 A *solid block* — a 7z folder, or a RAR ``unrar p`` pipe — decodes to a single
 forward-only (often non-seekable) byte stream whose members occupy consecutive,
 known-size ranges. :class:`SolidBlockReader` owns that stream and hands out one member
-sub-stream at a time, skipping forward **lazily**: the gap before a member (a preceding
-member's unread tail, or an inter-member gap) is consumed only when the *next* member is
-opened, so closing a member the caller never advances past costs nothing. Closing the
-reader closes the block without draining.
+sub-stream at a time, skipping forward **lazily**: the gap before a member is consumed
+only when the *next* member is opened, so closing a never-advanced member costs nothing.
 
-``open_member(..., lazy=True)`` returns the same :class:`_MemberSlice` type but defers
-that open (and its skip-decode) until the first read — so an iterator that yields then
-closes an unselected member pays nothing. This is the sequential/iteration primitive.
-Random access into a solid block is served differently (a seekable slice over a
-seekable decode), so this class is deliberately forward-only and does not seek.
+Not the same as :class:`~archivey.internal.streams.streamtools.shared.SharedSource`
+(independent seekable views) or :class:`~archivey.internal.streams.streamtools.locked.LockedStream`
+(lock around seek+read on one handle). This class is deliberately forward-only.
 
-Like the rest of ``streamtools`` this module knows nothing about archivey's error
-hierarchy: a truncated block surfaces as a plain :class:`EOFError` for the caller to
-translate into a format-specific error.
+``open_member(..., lazy=True)`` defers open/skip until the first read — so an
+iterator that yields then closes an unselected member pays nothing.
+
+Like the rest of ``streamtools``, truncated blocks surface as plain :class:`EOFError`
+for the caller to translate.
 """
 
 from __future__ import annotations

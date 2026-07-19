@@ -1,8 +1,18 @@
-"""Seekable decompressor stream parameterized by a ``Decoder`` strategy.
+"""Seekable decompress *engine*: one stream class, many codec strategies.
 
-One concrete :class:`DecompressorStream` owns the buffer, position, seek-point table,
-and seek algorithm. Codecs plug in through the :class:`Decoder` protocol (feed / flush /
+:class:`DecompressorStream` owns the buffer, position, seek-point table, and seek
+algorithm. Codecs plug in through the :class:`Decoder` protocol (feed / flush /
 recreate / index discovery) — not by subclassing the stream.
+
+Where the decoders live (easy to mix with this file's name):
+
+- :mod:`archivey.internal.streams.decompress` — zlib/deflate, Brotli, PPMd, BCJ,
+  Deflate64 adapters
+- :mod:`archivey.internal.streams.xz` / ``lzip`` / ``unix_compress`` — larger
+  format-specific decoders (index scan / LZW)
+
+``codecs.StreamCodec.open`` wires those into an ``ArchiveStream``; this module is
+only the shared engine underneath.
 """
 
 from __future__ import annotations
@@ -201,10 +211,14 @@ def build_index_backwards(
 
 
 class DecompressorStream(ReadOnlyIOStream):
-    """Seekable decompressor stream driven by a :class:`Decoder` strategy.
+    """Seekable ``BinaryIO`` over compressed bytes, driven by a :class:`Decoder`.
 
-    ``readable``/``writable``/``write``/``readinto`` come from :class:`ReadOnlyIOStream`
-    (``readinto`` is built on this class's ``read``).
+    Owns: output buffer, logical position, seek-point table, and the seek algorithm
+    (bisect to a point → recreate decoder → skip forward). Does **not** know codec
+    formats — ``make_decoder`` supplies that.
+
+    ``seekable=False`` skips index/seek-point work (forward-only cheap path).
+    ``readable``/``writable``/``write``/``readinto`` come from :class:`ReadOnlyIOStream`.
     """
 
     def __init__(

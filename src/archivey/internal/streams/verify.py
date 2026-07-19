@@ -1,12 +1,15 @@
 """Decompressed-output digest (and length) verification.
 
 Container digests (``ArchiveMember.hashes``) and optional declared decompressed
-length are checked on a clean sequential read to EOF. The logic lives in
-:class:`MemberVerifier` so it can run either as a standalone
-:class:`VerifyingStream` wrapper (codec length backstops) or **fused into**
-:class:`~archivey.internal.streams.archive_stream.ArchiveStream` (the member
-hot path — one fewer Python layer, and nested codec ``ArchiveStream``s can
-collapse through).
+length are checked on a clean sequential read to EOF.
+
+Two delivery shapes (same rules, different wrappers):
+
+- :class:`MemberVerifier` — the logic object. **Fused into**
+  :class:`~archivey.internal.streams.archive_stream.ArchiveStream` on the member
+  hot path (one fewer Python layer; nested codec ``ArchiveStream``s can collapse).
+- :class:`VerifyingStream` — standalone ``BinaryIO`` wrapper around an inner +
+  verifier. Kept for codec length backstops and tests; prefer fusion for members.
 
 Per the ``compressed-streams`` spec:
 

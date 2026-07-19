@@ -1,5 +1,7 @@
-"""
-Pure-stdlib seekable lzip decompression over Python's ``lzma`` module.
+"""Seekable lzip decoder for :class:`~.decompressor_stream.DecompressorStream`.
+
+Opened via :class:`~.codecs.LzipCodec` / ``open_codec_stream(Codec.LZIP, …)``.
+Pure-stdlib over Python's ``lzma`` module.
 
 lzip format (per the lzip manual): a file is a sequence of one or more *members* that may
 be concatenated freely. Each member carries its own sizes in a 20-byte trailer (the
