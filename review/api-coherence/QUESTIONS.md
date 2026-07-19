@@ -1,7 +1,9 @@
 # QUESTIONS — maintainer decisions
 
-> **Status (2026-07-18):** **Q1–Q6 decided** (recorded below). **Q7** deferred to a
-> next review round (not this freeze pass). Triage / follow-up work: `../STATUS.md`.
+> **Status (2026-07-19):** **Q1–Q7 decided and implemented** (#153–#157), except
+> **Q5** (verify primitive — deferred past 0.2.0, parked in `IDEAS.md`) and
+> digest *filling* (OpenSpec `surface-stored-stream-digests`). This review is
+> ready to archive once those two are parked. Triage: `../STATUS.md`.
 
 Per the pause-and-ask rule (`CLAUDE.md`, `CONTRIBUTING.md`): discrepancies and
 judgement calls surfaced, not silently resolved. Ordered by weight.
@@ -15,22 +17,16 @@ conformance sweep assert the uniform contract (drop the
 `REPLACE if has_duplicates` dodge). Streaming-mode caveat stays documented (forward
 pass cannot know supersession mid-yield).
 
-### Already done? (checked 2026-07-18)
+### Already done? (checked 2026-07-19)
 
-**No — not implemented for ZIP/TAR.** Current code:
+**Yes — implemented in #154.** Shared `_apply_last_entry_wins_is_current` in
+`base_reader.py` runs for all random-access materializations (ZIP/TAR included);
+`archive-data-model` / `safe-extraction` specs agree; corpus sweep asserts the
+uniform contract. Regression: `tests/test_duplicates_is_current.py`.
 
-| Backend | `is_current` |
-|---|---|
-| 7z | `compute_is_current(...)` in `sevenzip_reader` / `sevenzip_parser` |
-| RAR | history rows get distinct `path;n` names + `is_current=False` |
-| ZIP / TAR | never set — field defaults to `True` (`types.py`) |
-| `base_reader` | no shared last-entry-wins pass |
-
-So a duplicate-name ZIP/TAR still fails default extraction with `ExtractionError`
-(O2 / `OverwritePolicy.ERROR`). The impression that this was already done is
-understandable (7z has the helper; the specs already describe the skip) — but the
-ZIP/TAR materialization path never grew the equivalent. Tracking fix: P1 in
-`SUMMARY.md` / `parity.md`.
+*(Historical note from decision-recording day: before #154, only 7z/RAR set
+`is_current`; ZIP/TAR defaulted to `True` and failed default extraction under
+`OverwritePolicy.ERROR`.)*
 
 ---
 
@@ -139,7 +135,7 @@ a first-class API (CLI `test` can keep its hand-rolled loop for now). Park in
 | Item | Decision |
 |---|---|
 | **`WriteError`** | **Defer / remove from the read-only 0.2.0 surface.** v0.2.0 is read-only; writing is a later major release. Do not ship writing leftovers — demote/unexport `WriteError` for now. Same spirit: drop or stop advertising the `[7z-write]` extra/dep group until writing is real (py7zr stays a *dev* oracle as needed). |
-| **`ExtractionStatus.SKIPPED` split (E3)** | **Split into distinct statuses** (not a `reason` field). Overwrite-skip and non-current-skip are different caller concerns: most tools ignore superseded members but care that an expected extract hit a pre-existing path. Name at implement (`SUPERSEDED` / `NON_CURRENT` / …) — prefer a clear verb/noun over overloading `SKIPPED`. |
+| **`ExtractionStatus.SKIPPED` split (E3)** | **Split into distinct statuses** (not a `reason` field). **Implemented (#154 / #156):** non-current → `SUPERSEDED`; overwrite-skip → `NOT_OVERWRITTEN` (renamed from `SKIPPED`); safety-filter → `BLOCKED` (was rejected diagnostic). |
 | **`hashes` value convention** | **Type cleanup (immediate review fix):** all values `bytes`; keys become `HashAlgorithm` (`CRC32` / `BLAKE2SP` / `ADLER32` stub OK). Today: `Mapping[str, int \| bytes]`. Target: `Mapping[HashAlgorithm, bytes]` (crc32 as 4-byte digest). Prefer `HashAlgorithm(str, Enum)`. Endianness of 4-byte digests: fix at implement (big-endian usual). **Filling missing digests (zlib Adler-32, lzip multi-member combine, …):** **out of this review’s code follow-ups** — tracked as OpenSpec change `surface-stored-stream-digests` (depends on the typing fix). |
 
 ### Q6 hashes — what formats store today / Adler-32 parity
@@ -170,7 +166,7 @@ hard parts — deferred in that change.
 
 ---
 
-## Q7 — Partial members + honest error accessor (later-surfaced)
+## Q7 — Partial members + honest error accessor (later-surfaced) — DONE (#157)
 
 > **Surfaced later** (2026-07-18), during review of #149 (`decide-strict-archive-eof-default`
 > Option F) — not part of the original api-coherence finding set in #133. Adjacent to
@@ -183,20 +179,24 @@ surface: `members()` / `scan_members()` stay complete-or-raise; `members_report(
 `get_members_if_available` renamed to `members_report_if_available`. Exception-carried
 prefix rejected. Salvage / soft-extract / verify remain separate.
 
+**Implemented in #157** (change archived as
+`openspec/changes/archive/2026-07-18-partial-members-and-errors/`). CLI `list` uses
+`members_report()` so recovered members print with an honest error.
+
 ---
 
 ## Decision → implementation map
 
-| Decision | Follow-up (code/docs; not this PR unless noted) |
-|---|---|
-| Q1 (a) | Shared last-entry-wins on ZIP/TAR RA materialization; spec delta; sweep asserts |
-| Q2 | Docs / recipes only once Q1 lands |
-| Q3 | Fix `cost.py` docstring + receipt test + formats/costs prose |
-| Q4 | Surface PR (demote/export/docs) |
-| Q5 | `IDEAS.md` park only |
-| Q6 WriteError / `[7z-write]` | Demote exception; remove or un-advertise extra |
-| Q6 SKIPPED split | New `ExtractionStatus` value + CLI/report call sites |
-| Q6 hashes → `Mapping[HashAlgorithm, bytes]` | Review-fix PR: add enum (`CRC32` / `BLAKE2SP` / `ADLER32`); crc32 `int`→4-byte `bytes`; backends/verify/docs for type only |
-| Q6 hashes fill (zlib/lzip) | **Separate change:** `openspec/changes/surface-stored-stream-digests` |
-| Q6 `display_name` | Property on `ArchiveFormat` + CLI |
-| Q7 | **OpenSpec `partial-members-and-errors`** (this change) |
+| Decision | Follow-up | Status |
+|---|---|---|
+| Q1 (a) | Shared last-entry-wins on ZIP/TAR RA; spec delta; sweep asserts | **done #154** |
+| Q2 | Docs / recipes | **done #154** |
+| Q3 | Fix `cost.py` docstring + receipt test + formats/costs prose | **done #154** |
+| Q4 | Surface PR (demote/export/docs) | **done #154** |
+| Q5 | `IDEAS.md` park only | **parked** |
+| Q6 WriteError / `[7z-write]` | Demote exception; remove extra | **done #154** |
+| Q6 SKIPPED split | `SUPERSEDED` + later `NOT_OVERWRITTEN` / `BLOCKED` | **done #154/#156** |
+| Q6 hashes typing | `HashAlgorithm` + `Mapping[..., bytes]` | **done #154** |
+| Q6 hashes fill (zlib/lzip) | OpenSpec `surface-stored-stream-digests` | **open change** |
+| Q6 `display_name` | Property on `ArchiveFormat` + CLI | **done #154** |
+| Q7 | OpenSpec `partial-members-and-errors` | **done #157** |

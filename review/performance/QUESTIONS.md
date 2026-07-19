@@ -2,11 +2,11 @@
 
 Decisions this review cannot make unilaterally (per the pause-and-ask rule).
 
-> **Status (2026-07-18):** Q3, Q5, Q6 **resolved** (#136 / #139). Q1 has a
-> **maintainer direction** (#140) — listing peers (#143) + L1/L2/L3 listing
-> fixes (#146) landed; ZIP open+list still above the 2–3× band. **Still need a
-> decision:** Q2 (wall enforcement), Q4 (verify-skip knob; perf case ~nil
-> post-#137). See `../STATUS.md`.
+> **Status (2026-07-19):** Q3, Q5, Q6 **resolved** (#136 / #139). Q1
+> **direction recorded** (#140) and largely **implemented** — listing peers
+> (#143) + L0–L3 (#143/#146) + 7z byte-cursor (#148). ZIP/7z listing still
+> above Q1 bands (residual). **Still need a decision:** Q2 (wall enforcement),
+> Q4 (verify-skip; lean leave-as-is). See `../STATUS.md`.
 
 ## Q1 — What does "≤1.3× on common paths" cover, exactly? — DIRECTION RECORDED
 

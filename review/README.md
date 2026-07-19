@@ -20,11 +20,11 @@ completed changes out of `changes/`.
 Round commissioned 2026-07-17 — the **non-security** pass toward the first public
 `0.2.0`, after the three security-adjacent reviews archived below. See each `brief.md`:
 
-| Dir | Review | Status (2026-07-18) |
+| Dir | Review | Status (2026-07-19) |
 |-----|--------|---------------------|
-| `api-coherence/` | Public API & member-model coherence / ergonomics (incl. cross-backend parity) | Findings in (#133); **Q1–Q6 decided + implemented**; digest fill → `surface-stored-stream-digests`; Q7 → next round |
-| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | **Brief only** — review not run |
-| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Findings + partial fixes (#134/#136/#137/#139/#140/#141); P1/P2/P6/P7 + Q2/Q4 remain |
+| `api-coherence/` | Public API & member-model coherence / ergonomics (incl. cross-backend parity) | **Q1–Q7 decided + implemented** (#153–#157); park Q5 + digest fill → archive |
+| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | Findings in (#144); **no fixes yet** — Q1–Q7 open |
+| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4** still open |
 | `stream-layering/` | Stream wrapper stack — are the checks correct, and can slicing+verification collapse into one stream under `ArchiveStream`? | **Essentially done** (#137); park Q4 then archive |
 
 **Live triage of remaining action items / decisions / future copy-targets:**

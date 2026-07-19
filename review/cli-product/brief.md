@@ -1,9 +1,9 @@
 # Brief — The `archivey` CLI as a product (UX / ergonomics)
 
-> **Status (2026-07-18):** brief only — **product review not yet run.**
-> Start condition (PR #120 merged) is met. Finding D1 from `api-coherence/`
-> (CLI list ANTI / non-current marks) should be folded into this review when
-> it runs. See `../STATUS.md`.
+> **Status (2026-07-19):** findings delivered in **#144** (`SUMMARY.md`, theme
+> files, `QUESTIONS.md`). **No code follow-ups yet** — P1–P14 + Q1–Q7 still
+> open. Api-coherence **D1** (ANTI / non-current list marks) remains a
+> fold-in for this review. Triage: `../STATUS.md`.
 
 Read `review/README.md` (conventions, VISION tie-breakers, deliverable shape). This
 is a **product** review — the CLI seen through a user's eyes — **not** a code-correctness

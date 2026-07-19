@@ -141,8 +141,8 @@ OpenSpec change), not something a review finds. Flagged here only so it doesn't 
 lost among the review topics — it likely outranks both topics above in product value,
 and `--salvage` is already reserved in the CLI grammar waiting for it.
 
-**Partial members + honest error accessor (api-coherence Q7)** — **decided / in
-progress** as OpenSpec change `partial-members-and-errors`: `members_report()` →
-`MemberListReport`, complete-or-raise `members()`/`scan_members()`, RA
-yield-then-raise, `members_report_if_available` rename. Adjacent to salvage but
-narrower (no resync past damage). See `api-coherence/QUESTIONS.md` §Q7.
+**Partial members + honest error accessor (api-coherence Q7)** — **done** in
+#157 / archived OpenSpec `partial-members-and-errors`
+(`members_report()` → `MemberListReport`, complete-or-raise
+`members()`/`scan_members()`, RA yield-then-raise). Salvage / best-effort
+resync past damage remains a separate feature gap above.

@@ -109,18 +109,18 @@ suite green, gate green, probes re-run, before/after probe on shared fixtures):
 pipeline). Threat-model O8 marked mitigated; residual is only garbage that
 parses as a *non-empty* plausible header.
 
-## Remaining open (triage 2026-07-18 — see `../STATUS.md`)
+## Remaining open (triage 2026-07-19 — see `../STATUS.md`)
 
 | # | Status |
 |---|--------|
 | P1 | open — needs **Q2** (enforcement venue) |
-| P2 | **partial** — large-member ZIP read in budget; many-small / open+list improved (ZIP many-small ~3.7× after L2; 7z open+list ~2.0× after L1) but not yet inside Q1 bands; extract realistic in ~2× band |
+| P2 | **partial** — large-member ZIP read in budget; many-small / open+list improved (ZIP ~3.7× after L2; 7z ~2.0–2.2× after L1/#148) but not yet inside Q1 bands; extract realistic in ~2× band |
 | P3 | **fixed** (#136) |
 | P4 / P5 | **fixed** (#139) |
-| P6 | **partial** — ZIP peers in #139; **py7zr/rarfile + TAR open_list peers added** (#143); RAR/encrypted/accel data cases still missing |
-| P7 | **partial** — #143 model-build fast paths + #146 L1/L2/L3 listing fixes (`listing-attribution.md`); ZIP open+list still above 2–3×; 7z closer to native band |
+| P6 | **partial** — listing peers done (#139/#143); RAR/encrypted/accel *data* cases still missing |
+| P7 | **partial** — L0–L3 (#143/#146) + byte-cursor (#148); residual band miss → L3 large RAR fixture / L5 lazy derivation |
 | P8 / P9 | **follow-up** (future / archive-copy) |
-| Q1 | **direction recorded** (#140) — listing peers + ZIP model-build (#143) + L1/L2/L3 from attribution worklist (#146); residual band miss remains |
+| Q1 | **direction recorded + largely implemented** — residual band miss remains |
 | Q2 / Q4 | **need decision** |
 | Q3 / Q5 / Q6 | **resolved** |
 

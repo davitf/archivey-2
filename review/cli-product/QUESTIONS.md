@@ -1,5 +1,8 @@
 # Maintainer decisions — CLI product review
 
+> **Status (2026-07-19):** **Q1–Q7 all still open** — no decisions recorded
+> since findings landed in #144. Triage: `../STATUS.md`.
+
 Decisions this review surfaced that are not plain fixes. Q1–Q3 shape 0.2.0
 user-visible behavior; Q4–Q6 can land after. #131's D1–D8 are settled and not
 reopened.

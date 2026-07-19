@@ -1,5 +1,10 @@
 # CLI-as-a-product review — SUMMARY
 
+> **Status (2026-07-19):** findings in #144; **no fixes landed yet.** Blockers
+> needing maintainer answers first: **Q1–Q3** (and Q4 for P3 style). Small
+> actionable items (P5, P6 prose, P7/P9 library messages, P10–P13 polish) are
+> listed in `../STATUS.md` §1.
+
 Deep review per `brief.md`: the merged `src/archivey/cli/` on `main` (post-#120,
 post-#131 fixes), judged as a **product** — muscle memory, output, errors, exit
 codes, discoverability — not re-reviewing implementation correctness.
