@@ -1,4 +1,22 @@
-"""Native RAR reader backend (metadata via rar_parser; data via RARLAB unrar)."""
+"""Native RAR reader backend.
+
+Module split:
+
+- :mod:`.rar_parser` — metadata, offsets, encryption headers, multi-volume merge
+- :mod:`.rar_unrar` — spawn RARLAB ``unrar p`` (password on stdin; ``-n./member``)
+- this module — ``BaseArchiveReader``: list from the parser; member **data** via unrar
+
+Data-open shapes:
+
+- Solid archive → one ``unrar p`` ALL-pipe + :class:`SolidBlockReader` demux
+- Non-solid → per-member named ``unrar p -n./…`` opens
+- Stream / non-path sources may be materialized to a temp ``.rar`` so ``unrar``
+  can open a real path (and resolve sibling volumes)
+
+WinRAR ``-ver`` history members are presented as ``path;n`` (see
+:func:`_presented_filename`). Passwords feed three places: header parse, ``unrar``,
+and RAR5 ConvertHashToMAC when checksums are tweaked.
+"""
 
 from __future__ import annotations
 

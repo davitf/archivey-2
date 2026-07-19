@@ -1,8 +1,26 @@
-"""Native RAR metadata parser (RAR 1.5 / 2.x through RAR5).
+"""Native RAR metadata parser (RAR 1.5 / 2.x / 3.x through RAR5).
 
 Parses archive headers into :class:`RarArchive` / :class:`RarMemberInfo` without
 decompressing member data and without importing ``rarfile``. Header encryption uses
 :mod:`archivey.internal.streams.crypto` (never ``cryptography`` directly).
+
+On-disk layout this module walks::
+
+    [ optional SFX stub ][ magic ]
+        RAR 1.5–3.x:  b"Rar!\\x1a\\x07\\x00"      → RarArchive.version == 4
+        RAR5:         b"Rar!\\x1a\\x07\\x01\\x00"  → RarArchive.version == 5
+    [ block sequence … until ENDARC ]
+        RAR3 family: MARK / MAIN / FILE / … / ENDARC
+          each: CRC16 | type | flags | header_size | [body] | [packed add_size]
+        RAR5: vint-framed MAIN / FILE / SERVICE / ENCRYPTION / ENDARC
+          optional encryption block before encrypted headers
+    FILE rows point at packed bytes after the header (``data_offset``).
+
+``RarArchive.version`` uses **4 for the whole RAR3-on-disk family** (1.5/2.x/3.x) and
+**5 for RAR5** — not "RAR 4.x product version". Multi-volume sets are merged by
+:func:`parse_rar_volumes` (split sizes/CRC; offsets rebased for
+:class:`~archivey.internal.volumes.ConcatenatedFile`). Member **payload** decode is
+``unrar`` via :mod:`.rar_unrar` / :mod:`.rar_reader`.
 
 RAR3 SHA-1 / string-to-key and Unicode filename decompression are adapted from
 ``rarfile`` 4.3 (https://github.com/markokr/rarfile), Copyright (c) 2005-2024
@@ -212,7 +230,7 @@ class RarMemberInfo:
 
 @dataclass
 class RarArchive:
-    version: int  # 4 or 5 (use 4 for RAR3 on-disk format)
+    version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")
     is_solid: bool
     has_header_encryption: bool
     comment: str | None

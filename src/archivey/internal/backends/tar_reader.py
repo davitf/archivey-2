@@ -1,13 +1,27 @@
 """TAR backend on the v2 ABC, backed by the stdlib ``tarfile`` module.
 
-Random-access reading (``streaming=False``) scans 512-byte headers on a seekable source
-(decompressing first for a compressed tar) and opens any member on demand. Forward-only
-reading (``streaming=True``) walks the archive in one progressive pass — including on a
-non-seekable source for plain and compressed tars — via ``_iter_with_data()`` /
-``stream_members()``. After a full scan or streaming pass the end-of-archive is checked
-(``_verify_tar_eof``): a rejected header raises ``CorruptionError`` regardless of config,
-while a missing two-block null trailer warns unless ``config.strict_archive_eof`` escalates
-it to ``TruncatedError``.
+On-disk layout (ustar/pax/gnu as ``tarfile`` sees it)::
+
+    [ 512-byte header ][ file data, padded to 512 ]*
+    [ 512 zero bytes ][ 512 zero bytes ]   # two null end-of-archive trailers
+
+There is no central directory: listing is a header scan (``REQUIRES_SCANNING``) or a
+progressive forward pass. Compressed forms (``.tar.gz`` / …) wrap the same layout in
+a stream codec and behave as **solid** for random member opens.
+
+Random-access reading (``streaming=False``) needs a seekable source (decompressing
+first for a compressed tar) and opens any member on demand. Forward-only
+(``streaming=True``) walks one progressive pass — including on a non-seekable source —
+via ``_iter_with_data()`` / ``stream_members()``.
+
+After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
+
+- A rejected (non-null) header where ``tarfile`` stopped → ``CorruptionError``.
+- A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING`` unless
+  ``config.strict_archive_eof`` escalates to ``TruncatedError``.
+
+Note: after ``getmembers()`` / a walk, ``tarfile`` has typically already consumed the
+*first* trailer zero-block; the EOF probe therefore inspects the *next* 512 bytes.
 """
 
 from __future__ import annotations
@@ -188,7 +202,12 @@ class _EofProbeStream:
 
 
 class TarReader(BaseArchiveReader):
-    """Reads a TAR archive (plain or compressed) via stdlib ``tarfile``."""
+    """Reads a TAR archive (plain or compressed) via stdlib ``tarfile``.
+
+    ``_SUPPORTS_RANDOM_ACCESS`` is True (seekable uncompressed / decompressed sources
+    can open any member), but ``_MEMBER_LIST_UPFRONT`` is False — there is no central
+    directory, so a complete list always requires a scan (or a finished stream pass).
+    """
 
     _SUPPORTS_RANDOM_ACCESS = True
     # TAR has no central directory: the member list only exists after a scan, so it is not

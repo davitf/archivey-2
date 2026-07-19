@@ -1,9 +1,22 @@
-"""ZIP backend on the v2 ABC, backed by the stdlib ``zipfile`` module.
+"""ZIP backend on the v2 ABC.
 
-The central directory is read on open, giving O(1) member listing (``INDEXED``) and
-direct random access (``DIRECT``) to any member. A non-seekable source fails fast (the
-central directory lives at EOF), and split/spanned multi-volume sets are rejected with a
-clear "rejoin first" error (see ``format-zip``).
+Layout this code assumes::
+
+    [ local file header + payload ]*   # PK\\x03\\x04 … name | extra | [data]
+    [ central directory ]              # ZipFile reads this at open (INDEXED listing)
+    [ EOCD (+ optional ZIP64) ]        # at EOF → seekable source required
+
+Who does what:
+
+- ``zipfile.ZipFile`` / ``ZipInfo`` — central-directory parse, listing, shared ``fp`` lock.
+- Unencrypted member **data** — slice the local payload and decode via the shared
+  codec layer (not ``ZipExtFile``), so accelerators / rewind warnings stay uniform.
+- ZipCrypto — encryption header + weak 1-byte check (+ CRC confirm when ambiguous).
+- WinZip AES (method 99) — ``internal.zip_aes``, then the codec for the real method
+  from extra field ``0x9901``.
+
+Split/spanned multi-volume sets (``.z01``…``.zip``) are rejected — rejoin first
+(see ``format-zip``).
 """
 
 from __future__ import annotations
@@ -216,8 +229,8 @@ def _is_candidate_integrity_failure(exc: Exception) -> bool:
 
 
 # NTFS FILETIME conversion + the shared TimestampIssue type live in internal.timestamps
-# (also used by the native 7z reader, and RAR later). Local aliases keep this module's
-# call sites — including the DOS date_time issue below — unchanged.
+# (also used by the native 7z reader). Local aliases keep this module's call sites —
+# including the DOS date_time issue below — and test imports of the underscored names.
 _TimestampIssue = TimestampIssue
 _filetime_to_datetime = filetime_to_datetime
 

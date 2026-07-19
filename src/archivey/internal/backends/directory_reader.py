@@ -69,10 +69,10 @@ class DirectoryReader(BaseArchiveReader):
 
     _SUPPORTS_RANDOM_ACCESS = True
     # A filesystem directory has no O(1) upfront index: enumerating members is a recursive
-    # os.scandir walk, i.e. a scan. So this is False (like plain TAR) — members_report_if_available()
+    # os.scandir walk (a scan). So this is False (like plain TAR) — members_report_if_available()
     # returns None rather than triggering an uncached walk on every call, and the walk only runs
     # once under the materialization election (which also removes the free-threaded cache race on
-    # _uname_cache/_gname_cache). See review C2/C3 and format-directory spec.
+    # _uname_cache/_gname_cache). See format-directory.
     _MEMBER_LIST_UPFRONT = False
 
     def __init__(

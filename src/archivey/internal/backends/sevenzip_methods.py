@@ -1,4 +1,14 @@
-"""7z coder method registry — single source for IDs, algorithms, and decode kind."""
+"""7z coder method registry — single source for IDs, algorithms, and decode kind.
+
+:class:`MethodKind` drives :func:`sevenzip_pipeline.plan_folder`:
+
+- ``COPY`` / ``AES`` / ``BCJ2`` / ``SINGLE`` — self-explanatory stages
+- ``LZMA_FAMILY`` — **not** "is LZMA": Delta and BCJ share this kind because they
+  batch into the same liblzma / ``pybcj`` staging run as LZMA1/2
+
+BCJ entries carry both short and long on-disk method ids (``aliases``) — 7-Zip
+has historically written either form.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +22,12 @@ from archivey.types import CompressionAlgorithm
 
 
 class MethodKind(Enum):
+    """How :func:`sevenzip_pipeline.plan_folder` should stage this method.
+
+    ``LZMA_FAMILY`` includes Delta/BCJ as well as LZMA1/2 — they compose into one
+    staging run, not because they are LZMA codecs themselves.
+    """
+
     COPY = auto()
     AES = auto()
     BCJ2 = auto()

@@ -1,8 +1,24 @@
-# Importing each backend module is REQUIRED, not incidental: every backend
-# self-registers with the BackendRegistry as an import-time side effect (each module
-# ends with `register_reader(...)`). Importing this package therefore makes the
-# bundled backends available for selection. Do not remove these imports — without
-# them the registry would be empty and `open_archive()` would find no backend.
+"""Format backends — one self-registering reader module per archive format.
+
+Importing this package is required: each submodule ends with ``register_reader(...)``,
+so a bare ``import archivey.internal.backends`` fills the registry. Do not remove the
+side-effect imports below.
+
+Module map:
+
+- :mod:`.zip_reader` — ZIP (stdlib central directory; codecs/crypto for member data)
+- :mod:`.tar_reader` — TAR / compressed TAR (stdlib ``tarfile``)
+- :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[iso]``)
+- :mod:`.directory_reader` — filesystem directory as a pseudo-archive
+- :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
+- :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
+  ``sevenzip_reader`` — native 7z (method registry → header parse → folder decode → ABC)
+- :mod:`.rar_parser` / ``rar_unrar`` / ``rar_reader`` — native RAR metadata + ``unrar`` data
+
+Typical split inside a format: ``*ReadBackend`` (registry / ``open_read``) +
+``*Reader`` (``BaseArchiveReader``). Native 7z/RAR also split parse vs decode.
+"""
+
 from archivey.internal.backends import (
     directory_reader as _directory_reader,  # noqa: F401
 )
