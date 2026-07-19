@@ -1,5 +1,9 @@
 # Stream wrapper layering — SUMMARY
 
+> **Archived 2026-07-19.** Actionable findings done (#137); **Q4**
+> (`SlicingStream.readinto`) parked → `review/backlog.md` Topic 6 (with
+> optional `VerifyingStream` cleanup). See `review/STATUS.md`.
+
 **Brief:** `brief.md` (correctness of slice/verify/outer wrappers + whether
 slicing+verification can collapse into one stream under `ArchiveStream`).
 

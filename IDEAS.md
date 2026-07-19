@@ -281,10 +281,11 @@
   "skip damaged unit" mode) so `test` can continue where the format allows.
   Overlaps salvage (above) but is narrower — integrity reporting, not
   best-effort recovery of truncated archives.
-- **Library `verify` / `VerifyReport` primitive** (api-coherence E2 / Q5) —
-  **deferred past 0.2.0.** CLI `test` hand-rolls the loop today; unclear whether
-  callers verify without extracting often enough to justify a first-class API.
-  Adjacent to skip-damaged-member iteration above.
+- **Library `verify` / `VerifyReport` primitive** (api-coherence E2 / **Q5**) —
+  **deferred past 0.2.0** when archiving the api-coherence deep review.
+  CLI `test` hand-rolls the loop today; unclear whether callers verify without
+  extracting often enough to justify a first-class API. Adjacent to
+  skip-damaged-member iteration above.
 
 ## Strategy & adoption (2026-07 review backlog)
 

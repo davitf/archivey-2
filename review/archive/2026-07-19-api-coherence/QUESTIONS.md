@@ -1,7 +1,9 @@
 # QUESTIONS — maintainer decisions
 
-> **Status (2026-07-18):** **Q1–Q6 decided** (recorded below). **Q7** deferred to a
-> next review round (not this freeze pass). Triage / follow-up work: `../STATUS.md`.
+> **Archived 2026-07-19.** Q1–Q7 decided and implemented (#153–#157); digest
+> fill done (#160). **Q5** parked in `IDEAS.md`; **D1** folded into
+> `review/cli-product/`. Triage of remaining in-flight work:
+> `../../STATUS.md`.
 
 Per the pause-and-ask rule (`CLAUDE.md`, `CONTRIBUTING.md`): discrepancies and
 judgement calls surfaced, not silently resolved. Ordered by weight.

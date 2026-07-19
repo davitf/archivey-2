@@ -1,10 +1,14 @@
 # API-coherence review — SUMMARY
 
-> **Status (2026-07-18):** findings delivered in #133; **Q1–Q6 decided**
-> (`QUESTIONS.md`) — **Q1–Q6 code follow-ups implemented** on this branch (except
-> digest *filling*, which is OpenSpec `surface-stored-stream-digests`). **Q7** deferred to a next
-> review round. Mechanical surface work (S1/S2/S3/E1/E3) and P1/`is_current` are
-> now unblocked. Triage: `../STATUS.md`.
+> **Archived 2026-07-19.** All actionable findings addressed or consciously
+> deferred: Q1–Q7 implemented (#153–#157); digest fill done (#160); **Q5**
+> (`verify` primitive) → `IDEAS.md`; **D1** → in-flight `cli-product/`. See
+> `review/backlog.md` parked table and `review/STATUS.md`.
+
+> **Status (at archive):** findings delivered in #133; **Q1–Q7 decided and
+> implemented** (#153–#157). Digests typed in #154 and filled in #160
+> (`surface-stored-stream-digests`, zlib Adler deliberately omitted from
+> `member.hashes`). E3 rename polish (`NOT_OVERWRITTEN` / `BLOCKED`) in #156.
 
 Reviewed at `main` + CLI (#120) merged (`7139c13`). Baseline (all captured before
 review, `[all]` config): pytest **1699 passed / 131 skipped / 3 deselected**, pyrefly

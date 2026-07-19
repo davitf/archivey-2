@@ -1,8 +1,7 @@
 # Review backlog — deferred review ideas
 
-Non-security review topics worth doing, but *after* the in-flight round
-(`api-coherence`, `cli-product`, `performance`, `stream-layering`). They differ in
-character and timing:
+Non-security review topics worth doing, but *after* the remaining in-flight
+round (`cli-product`, `performance`). They differ in character and timing:
 
 - **Topics 4 + 5** (test-strategy, structural-cleanliness) — a single lighter
   "quality & debt" pass; they overlap heavily and both feed the same pre-`0.2.0`
@@ -10,13 +9,28 @@ character and timing:
 - **Topic 6** (decode-engine performance) — a later *performance* round, once the
   `stream-layering` wrapper work has landed; mostly independent of it.
   *(stream-layering fusion landed in #137 — Topic 6 is unblocked on that axis.
-  Also absorb parked stream-layering Q4: real `SlicingStream.readinto`.)*
+  Absorb when commissioning: (1) parked stream-layering **Q4** — real
+  `SlicingStream.readinto` under lock so a fused hasher can hash a `memoryview`
+  without a bytes copy; park until an extract path is shown `readinto`-bound;
+  (2) optional cleanup — delete the thin leftover `VerifyingStream` wrapper once
+  nothing but unit tests / `codecs.py` length backstops need it.)*
 - **Topic 7** (outside-in adoption / confidence) — a **capstone**, meaningful only
   *after everything else is fully addressed*; it judges the finished library, not a
   work in progress.
 
-Live triage of the *current* in-flight round's remaining items is in
-[`STATUS.md`](STATUS.md) (actionable / needs-decision / future archive-copy).
+## Parked from archived deep reviews (2026-07)
+
+Items consciously deferred when archiving `api-coherence/` and `stream-layering/`.
+Do not re-open those review directories for these.
+
+| Item | Origin | Where it lives now |
+|------|--------|--------------------|
+| Library `verify` / `VerifyReport` (E2 / **Q5**) | api-coherence | `IDEAS.md` — deferred past 0.2.0 |
+| Stored stream digests (zlib Adler omit + lzip multi-member CRC) | api-coherence Q6 fill | **Done** #160 — archived OpenSpec `archive/2026-07-19-surface-stored-stream-digests` |
+| CLI list marks for `ANTI` / non-current (**D1**) | api-coherence | Folded into in-flight `cli-product/` (see its SUMMARY) |
+| `SlicingStream.readinto` (**Q4**) + optional `VerifyingStream` delete | stream-layering | Topic 6 adjacency above |
+
+Live triage of remaining *in-flight* reviews is in [`STATUS.md`](STATUS.md).
 
 When commissioned, each gets its own top-level directory with a `brief.md` and
 archives when addressed (see `README.md`).
@@ -141,8 +155,8 @@ OpenSpec change), not something a review finds. Flagged here only so it doesn't 
 lost among the review topics — it likely outranks both topics above in product value,
 and `--salvage` is already reserved in the CLI grammar waiting for it.
 
-**Partial members + honest error accessor (api-coherence Q7)** — **decided / in
-progress** as OpenSpec change `partial-members-and-errors`: `members_report()` →
-`MemberListReport`, complete-or-raise `members()`/`scan_members()`, RA
-yield-then-raise, `members_report_if_available` rename. Adjacent to salvage but
-narrower (no resync past damage). See `api-coherence/QUESTIONS.md` §Q7.
+**Partial members + honest error accessor (api-coherence Q7)** — **done** in
+#157 / archived OpenSpec `partial-members-and-errors`
+(`members_report()` → `MemberListReport`, complete-or-raise
+`members()`/`scan_members()`, RA yield-then-raise). Salvage / best-effort
+resync past damage remains a separate feature gap above.

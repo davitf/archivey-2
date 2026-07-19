@@ -1,9 +1,8 @@
 # Questions for the maintainer
 
-> **Status (2026-07-18):** Q1–Q3 decided and implemented in #137. **Q4** is the
-> only leftover — recommend **park** (future / archive-copy). This review is
-> otherwise complete and can move to `archive/` once Q4 is deferred. See
-> `../STATUS.md`.
+> **Archived 2026-07-19.** Q1–Q3 decided and implemented in #137. **Q4** parked
+> → `../../backlog.md` Topic 6 (with optional `VerifyingStream` cleanup). See
+> `../../STATUS.md`.
 
 ## Q1 — Accept the partial-collapse verdict? — DONE (#137)
 
@@ -32,12 +31,10 @@ a no-op).
 thin wrapper for `codecs.py`'s length-only backstop and unit tests. Member
 backends no longer construct it. Deleting the class later is optional cleanup.
 
-## Q4 — `SlicingStream.readinto` follow-up? — PARK (future)
+## Q4 — `SlicingStream.readinto` follow-up? — PARKED (Topic 6)
 
 The brief hoped a fused `readinto` would matter more than dispatch count. On
-this host it does not, until the slice layer also stops allocating. Worth a
-follow-up task, or park until an extract path is shown `readinto`-bound?
+this host it does not, until the slice layer also stops allocating.
 
-**Triage (2026-07-18):** **park** — copy to `backlog.md` / Topic 6 adjacency
-when archiving this review. Not a 0.2.0 blocker; no extract path has been
-shown `readinto`-bound.
+**Parked 2026-07-19** into `review/backlog.md` Topic 6 adjacency — not a 0.2.0
+blocker; no extract path has been shown `readinto`-bound.
