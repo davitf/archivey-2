@@ -2,14 +2,22 @@
 
 Quick reference for reviewing changes in this Python archive library.
 
-## Pre-Review (2 min)
+Archivey order: **code first, then context** (addendum §8). Do not absorb OpenSpec /
+design / long PR rationale before the cold code pass.
 
-- [ ] Read PR description and linked issue / OpenSpec change
-- [ ] Check PR size (<400 lines ideal)
-- [ ] Verify CI status (tests / ruff / type-check)
-- [ ] Understand the behavior under change (format? safety? API?)
+## Logistics (≤1 min) — before either pass
 
-## Architecture & Design (5 min)
+- [ ] Scope: diff vs `main` (or named paths); size (<400 lines ideal, else ask to split)
+- [ ] CI / local gates (`ruff`, pyrefly/ty, pytest)
+- [ ] Linked artifact **names** only (issue #, `openspec/changes/<name>/`, `review/` ID)
+  — not the prose yet
+
+## Pass 1 — code alone
+
+Read the changed code (+ nearby context) cold. Self-explanatory resulting tree;
+local *why* for non-obvious choices; bugs / safety / tests.
+
+### Architecture & Design (5 min)
 
 - [ ] Solution fits the problem
 - [ ] Consistent with existing backends / patterns
@@ -17,7 +25,7 @@ Quick reference for reviewing changes in this Python archive library.
 - [ ] Public API impact is intentional and documented
 - [ ] Changes land in the right module layer
 
-## Logic & Correctness (10 min)
+### Logic & Correctness (10 min)
 
 - [ ] Edge cases / truncated / hostile input handled
 - [ ] `None` / optional metadata handled
@@ -25,7 +33,7 @@ Quick reference for reviewing changes in this Python archive library.
 - [ ] Error handling uses the library exception contract
 - [ ] Format parity preserved (or differences are explicit data)
 
-## Security (5 min)
+### Security (5 min)
 
 - [ ] No hardcoded secrets
 - [ ] Path traversal / symlink escape considered on extract paths
@@ -33,21 +41,21 @@ Quick reference for reviewing changes in this Python archive library.
 - [ ] Subprocess args are lists (no `shell=True` footguns)
 - [ ] Passwords / key material not logged
 
-## Performance (3 min)
+### Performance (3 min)
 
 - [ ] No silent re-decompression / O(n²) member loops
 - [ ] Streaming preferred over full buffering where appropriate
 - [ ] Handles closed; no unbounded buffers
 - [ ] Hot-path copies justified
 
-## Testing (5 min)
+### Testing (5 min)
 
 - [ ] Tests exist for new behavior
 - [ ] Edge / error / hostile cases covered
 - [ ] Tests are readable and deterministic
 - [ ] Fixtures reused when possible
 
-## Code Quality (3 min)
+### Code Quality (3 min)
 
 - [ ] Clear names
 - [ ] No unnecessary duplication
@@ -55,11 +63,20 @@ Quick reference for reviewing changes in this Python archive library.
 - [ ] Complex parser logic explained where needed
 - [ ] No magic numbers (use named constants)
 
-## Documentation (2 min)
+### Documentation (2 min)
 
 - [ ] Public APIs documented
 - [ ] Specs / ADRs updated if behavior contracts change
 - [ ] Breaking changes called out
+- [ ] Resulting code is self-explanatory; non-obvious *why* is near the code (not only
+  in OpenSpec / PR prose)
+
+## Pass 2 — context (required)
+
+- [ ] PR description + linked issue / full OpenSpec change / `review/` finding
+- [ ] Contract fit: OpenSpec / VISION / threat model / addendum (§1, §3, §5)
+- [ ] Spec ↔ code ↔ docs: match, intentional revision, or pause-and-ask
+- [ ] Concerns that only dissolve after external prose → usually 🟡 doc debt in the code
 
 ---
 
