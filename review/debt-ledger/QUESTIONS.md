@@ -23,7 +23,12 @@ informational. **A choice — any choice — is needed before the VISION/costs
 re-wording can be finished.** Recommendation: (a), it dodges shared-runner
 absolute-ratio flake and catches regressions, which is what the claim needs.
 
-## Q2 — ZIP open+list is above the maintainer's own re-scoped band: land L5 pre-release, or publish the real number?
+## Q2 — ZIP open+list is above the maintainer's own re-scoped band: land L5 pre-release, or publish the real number? — **DECIDED (2026-07-20)**
+
+**Decision: (b).** Peer-ratio bands are **aspirational**; publish measured
+numbers in `docs/costs.md` / VISION; L5 (lazy `ArchiveMember` derivation) is a
+named post-0.2.0 follow-up in `IDEAS.md`. Measured many-small ZIP ~3.7–4× and
+7z ~2× are good enough for everyday use — do not block the release on L5.
 
 Post-#143/#146, ZIP open+list sits ~3.7–4× vs the Q1-direction band of 2–3×;
 7z ~2.0–2.2× vs ≈1.25× native-par. Two honest paths:

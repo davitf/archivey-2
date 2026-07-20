@@ -7,8 +7,8 @@ Triage after archiving `cli-product/` and OpenSpec `stop-on-failure-not-policy`
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 open; **D5/D6 done**; **Q1 decided**; Q2–Q5 open | no |
-| `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2 decided** (drift gate); **Q4 open** | no |
+| `debt-ledger/` | yes (2026-07-20) | pay-list D2/D3/T1/T2/T3/D4/T7 open; **D1/D5/D6 done**; **Q1/Q2 decided**; Q3–Q5 open | no |
+| `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers; residual band miss **accepted as aspirational** (debt-ledger Q2 (b)); wall enforcement **Q2 decided** (drift gate); **Q4 open** | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
 `archive/2026-07-19-stream-layering/`, `archive/2026-07-20-cli-product/`.
@@ -22,21 +22,18 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 
 | ID | Action |
 |----|--------|
-| **D1** | Re-word VISION/philosophy/costs ≤1.3× claim to peer-ratio bands (after Q1/Q2). |
 | **D2** | Write `SECURITY.md` / disclosure process. |
 | **D3** | Start `CHANGELOG.md` (Q5 form). |
 | **T1 / T2** | Solid-RAR mutation net; parametrize seek-interleaving over lzip/`.Z`. |
 | **T3** | Benchmark-gate RAR / encrypted / accelerator data cases (perf P6 remainder). |
 | **D4 / T7** | `open-issues.md` sweep; corpus-matrix audit. |
-| **Q3 record** | S2/S3 entry gate for next backend → `PLAN.md` / `IDEAS.md`. |
 
 ### From `performance/`
 
 | ID | Action |
 |----|--------|
-| **P7 residual** | ZIP many-small ~3.7× (above 2–3×); 7z ~2.0–2.2× (above 1.25×). Next: **L3** large RAR listing fixture; **L5** lazy derivation (needs OpenSpec) — or publish honest numbers (debt-ledger Q2). |
+| **P7 residual** | **Accepted** — peer bands aspirational; measured ZIP ~3.7–4× / 7z ~2× published in `docs/costs.md`; **L5** → `IDEAS.md` (debt-ledger Q2 (b)). Optional: **L3** large RAR listing fixture. |
 | **P6 remainder** | RAR / encrypted / accelerator *data* harness cases still missing (= debt-ledger T3). |
-| **VISION/docs** | Re-word ≤1.3× claim to match Q1 now that **Q2** is (a) (= debt-ledger D1). |
 
 ---
 
@@ -47,7 +44,7 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 | Q | Finding | Status |
 |---|---------|--------|
 | **Q1** | Perf wall-budget enforcement (perf Q2) | **decided** — nightly drift vs previous JSON (a); absolute bands informational |
-| **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | lean: publish honest number; L5 follow-up |
+| **Q2** | ZIP listing above band: L5 vs publish honest number | **decided** — (b) aspirational bands + measured table; L5 → `IDEAS.md` |
 | **Q3** | S2+S3: entry gate for next backend vs pay pre-release | lean: entry gate |
 | **Q4** | rapidgzip-truncation rides past 0.2.0? | lean: KEEP change open |
 | **Q5** | CHANGELOG form | lean: committed `CHANGELOG.md` |
@@ -56,7 +53,7 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 
 | Q | Finding | Status |
 |---|---------|--------|
-| **Q2** | **P1** wall-budget enforcement | **decided** (= debt-ledger Q1 (a)) |
+| **Q2** | **P1** wall-budget enforcement | **decided** (= debt-ledger Q1 (a); landed #171) |
 | **Q4** | Verify-skip knob (lean leave-as-is; close when archiving) | open |
 
 ---
@@ -68,7 +65,7 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 | **P8** | rapidgzip AUTO threshold may be conservative for seek. |
 | **P9** | Measurement blind spots (7z password-confirm; RAR solid rewind). |
 | Extract residual | Safety floor; realistic ~1.9× already in band. |
-| **L5** | Lazy `ArchiveMember` derivation — OpenSpec when commissioned. |
+| **L5** | Lazy `ArchiveMember` derivation — **deferred** → `IDEAS.md` (debt-ledger Q2 (b)). |
 | Topic 6 | Decode-engine performance — `backlog.md` (includes stream Q4). |
 
 ---
@@ -102,3 +99,4 @@ Full table also in `backlog.md` → "Parked from archived deep reviews".
 | Perf P3–P5, decode-feed, O8 | #136/#139/#141 |
 | cli-product P1–P3/P5–P14/D1 | #144 follow-ups + #163/#165 |
 | OpenSpec `stop-on-failure-not-policy` | #165 → archived 2026-07-20 |
+| Nightly wall-ratio drift gate | #171 |

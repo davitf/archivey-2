@@ -73,13 +73,29 @@ That origin story encodes priorities that remain core:
 
 ## Performance budget
 
-- Target: **≤ 1.3×** stdlib wall-time for the common paths (open/list/read/extract on
-  ZIP and TAR); up to ~2× acceptable where a safety or correctness feature justifies it.
-- The bottleneck in real workloads is data movement and *re*-decompression, not header
-  parsing. So the benchmark suite must track **bytes decompressed and seek patterns**,
-  not just wall time — an implementation that re-reads a solid block fails the
-  benchmark even if a small test corpus hides it.
-- Benchmarks become a CI gate like the type checkers (backlog until stood up).
+Wall-time targets are **aspirational peer-ratio bands**, not a claim that every
+path meets them today. Measured ratios live in [`docs/costs.md`](docs/costs.md)
+(and the nightly harness report); re-run
+`python -m benchmarks.harness --mode full --scale realistic` to check on your host.
+
+- **Decompression-dominated** common paths (large-member ZIP/TAR/gzip read):
+  target **≤ 1.3×** the relevant stdlib peer; up to ~**2×** where safety or
+  correctness features justify it (e.g. extract with path/symlink guards).
+  Large-member ZIP read and realistic extract are in or near these bands today;
+  many-small member machinery tracks the listing story below.
+- **Metadata / listing** (open+list): aspirational peer ratios — ZIP/TAR at most
+  **2–3×** vs `zipfile`/`tarfile`; native 7z/RAR **≈parity** (~1.25×) with
+  `py7zr`/`rarfile`. Measured many-small ZIP listing is ~3.7–4× and 7z listing
+  ~2× — fine for everyday use; closing the residual (lazy `ArchiveMember`
+  derivation) is a named follow-up, not a release blocker.
+- The bottleneck in real workloads is data movement and *re*-decompression, not
+  header parsing. The benchmark suite tracks **bytes decompressed and seek
+  patterns**, not just wall time — an implementation that re-reads a solid block
+  fails the structural gate even if a small test corpus hides it.
+- **CI:** structural axes (bytes decompressed, seeks, solid decode-once) gate
+  every PR. Absolute wall bands are **not** PR-gated (shared-runner noise). The
+  change-guarded nightly (`benchmark-wall.yml`) measures and publishes wall
+  ratios vs peers.
 
 ## Quality scaffolding over promises
 

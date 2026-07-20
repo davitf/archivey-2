@@ -6,29 +6,21 @@ All references: `main` @ `7bb862b`. Mechanical baseline: `openspec validate
 `rapidgzip-truncation-investigation 1/11`. (**D5** archived that complete change
 on 2026-07-20.)
 
-## D1 — the VISION ≤1.3× performance claim no longer matches either the measurements or the maintainer's own re-scoping (PAY — top of the ledger)
+## D1 — the VISION ≤1.3× performance claim no longer matches either the measurements or the maintainer's own re-scoping — **DONE (2026-07-20)**
 
-`VISION.md:74-76` still states the budget as "**≤ 1.3×** stdlib wall-time for
+Paid with debt-ledger Q1/Q2: `VISION.md` / `docs/philosophy.md` /
+`docs/costs.md` now state **aspirational peer-ratio bands** plus a measured
+table; L5 parked in `IDEAS.md`. Absolute bands are not PR-gated; structural
+axes remain the PR gate.
+
+`VISION.md:74-76` previously stated the budget as "**≤ 1.3×** stdlib wall-time for
 the common paths (open/list/read/extract…)". The performance review measured
 ZIP open+list at ~3.7–4× post-optimization, 7z listing ~2.0–2.2× vs py7zr,
 ZIP many-small extract ~3.7× (`review/performance/QUESTIONS.md` Q1,
 `budget-table.md`), and the maintainer **already re-scoped the claim** (Q1
 direction, 2026-07-18): metadata ops get *ratio bands vs the relevant peer*
 (ZIP/TAR listing ≤2–3×, native 7z/RAR ≈ par), decompression-dominated paths
-keep ≤1.3×. None of that re-scoping has reached `VISION.md`, `docs/philosophy.md`,
-or `docs/costs.md` — and `philosophy.md` explicitly invites skeptics to
-benchmark. Shipping 0.2.0 with the old sentence publishes a falsifiable claim
-the project's own numbers falsify.
-
-This is the highest freezes-at-release item on the ledger: a public claim,
-quoted in announcement posts and package metadata, is the single hardest thing
-to walk back. **PAY before 0.2.0**: re-word VISION + philosophy + costs to the
-Q1 band structure. Only the *enforcement* wording (is the band CI-gated or
-measured-and-published?) waits on performance Q2 — the band honesty does not.
-Residual: ZIP open+list is still **above** its own re-scoped 2–3× band; either
-L5 (lazy `ArchiveMember` derivation, needs an OpenSpec) lands pre-release or
-the published band must say where ZIP actually sits today (see `QUESTIONS.md`
-Q1/Q2).
+keep ≤1.3×.
 
 ## D2 — no SECURITY.md / disclosure process, and it gates the release's own marketing (PAY)
 
@@ -105,7 +97,7 @@ Archived to `review/archive/2026-07-20-cli-product/`. Parked leftovers:
 |---|---|---|---|
 | **DD1** | Performance **Q2** — where the wall budget is enforced (nightly-vs-previous JSON, 2× band on read_all, or informational) | `review/performance/QUESTIONS.md` Q2 | **DECIDED (2026-07-20)** — (a) nightly wall-ratio drift vs previous successful JSON; skip re-publish + ≥30d forced re-measure; absolute bands informational. |
 | DD2 | Performance **Q4** — verify-skip knob | same, Q4 | **KEEP** (lean leave-as-is already recorded; perf case ~nil post-#137). Record as closed-no-knob. |
-| DD3 | ZIP listing above its own band — land **L5** or publish the honest number | STATUS "residual band miss" | **DECIDE pre-0.2.0** (part of D1; `QUESTIONS.md` Q2). |
+| DD3 | ZIP listing above its own band — land **L5** or publish the honest number | STATUS "residual band miss" | **DECIDED (2026-07-20)** — (b) aspirational bands + measured table; L5 → `IDEAS.md`. |
 | DD4 | `rapidgzip-truncation-investigation` (1/11) — the shipped ISIZE backstop is a heuristic built on admittedly incomplete knowledge (`proposal.md`) | in-flight change | **KEEP for 0.2.0 with justification**: accelerators are opt-in, AUTO additionally gated on verifiable decompressed size, threat model already scopes accelerators out of the defended surface; refining the backstop post-release is non-breaking. Keep the change open; don't let 0.2.0 *close* it silently. |
 | DD5 | `seekable-gzip-and-block-writing` (0/24, spec-only, Phase 8) | in-flight change | **KEEP** — post-0.2.0 feature by plan; additive. |
 | DD6 | Salvage / best-effort read mode — the founding use case, unbuilt; reads are all-or-error | `backlog.md`, `IDEAS.md`, reserved `--salvage` | **KEEP for 0.2.0** — already an explicit, recorded sequencing decision (PLAN: post-0.2.0); CLI grammar + `members_report()` shape keep it additive. Confirm `docs`/README don't over-promise it (checked: gotchas/philosophy phrase it as recoverable-prefix + honest error, which #157 delivers). |

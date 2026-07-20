@@ -41,9 +41,11 @@ Consequences to implement:
 2. ZIP open+list: measured **~3.7–4×** after #143 model-build + L2
    (`slots=True` / trimmed kwargs) — still above 2–3×. Remaining cost is
    `_to_member` derivation (~3.3 µs/member) + registration (~1.3 µs); further
-   gains need L5 lazy derivation (OpenSpec). 7z open+list after L1 bulk name
+   gains need L5 lazy derivation (OpenSpec). **Debt-ledger Q2 (2026-07-20):
+   bands are aspirational; measured numbers published; L5 deferred** →
+   `IDEAS.md` / `docs/costs.md`. 7z open+list after L1 bulk name
    decode: probe **~2.0×** / harness ~**2.2×** vs py7zr (was ~3.4×); still
-   above the 1.25× native band. RAR harness ratio remains a small-fixture
+   above the 1.25× native band (same aspirational treatment). RAR harness ratio remains a small-fixture
    artifact until a larger listing fixture exists (L3).
 3. Read/extract regimes stay as previously framed: decompression-dominated
    ≤1.3× (met for large-member ZIP after #139), extract inside the ~2× safety
