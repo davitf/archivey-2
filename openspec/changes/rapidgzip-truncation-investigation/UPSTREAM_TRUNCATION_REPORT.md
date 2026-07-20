@@ -9,15 +9,15 @@
 
 > This document answers the OpenSpec change’s upstream questions. It does **not** change Archivey’s product decision; it feeds §2 (narrow / extend / remove ISIZE).
 
-### Relation to branch `cursor/rapidgzip-truncation-investigation-ecfc`
+### Relation to PR #177 / `FINDINGS.md` (now on this branch)
 
-That branch already landed Archivey’s **behavioral** characterization (`FINDINGS.md`,
+PR #177 landed Archivey’s **behavioral** characterization (`FINDINGS.md`,
 `scripts/rapidgzip_truncation_sweep.py`, `results/linux-x86_64.*`) and the refined
 product lean: **empty→stdlib fallback + keep/extend ISIZE**. This report is the
-**upstream code/issue** half prompted by that branch’s
-`UPSTREAM-INVESTIGATION-PROMPT.md`.
+**upstream code/issue** half prompted by `UPSTREAM-INVESTIGATION-PROMPT.md`
+(this branch is rebased on #177).
 
-| Topic | ecfc `FINDINGS.md` | This report | Net |
+| Topic | `FINDINGS.md` | This report | Net |
 | --- | --- | --- | --- |
 | Silent set wide (not header-only) | Measured (416 silent∩raise cuts) | Confirmed in ad-hoc repros + code | **Agree** — no re-derive needed |
 | Soft EOF by design | Inferred from behaviour | Cited (`processNextChunk`, `tryToDecode` swallow, `!blockResult`) | **Adds upstream intent** |
@@ -26,7 +26,7 @@ product lean: **empty→stdlib fallback + keep/extend ISIZE**. This report is th
 | empty→stdlib + ISIZE | Recommended for priorities (1)+(2)+(3) | Initially ISIZE-heavy; aligns once (2) is explicit | **Defer to FINDINGS stack** |
 | `<18` / multi-member holes | Quantified vs current backstop | Out of scope here | FINDINGS owns product holes |
 
-**Does ecfc change this report’s testing?** No outcome flip. The sweep is the
+**Does FINDINGS change this report’s testing?** No outcome flip. The sweep is the
 better matrix; this report’s value is *why* silent success happens and which
 upstream signals exist. One FINDINGS claim to amend: stderr Unexpected-end is
 **not** a reliable silent-empty companion on 0.16.0.
