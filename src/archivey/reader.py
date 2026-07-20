@@ -41,8 +41,9 @@ class ArchiveReader(ABC):
     - :meth:`members` — complete list or raise; random-access only (fails on streaming).
     - :meth:`members_report` — always returns a report; check ``error is None`` for
       completeness (preferred for damaged archives).
-    - :meth:`scan_members` — like ``members``, but also finishes a streaming forward
-      pass so you can obtain a full list after a partial iteration.
+    - :meth:`scan_members` — random-access: same as ``members``; streaming: start or
+      finish the forward pass and return the resolved list (also OK after a completed
+      pass).
     - :meth:`members_report_if_available` — never scans; ``None`` if not yet cached.
     """
 

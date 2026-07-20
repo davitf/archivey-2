@@ -184,7 +184,8 @@ def open_archive(
     reader_source = resolved.open_source
     archive_name = resolved.archive_name
 
-    # --- Resolve format (caller override → directory shortcut → magic detect) ---
+    # --- Resolve format: directory path forces DIRECTORY (overrides format=);
+    # else caller format, else magic detect. ---
     resolved_format = format
     if isinstance(reader_source, Path) and reader_source.is_dir():
         resolved_format = ArchiveFormat.DIRECTORY
