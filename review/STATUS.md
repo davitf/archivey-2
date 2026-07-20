@@ -7,7 +7,7 @@ Triage after archiving `cli-product/` and OpenSpec `stop-on-failure-not-policy`
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 open; **D5/D6 done**; **QUESTIONS Q1–Q5** open | no |
+| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 open; **D5/D6 done**; **Q3 decided** (S2/S3 entry gate); Q1/Q2/Q4/Q5 open | no |
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
@@ -28,7 +28,6 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 | **T1 / T2** | Solid-RAR mutation net; parametrize seek-interleaving over lzip/`.Z`. |
 | **T3** | Benchmark-gate RAR / encrypted / accelerator data cases (perf P6 remainder). |
 | **D4 / T7** | `open-issues.md` sweep; corpus-matrix audit. |
-| **Q3 record** | S2/S3 entry gate for next backend → `PLAN.md` / `IDEAS.md`. |
 
 ### From `performance/`
 
@@ -44,13 +43,13 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 
 ### `debt-ledger/QUESTIONS.md`
 
-| Q | Finding | Lean |
-|---|---------|------|
-| **Q1** | Perf wall-budget enforcement (perf Q2) | nightly drift-vs-previous JSON |
-| **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | publish honest number; L5 follow-up |
-| **Q3** | S2+S3: entry gate for next backend vs pay pre-release | entry gate |
-| **Q4** | rapidgzip-truncation rides past 0.2.0? | KEEP change open |
-| **Q5** | CHANGELOG form | committed `CHANGELOG.md` |
+| Q | Finding | Status |
+|---|---------|--------|
+| **Q1** | Perf wall-budget enforcement (perf Q2) | lean: nightly drift-vs-previous JSON |
+| **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | lean: publish honest number; L5 follow-up |
+| **Q3** | S2+S3: entry gate for next backend vs pay pre-release | **decided** — entry gate; recorded in `PLAN.md` / `IDEAS.md` |
+| **Q4** | rapidgzip-truncation rides past 0.2.0? | lean: KEEP change open |
+| **Q5** | CHANGELOG form | lean: committed `CHANGELOG.md` |
 
 ### `performance/QUESTIONS.md`
 
@@ -102,3 +101,4 @@ Full table also in `backlog.md` → "Parked from archived deep reviews".
 | Perf P3–P5, decode-feed, O8 | #136/#139/#141 |
 | cli-product P1–P3/P5–P14/D1 | #144 follow-ups + #163/#165 |
 | OpenSpec `stop-on-failure-not-policy` | #165 → archived 2026-07-20 |
+| S2+S3 entry gate for next backend (Q3) | `PLAN.md` / `IDEAS.md` (2026-07-20) |
