@@ -77,8 +77,10 @@
       and the truncation notes in `docs/internal/library-analysis.md`.
       → Also scoped end-user notes in `docs/gotchas.md` / `docs/formats.md` (bare `.gz` vs
       container CRC; best-effort / certainty caveat). Separate follow-up parked in
-      `docs/internal/open-issues.md`: confirm container CRC catches soft-EOF under
-      `use_rapidgzip=ON` for ZIP/7z members.
+      `docs/internal/open-issues.md`: confirm container CRC catches corrupted /
+      truncated ZIP/7z *member* payloads under `use_rapidgzip=ON` (in-member
+      corruption is the sneaky case; whole-archive ZIP truncation usually fails
+      at the directory).
 - [x] 3.4 If `_GzipTruncationCheckStream` is gone and nothing else needs standalone
       `VerifyingStream` beyond unit tests / container bounds, note Topic 6 adjacency in
       `review/backlog.md` (do not delete in this change unless clearly unused).
