@@ -6,6 +6,8 @@
 
 **What Linux showed:** that hypothesis is **false**. Mid-body truncations with a valid header commonly return `b""` with no exception (stdlib raises). The current ISIZE check is load-bearing for `size ≥ 18` but misses the `< 18` band and multi-member bailouts. See `FINDINGS.md`.
 
-**Recommendation (awaiting your lock-in):** **extend** the length backstop (safe multi-member ISIZE sum + close the `< 18` hole), do **not** remove it, do **not** narrow to header-only.
+**Recommendation (awaiting your lock-in):** **extend**, refined: empty→stdlib
+fallback for silent-empty (gets partial recovery) **plus** ISIZE for silent
+short/full; not remove; not narrow-only; not DIY reverse gzip seek.
 
 **Your call:** lock §2 (extend vs alternate) after reviewing `FINDINGS.md`; optionally run the sweep on macOS / add CI. §3 implements after that.

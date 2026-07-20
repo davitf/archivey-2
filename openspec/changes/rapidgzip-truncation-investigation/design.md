@@ -125,10 +125,11 @@ stdlib raises.
 `≥ 18` (ISIZE mismatch). Misses the `< 18` band (including bare header-10)
 and multi-member bailouts. So the machinery is load-bearing — but incomplete.
 
-**Recommendation (awaiting lock-in):** **extend** (task 2.2), not remove
-(2.3) or narrow-to-header-only (2.1 alone). Keep ISIZE EOF compare; close
-the `< 18` hole with a small incomplete-member check; replace multi-member
-“any further header ⇒ accept” with a safe per-member ISIZE sum; keep AUTO’s
-`gzip_isize_backstop` verifiability signal. bzip2 (`IndexedBzip2File`,
-`parallelization=0`): silent empty only on very short prefixes (0..9) —
-document, no ISIZE twin.
+**Recommendation (awaiting lock-in):** **extend**, refined after the depth probe:
+compose (a) **empty→stdlib fallback** when rapidgzip EOF-delivers 0 bytes
+(recovers partial data + loud error on the common silent-empty path) with
+(b) **ISIZE/length backstop** for silent short/full (multi-block / trailer
+strip) that empty-fallback misses; close the `< 18` hole; safe multi-member
+ISIZE sum; keep AUTO’s verifiability signal. **Reject** remove, narrow-only,
+and DIY reverse deflate-block seek (gzip trailer is CRC+ISIZE only — not an
+xz/lzip-style index). Details in `FINDINGS.md` (“Refined recommendation”).

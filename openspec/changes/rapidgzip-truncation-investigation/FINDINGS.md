@@ -200,3 +200,73 @@ from silent truncation; out of band for the ISIZE-backstop decision.
   that missing signal is what the ISIZE / incompleteness backstop must cover.
 - Measuring only `readall()` makes stdlib look like “never returns partial
   data”; that is an API artifact, not zlib/gzip behaviour.
+
+## Refined recommendation (post depth-probe) — awaiting lock-in
+
+Priorities (maintainer): (1) no silent success, (2) recover partial data,
+(3) seekability on good inputs.
+
+### Should we refine? **Yes.**
+
+The earlier “extend ISIZE only” recommendation optimizes for (1) but **throws
+away (2)** on the common silent-empty path: ISIZE raises `TruncatedError`
+after rapidgzip already returned `b""`, with no recovered prefix. stdlib
+sized-reads show that prefix was often available.
+
+### Empty→stdlib fallback: possible? worthwhile? what does it miss?
+
+**Possible.** On first rapidgzip EOF with **zero bytes delivered**, reopen the
+same path with stdlib and drain via sized reads:
+
+| Input | rapidgzip | stdlib after fallback | Result |
+| --- | --- | --- | --- |
+| Valid empty gzip | `len=0`, no err | `len=0`, no err | OK — no false positive |
+| Header-only / mid single-block trunc | silent `len=0` | prefix (maybe 0) then `EOFError` | **(1)+(2)** |
+| Multi-block silent **short** (e.g. 50%) | `len=140000`, no err | n/a — fallback never triggers | **MISS** |
+| Trailer-stripped silent **full** | `len=full`, no err | n/a | **MISS** |
+| rapidgzip raise / abort | err / crash | n/a | already loud / separate crash issue |
+
+So empty-fallback is **worthwhile for the dominant silent-empty case** (ordinary
+`gzip.compress` single-block files) and gives (2) “for free,” but it is **not
+sufficient alone** — multi-block / trailer-strip silent non-empty still need a
+length (ISIZE) or CRC check for (1).
+
+### DIY limited seek via trailer / reverse block scan?
+
+**Not with the gzip format as specified (RFC 1952).**
+
+A gzip member is `header | deflate blocks | CRC32(4) + ISIZE(4)`. The trailer
+is integrity/size metadata for that member, **not** a block offset table.
+Deflate blocks are bit-aligned and the 32 KiB LZ77 window **crosses** block
+boundaries, so you cannot resume at an arbitrary block from the trailer the
+way xz/lzip indexes or `.Z` CLEAR points allow.
+
+What Archivey already has without rapidgzip: stdlib `GzipFile.seek` =
+**O(n) re-decompress from start** + rewind warning — same “limited seek”
+pattern as zstd/lz4/brotli. Building a real gzip seek index means a
+forward `zran`-style pass (sync points + window dictionaries) — that is
+reinventing what rapidgzip already does, not a cheap trailer walk.
+
+**Do not** pursue reverse deflate-boundary scanning for seek or truncation;
+it is unreliable on arbitrary gzip and the wrong tool vs ISIZE/CRC + stdlib.
+
+### Recommended stack (refined)
+
+Keep rapidgzip for (3). Compose two cheap correctness layers for (1)+(2):
+
+1. **Empty→stdlib fallback** when rapidgzip hits EOF having delivered 0 bytes
+   (path sources; wall-clock / translate stdlib `EOFError`). Covers silent-empty;
+   preserves valid empty; recovers partial data.
+2. **Keep/extend ISIZE backstop** when rapidgzip delivered **any** bytes then
+   hit EOF without error: compare length (and fix `<18` hole + multi-member
+   ISIZE sum). Covers silent short/full that empty-fallback misses.
+3. **Do not remove** the length check in favour of fallback alone.
+4. **Do not** DIY gzip reverse-seek; rely on rapidgzip for RA, stdlib rewind
+   otherwise.
+5. AUTO/`gzip_isize_backstop` coupling: still required if length verification
+   remains a verifiability signal; fallback alone is not a substitute for AUTO
+   eligibility math without careful redesign.
+
+Net vs prior recommendation: still **extend**, but lead with
+**fallback-for-empty + ISIZE-for-non-empty-EOF**, not ISIZE-only — because
+priority (2) is now explicit.
