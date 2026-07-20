@@ -88,8 +88,10 @@ class CloseLockedStream(DelegatingStream):
     Contrast :class:`LockedStream` (locks every op). ZIP under
     ``MemberStreams.CONCURRENT``: stdlib ``zipfile`` already serializes shared-fp
     seek/read via ``_SharedFile``, but ``_fileRefCnt`` on open/close races under
-    free-threaded CPython — serializing close is enough; locking reads would
-    needlessly serialize independent decompressors.
+    free-threaded CPython. This wrapper covers close; the ZIP backend also
+    serializes ``ZipFile.open`` under the same lock (``_handle_guard``) — open +
+    close together are enough; locking reads would needlessly serialize
+    independent decompressors.
     """
 
     def __init__(self, inner: BinaryIO, lock: threading.Lock | threading.RLock) -> None:

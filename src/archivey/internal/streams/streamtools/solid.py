@@ -5,6 +5,7 @@ forward-only (often non-seekable) byte stream whose members occupy consecutive,
 known-size ranges. :class:`SolidBlockReader` owns that stream and hands out one member
 sub-stream at a time, skipping forward **lazily**: the gap before a member is consumed
 only when the *next* member is opened, so closing a never-advanced member costs nothing.
+Closing the reader closes the block without draining.
 
 Not the same as :class:`~archivey.internal.streams.streamtools.shared.SharedSource`
 (independent seekable views) or :class:`~archivey.internal.streams.streamtools.locked.LockedStream`
