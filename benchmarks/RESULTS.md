@@ -2,11 +2,22 @@
 
 **Blocking PR gate = structural invariants only** (seek-count baselines + solid
 decode-once). Wall-time / VISION ≤1.3× runs off the PR path as a **change-guarded
-nightly** (`benchmark-wall.yml`): a daily schedule whose expensive realistic run is
-skipped unless the default branch changed since the previous run (this project is
-bursty/dormant, and per-PR taxed every PR). It records drift (JSON + markdown report
-artifacts, job summary table, and informational VISION print) and goes red only on a gross
-regression.
+nightly** (`benchmark-wall.yml`): a daily schedule whose expensive realistic run
+fires when the default branch changed recently **or** the last measurement is
+older than ~30 days (runner / toolchain drift). Quiet days **re-publish** the
+previous JSON (preserving `measured_at`, stamping `republished_at`) so dormant
+successes still carry an artifact for the next drift compare. When the expensive
+run fires it:
+
+- records results (JSON + markdown report artifacts, job summary table) with
+  `measured_at` / source provenance;
+- hard-fails on the ~10× sanity ceiling **or** on **wall-ratio drift** vs the
+  previous successful nightly's JSON (relative regression gate — debt-ledger Q1 /
+  perf Q2 option (a));
+- prints absolute VISION / Q1 listing bands as informational only.
+
+`workflow_dispatch` can pass `skip_drift=true` to accept the current ratios as a
+new baseline after an intentional slowdown.
 
 Re-run with:
 
@@ -120,7 +131,8 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
 - **Change-guarded nightly (off the PR path, `benchmark-wall.yml`):** `--mode full
   --scale realistic` with JSON + markdown report artifact upload (the markdown is also
   written to the Actions job summary so it is readable without downloading) — a daily
-  schedule that skips its expensive run unless the default branch changed since the previous
-  run (bursty/dormant project; per-PR was rejected for taxing every PR). `workflow_dispatch`
-  forces a run.
-- Wall timing: unmeasured archivey vs stdlib; VISION band informational.
+  schedule that skips its expensive run unless the default branch changed recently or
+  `measured_at` is older than ~30 days; skips re-publish the previous artifact.
+  `workflow_dispatch` forces a run (`skip_drift` re-seeds after intentional regressions).
+- Wall timing: unmeasured archivey vs stdlib; absolute VISION bands informational;
+  nightly hard-fails on wall-ratio *drift* vs the previous successful artifact.

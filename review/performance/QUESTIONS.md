@@ -2,11 +2,12 @@
 
 Decisions this review cannot make unilaterally (per the pause-and-ask rule).
 
-> **Status (2026-07-18):** Q3, Q5, Q6 **resolved** (#136 / #139). Q1 has a
-> **maintainer direction** (#140) — listing peers (#143) + L1/L2/L3 listing
-> fixes (#146) landed; ZIP open+list still above the 2–3× band. **Still need a
-> decision:** Q2 (wall enforcement), Q4 (verify-skip knob; perf case ~nil
-> post-#137). See `../STATUS.md`.
+> **Status (2026-07-20):** Q2 **decided** — nightly wall-ratio drift vs previous
+> successful JSON (option (a)); absolute VISION bands stay informational.
+> Q3, Q5, Q6 **resolved** (#136 / #139). Q1 has a **maintainer direction** (#140)
+> — listing peers (#143) + L1/L2/L3 listing fixes (#146) landed; ZIP open+list
+> still above the 2–3× band. **Still need a decision:** Q4 (verify-skip knob;
+> perf case ~nil post-#137). See `../STATUS.md`.
 
 ## Q1 — What does "≤1.3× on common paths" cover, exactly? — DIRECTION RECORDED
 
@@ -49,7 +50,17 @@ Consequences to implement:
    band (met at realistic scale), many-small read_all follows the listing
    story (its cost *is* per-member machinery).
 
-## Q2 — Where should the wall budget be *enforced*? — OPEN
+## Q2 — Where should the wall budget be *enforced*? — **DECIDED (2026-07-20)**
+
+**Decision: (a) (+ (c) already paid).** Nightly compares wall ratios against the
+*previous successful nightly's* JSON artifact and fails on relative drift
+(`WALL_RATIO_DRIFT_FACTOR` / `WALL_RATIO_DRIFT_MIN_ABS` in `harness.py`). Quiet
+days re-publish that artifact (preserving `measured_at`); a full re-measure is
+forced at least every ~30 days. Absolute VISION ≤1.3× / ~2× bands stay
+informational prints; PR path stays structural-only. `(c)` peers for
+open/list/extract landed in #139/#143. `(b)` absolute 2× band on `read_all`
+deferred until ZIP is stably inside the band. `workflow_dispatch`
+`skip_drift=true` re-seeds after intentional slowdowns.
 
 Today: nowhere (`gate-efficacy.md` G1) — deliberate, because shared-runner ratios
 flake. Options, not mutually exclusive:
