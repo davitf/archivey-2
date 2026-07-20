@@ -37,7 +37,7 @@ stable over time.
 | **D1** | VISION/philosophy/costs still publish **≤1.3× for open/list** — falsified by own measurements; maintainer's Q1 re-scoping (peer-ratio bands) never reached the docs | `VISION.md:74-76`; `review/performance/QUESTIONS.md` Q1 | **F3** | **PAY** — re-word before release; band honesty doesn't wait on Q2 |
 | **D2** | No `SECURITY.md` / disclosure process — gates the "safe" positioning per threat-model O5.4 + PLAN | `docs/internal/threat-model.md` O5 | **F3** | **PAY** (SECURITY.md); OSS-Fuzz may trail |
 | **DD1/DD3** | Perf **Q2** (wall enforcement) + ZIP listing above its own band (L5 or honest number) | `review/performance/` | **F3** | **DECIDE** — `QUESTIONS.md` Q1/Q2 |
-| **D3** | No `CHANGELOG`; `0.2.0.dev0` sets the record at release | `pyproject.toml:7` | **F3** | **PAY** (cheap; form → Q5) |
+| **D3** | No `CHANGELOG`; `0.2.0.dev0` sets the record at release | `pyproject.toml:7` | **F3** | **DONE** (2026-07-20) — `CHANGELOG.md` + `docs/internal/release-checklist.md` (Q5 = committed file) |
 | **DD6** | Salvage mode absent though it's the founding use case | PLAN / IDEAS / reserved `--salvage` | **F3**→ok | **KEEP** — sequencing decision already recorded; docs verified honest |
 | **T1** | Mutation-fuzz + conformance sweep cover only declarative `CORPUS`; **solid-RAR demux** (where RAR-review bugs lived) has no generative net | `tests/test_mutation_fuzz.py:118`; `rar_reader.py:578-649` | **F2** | **PAY** — mutate static fixtures / build solid RAR into corpus |
 | **T3** | Benchmark gate has no RAR/encrypted/accelerator data cases — D1's claim can't be honest for unmeasured paths | `tests/test_benchmark_gate.py` | **F2** | **PAY** (already tracked as perf P6 remainder) |
@@ -59,7 +59,7 @@ stable over time.
 
 1. **D1** — re-word the perf claim (after deciding Q1/Q2 in `QUESTIONS.md`).
 2. **D2** — write `SECURITY.md`.
-3. **D3** — start `CHANGELOG.md`.
+3. **D3** — start `CHANGELOG.md`. (**DONE** 2026-07-20 — file + release checklist.)
 4. **T1 + T2** — widen the generative nets (solid-RAR mutation; lzip/`.Z`
    seek property test). Cheap, reuses machinery, and T1 doubles as the
    safety net for the eventual S2/S3 change.

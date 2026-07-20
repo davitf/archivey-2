@@ -75,6 +75,14 @@ macOS/Windows). Repo `.python-version` pins the default local env to 3.11, so th
 workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /
 `uv run` in the test job — otherwise newer-version legs silently re-test 3.11.
 
+## Cutting a release
+
+See [`docs/internal/release-checklist.md`](docs/internal/release-checklist.md)
+(CHANGELOG triage, perf vs previous tag, docs, three-config tests, version bump,
+tag, publish). One-time repo rename / PyPI setup:
+[`docs/internal/release-repo-cutover.md`](docs/internal/release-repo-cutover.md).
+User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Tooling decisions
 
 - **Type-checking is Pyrefly + ty** — the library is kept clean on **both**. We do

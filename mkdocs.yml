@@ -33,6 +33,7 @@ nav:
       - Open issues (gotchas triage): internal/open-issues.md
       - Compression-library analysis: internal/library-analysis.md
       - Known issues: internal/known-issues.md
+      - Release checklist: internal/release-checklist.md
       - Release-repo cutover: internal/release-repo-cutover.md
   - Grab-bag:
       - Overview: grab-bag/index.md

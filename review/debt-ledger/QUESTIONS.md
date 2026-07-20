@@ -63,9 +63,15 @@ backstop later is non-breaking. Confirm — or, if the maintainer considers a
 knowingly-heuristic guard on a shipped path unacceptable debt for a release,
 the characterization (a measurement matrix, no design work) is the pay path.
 
-## Q5 — Does a `CHANGELOG` entry-zero get written now?
+## Q5 — Does a `CHANGELOG` entry-zero get written now? — **DECIDED (2026-07-20)**
 
-D3 says PAY. The only real question is form: a conventional
+**Decision: committed `CHANGELOG.md`** (Keep a Changelog), not generated-only
+GitHub release notes. Entry-zero lives under `[Unreleased]` until `0.2.0` is
+tagged; the every-release loop (commit walk, perf vs previous tag, docs, tag)
+is `docs/internal/release-checklist.md`. GitHub Release bodies may mirror the
+file; the in-repo changelog remains authoritative.
+
+D3 says PAY. The only real question was form: a conventional
 `CHANGELOG.md` starting at 0.2.0 ("initial public release" + highlights), or
-generated release notes only. Recommendation: a committed `CHANGELOG.md` —
+generated release notes only. Recommendation was a committed `CHANGELOG.md` —
 the adoption capstone explicitly looks for one in-repo.

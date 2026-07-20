@@ -8,6 +8,8 @@ Maintainer / contributor material. Not the primary user guide.
 | [Open issues (gotchas triage)](open-issues.md) | Fixable leftovers vs irreducible user gotchas; docs/spec drift |
 | [Compression-library analysis](library-analysis.md) | Per-codec backend choice and rationale |
 | [Known issues](known-issues.md) | Accelerator lifecycle / macOS coexistence notes |
+| [Release checklist](release-checklist.md) | Every-release loop: CHANGELOG, perf vs prior tag, docs, tag/publish |
+| [Release-repo cutover](release-repo-cutover.md) | One-time rename / PyPI / Pages before the first public tag |
 
 Normative behavior remains in `openspec/specs/`. Product framing: `VISION.md` at the
 repository root. Decision summaries: [decision log](../decisions/index.md).

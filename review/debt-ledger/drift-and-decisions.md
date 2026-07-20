@@ -40,13 +40,14 @@ security-positioned library launching without a disclosure path is a story
 adopters remember); OSS-Fuzz onboarding can trail the release. **PAY
 (SECURITY.md) before 0.2.0; OSS-Fuzz may follow.**
 
-## D3 — no CHANGELOG (PAY — cheap)
+## D3 — no CHANGELOG (PAY — cheap) — **DONE (2026-07-20)**
 
-`pyproject.toml` is at `0.2.0.dev0`; there is no `CHANGELOG*` anywhere. The
-first public release sets the record and the precedent (the adoption capstone
-in `backlog.md` Topic 7 names "a trustworthy changelog" as a confidence
-signal). Retro-writing it later from ~170 PRs is strictly more expensive than
-starting it now. **PAY before 0.2.0.**
+Paid with debt-ledger Q5: committed Keep a Changelog `CHANGELOG.md` (entry-zero
+under `[Unreleased]` until `0.2.0` is tagged) plus
+`docs/internal/release-checklist.md` for the every-release update loop.
+GitHub release notes may mirror; they are not a substitute.
+
+`pyproject.toml` remains at `0.2.0.dev0` until the release cut.
 
 ## D4 — `docs/internal/open-issues.md` has gone stale against its own resolutions (PAY — 15-minute sweep)
 

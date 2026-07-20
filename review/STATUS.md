@@ -7,7 +7,7 @@ Triage after archiving `cli-product/` and OpenSpec `stop-on-failure-not-policy`
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 open; **D5/D6 done**; **Q1 decided**; Q2–Q5 open | no |
+| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/T1/T2/T3/D4/T7 open; **D3/D5/D6 done**; **Q1/Q5 decided**; Q2–Q4 open | no |
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2 decided** (drift gate); **Q4 open** | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
@@ -24,7 +24,6 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 |----|--------|
 | **D1** | Re-word VISION/philosophy/costs ≤1.3× claim to peer-ratio bands (after Q1/Q2). |
 | **D2** | Write `SECURITY.md` / disclosure process. |
-| **D3** | Start `CHANGELOG.md` (Q5 form). |
 | **T1 / T2** | Solid-RAR mutation net; parametrize seek-interleaving over lzip/`.Z`. |
 | **T3** | Benchmark-gate RAR / encrypted / accelerator data cases (perf P6 remainder). |
 | **D4 / T7** | `open-issues.md` sweep; corpus-matrix audit. |
@@ -50,7 +49,7 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 | **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | lean: publish honest number; L5 follow-up |
 | **Q3** | S2+S3: entry gate for next backend vs pay pre-release | lean: entry gate |
 | **Q4** | rapidgzip-truncation rides past 0.2.0? | lean: KEEP change open |
-| **Q5** | CHANGELOG form | lean: committed `CHANGELOG.md` |
+| **Q5** | CHANGELOG form | **decided** — committed `CHANGELOG.md` + release checklist |
 
 ### `performance/QUESTIONS.md`
 

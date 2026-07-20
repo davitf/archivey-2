@@ -10,3 +10,5 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 - **[Threat model](docs/internal/threat-model.md)** — trust boundaries and open gaps
 - **[PLAN.md](PLAN.md)** — phased roadmap · **[IDEAS.md](IDEAS.md)** — backlog
 - Authoritative contracts: `openspec/specs/`
+- **[CHANGELOG.md](CHANGELOG.md)** — notable changes · **[Release checklist](docs/internal/release-checklist.md)** — how to cut a version
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — coding / testing standards
