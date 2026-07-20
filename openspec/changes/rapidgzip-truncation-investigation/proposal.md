@@ -40,6 +40,13 @@ special-case.
 An interim, low-risk fix already landed in the originating PR (#14): the multi-member header scan
 no longer reads the whole file into memory — it scans in fixed-size blocks with overlap.
 
+Debt-ledger **Q4** (2026-07-20) decided this change **PAY before 0.2.0**: shipping a
+self-described under-characterized guard on a supported (even opt-in) path is unacceptable
+release debt. Measurement and the narrow/extend/remove implementation are deferred to a
+follow-up PR; `design.md` collects code/threat-model/ledger pointers so that work does not
+have to re-discover AUTO↔ISIZE coupling, the VerifyingStream vs ISIZE split, or why fuzz
+jobs cannot stand in for the characterization matrix.
+
 ## What Changes
 
 - **`seekable-decompressor-streams`** — refine the truncation requirement for the rapidgzip gzip
