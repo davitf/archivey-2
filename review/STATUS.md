@@ -7,7 +7,7 @@ Triage after archiving `cli-product/` and OpenSpec `stop-on-failure-not-policy`
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 + **DD4/rapidgzip-truncation** open; **D5/D6 done**; **Q1/Q4 decided**; Q2/Q3/Q5 open | no |
+| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 + **DD4/rapidgzip-truncation** open; **D5/D6 done**; **Q1/Q3/Q4 decided**; Q2/Q5 open | no |
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2 decided** (drift gate); **Q4 open** | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
@@ -48,8 +48,13 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 |---|---------|--------|
 | **Q1** | Perf wall-budget enforcement (perf Q2) | **decided** — nightly drift vs previous JSON (a); absolute bands informational |
 | **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | lean: publish honest number; L5 follow-up |
+<<<<<<< HEAD
 | **Q3** | S2+S3: entry gate for next backend vs pay pre-release | lean: entry gate |
 | **Q4** | rapidgzip-truncation rides past 0.2.0? | **decided** — PAY before 0.2.0; implement later |
+=======
+| **Q3** | S2+S3: entry gate vs pay pre-release | **decided** — (b) pay now; OpenSpec `unify-pass-driver` |
+| **Q4** | rapidgzip-truncation rides past 0.2.0? | lean: KEEP change open |
+>>>>>>> 87fb147 (Triage: mark debt-ledger Q3 decided in STATUS glance)
 | **Q5** | CHANGELOG form | lean: committed `CHANGELOG.md` |
 
 ### `performance/QUESTIONS.md`
