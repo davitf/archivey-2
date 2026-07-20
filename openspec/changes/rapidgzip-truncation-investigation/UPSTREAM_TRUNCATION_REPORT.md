@@ -9,6 +9,28 @@
 
 > This document answers the OpenSpec change’s upstream questions. It does **not** change Archivey’s product decision; it feeds §2 (narrow / extend / remove ISIZE).
 
+### Relation to branch `cursor/rapidgzip-truncation-investigation-ecfc`
+
+That branch already landed Archivey’s **behavioral** characterization (`FINDINGS.md`,
+`scripts/rapidgzip_truncation_sweep.py`, `results/linux-x86_64.*`) and the refined
+product lean: **empty→stdlib fallback + keep/extend ISIZE**. This report is the
+**upstream code/issue** half prompted by that branch’s
+`UPSTREAM-INVESTIGATION-PROMPT.md`.
+
+| Topic | ecfc `FINDINGS.md` | This report | Net |
+| --- | --- | --- | --- |
+| Silent set wide (not header-only) | Measured (416 silent∩raise cuts) | Confirmed in ad-hoc repros + code | **Agree** — no re-derive needed |
+| Soft EOF by design | Inferred from behaviour | Cited (`processNextChunk`, `tryToDecode` swallow, `!blockResult`) | **Adds upstream intent** |
+| stderr on silent empty | Prompt/FINDINGS: often present with OK empty | Code **rethrows** after that cerr; 0.16.0 repros: line pairs with **raise/abort**, silent empty usually **no** that line | **Correct FINDINGS wording** — do not plan on stderr-as-signal |
+| `parallelization` 0 vs 1 | Identical outcome classes | Same; also: `0` means **all cores** | **Agree** + API note |
+| empty→stdlib + ISIZE | Recommended for priorities (1)+(2)+(3) | Initially ISIZE-heavy; aligns once (2) is explicit | **Defer to FINDINGS stack** |
+| `<18` / multi-member holes | Quantified vs current backstop | Out of scope here | FINDINGS owns product holes |
+
+**Does ecfc change this report’s testing?** No outcome flip. The sweep is the
+better matrix; this report’s value is *why* silent success happens and which
+upstream signals exist. One FINDINGS claim to amend: stderr Unexpected-end is
+**not** a reliable silent-empty companion on 0.16.0.
+
 ---
 
 ## 1. Executive summary
@@ -20,13 +42,17 @@
 | Signal | Usable? |
 | --- | --- |
 | Python exceptions alone | **No** — silent empty/short is common; near-trailer often raises *and* can `std::terminate` |
-| stderr (`Unexpected end of file when getting block…`) | **No** for silent cases (usually absent); accompanies raise/abort near trailer; not queryable |
+| stderr (`Unexpected end of file when getting block…`) | **No** — rethrow path near trailer; **not** a silent-success channel; not queryable |
 | Post-`read` flags (`block_offsets_complete`, `size`) | **Mostly no** — truncated inputs often report `block_offsets_complete=True` and `size==len(short)` |
 | `tell_compressed` after empty read | **Partial** — valid empty gzip ends at bit offset 160; header-only trunc stays at 0 |
-| ISIZE trailer compare (current backstop) | **Still necessary** for silent-short and many silent-empty path sources |
-| empty→stdlib fallback alone | **Insufficient** — large truncations return a long silent prefix, not empty |
+| ISIZE trailer compare (current backstop) | **Necessary** for silent-short / silent-full (and many non-empty EOFs) |
+| empty→stdlib fallback | **Useful for silent-empty** (priority 2: recover prefix); **not sufficient alone** |
 
-**Verdict for Archivey’s three priorities:** keep (and do not shrink blindly) the ISIZE backstop for path gzip; treat exceptions as a bonus path; do not parse stderr; consider empty+`tell_compressed==0` as an extra cheap trap; open an upstream issue requesting a real incomplete-stream flag (draft below). Silent EOF is **by design** for the parallel decoder; process abort after some errors is a **related bug** (finalization / `std::terminate`).
+**Verdict for Archivey’s three priorities:** adopt the ecfc FINDINGS stack —
+**empty→stdlib on zero-byte rapidgzip EOF** + **keep/extend ISIZE for non-empty
+silent EOF**; do not parse stderr; exceptions are bonus; optional
+`tell_compressed==0` trap for header-only. Silent EOF is **by design**; process
+abort after some errors is a **related bug** (`std::terminate` / finalization).
 
 ---
 
@@ -274,7 +300,15 @@ r = subprocess.run([sys.executable, "/tmp/rgz_probe.py", "/tmp/t.gz", "0"],
 
 ### 5.4 Stderr without exception?
 
-**Not reproduced** on 0.16.0 for the common silent-empty set: the Unexpected-end line is paired with rethrow. Archivey’s earlier “stderr + OK 0” for bare header may have been a different cut/tooling mix; on this pin, cut=10 is **OK empty with no that stderr line**. Valid empty vs trunc-empty still differ on `tell_compressed` (160 vs 0).
+**Not reproduced** as a reliable silent-empty companion on 0.16.0: the
+Unexpected-end line is emitted immediately before `throw exception` in
+`GzipChunkFetcher::getBlock`. Spot checks: mid-body silent empty → **no** that
+line; trailer-adjacent cuts → line **plus** `RuntimeError` (often then
+`terminate`). The ecfc FINDINGS/prompt claim that many silent cuts print this
+line while returning OK should be treated as **overstated / needs re-check** —
+do not build Archivey detection on capturing stderr.
+
+Valid empty vs trunc-empty still differ on `tell_compressed` (160 vs 0).
 
 ### 5.5 Valid empty vs trunc empty discriminator
 
