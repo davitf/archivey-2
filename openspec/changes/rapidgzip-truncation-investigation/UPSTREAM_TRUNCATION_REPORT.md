@@ -330,25 +330,22 @@ for p in ("/tmp/e.gz","/tmp/h.gz"):
 
 Priorities: **(1) no silent success, (2) recover partial data, (3) keep seekability on good inputs.**
 
-1. **Do not trust exceptions alone.** Soft EOF is upstream design for the parallel reader. Removing `_GzipTruncationCheckStream` would regress (1) badly (silent empty *and* silent short).
+Defer product lock-in to ecfc `FINDINGS.md` (“empty→stdlib + ISIZE”). Upstream
+evidence supports that stack and rules out remove / narrow-only / stderr-based
+detection:
 
-2. **Keep ISIZE compare for path gzip** as the primary backstop for silent-short and many silent-empty cases. It is the only reliable length signal when `block_offsets_complete` lies. Multi-member limitations remain (proposal already notes them); do not treat “narrow to header-only” as sufficient — silent empty/short is **wide**, not a 10-byte curiosity.
-
-3. **Optional cheap supplement (not a replacement):** if `read` yields empty and `tell_compressed()==0` (and/or offsets `{0:0}`), treat as truncated without waiting for ISIZE (covers header-only; does not cover silent-short).
-
-4. **empty→stdlib fallback:** useful only as an *additional* probe for ambiguous empty results; **cannot** replace ISIZE for silent-short. Cost: double-open / lose seekability on that path unless carefully staged.
-
-5. **Do not parse stderr.** Fragile, racy with workers, absent on the common silent path, and tied to raise/abort paths.
-
-6. **Do not use `block_offsets_complete` / `size` as completeness.** They report the index of what was decoded, not “archive integrity”.
-
-7. **Exception translation** (`_translate_rapidgzip`) remains correct for the cases that do raise; keep treating `RuntimeError`/`ValueError`/`std::exception` as corruption/truncation. Be aware some raises still **abort the process** — sandbox/timeout remains necessary (threat model).
-
-8. **`parallelization=0`:** document internally that this means **all cores**. Switching to `1` is unlikely to fix silent EOF; it may slightly reduce finalize races (unproven).
-
-9. **bzip2:** IndexedBzip2File raises more often than gzip on truncations but still has silent-empty early cuts; no ISIZE twin — rely on container bounds / stdlib when integrity matters.
-
-10. **Upstream:** silent truncated success is **absent-by-design**; ask for an explicit incomplete/error flag rather than assuming a quick fix. Draft below.
+1. **Do not trust exceptions alone.** Soft EOF is upstream design for the parallel reader.
+2. **Empty→stdlib fallback** when rapidgzip EOF delivered **0 bytes**: recovers the
+   prefix stdlib sized-reads can yield (priority 2); valid empty still OK.
+3. **Keep/extend ISIZE** when rapidgzip delivered **any** bytes then silent EOF
+   (silent short/full, trailer strip) — empty-fallback never triggers there.
+4. **Do not parse stderr.** Fragile; not a silent-success channel on 0.16.0.
+5. **Do not use `block_offsets_complete` / `size` as completeness.**
+6. Optional: empty + `tell_compressed()==0` as a cheap header-only trap (complements `<18` hole).
+7. Exception translation remains useful when rapidgzip *does* raise; sandbox/timeout still needed (`terminate`).
+8. **`parallelization=0` = all cores**; outcome class matches `=1` for silent vs raise.
+9. **bzip2:** raises more mid-stream; early silent-empty only — no ISIZE twin unless product requires bare-`.bz2` parity.
+10. **Upstream:** ask for an explicit incomplete-stream flag (draft §7); soft EOF is by design, not a one-line bugfix.
 
 ---
 
