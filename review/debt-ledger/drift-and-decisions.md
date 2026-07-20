@@ -103,7 +103,7 @@ Archived to `review/archive/2026-07-20-cli-product/`. Parked leftovers:
 
 | ID | Decision | Where it lives | Verdict |
 |---|---|---|---|
-| **DD1** | Performance **Q2** — where the wall budget is enforced (nightly-vs-previous JSON, 2× band on read_all, or informational) | `review/performance/QUESTIONS.md` Q2 | **DECIDED (2026-07-20)** — (a) nightly wall-ratio drift vs previous successful JSON; absolute bands informational. |
+| **DD1** | Performance **Q2** — where the wall budget is enforced (nightly-vs-previous JSON, 2× band on read_all, or informational) | `review/performance/QUESTIONS.md` Q2 | **DECIDED (2026-07-20)** — (a) nightly wall-ratio drift vs previous successful JSON; skip re-publish + ≥30d forced re-measure; absolute bands informational. |
 | DD2 | Performance **Q4** — verify-skip knob | same, Q4 | **KEEP** (lean leave-as-is already recorded; perf case ~nil post-#137). Record as closed-no-knob. |
 | DD3 | ZIP listing above its own band — land **L5** or publish the honest number | STATUS "residual band miss" | **DECIDE pre-0.2.0** (part of D1; `QUESTIONS.md` Q2). |
 | DD4 | `rapidgzip-truncation-investigation` (1/11) — the shipped ISIZE backstop is a heuristic built on admittedly incomplete knowledge (`proposal.md`) | in-flight change | **KEEP for 0.2.0 with justification**: accelerators are opt-in, AUTO additionally gated on verifiable decompressed size, threat model already scopes accelerators out of the defended surface; refining the backstop post-release is non-breaking. Keep the change open; don't let 0.2.0 *close* it silently. |

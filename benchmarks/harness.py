@@ -17,8 +17,9 @@ Modes:
   on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
   (``benchmark-wall.yml``) hard-fails on (1) the ~10× sanity ceiling and (2)
   **wall-ratio drift** vs the previous successful nightly's JSON artifact
-  (perf-review Q2 / debt-ledger Q1 option (a)). VISION absolute bands stay
-  informational prints.
+  (perf-review Q2 / debt-ledger Q1 option (a)). Quiet days re-publish that
+  artifact (preserving ``measured_at``); a full re-measure is forced at least
+  every ~30 days. VISION absolute bands stay informational prints.
 
 Formats covered here: ZIP, TAR, gzip, tar.gz/tar.bz2 (+ accelerators), solid 7z
 (and solid RAR when the ``rar`` writer is available to build fixtures). Listing
@@ -46,6 +47,11 @@ from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
 from benchmarks.fixtures import FixtureSet, materialize_fixtures
+from benchmarks.wall_baseline import (
+    measurement_provenance,
+    overlapping_wall_ratio_count,
+    wall_ratio_map,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINES_DIR = Path(__file__).resolve().parent / "baselines"
@@ -888,15 +894,7 @@ def _wall_checks(
 
 def _previous_wall_ratios(previous: dict[str, Any]) -> dict[str, float]:
     """Map case name → wall_ratio from a prior harness JSON payload."""
-    out: dict[str, float] = {}
-    for row in previous.get("results", []):
-        if not isinstance(row, dict):
-            continue
-        name = row.get("case")
-        ratio = row.get("wall_ratio")
-        if isinstance(name, str) and isinstance(ratio, (int, float)):
-            out[name] = float(ratio)
-    return out
+    return wall_ratio_map(previous)
 
 
 def _wall_drift_checks(
@@ -911,6 +909,9 @@ def _wall_drift_checks(
     Compares peer ratios only (cases with ``wall_ratio`` on both sides). Absolute
     wall seconds are not gated — machine skew dominates; the ratio cancels most of
     it. Missing previous / new cases / dropped cases are skipped (seed or rename).
+    Callers that *require* a baseline should fail closed when
+    ``overlapping_wall_ratio_count`` is 0 — this helper alone treats empty prior
+    as no failures (true seed).
     """
     if previous is None:
         return []
@@ -1010,6 +1011,18 @@ def format_text_report(payload: dict[str, Any]) -> str:
         f"- **scale:** `{scale}`",
         f"- **warmup:** `{payload.get('warmup', False)}`",
     ]
+    measured = payload.get("measured_at")
+    if isinstance(measured, str) and measured:
+        lines.append(f"- **measured_at:** `{measured}`")
+        source_run = payload.get("source_run_id")
+        if source_run:
+            lines.append(f"- **source_run_id:** `{source_run}`")
+        source_sha = payload.get("source_sha")
+        if isinstance(source_sha, str) and source_sha:
+            lines.append(f"- **source_sha:** `{source_sha[:12]}`")
+    republished = payload.get("republished_at")
+    if isinstance(republished, str) and republished:
+        lines.append(f"- **republished_at:** `{republished}` (ratios unchanged)")
     if detail:
         lines.extend(
             [
@@ -1086,6 +1099,8 @@ def format_text_report(payload: dict[str, Any]) -> str:
             f"- Nightly also fails on wall-ratio *drift* vs the previous successful "
             f"run's JSON (>{WALL_RATIO_DRIFT_FACTOR:.2f}× and "
             f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs) — not on absolute VISION bands.",
+            "- Quiet nights re-publish the previous artifact (preserving "
+            "`measured_at`); a full re-measure is forced at least every ~30 days.",
             "- Structural seek/bytes gates live on the PR path (`ci.yml`), not here.",
             "",
         ]
@@ -1135,7 +1150,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Previous harness JSON (nightly artifact). When set, fail if any "
-            "case's wall_ratio regresses beyond --wall-drift-factor"
+            "case's wall_ratio regresses beyond --wall-drift-factor and "
+            "--wall-drift-min-abs (missing file / no overlapping ratios fail closed)"
         ),
     )
     parser.add_argument(
@@ -1145,6 +1161,15 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Max allowed relative wall_ratio increase vs --wall-drift-baseline "
             f"(default {WALL_RATIO_DRIFT_FACTOR})"
+        ),
+    )
+    parser.add_argument(
+        "--wall-drift-min-abs",
+        type=float,
+        default=WALL_RATIO_DRIFT_MIN_ABS,
+        help=(
+            "Min absolute wall_ratio increase required together with "
+            f"--wall-drift-factor (default {WALL_RATIO_DRIFT_MIN_ABS})"
         ),
     )
     parser.add_argument(
@@ -1187,6 +1212,9 @@ def main(argv: list[str] | None = None) -> int:
         "warmup": warmup,
         "results": [asdict(r) for r in results],
     }
+    # Stamp when ratios were actually timed (nightly skip re-publish preserves this).
+    if args.mode == "full":
+        payload.update(measurement_provenance())
     report = format_text_report(payload)
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
@@ -1223,21 +1251,29 @@ def main(argv: list[str] | None = None) -> int:
             prev = load_json(args.wall_drift_baseline)
             if prev is None:
                 print(
-                    f"wall-drift baseline missing: {args.wall_drift_baseline} "
-                    "(skipping drift check — seed run)",
+                    f"wall-drift baseline missing: {args.wall_drift_baseline}",
                     file=sys.stderr,
+                )
+                return 2
+            comparable = overlapping_wall_ratio_count(results, prev)
+            if comparable == 0:
+                failures.append(
+                    f"wall-drift baseline {args.wall_drift_baseline} has no "
+                    "overlapping wall_ratio cases to compare"
                 )
             else:
                 drift = _wall_drift_checks(
                     results,
                     prev,
                     factor=args.wall_drift_factor,
+                    min_abs=args.wall_drift_min_abs,
                 )
                 failures.extend(drift)
                 if not drift:
                     print(
                         f"Wall-ratio drift OK vs {args.wall_drift_baseline} "
-                        f"(factor={args.wall_drift_factor})",
+                        f"({comparable} cases; factor={args.wall_drift_factor}, "
+                        f"min_abs={args.wall_drift_min_abs})",
                         file=sys.stderr,
                     )
 

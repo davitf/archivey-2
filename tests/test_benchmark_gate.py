@@ -101,6 +101,7 @@ def test_format_text_report_table() -> None:
 def test_wall_drift_checks_regressions_and_noise() -> None:
     """Nightly drift gate: relative+abs dual threshold; seed/missing skipped."""
     from benchmarks.harness import CaseResult, _wall_drift_checks
+    from benchmarks.wall_baseline import overlapping_wall_ratio_count
 
     def _case(name: str, ratio: float | None) -> CaseResult:
         return CaseResult(
@@ -135,13 +136,86 @@ def test_wall_drift_checks_regressions_and_noise() -> None:
     )
     assert ok == []
 
+    # Relative yes, abs no (old small): 0.4 → 0.51 (>1.25× but +0.11 < 0.15).
+    assert (
+        _wall_drift_checks(
+            [_case("zip_read_all", 0.51)],
+            {"results": [{"case": "zip_read_all", "wall_ratio": 0.4}]},
+        )
+        == []
+    )
+
+    # Abs yes, relative no: 2.0 → 2.40 (+0.40 but only 1.20× < 1.25×).
+    assert (
+        _wall_drift_checks(
+            [_case("zip_read_all", 2.40)],
+            {"results": [{"case": "zip_read_all", "wall_ratio": 2.0}]},
+        )
+        == []
+    )
+
     # Improvement — OK.
     better = _wall_drift_checks([_case("zip_read_all", 1.00)], previous)
     assert better == []
 
-    # No previous / empty — seed.
+    # No previous / empty — seed helper returns no failures (callers fail closed).
     assert _wall_drift_checks([_case("zip_read_all", 9.0)], None) == []
     assert _wall_drift_checks([_case("zip_read_all", 9.0)], {"results": []}) == []
+    assert (
+        overlapping_wall_ratio_count([_case("zip_read_all", 9.0)], {"results": []}) == 0
+    )
 
     # New case not in previous — skip.
     assert _wall_drift_checks([_case("brand_new_case", 5.0)], previous) == []
+
+
+def test_wall_baseline_provenance_and_republish(tmp_path: Path) -> None:
+    """measured_at age drives the 30d force-run; re-publish preserves it."""
+    from datetime import datetime, timedelta, timezone
+
+    from benchmarks.wall_baseline import (
+        MEASURE_MAX_AGE_SECONDS,
+        measured_at_age_seconds,
+        measurement_provenance,
+        republish_files,
+        stamp_republish,
+        wall_ratio_map,
+    )
+
+    measured = datetime(2026, 6, 1, 6, 17, tzinfo=timezone.utc)
+    payload = {
+        "measured_at": measured.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_run_id": "111",
+        "source_sha": "abc123",
+        "results": [{"case": "zip_read_all", "wall_ratio": 1.2}],
+    }
+    now = measured + timedelta(days=31)
+    age = measured_at_age_seconds(payload, now=now)
+    assert age is not None
+    assert age > MEASURE_MAX_AGE_SECONDS
+
+    stamped = stamp_republish(payload, run_id="222")
+    assert stamped["measured_at"] == payload["measured_at"]
+    assert stamped["source_run_id"] == "111"
+    assert stamped["republish_run_id"] == "222"
+    assert "republished_at" in stamped
+
+    src = tmp_path / "benchmark-wall-realistic.json"
+    src.write_text(json.dumps(payload) + "\n")
+    (tmp_path / "benchmark-wall-realistic.md").write_text("# Benchmark report\n\nok\n")
+    out = tmp_path / "out"
+    republish_files(src, out, run_id="333")
+    written = json.loads((out / "benchmark-wall-realistic.json").read_text())
+    assert written["measured_at"] == payload["measured_at"]
+    assert written["republish_run_id"] == "333"
+    md = (out / "benchmark-wall-realistic.md").read_text()
+    assert "Re-published without re-measurement" in md
+    assert "ok" in md
+
+    fresh = measurement_provenance(run_id="444", sha="deadbeef")
+    assert fresh["source_run_id"] == "444"
+    assert fresh["source_sha"] == "deadbeef"
+    assert fresh["measured_at"].endswith("Z")
+
+    assert wall_ratio_map({"results": [{"case": "a", "wall_ratio": True}]}) == {}
+    assert measured_at_age_seconds({"results": []}) is None

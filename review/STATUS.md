@@ -36,7 +36,7 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 |----|--------|
 | **P7 residual** | ZIP many-small ~3.7× (above 2–3×); 7z ~2.0–2.2× (above 1.25×). Next: **L3** large RAR listing fixture; **L5** lazy derivation (needs OpenSpec) — or publish honest numbers (debt-ledger Q2). |
 | **P6 remainder** | RAR / encrypted / accelerator *data* harness cases still missing (= debt-ledger T3). |
-| **VISION/docs** | Re-word ≤1.3× claim to match Q1 once **Q2** is chosen (= debt-ledger D1). |
+| **VISION/docs** | Re-word ≤1.3× claim to match Q1 now that **Q2** is (a) (= debt-ledger D1). |
 
 ---
 

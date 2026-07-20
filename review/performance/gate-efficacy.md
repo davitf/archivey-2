@@ -4,38 +4,45 @@ VISION defines the budget on three axes: wall time (≤1.3×/~2×), bytes decomp
 and seek patterns, with the solid re-read as the named failure. The machinery is
 `benchmarks/harness.py` (+ `baselines/structural.json`), the `benchmark` job in
 `ci.yml` (PR-blocking, `--mode structural --scale ci`), and the change-guarded
-nightly `benchmark-wall.yml` (`--mode full --scale realistic`, non-blocking wall).
+nightly `benchmark-wall.yml` (`--mode full --scale realistic`, relative wall-ratio
+drift gate; absolute VISION bands informational).
 
-Verdict up front: **the gate reliably catches exactly one regression family — the
-sequential solid path collapsing to per-member re-decode. Everything else VISION
-names is either unasserted (wall ratios), structurally invisible (non-solid
-re-decompression), or inside the slack (a clean 2× solid re-decode).**
+Verdict up front: **the structural gate reliably catches the sequential solid
+path collapsing to per-member re-decode (and related byte/seek regressions).
+Wall ratios are enforced on nightly as *drift vs the previous measurement*, not
+as absolute ≤1.3×.** Absolute VISION / Q1 listing bands remain informational
+prints (shared-runner noise).
 
-> **Status update (#139 merged, verified):** G3, G4, and G5 are closed —
-> `SOLID_DECODE_FACTOR` 2.0 → 1.25, a non-solid over-decode bound (×1.1) on
-> `read_all`, seek slack `baseline×2+8` → `baseline+8`, and
+> **Status update (#139 merged, verified; wall drift 2026-07-20):** G3, G4, and
+> G5 are closed — `SOLID_DECODE_FACTOR` 2.0 → 1.25, a non-solid over-decode bound
+> (×1.1) on `read_all`, seek slack `baseline×2+8` → `baseline+8`, and
 > `sevenzip_solid_random` bounded vs its committed baseline ×1.5 (ci scale).
-> All three `repro.py` probes now report CAUGHT. G1 (wall enforcement) remains
-> the open blocker; G6/G7 are partial — #139 added ZIP `open_list`/`extract`
-> stdlib peers, and the Q1 direction (2026-07-18) adds listing-ratio peers
-> (`zipfile`/`tarfile` bands, `py7zr`/`rarfile` parity) to the missing list.
+> All three `repro.py` probes now report CAUGHT. **G1 is closed as Q2 option (a)**
+> — nightly wall-ratio drift vs previous JSON (`--wall-drift-baseline`), with
+> skip re-publish + ≥30d forced re-measure. Absolute ≤1.3× stays informational.
+> G6/G7 are partial — #139 added ZIP `open_list`/`extract` stdlib peers, and the
+> Q1 direction (2026-07-18) adds listing-ratio peers (`zipfile`/`tarfile` bands,
+> `py7zr`/`rarfile` parity) to the missing list.
 
-## G1 — The wall budget is enforced nowhere (blocker)
+## G1 — Wall budget: nightly relative drift (done — Q2 (a))
 
 - PR gate: `--mode structural` computes wall ratios but never checks them
-  (`_wall_checks` is only called for `--mode full`, `harness.py:826-834`).
-- Nightly: `--mode full` hard-fails only above `WALL_RATIO_BUDGET = 10.0`
-  (`harness.py:55`). The VISION check runs with `enforce_vision=True` only to
-  *print* `VISION BUDGET (informational)` lines (`harness.py:831-834`); they can
-  never fail the job.
-- There is no committed wall baseline, no trend comparison between nightly runs,
-  and no alerting; the job summary table is the only artifact. A steady 2–3×
-  regression on ZIP (which is the *current measured state*, see `budget-table.md`)
-  produces a permanently green nightly.
+  (`_wall_checks` is only called for `--mode full`). Absolute ≤1.3× stays off
+  the PR path by design (shared-runner noise).
+- Nightly expensive run (`benchmark-wall.yml`): hard-fails on
+  `WALL_RATIO_BUDGET = 10.0` **or** on wall-ratio *drift* vs the previous
+  successful artifact (`WALL_RATIO_DRIFT_FACTOR` / `WALL_RATIO_DRIFT_MIN_ABS`).
+  Absolute VISION / Q1 listing lines remain `VISION BUDGET (informational)`
+  prints only.
+- Quiet days **re-publish** the previous JSON (preserving `measured_at`,
+  stamping `republished_at`) so dormant cron successes still carry an artifact
+  for the next compare. A full re-measure is forced when `measured_at` is older
+  than ~30 days (runner / toolchain drift), independent of HEAD age.
+- `workflow_dispatch` + `skip_drift=true` re-seeds after an intentional
+  slowdown. An explicit `--wall-drift-baseline` path fails closed if the file
+  is missing or has no overlapping `wall_ratio` cases.
 
-The "shared runners are noisy" rationale (`harness.py:52-54`, RESULTS.md) is real,
-but the chosen answer — informational print — means the budget is a documentation
-claim, not an enforced property. Options in `QUESTIONS.md` Q2.
+See `QUESTIONS.md` Q2 (decided 2026-07-20) and debt-ledger Q1.
 
 ## G2 — The canonical O(n²) collapse IS caught (fine)
 

@@ -2,12 +2,13 @@ name: Benchmark wall-time
 
 # Wall-time drift tracker for the VISION perf budget. Off the PR path (shared-runner
 # absolute ratios are too noisy to block merges) and NOT run per-PR. Instead: a daily
-# schedule with a change guard — the expensive run fires only when the default branch
-# actually moved since the previous nightly, so bursts of activity get next-morning
-# signal while long dormant stretches cost only the ~15s guard step.
-# `workflow_dispatch` forces a run on demand (optional skip-drift to re-seed).
+# schedule with a change guard — the expensive run fires when the default branch moved
+# recently, or when the last *measurement* is older than ~30 days (runner / toolchain
+# drift). On quiet days the job re-publishes the previous JSON (with measured_at kept,
+# republished_at stamped) so dormant successes still carry an artifact for the next
+# drift compare. `workflow_dispatch` forces a run (optional skip-drift to re-seed).
 #
-# Hard fails (when the run fires):
+# Hard fails (when the expensive run fires):
 #   1. ~10× wall-ratio sanity ceiling
 #   2. wall-ratio *drift* vs the previous successful run's JSON artifact
 #      (debt-ledger Q1 / perf Q2 option (a) — relative regression, not absolute ≤1.3×)
@@ -40,29 +41,87 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Decide whether to run (skip unchanged nightly)
+
+      - name: Fetch previous wall JSON
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          echo "baseline=" >> "$GITHUB_OUTPUT"
+          mkdir -p previous-wall
+          # Prefer a successful prior run on the default branch that uploaded our
+          # artifact. Skip re-publishes keep an artifact on every success, so a
+          # modest limit stays enough after that lands; paginate a bit for the
+          # transition from pre-republish history.
+          mapfile -t runs < <(
+            gh run list \
+              --workflow benchmark-wall.yml \
+              --branch "$DEFAULT_BRANCH" \
+              --status success \
+              --limit 100 \
+              --json databaseId \
+              --jq '.[].databaseId'
+          )
+          for id in "${runs[@]}"; do
+            rm -rf previous-wall
+            mkdir -p previous-wall
+            if gh run download "$id" -n benchmark-wall-realistic -D previous-wall 2>/dev/null; then
+              if [ -f previous-wall/benchmark-wall-realistic.json ]; then
+                echo "Found wall artifact from run $id"
+                echo "found=true" >> "$GITHUB_OUTPUT"
+                echo "baseline=previous-wall/benchmark-wall-realistic.json" >> "$GITHUB_OUTPUT"
+                echo "source_run_id=$id" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+          done
+          echo "No previous wall artifact found."
+
+      - name: Decide whether to run
         id: guard
         env:
           EVENT: ${{ github.event_name }}
+          PREV_FOUND: ${{ steps.prev.outputs.found }}
+          BASELINE: ${{ steps.prev.outputs.baseline }}
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then
-            echo "Manual dispatch — running."
+            echo "Manual dispatch — full run."
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Scheduled: run only if the default-branch HEAD was committed since roughly
-          # the previous nightly. Cron is daily; 25h gives a 1h margin so a commit made
-          # just before yesterday's run isn't missed. During dormant stretches HEAD is
-          # older than the window and the expensive job is skipped.
+
+          # Force a full measurement when provenance is missing or older than
+          # ~30 days (keyed off measured_at inside the JSON — not artifact
+          # upload time, which re-publish refreshes daily).
+          if [ "$PREV_FOUND" = "true" ] && [ -n "$BASELINE" ]; then
+            age_s=$(python3 benchmarks/wall_baseline.py age-seconds "$BASELINE")
+            max_s=$((30 * 86400))
+            if [ "$age_s" -gt "$max_s" ]; then
+              echo "measured_at age ${age_s}s > ${max_s}s (~30d) — full run."
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "measured_at age ${age_s}s within ${max_s}s."
+          else
+            echo "No previous measurement — full run (seed)."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Otherwise: run only if default-branch HEAD moved since roughly the
+          # previous nightly. Cron is daily; 25h gives a 1h margin.
           last=$(git log -1 --format=%ct)
           age=$(( $(date +%s) - last ))
           if [ "$age" -lt 90000 ]; then
-            echo "HEAD committed ${age}s ago (< 25h) — changes since last run; running."
+            echo "HEAD committed ${age}s ago (< 25h) — full run."
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
-            echo "HEAD committed ${age}s ago (>= 25h) — no changes since last run; skipping."
+            echo "HEAD committed ${age}s ago (>= 25h) and measurement fresh — re-publish skip."
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Install uv
         if: steps.guard.outputs.run == 'true'
         uses: astral-sh/setup-uv@v5
@@ -75,58 +134,41 @@ jobs:
       - name: Sync (dev + all extras)
         if: steps.guard.outputs.run == 'true'
         run: uv sync --group dev --extra all
-      - name: Fetch previous wall JSON (drift baseline)
-        id: prev
-        if: steps.guard.outputs.run == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          # Boolean workflow_dispatch input; false on schedule.
-          SKIP_DRIFT: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_drift || false }}
-        run: |
-          echo "baseline=" >> "$GITHUB_OUTPUT"
-          if [ "$SKIP_DRIFT" = "true" ]; then
-            echo "skip_drift input set — not loading a previous baseline (re-seed)."
-            exit 0
-          fi
-          mkdir -p previous-wall
-          # Prefer a successful prior run on the default branch that uploaded our
-          # artifact. Skip if this is the first run after enabling drift (seed).
-          mapfile -t runs < <(
-            gh run list \
-              --workflow benchmark-wall.yml \
-              --branch "$DEFAULT_BRANCH" \
-              --status success \
-              --limit 30 \
-              --json databaseId \
-              --jq '.[].databaseId'
-          )
-          for id in "${runs[@]}"; do
-            rm -rf previous-wall
-            mkdir -p previous-wall
-            if gh run download "$id" -n benchmark-wall-realistic -D previous-wall 2>/dev/null; then
-              if [ -f previous-wall/benchmark-wall-realistic.json ]; then
-                echo "Using drift baseline from run $id"
-                echo "baseline=previous-wall/benchmark-wall-realistic.json" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-            fi
-          done
-          echo "No previous wall artifact found — seed run (drift check skipped)."
+
       - name: Full realistic wall-time run
         if: steps.guard.outputs.run == 'true'
         env:
           BASELINE: ${{ steps.prev.outputs.baseline }}
+          # Boolean workflow_dispatch input; false on schedule.
+          SKIP_DRIFT: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_drift || false }}
         run: |
           extra=()
-          if [ -n "$BASELINE" ]; then
+          if [ "$SKIP_DRIFT" = "true" ]; then
+            echo "skip_drift input set — not passing a drift baseline (re-seed)."
+          elif [ -n "$BASELINE" ]; then
             extra+=(--wall-drift-baseline "$BASELINE")
+          else
+            echo "No previous baseline — seed run (drift check omitted)."
           fi
           uv run --no-sync python -m benchmarks.harness \
             --mode full --scale realistic \
             --json-out benchmark-wall-realistic.json \
             --text-out benchmark-wall-realistic.md \
             "${extra[@]}"
+
+      - name: Re-publish previous baseline (skip path)
+        if: steps.guard.outputs.run == 'false' && steps.prev.outputs.found == 'true'
+        env:
+          BASELINE: ${{ steps.prev.outputs.baseline }}
+        run: |
+          python3 benchmarks/wall_baseline.py republish \
+            "$BASELINE" \
+            .
+          echo "Re-published previous wall baseline (measured_at preserved)." >> "$GITHUB_STEP_SUMMARY"
+          if [ -f benchmark-wall-realistic.md ]; then
+            cat benchmark-wall-realistic.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Publish report to job summary
         if: always() && steps.guard.outputs.run == 'true'
         run: |
@@ -135,11 +177,13 @@ jobs:
           else
             echo "No benchmark report produced (harness did not write text output)." >> "$GITHUB_STEP_SUMMARY"
           fi
+
       - name: Upload wall-time results
-        if: always() && steps.guard.outputs.run == 'true'
+        if: always() && (steps.guard.outputs.run == 'true' || (steps.guard.outputs.run == 'false' && steps.prev.outputs.found == 'true'))
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-wall-realistic
           path: |
             benchmark-wall-realistic.md
             benchmark-wall-realistic.json
+          if-no-files-found: error

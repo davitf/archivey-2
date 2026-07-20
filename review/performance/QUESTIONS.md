@@ -54,10 +54,12 @@ Consequences to implement:
 
 **Decision: (a) (+ (c) already paid).** Nightly compares wall ratios against the
 *previous successful nightly's* JSON artifact and fails on relative drift
-(`WALL_RATIO_DRIFT_FACTOR` / `WALL_RATIO_DRIFT_MIN_ABS` in `harness.py`). Absolute
-VISION ≤1.3× / ~2× bands stay informational prints; PR path stays structural-only.
-`(c)` peers for open/list/extract landed in #139/#143. `(b)` absolute 2× band on
-`read_all` deferred until ZIP is stably inside the band. `workflow_dispatch`
+(`WALL_RATIO_DRIFT_FACTOR` / `WALL_RATIO_DRIFT_MIN_ABS` in `harness.py`). Quiet
+days re-publish that artifact (preserving `measured_at`); a full re-measure is
+forced at least every ~30 days. Absolute VISION ≤1.3× / ~2× bands stay
+informational prints; PR path stays structural-only. `(c)` peers for
+open/list/extract landed in #139/#143. `(b)` absolute 2× band on `read_all`
+deferred until ZIP is stably inside the band. `workflow_dispatch`
 `skip_drift=true` re-seeds after intentional slowdowns.
 
 Today: nowhere (`gate-efficacy.md` G1) — deliberate, because shared-runner ratios
