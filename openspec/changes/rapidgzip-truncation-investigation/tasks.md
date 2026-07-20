@@ -23,8 +23,9 @@
       Upstream: soft-EOF is **by design** (`processNextChunk` / speculative `tryToDecode`);
       `parallelization=0` means all cores (`UPSTREAM_TRUNCATION_REPORT.md`).
 - [ ] 1.3 Repeat on macOS (arm64) and Linux to confirm the silent set is platform-independent.
-      → **Linux done.** macOS/Windows deferred (maintainer local run or CI job using the
-      same script). Do not lock §2 solely on cross-platform identity, but confirm before 0.2.0.
+      → **Linux done.** CI workflow `.github/workflows/rapidgzip-truncation-sweep.yml`
+      runs the same script on macos-latest + windows-latest (+ ubuntu control); fold
+      artifacts into `results/` when green.
 - [x] 1.4 Do the same quick pass for `rapidgzip.IndexedBzip2File` (bzip2) so the bzip2 path's
       truncation behavior is documented too. Do not invent an ISIZE twin for raw
       deflate/zlib unless that sweep shows a real silent set (container CRC covers members today).
@@ -33,34 +34,35 @@
 
 ## 2. Decide the backstop's shape
 
-> **Agent recommendation (not locked):** **extend**, refined after depth probe —
-> (a) empty→stdlib fallback when rapidgzip EOF-delivers 0 bytes (P1+P2 on
-> silent-empty), (b) keep/extend ISIZE for silent short/full that (a) misses,
-> (c) no DIY reverse deflate seek. Reject remove (2.3) and narrow-only (2.1).
-> Details in `FINDINGS.md`. Upstream supports that stack (`UPSTREAM_TRUNCATION_REPORT.md`);
-> do not rely on stderr. Maintainer analyzes before locking; §3 waits.
+> **Locked 2026-07-20:** empty→stdlib on zero-byte EOF + single-member ISIZE (close
+> `<18`). Multi-member ISIZE sum deferred. No `tell_compressed` trap. No upstream
+> issue (document only). Keep `parallelization=0`. See `design.md`.
 
-- [ ] 2.1 If the silent set is narrow and specific, replace the broad ISIZE compare with a
+- [x] 2.1 If the silent set is narrow and specific, replace the broad ISIZE compare with a
       targeted check for exactly those cases (and prefer rapidgzip's own errors otherwise).
-      → Linux data: silent set is **not** narrow; do not use 2.1 as the sole outcome.
-      A small `< 18` / incomplete-member special-case is still needed *in addition to* ISIZE.
-- [ ] 2.2 If a size comparison is kept, define multi-member handling explicitly: sum per-member
+      → **Rejected as sole outcome** (silent set is wide).
+- [x] 2.2 If a size comparison is kept, define multi-member handling explicitly: sum per-member
       `ISIZE` by walking members, with a rule that cannot false-positive on a valid file.
-      → **Recommended** for silent short/full (empty-fallback does not cover these).
-- [ ] 2.3 If rapidgzip's own errors plus a tiny special-case suffice, remove the
+      → **Deferred.** Member discovery = forward `1f 8b 08` scan with false-header risk
+      (same class as today’s bailout). Keep “further magic ⇒ do not raise” for now;
+      ISIZE backstop remains **single-member**-effective.
+- [x] 2.3 If rapidgzip's own errors plus a tiny special-case suffice, remove the
       `_GzipTruncationCheckStream` machinery entirely.
-      → **Not supported by Linux data** (ISIZE already catches 337/416 silent∩raise cuts;
-      empty-fallback alone misses silent short/full). Upstream: exceptions alone insufficient.
-- [ ] 2.4 Whichever outcome: re-check AUTO eligibility when only `gzip_isize_backstop` made
+      → **Rejected.**
+- [x] 2.4 Whichever outcome: re-check AUTO eligibility when only `gzip_isize_backstop` made
       truncation “verifiable” (bare `.gz` / single-file-compressed). Keep
       `_wrap_accelerated_length` / container `VerifyingStream` behavior intact.
-- [ ] 2.5 Decide empty→stdlib fallback on rapidgzip EOF with zero bytes delivered (recovers
+      → **Keep** `gzip_isize_backstop` as AUTO verifiability signal; re-verify in §3 tests.
+- [x] 2.5 Decide empty→stdlib fallback on rapidgzip EOF with zero bytes delivered (recovers
       partial data + loud error; valid empty gzip must still succeed). Compose with 2.2, not
       as a replacement. Record lock-in in `design.md` / delta spec before §3.
-- [ ] 2.6 Decide remaining open items in `design.md`: multi-member ISIZE sum vs
+      → **Locked** (compose with single-member ISIZE; multi-member sum still deferred).
+- [x] 2.6 Decide remaining open items in `design.md`: multi-member ISIZE sum vs
       single-member-explicit scope; optional `tell_compressed==0` trap; whether to file the
       upstream `is_stream_complete` issue; whether to change `parallelization=0` (all cores)
       to `1` here or later; whether §2 locks without macOS (1.3).
+      → multi-member defer; tell_compressed reject; no upstream issue (doc instead);
+      keep parallelization=0; lock §2 + CI for 1.3.
 
 ## 3. Implement + test the chosen approach
 

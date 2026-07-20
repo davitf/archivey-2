@@ -255,28 +255,28 @@ reinventing what rapidgzip already does, not a cheap trailer walk.
 **Do not** pursue reverse deflate-boundary scanning for seek or truncation;
 it is unreliable on arbitrary gzip and the wrong tool vs ISIZE/CRC + stdlib.
 
-### Recommended stack (refined)
+### Recommended stack (locked 2026-07-20)
 
-Keep rapidgzip for (3). Compose two cheap correctness layers for (1)+(2):
+Keep rapidgzip for (3) with **`parallelization=0` (all cores — intentional)**.
+Compose two correctness layers for (1)+(2):
 
 1. **Empty→stdlib fallback** when rapidgzip hits EOF having delivered 0 bytes
    (path sources; wall-clock / translate stdlib `EOFError`). Covers silent-empty;
    preserves valid empty; recovers partial data.
-2. **Keep/extend ISIZE backstop** when rapidgzip delivered **any** bytes then
-   hit EOF without error: compare length (and fix `<18` hole + multi-member
-   ISIZE sum). Covers silent short/full that empty-fallback misses.
-3. **Do not remove** the length check in favour of fallback alone.
-4. **Do not** DIY gzip reverse-seek; rely on rapidgzip for RA, stdlib rewind
-   otherwise.
-5. AUTO/`gzip_isize_backstop` coupling: still required if length verification
-   remains a verifiability signal; fallback alone is not a substitute for AUTO
-   eligibility math without careful redesign.
-
-Net vs prior recommendation: still **extend**, but lead with
-**fallback-for-empty + ISIZE-for-non-empty-EOF**, not ISIZE-only — because
-priority (2) is now explicit.
+2. **Keep/extend single-member ISIZE backstop** when rapidgzip delivered **any**
+   bytes then hit EOF without error: compare length (and fix the `< 18` hole).
+   Covers silent short/full that empty-fallback misses.
+3. **Multi-member ISIZE sum deferred.** Locating further members is a forward
+   `1f 8b 08` scan with false-header risk (same ambiguity as today’s
+   “further magic ⇒ accept” bailout and as rapidgzip’s speculative decode).
+   Keep that conservative false-negative rule for now.
+4. **Do not** parse stderr; **do not** trust `block_offsets_complete` / `size`;
+   **do not** use `tell_compressed` bit offsets as a completeness heuristic
+   (e.g. “160” is fixture-specific, not a general empty-gzip constant).
+5. Soft EOF is upstream **design** — document in
+   `docs/internal/rapidgzip-upstream-report.md`; do not file as a bug.
+6. AUTO/`gzip_isize_backstop` coupling: keep as verifiability signal.
 
 Upstream confirmation (`UPSTREAM_TRUNCATION_REPORT.md`): soft EOF is **by design**
 (speculative parallel decode); exceptions/stderr/`block_offsets_complete` are
-insufficient; `parallelization=0` means all cores; optional `tell_compressed==0`
-for header-only. Product lock-in questions live in `design.md` “Open decisions”.
+insufficient; `parallelization=0` means all cores.

@@ -13,30 +13,24 @@ across the ledger, threat model, and codecs code.
 | Measure first, then choose narrow / extend / remove | settled in proposal |
 | Backstop = narrowest check that covers silent cases; never false-positive on valid input | settled in delta spec |
 | Block-wise multi-member header scan (no full-file read) | done (#14) |
-| **Finish before 0.2.0** (debt-ledger Q4 = PAY) | decided 2026-07-20; implementation deferred |
-| Fix priorities: (1) no silent success, (2) recover partial data, (3) seek on good inputs | settled with maintainer (depth-probe follow-up) |
-| DIY reverse deflate-block / trailer seek for gzip | **rejected** — trailer is CRC+ISIZE only; use rapidgzip for RA, stdlib O(n) rewind otherwise |
-| Soft EOF / silent empty-short is upstream **design** (not a binding bug) | settled — `UPSTREAM_TRUNCATION_REPORT.md` |
-| Do not parse rapidgzip stderr; do not trust `block_offsets_complete` / `size` | settled — upstream report |
-| Which of narrow / extend / remove (+ empty→stdlib fallback) | **open — need maintainer lock-in** (see “Open decisions” below); Linux + upstream recommend **empty→stdlib + extend ISIZE** |
+| **Finish before 0.2.0** (debt-ledger Q4 = PAY) | decided 2026-07-20; implementation deferred to §3 after lock-in |
+| Fix priorities: (1) no silent success, (2) recover partial data, (3) seek on good inputs | settled with maintainer |
+| DIY reverse deflate-block / trailer seek for gzip | **rejected** |
+| Soft EOF / silent empty-short is upstream **design** (not a binding bug) | settled — `UPSTREAM_TRUNCATION_REPORT.md` + `docs/internal/rapidgzip-upstream-report.md` |
+| Do not parse rapidgzip stderr; do not trust `block_offsets_complete` / `size` | settled |
+| **Composed stack:** empty→stdlib on zero-byte EOF + keep/extend single-member ISIZE (close `<18`) | **locked** 2026-07-20 |
+| Multi-member per-member ISIZE sum | **deferred** — member discovery is a forward `1f 8b 08` scan with false-header risk (same class as today’s bailout / rapidgzip speculative decode); keep “any further magic ⇒ do not raise” |
+| `tell_compressed()==0` header-only trap | **rejected** — bit offset 160 is fixture-specific, not a general empty-gzip constant |
+| File upstream issue for `is_stream_complete()` | **no** — soft EOF is by design; document in `docs/internal/rapidgzip-upstream-report.md` (pyppmd-style), do not file a “bug” |
+| `parallelization=0` (all cores) | **keep** — intentional; motivation for rapidgzip + benchmarks |
+| §2 lock vs macOS/Windows (1.3) | **lock §2 now**; confirm silent set via CI probe on macOS/Windows before 0.2.0 |
 
-## Open decisions (ask maintainer before §3)
+## Deferred / out of scope for §3
 
-1. **Lock the composed stack?** empty→stdlib on zero-byte rapidgzip EOF **plus** keep/extend
-   ISIZE for non-empty silent EOF (close `<18`, safe multi-member ISIZE sum). Reject remove /
-   narrow-only / stderr-based detection.
-2. **Multi-member ISIZE sum in this change, or ship single-member-explicit first?** Extending
-   the sum is the hole that leaves multi-member silent shorts undetected; scoping “single-member
-   only” in the shipped spec is an alternative if sum design needs more time.
-3. **Optional `tell_compressed()==0` header-only trap?** Cheap complement when rapidgzip returns
-   empty (valid empty ends at bit 160). Empty→stdlib already distinguishes valid empty vs trunc;
-   this is optional belt-and-suspenders.
-4. **File the upstream issue** requesting `is_stream_complete()` / similar (draft in
-   `UPSTREAM_TRUNCATION_REPORT.md` §7)? Soft EOF will not change soon; a flag would help future
-   Archivey versions.
-5. **`parallelization=0` = all cores** (upstream API). Change Archivey to `parallelization=1`
-   in this work, a follow-up, or leave as-is? Truncation class is the same; abort risk may differ.
-6. **Lock §2 without macOS (1.3)?** Linux + upstream code agree; 1.3 can confirm later before 0.2.0.
+- Per-member ISIZE summing for concatenated gzip (see above).
+- Changing `parallelization` away from `0`.
+- DIY gzip seek indexes / reverse block scans.
+- Relying on upstream adding a completeness flag (document only).
 
 Rejected framing: “KEEP the open change past 0.2.0 because accelerators are
 opt-in / threat-model-scoped.” Opt-in and non-defended still ship a
@@ -156,11 +150,7 @@ stdlib raises.
 `≥ 18` (ISIZE mismatch). Misses the `< 18` band (including bare header-10)
 and multi-member bailouts. So the machinery is load-bearing — but incomplete.
 
-**Recommendation (awaiting lock-in):** **extend**, refined after the depth probe:
-compose (a) **empty→stdlib fallback** when rapidgzip EOF-delivers 0 bytes
-(recovers partial data + loud error on the common silent-empty path) with
-(b) **ISIZE/length backstop** for silent short/full (multi-block / trailer
-strip) that empty-fallback misses; close the `< 18` hole; safe multi-member
-ISIZE sum; keep AUTO’s verifiability signal. **Reject** remove, narrow-only,
-and DIY reverse deflate-block seek (gzip trailer is CRC+ISIZE only — not an
-xz/lzip-style index). Details in `FINDINGS.md` (“Refined recommendation”).
+**Recommendation (locked 2026-07-20):** empty→stdlib on zero-byte EOF +
+single-member ISIZE (close `<18`); multi-member ISIZE sum deferred; keep
+`parallelization=0`; document soft EOF in `docs/internal/rapidgzip-upstream-report.md`.
+Details in `FINDINGS.md` / decisions table above.

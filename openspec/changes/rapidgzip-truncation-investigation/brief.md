@@ -1,13 +1,7 @@
 # rapidgzip-truncation-investigation — pin down gzip truncation handling
 
-**Status:** Linux characterization done (`FINDINGS.md`); macOS/Windows (1.3) and §2 lock-in still open; §3 not started. **Pre-0.2.0 pay item** (debt-ledger Q4).
+**Status:** §2 **locked** (2026-07-20). Linux + upstream research done; macOS/Windows CI probe added (task 1.3). §3 not started. **Pre-0.2.0 pay item** (debt-ledger Q4).
 
-**Why it matters:** rapidgzip does not reliably report truncation. Archivey’s ISIZE backstop was built on incomplete knowledge — including a hypothesis that silence might be limited to a bare ~10-byte header.
+**Locked stack:** empty→stdlib fallback on zero-byte rapidgzip EOF **plus** single-member ISIZE backstop (close `<18`). Multi-member ISIZE sum **deferred**. No stderr parsing, no `tell_compressed` heuristic, no upstream issue filing (soft EOF is by design — see `docs/internal/rapidgzip-upstream-report.md`). Keep `parallelization=0` (all cores).
 
-**What Linux showed:** that hypothesis is **false**. Mid-body truncations with a valid header commonly return `b""` with no exception (stdlib raises on `readall()`, but sized reads stream a correct prefix then raise). The current ISIZE check is load-bearing for `size ≥ 18` but misses the `< 18` band and multi-member bailouts; ISIZE-only also fails priority (2) by not recovering the prefix stdlib could have returned. See `FINDINGS.md`.
-
-**Priorities:** (1) no silent success, (2) recover partial data, (3) seekability on good inputs.
-
-**Recommendation (awaiting your lock-in):** **extend**, refined: empty→stdlib fallback for silent-empty (gets partial recovery) **plus** ISIZE for silent short/full; not remove; not narrow-only; not DIY reverse gzip seek (trailer is CRC+ISIZE only). Upstream: soft EOF **by design**; do not parse stderr. See `design.md` “Open decisions” for the six lock-in questions.
-
-**Your call:** answer the open decisions in `design.md` (stack lock-in, multi-member scope, `tell_compressed` trap, upstream issue, `parallelization=0` vs `1`, macOS-before-lock). §3 implements after that.
+**Your call done.** Next: §3 implement after CI confirms macOS/Windows silent set, or in parallel if you prefer.
