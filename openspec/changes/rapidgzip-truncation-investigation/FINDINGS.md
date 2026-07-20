@@ -60,12 +60,12 @@ truncated (deflate body complete, trailer incomplete) while stdlib raises:
 
 So truncation is not only “empty read” — trailer stripping can look like success.
 
-### stderr vs exception
-
-On many silent cuts rapidgzip prints to **stderr**
-(`Unexpected end of file when getting block at 10 B …`) but still returns
-`b""` to Python. That matches the maintainer’s `10 OK 0` note with a stderr
-line — the Python API stayed silent even when C++ logged EOF.
+On many silent cuts rapidgzip may print to **stderr**
+(`Unexpected end of file when getting block…`). Upstream research
+(`UPSTREAM_TRUNCATION_REPORT.md`) shows that line is emitted on a **rethrow**
+path (typically trailer-adjacent raise/abort), **not** as a reliable companion to
+silent-empty success on 0.16.0 — **do not** build detection on capturing stderr.
+Valid empty vs header-only trunc still differ on `tell_compressed` (160 vs 0).
 
 ## Current `_GzipTruncationCheckStream` coverage (same silent ∩ raise set)
 
@@ -275,3 +275,8 @@ Keep rapidgzip for (3). Compose two cheap correctness layers for (1)+(2):
 Net vs prior recommendation: still **extend**, but lead with
 **fallback-for-empty + ISIZE-for-non-empty-EOF**, not ISIZE-only — because
 priority (2) is now explicit.
+
+Upstream confirmation (`UPSTREAM_TRUNCATION_REPORT.md`): soft EOF is **by design**
+(speculative parallel decode); exceptions/stderr/`block_offsets_complete` are
+insufficient; `parallelization=0` means all cores; optional `tell_compressed==0`
+for header-only. Product lock-in questions live in `design.md` “Open decisions”.

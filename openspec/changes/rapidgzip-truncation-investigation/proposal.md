@@ -67,6 +67,11 @@ Full write-up: [`FINDINGS.md`](FINDINGS.md). Headline results:
 
 macOS/Windows confirmation (task 1.3) still open.
 
+Upstream code/issue research (`UPSTREAM_TRUNCATION_REPORT.md`): soft EOF is **by design**
+in the parallel reader; do not parse stderr; do not trust `block_offsets_complete` /
+`size` as completeness; `parallelization=0` means all cores. Product lock-in questions
+are listed in `design.md` (“Open decisions”).
+
 ## What Changes
 
 - **`seekable-decompressor-streams`** — refine the truncation requirement for the rapidgzip gzip

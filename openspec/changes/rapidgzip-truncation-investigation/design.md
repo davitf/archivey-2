@@ -16,7 +16,27 @@ across the ledger, threat model, and codecs code.
 | **Finish before 0.2.0** (debt-ledger Q4 = PAY) | decided 2026-07-20; implementation deferred |
 | Fix priorities: (1) no silent success, (2) recover partial data, (3) seek on good inputs | settled with maintainer (depth-probe follow-up) |
 | DIY reverse deflate-block / trailer seek for gzip | **rejected** — trailer is CRC+ISIZE only; use rapidgzip for RA, stdlib O(n) rewind otherwise |
-| Which of narrow / extend / remove (+ empty→stdlib fallback) | **open until maintainer lock-in** — Linux data recommend **extend** as **empty→stdlib fallback + ISIZE for non-empty silent EOF** (see `FINDINGS.md`); macOS/Windows confirm still pending (task 1.3) |
+| Soft EOF / silent empty-short is upstream **design** (not a binding bug) | settled — `UPSTREAM_TRUNCATION_REPORT.md` |
+| Do not parse rapidgzip stderr; do not trust `block_offsets_complete` / `size` | settled — upstream report |
+| Which of narrow / extend / remove (+ empty→stdlib fallback) | **open — need maintainer lock-in** (see “Open decisions” below); Linux + upstream recommend **empty→stdlib + extend ISIZE** |
+
+## Open decisions (ask maintainer before §3)
+
+1. **Lock the composed stack?** empty→stdlib on zero-byte rapidgzip EOF **plus** keep/extend
+   ISIZE for non-empty silent EOF (close `<18`, safe multi-member ISIZE sum). Reject remove /
+   narrow-only / stderr-based detection.
+2. **Multi-member ISIZE sum in this change, or ship single-member-explicit first?** Extending
+   the sum is the hole that leaves multi-member silent shorts undetected; scoping “single-member
+   only” in the shipped spec is an alternative if sum design needs more time.
+3. **Optional `tell_compressed()==0` header-only trap?** Cheap complement when rapidgzip returns
+   empty (valid empty ends at bit 160). Empty→stdlib already distinguishes valid empty vs trunc;
+   this is optional belt-and-suspenders.
+4. **File the upstream issue** requesting `is_stream_complete()` / similar (draft in
+   `UPSTREAM_TRUNCATION_REPORT.md` §7)? Soft EOF will not change soon; a flag would help future
+   Archivey versions.
+5. **`parallelization=0` = all cores** (upstream API). Change Archivey to `parallelization=1`
+   in this work, a follow-up, or leave as-is? Truncation class is the same; abort risk may differ.
+6. **Lock §2 without macOS (1.3)?** Linux + upstream code agree; 1.3 can confirm later before 0.2.0.
 
 Rejected framing: “KEEP the open change past 0.2.0 because accelerators are
 opt-in / threat-model-scoped.” Opt-in and non-defended still ship a

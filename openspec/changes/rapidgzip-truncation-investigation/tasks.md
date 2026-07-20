@@ -57,6 +57,10 @@
 - [ ] 2.5 Decide empty→stdlib fallback on rapidgzip EOF with zero bytes delivered (recovers
       partial data + loud error; valid empty gzip must still succeed). Compose with 2.2, not
       as a replacement. Record lock-in in `design.md` / delta spec before §3.
+- [ ] 2.6 Decide remaining open items in `design.md`: multi-member ISIZE sum vs
+      single-member-explicit scope; optional `tell_compressed==0` trap; whether to file the
+      upstream `is_stream_complete` issue; whether to change `parallelization=0` (all cores)
+      to `1` here or later; whether §2 locks without macOS (1.3).
 
 ## 3. Implement + test the chosen approach
 

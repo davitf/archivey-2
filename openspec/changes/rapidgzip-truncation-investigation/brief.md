@@ -8,6 +8,6 @@
 
 **Priorities:** (1) no silent success, (2) recover partial data, (3) seekability on good inputs.
 
-**Recommendation (awaiting your lock-in):** **extend**, refined: empty→stdlib fallback for silent-empty (gets partial recovery) **plus** ISIZE for silent short/full; not remove; not narrow-only; not DIY reverse gzip seek (trailer is CRC+ISIZE only).
+**Recommendation (awaiting your lock-in):** **extend**, refined: empty→stdlib fallback for silent-empty (gets partial recovery) **plus** ISIZE for silent short/full; not remove; not narrow-only; not DIY reverse gzip seek (trailer is CRC+ISIZE only). Upstream: soft EOF **by design**; do not parse stderr. See `design.md` “Open decisions” for the six lock-in questions.
 
-**Your call:** lock §2 (including task 2.5 empty-fallback) after reviewing `FINDINGS.md`; optionally run the sweep on macOS / add CI. §3 implements after that.
+**Your call:** answer the open decisions in `design.md` (stack lock-in, multi-member scope, `tell_compressed` trap, upstream issue, `parallelization=0` vs `1`, macOS-before-lock). §3 implements after that.
