@@ -84,8 +84,8 @@ with a future native ZIP/TAR reader — until then, plan around them.
 | RAR member **data** | Needs RARLAB `unrar` on `PATH` (not `unrar-free`). Listing works without it | — |
 | BCJ2 (7z) | Rejected (`UnsupportedFeatureError`) — never garbage output | — |
 | Gzip multi-member | Trailer CRC is last-member only — omitted from `member.hashes` | — |
-| Bare `.gz` / `open_stream` + rapidgzip | Upstream soft-EOFs on some truncations by design. Archivey backstops **path** sources (empty→stdlib + single-member ISIZE); multi-member ISIZE sum deferred; non-path sources and residual holes remain. Prefer stdlib (`use_rapidgzip=OFF`) when you need certainty on standalone gzip. **ZIP/7z/… members are different** — container CRC/`VerifyingStream` still catches truncation. | — |
-| Standalone zlib/raw deflate + rapidgzip | No ISIZE-style backstop; mid-stream cuts may stay silent (container CRC covers archive members) | — |
+| Bare `.gz` / `open_stream` + rapidgzip | Truncation/corruption detection is **best-effort, not guaranteed**. Upstream soft-EOFs by design; Archivey backstops **path** sources (empty→stdlib + single-member ISIZE), but residual holes remain (multi-member ISIZE deferred, non-path sources). If you need certainty on standalone gzip, use `use_rapidgzip=OFF` (stdlib). This row is about **raw/bare streams** — not ZIP/7z/… members (those still hit container CRC/`VerifyingStream`). | — |
+| Standalone zlib/raw deflate + rapidgzip | Same certainty caveat for **bare** streams: no ISIZE-style backstop; mid-stream cuts may stay silent. Container members are covered by CRC/size verify. | — |
 | `.Z` truncation | Only nonzero leftover bits raise; zero-leftover cuts can stay silent | — |
 
 ## Names, duplicates, and hardlinks

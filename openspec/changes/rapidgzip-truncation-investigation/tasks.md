@@ -76,7 +76,9 @@
 - [x] 3.3 Update `seekable-decompressor-streams` (sync the delta), `docs/internal/known-issues.md`,
       and the truncation notes in `docs/internal/library-analysis.md`.
       → Also scoped end-user notes in `docs/gotchas.md` / `docs/formats.md` (bare `.gz` vs
-      container CRC).
+      container CRC; best-effort / certainty caveat). Separate follow-up parked in
+      `docs/internal/open-issues.md`: confirm container CRC catches soft-EOF under
+      `use_rapidgzip=ON` for ZIP/7z members.
 - [x] 3.4 If `_GzipTruncationCheckStream` is gone and nothing else needs standalone
       `VerifyingStream` beyond unit tests / container bounds, note Topic 6 adjacency in
       `review/backlog.md` (do not delete in this change unless clearly unused).

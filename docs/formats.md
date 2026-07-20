@@ -129,10 +129,13 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - `.gz` surfaces the trailer CRC-32 as `member.hashes["crc32"]` for a **single-member**
   file on a seekable/path source (omit for multi-member gzip — the trailer covers only
   the last member — and for non-seekable sources).
-- With the `[seekable]` rapidgzip accelerator on a **path** `.gz`, truncation is backstopped
-  (empty→stdlib fallback + single-member ISIZE) but not as strong as stdlib alone — see
-  [Gotchas — format limitations](gotchas.md#format-limitations). Container formats that wrap
-  DEFLATE still verify via member CRC.
+- With the `[seekable]` rapidgzip accelerator on a **path** `.gz`, truncation detection is
+  **best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked
+  rapidgzip, weaker than stdlib alone. Do **not** rely on it when you need certainty;
+  set `use_rapidgzip=OFF`. This caveat applies to **bare** `.gz` / `open_stream` (and
+  bare zlib/raw deflate), not to ZIP/7z/… **members**: those already carry CRC/size and
+  fail via `VerifyingStream` when the decoded payload is short or wrong. See
+  [Gotchas — format limitations](gotchas.md#format-limitations).
 - `.lz` surfaces a whole-member CRC-32 the same way **size** is exposed: only when
   `MemberStreams.SEEKABLE` is declared on a path source (seekable lzip backend). For
   multi-member lzip the value is derived by combining per-trailer CRCs with each
