@@ -10,6 +10,7 @@ a finding is fixed or a question is decided.
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
+| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/D5/D6/T7 open; **QUESTIONS Q1–Q5** open | no |
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
 | `cli-product/` | yes (#144) | **P1–P3/P5–P14/D1 done** (Q1–Q3/Q5–Q6 decided; P4 deferred) | yes (after merge) |
 
