@@ -5,8 +5,24 @@ nothing about archivey's error hierarchy or any codec, only about stdlib binary 
 That independence is deliberate — it could be lifted out as a standalone library — so
 nothing here may import from the rest of ``archivey``.
 
-The public surface is re-exported below; import from this package root rather than the
-individual modules.
+Module map:
+
+- :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
+- :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
+- :mod:`.slice` — ``SlicingStream`` bound view + ``fix_stream_start_position``
+- :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
+- :mod:`.locked` — ``LockedStream`` / ``CloseLockedStream`` (whole-op lock wrappers)
+- :mod:`.solid` — ``SolidBlockReader`` (forward-only solid demux)
+
+When to use which concurrency helper:
+
+- ``LockedStream`` — one shared handle; hold a lock across each seek+read (TAR/ISO).
+- ``SharedSource`` + locked ``SlicingStream`` — each consumer has its own logical
+  position; every read re-seeks under the lock (ZIP-style shared file).
+- ``SolidBlockReader`` — one forward decode; hand out consecutive member slices
+  (7z folder / RAR pipe). Not seekable.
+
+Import from this package root rather than the individual modules.
 """
 
 from __future__ import annotations

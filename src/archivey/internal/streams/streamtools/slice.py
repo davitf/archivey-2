@@ -4,14 +4,14 @@ Used to present a member's byte range inside a container as a standalone stream,
 ``fix_stream_start_position``) to give a mid-positioned stream a clean ``tell() == 0``
 origin for codec libraries that assume it.
 
-With an optional ``lock``, the same class is the concurrent-safe view minted by
-:class:`~archivey.internal.streams.streamtools.shared.SharedSource`: every ``read``
-re-seeks the underlying to the view's own absolute position under the lock, so interleaved
-views never clobber each other. Construction must not call unlocked ``tell``/``seek`` on
-that shared handle when ``start`` is already known — ``BufferedReader.tell`` is not
-thread-safe. Without a lock (the historical default) ``read`` continues from wherever the
-shared handle currently sits — correct for single-consumer use, which is how every
-pre-SharedSource caller uses it.
+Two modes (same class — easy to miss):
+
+1. **Single-consumer (no lock, historical default)** — ``read`` continues from wherever
+   the underlying handle currently sits. Correct when only one view is live.
+2. **SharedSource mode (``lock`` set)** — every ``read`` does
+   ``seek(start + _pos); read(n)`` under the lock so interleaved views never clobber
+   each other. Construction must not call unlocked ``tell``/``seek`` on that shared
+   handle when ``start`` is already known — ``BufferedReader.tell`` is not thread-safe.
 """
 
 from __future__ import annotations

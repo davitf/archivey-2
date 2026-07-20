@@ -1,17 +1,23 @@
 """The uniform, pull-based codec layer.
 
-This is the single place codecs are implemented; format backends compose these stream
-backends instead of importing codec libraries (the ``compressed-streams`` contract). Each
-codec is one :class:`StreamCodec` subclass that bundles everything the rest of the library
-needs to know about it — its open method, exception translator, detection signals (magic /
-content probe / extensions), single-file metadata extraction, and optional-dependency
-requirement — so adding a standalone codec is "add one subclass", not "edit the detector,
-the single-file reader, and the registry separately". The codec objects are collected in
-:data:`STREAM_CODECS`, the single source of truth those consumers iterate directly.
+Format backends compose these stream backends instead of importing codec libraries
+(the ``compressed-streams`` contract). Adding a standalone codec is "add one
+:class:`StreamCodec` subclass" — not "edit the detector, single-file reader, and
+registry separately". Instances live in :data:`STREAM_CODECS`.
 
-Scope here is the spec's codec table. The AES decrypt **stage** lives in ``crypto.py`` and
-the decompressed-digest verification stage in ``verify.py`` — both compose with these
-codec streams in a pipeline.
+Three names that are easy to mix up:
+
+- :class:`Codec` — enum id (``Codec.GZIP``, ``Codec.DEFLATE``, …). What callers pass
+  to :func:`open_codec_stream` / :func:`resolve_codec`.
+- :class:`StreamCodec` — descriptor class per codec: ``open`` / ``translate`` /
+  magic / content probe / optional ``requirement``. Looked up via ``STREAM_CODECS``.
+- :class:`CodecBackend` — *resolved* open+translator for a given ``StreamConfig``
+  (accelerator choice may change the translator). Returned by :func:`resolve_codec`.
+
+AES decrypt lives in ``crypto.py``; digest/length verify in ``verify.py``. Both
+compose *around* these codec streams in a pipeline. Seekable decode engines for
+raw deflate/Brotli/… live in ``decompressor_stream`` + ``decompress``; XZ/lzip/
+``.Z`` have their own modules and are opened from the matching ``StreamCodec``.
 """
 
 from __future__ import annotations
@@ -1327,8 +1333,10 @@ class Deflate64Codec(StreamCodec):
 
 # --- the codec registry ----------------------------------------------------------------
 
-# The single source of truth: one instance per codec. Detection, the single-file reader, and
-# the backend registry iterate these objects and read their fields directly.
+# Single source of truth for *openable* codecs. Detection, the single-file reader, and
+# the backend registry iterate these. Filter-only ``Codec`` enum members (DELTA / BCJ_*)
+# are intentionally absent — they compose into raw LZMA via ``LZMA_FILTER_IDS``, not
+# standalone ``StreamCodec.open``.
 STREAM_CODECS: tuple[StreamCodec, ...] = (
     StoredCodec(),
     GzipCodec(),

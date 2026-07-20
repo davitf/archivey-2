@@ -1,8 +1,10 @@
-"""Forward-only codec decoders: zlib/deflate, Brotli, PPMd, BCJ, Deflate64.
+"""Thin ``BaseDecoder`` adapters: zlib/deflate, Brotli, PPMd, BCJ, Deflate64.
 
-Each is a thin :class:`BaseDecoder` adapter. Construction helpers return a concrete
-:class:`~archivey.internal.streams.decompressor_stream.DecompressorStream` wrapping
-the decoder — there are no per-codec stream subclasses.
+Not the seekable engine — that is :mod:`.decompressor_stream`. Each class here
+implements :class:`~archivey.internal.streams.decompressor_stream.Decoder`; helpers
+return a ``DecompressorStream`` wrapping the adapter (no per-codec stream
+subclasses). XZ / lzip / unix-compress decoders live in their own modules for the
+same reason (larger index/LZW logic).
 """
 
 from __future__ import annotations

@@ -1,4 +1,18 @@
-"""Lock-wrapping stream for library-owned seek-before-read shared handles."""
+"""Lock-wrapping streams for library-owned shared handles.
+
+Two wrappers (easy to mix up):
+
+- :class:`LockedStream` — hold ``lock`` across **every** read/seek/tell on
+  ``inner`` (TAR/ISO under ``MemberStreams.CONCURRENT``: seek-then-read must be
+  atomic). Archivey buffering/error wrappers sit *outside* this layer.
+- :class:`CloseLockedStream` — only serializes ``close()`` (and optionally
+  ``flush``); reads stay unlocked. Use when concurrent readers share a handle
+  for I/O but close must not race.
+
+For independent logical positions over one file, prefer
+:class:`~archivey.internal.streams.streamtools.shared.SharedSource` instead of
+``LockedStream`` (ZIP-style re-seek-under-lock views).
+"""
 
 from __future__ import annotations
 
@@ -69,12 +83,15 @@ class LockedStream(DelegatingStream):
 
 
 class CloseLockedStream(DelegatingStream):
-    """Hold ``lock`` only across ``close``; leave read/seek to the inner stream.
+    """Serialize only ``close()``; leave read/seek unlocked on ``inner``.
 
-    Used by ZIP under ``MemberStreams.CONCURRENT``: stdlib ``zipfile`` serializes
-    shared-fp seek/read via ``_SharedFile``, but ``_fileRefCnt`` on open/close is
-    unlocked and races under free-threaded CPython. Serializing open + close is enough;
-    holding the lock across reads would needlessly serialize independent decompressors.
+    Contrast :class:`LockedStream` (locks every op). ZIP under
+    ``MemberStreams.CONCURRENT``: stdlib ``zipfile`` already serializes shared-fp
+    seek/read via ``_SharedFile``, but ``_fileRefCnt`` on open/close races under
+    free-threaded CPython. This wrapper covers close; the ZIP backend also
+    serializes ``ZipFile.open`` under the same lock (``_handle_guard``) — open +
+    close together are enough; locking reads would needlessly serialize
+    independent decompressors.
     """
 
     def __init__(self, inner: BinaryIO, lock: threading.Lock | threading.RLock) -> None:

@@ -1,6 +1,7 @@
-"""
-Seekable XZ decompression over stdlib ``lzma``: backward index scan + streaming state
-machine.
+"""Seekable XZ decoder for :class:`~.decompressor_stream.DecompressorStream`.
+
+Opened via :class:`~.codecs.XzCodec` / ``open_codec_stream(Codec.XZ, …)``. Backward
+index scan + streaming state machine over stdlib ``lzma``.
 
 XZ binary format (summary):
   A file is a sequence of one or more XZ streams, optionally separated by 4-byte-aligned

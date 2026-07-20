@@ -1,10 +1,10 @@
-"""Unix-compress (``.Z``) LZW decode via :class:`DecompressorStream`.
+"""Unix-compress (``.Z``) LZW decoder for :class:`~.decompressor_stream.DecompressorStream`.
 
-The LZW kernel is adapted from `uncompresspy` (https://github.com/kYwzor/uncompresspy),
-Copyright (c) 2025 Tiago Gomes, used under the BSD 3-Clause License (see the notice at
-the bottom of this file). Archivey wraps it in an :class:`UnixCompressDecoder` so
-CLEAR boundaries become :class:`~archivey.internal.streams.decompressor_stream.SeekPoint`s
-and forward decode never requires a seekable source.
+Opened via :class:`~.codecs.UnixCompressCodec`. The LZW kernel is adapted from
+`uncompresspy` (https://github.com/kYwzor/uncompresspy), Copyright (c) 2025 Tiago
+Gomes, used under the BSD 3-Clause License (see the notice at the bottom of this
+file). CLEAR boundaries become seek points; forward decode never needs a seekable
+source.
 """
 
 from __future__ import annotations
