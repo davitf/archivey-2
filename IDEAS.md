@@ -286,6 +286,14 @@
   CLI `test` hand-rolls the loop today; unclear whether callers verify without
   extracting often enough to justify a first-class API. Adjacent to
   skip-damaged-member iteration above.
+- **`--json` machine output** (cli-product **P4** / Q2) — **wait for the `hash`
+  verb / a designed member schema**; do not ship a provisional JSON-lines surface
+  in 0.2.0. Flag name when it lands: `--json` (not `--porcelain`). Parked when
+  archiving `cli-product/` (2026-07-20); also debt-ledger DD7.
+- **`--raw` / TTY-only control-byte quoting** (cli-product **Q4** remainder) —
+  recommended style (escape everywhere, backslash) already applied; optional
+  `--raw` hatch for scripts that need exact names before `--json` exists is
+  additive. Parked as debt-ledger DD8.
 
 ## Strategy & adoption (2026-07 review backlog)
 

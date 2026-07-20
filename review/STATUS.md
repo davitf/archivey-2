@@ -1,75 +1,63 @@
-# In-flight review status (2026-07-19)
+# In-flight review status (2026-07-20)
 
-Triage after archiving `api-coherence/` and `stream-layering/` (parked leftovers
-recorded) and archiving completed OpenSpec changes
-`clarify-extraction-status-names`, `surface-stored-stream-digests`, and
-`decide-strict-archive-eof-default` (TAR Option F / EOF probe, #149). Update when
-a finding is fixed or a question is decided.
+Triage after archiving `cli-product/` and OpenSpec `stop-on-failure-not-policy`
+(debt-ledger **D5/D6**). Update when a finding is fixed or a question is decided.
 
 ## At a glance
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/D5/D6/T7 open; **QUESTIONS Q1–Q5** open | no |
+| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 open; **D5/D6 done**; **QUESTIONS Q1–Q5** open | no |
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
-| `cli-product/` | yes (#144) | **P1–P3/P5–P14/D1 done** (Q1–Q3/Q5–Q6 decided; P4 deferred) | yes (after merge) |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
-`archive/2026-07-19-stream-layering/`.
+`archive/2026-07-19-stream-layering/`, `archive/2026-07-20-cli-product/`.
+OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 
 ---
 
 ## 1. Actionable right now
 
-### From `cli-product/` (findings in #144)
+### From `debt-ledger/` (pay list)
 
-| ID | Action | Status |
-|----|--------|--------|
-| **P5** | Ctrl-D at password prompt → catch `EOFError`. | **done** |
-| **P3** | Escape control bytes in member names (backslash style; Q4 style still open for `--raw`/TTY-only). | **done** (recommended style) |
-| **P6 (message)** | Prose instead of raw errno for missing file / bad path. | **done** |
-| **P7 / P9** | Library/CLI message cleanup (truncated-zip prose, enum leaks, zipcrypto no-password; rapidgzip AUTO-gate warning text). | **done** |
-| **P10–P13** | Help examples; hoist micro-copy; argparse `patterns` wording; reserved-flag asymmetry. | **done** |
-| **D1** | List marks for `ANTI` / non-current (from archived api-coherence). | **done** |
-| **P1** | Extract CONTINUE + `--stop-on-error` + exit 3 (Q1). | **done** |
-| **P2** | No-match include warnings + extract/test exit 1 + `-d` hint (Q3). | **done** |
-| **P4** | `--json` for scripting audience. | **deferred** (Q2) — wait for `hash` / member schema |
-| **P14** | `info` access/cost line + `--version -v` capability matrix (Q5/Q6). | **done** |
-| **P8** | `test` summary reports `K not tested` when an indexed stream aborts early. | **done** |
-
-cli-product code/docs follow-ups from #144 are complete for this pass (**P4**
-deferred by Q2).
+| ID | Action |
+|----|--------|
+| **D1** | Re-word VISION/philosophy/costs ≤1.3× claim to peer-ratio bands (after Q1/Q2). |
+| **D2** | Write `SECURITY.md` / disclosure process. |
+| **D3** | Start `CHANGELOG.md` (Q5 form). |
+| **T1 / T2** | Solid-RAR mutation net; parametrize seek-interleaving over lzip/`.Z`. |
+| **T3** | Benchmark-gate RAR / encrypted / accelerator data cases (perf P6 remainder). |
+| **D4 / T7** | `open-issues.md` sweep; corpus-matrix audit. |
+| **Q3 record** | S2/S3 entry gate for next backend → `PLAN.md` / `IDEAS.md`. |
 
 ### From `performance/`
 
 | ID | Action |
 |----|--------|
-| **P7 residual** | ZIP many-small ~3.7× (above 2–3×); 7z ~2.0–2.2× (above 1.25×). Next: **L3** large RAR listing fixture; **L5** lazy derivation (needs OpenSpec). |
-| **P6 remainder** | RAR / encrypted / accelerator *data* harness cases still missing. |
-| **VISION/docs** | Re-word ≤1.3× claim to match Q1 once **Q2** is chosen. |
+| **P7 residual** | ZIP many-small ~3.7× (above 2–3×); 7z ~2.0–2.2× (above 1.25×). Next: **L3** large RAR listing fixture; **L5** lazy derivation (needs OpenSpec) — or publish honest numbers (debt-ledger Q2). |
+| **P6 remainder** | RAR / encrypted / accelerator *data* harness cases still missing (= debt-ledger T3). |
+| **VISION/docs** | Re-word ≤1.3× claim to match Q1 once **Q2** is chosen (= debt-ledger D1). |
 
 ---
 
 ## 2. Still needs decisions
 
-### `cli-product/QUESTIONS.md`
+### `debt-ledger/QUESTIONS.md`
 
-| Q | Finding | Status |
-|---|---------|--------|
-| **Q1** | **P1** extract abort-on-first-error | **decided** — CONTINUE (+ `--stop-on-error`); exit 3 for policy-only blocks |
-| **Q2** | **P4** `--json` timing | **decided** — wait for `hash` / member schema (no minimal JSON in 0.2.0) |
-| **Q3** | **P2** no-match filters exit code | **decided** — warn; extract/test exit 1; list exit 0; `-d` hint |
-| **Q4** | **P3** control-byte quoting style | lean applied (escape everywhere / backslash); `--raw`/TTY-only still open |
-| **Q5 / Q6** | **P14** `info` cost line / install capability view | **decided** — `info` prints `access:` from `CostReceipt`; `--version -v` format matrix |
-| **Q7** | P7/P9 library vs CLI ownership | **done** (library) |
-| **Q8** | STOP+policy exit `3` vs `1` | **resolved by scoping** — STOP never halts on policy; exit `3` for completed runs with blocks only (CONTINUE or STOP); abort/failure → `1` |
+| Q | Finding | Lean |
+|---|---------|------|
+| **Q1** | Perf wall-budget enforcement (perf Q2) | nightly drift-vs-previous JSON |
+| **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | publish honest number; L5 follow-up |
+| **Q3** | S2+S3: entry gate for next backend vs pay pre-release | entry gate |
+| **Q4** | rapidgzip-truncation rides past 0.2.0? | KEEP change open |
+| **Q5** | CHANGELOG form | committed `CHANGELOG.md` |
 
 ### `performance/QUESTIONS.md`
 
 | Q | Finding |
 |---|---------|
-| **Q2** | **P1** wall-budget enforcement |
-| **Q4** | Verify-skip knob (lean leave-as-is) |
+| **Q2** | **P1** wall-budget enforcement (= debt-ledger Q1) |
+| **Q4** | Verify-skip knob (lean leave-as-is; close when archiving) |
 
 ---
 
@@ -91,9 +79,11 @@ deferred by Q2).
 |------|-------|
 | api-coherence **Q5** (`verify` / `VerifyReport`) | `IDEAS.md` |
 | api-coherence digest fill | **Done** #160 — OpenSpec archived `2026-07-19-surface-stored-stream-digests` |
-| api-coherence **D1** (ANTI / non-current list marks) | Folded into `cli-product/` |
+| api-coherence **D1** (ANTI / non-current list marks) | Folded into `cli-product/` → **done** in archive |
 | stream-layering **Q4** (`SlicingStream.readinto`) + optional `VerifyingStream` delete | `backlog.md` Topic 6 |
 | api-coherence **Q7** | Done #157 — already archived OpenSpec |
+| cli-product **P4** `--json` | Wait for `hash` / member schema — `IDEAS.md` / debt-ledger DD7 |
+| cli-product **Q4** `--raw` / TTY-only quoting | debt-ledger DD8 (additive; recommended style already applied) |
 
 Full table also in `backlog.md` → "Parked from archived deep reviews".
 
@@ -110,3 +100,5 @@ Full table also in `backlog.md` → "Parked from archived deep reviews".
 | Stored stream digests (lzip multi + Adler omit) | #160 |
 | Listing L0–L3 + peers + 7z byte-cursor | #143/#146/#148 |
 | Perf P3–P5, decode-feed, O8 | #136/#139/#141 |
+| cli-product P1–P3/P5–P14/D1 | #144 follow-ups + #163/#165 |
+| OpenSpec `stop-on-failure-not-policy` | #165 → archived 2026-07-20 |

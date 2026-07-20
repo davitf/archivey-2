@@ -1,8 +1,12 @@
 # CLI-as-a-product review — SUMMARY
 
-> **Status (2026-07-19):** findings in #144; **P1–P3/P5–P14/D1 landed**
-> (Q1–Q3/Q5–Q6 decided; **P4/`--json` deferred** until `hash`/schema). See
-> `../STATUS.md` §1.
+> **Archived 2026-07-20.** Actionable findings done (#144 follow-ups +
+> #163/#165); **P4/`--json`** parked → wait for `hash`/member schema
+> (`IDEAS.md` / debt-ledger DD7); **Q4/`--raw`** remainder parked →
+> debt-ledger DD8. See `review/STATUS.md` / `review/backlog.md`.
+>
+> Prior status (2026-07-19): findings in #144; **P1–P3/P5–P14/D1 landed**
+> (Q1–Q3/Q5–Q6 decided; **P4/`--json` deferred** until `hash`/schema).
 
 Deep review per `brief.md`: the merged `src/archivey/cli/` on `main` (post-#120,
 post-#131 fixes), judged as a **product** — muscle memory, output, errors, exit

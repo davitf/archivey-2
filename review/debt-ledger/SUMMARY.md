@@ -45,7 +45,7 @@ stable over time.
 | **S3** | Pass driver now **4 divergent copies** (base/TAR/7z/RAR; close-previous enforced 3 ways + not at all in one) — S3's prediction realized; next backend makes 5 | `base_reader.py:450`, `tar_reader.py:439`, `sevenzip_reader.py:303`, `rar_reader.py:578` | **F2** | **KEEP thru 0.2.0, PAY as entry gate for next backend** — Q3 to confirm |
 | **S2** | Member-list pipeline half-unified: shared stamper/publication landed, but dual drive loops + **mirrored double-fault guards** remain | `base_reader.py:782-816` vs `:1021-1048,1640-1690` | **F2** | **KEEP thru 0.2.0, PAY with S3** (one change) |
 | **D4** | `open-issues.md` contradicts its own bucket rules (P1 decided+implemented yet listed as to-fix; dead change-path refs) | `docs/internal/open-issues.md:34-55,185` | **F2** | **PAY** — 15-min sweep |
-| **D5/D6** | Lifecycle housekeeping: `stop-on-failure-not-policy` complete-but-unarchived; `cli-product/` review done-pending-archive | `openspec list`; `review/STATUS.md` | **F2** | **PAY** — archive both |
+| **D5/D6** | Lifecycle housekeeping: `stop-on-failure-not-policy` complete-but-unarchived; `cli-product/` review done-pending-archive | `openspec list`; `review/STATUS.md` | **F2** | **DONE** (2026-07-20) — OpenSpec → `archive/2026-07-20-stop-on-failure-not-policy/`; review → `archive/2026-07-20-cli-product/` |
 | **T7** | Corpus matrix thin spots post-oracle-retirement: ISO only in `basic`; encrypted-header 7z / multi-volume outside the nets | `tests/sample_archives.py:307-345` | **F2** | **PAY** — half-day audit + cheap extensions |
 | **DD4** | rapidgzip ISIZE truncation backstop ships self-describedly under-characterized (change at 1/11) | `openspec/changes/rapidgzip-truncation-investigation/` | **F2** | **KEEP** w/ justification (opt-in, gated, non-breaking to refine) — Q4 to confirm |
 | **T4** | Free-threaded CI core-only; no multithread `members_report_if_available` test | `ci.yml:168-191` | **F2** | **KEEP scope** (already published honestly) / **PAY one test** |
@@ -64,8 +64,8 @@ stable over time.
    seek property test). Cheap, reuses machinery, and T1 doubles as the
    safety net for the eventual S2/S3 change.
 5. **T3** — benchmark-gate RAR/encrypted/accelerator cases (D1 dependency).
-6. **D4/D5/D6 + T7** — the housekeeping sweep (open-issues, two archives,
-   corpus-matrix audit).
+6. **D4 + T7** — the housekeeping sweep (open-issues, corpus-matrix audit).
+   (**D5/D6** archived 2026-07-20.)
 7. Record the **S2/S3 entry-gate** decision (Q3) in `PLAN.md`/`IDEAS.md`.
 
 Nothing else on the ledger should block 0.2.0; every KEEP above has its

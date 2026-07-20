@@ -1,9 +1,10 @@
 # Doc ↔ spec ↔ code drift + the deferred-decision register
 
 All references: `main` @ `7bb862b`. Mechanical baseline: `openspec validate
---all` green (27/27); the three live changes list as `stop-on-failure-not-policy ✓
-Complete`, `seekable-gzip-and-block-writing 0/24`,
-`rapidgzip-truncation-investigation 1/11`.
+--all` green (27/27); at review time the three live changes listed as
+`stop-on-failure-not-policy ✓ Complete`, `seekable-gzip-and-block-writing 0/24`,
+`rapidgzip-truncation-investigation 1/11`. (**D5** archived that complete change
+on 2026-07-20.)
 
 ## D1 — the VISION ≤1.3× performance claim no longer matches either the measurements or the maintainer's own re-scoping (PAY — top of the ledger)
 
@@ -66,21 +67,15 @@ starting it now. **PAY before 0.2.0.**
 Small, but this file is the designated gotchas-triage register — drift *here*
 compounds, because future reviews are told to trust it. **PAY.**
 
-## D5 — `stop-on-failure-not-policy` is complete but unarchived (PAY — housekeeping)
+## D5 — `stop-on-failure-not-policy` is complete but unarchived — **DONE (2026-07-20)**
 
-`openspec list` shows it ✓ Complete (all tasks checked; shipped as #165, specs
-synced). Under the project's own lifecycle it should be archived
-(`openspec-archive-change`) so `changes/` shows only genuinely in-flight work
-— the same "what still needs attention at a glance" rule `review/README.md`
-applies to reviews. **PAY.**
+Archived to `openspec/changes/archive/2026-07-20-stop-on-failure-not-policy/`.
+Main `cli` / `safe-extraction` specs were already synced (no further sync needed).
 
-## D6 — review lifecycle: `cli-product/` is done-pending-recording (PAY — housekeeping)
+## D6 — review lifecycle: `cli-product/` is done-pending-recording — **DONE (2026-07-20)**
 
-`review/STATUS.md` marks `cli-product/` "ready to archive? yes (after merge)"
-and its follow-ups complete (P4 deferred by decided Q2; Q4 remainder
-explicitly optional). The merges happened (#163/#165). Archiving it (with the
-P4/Q4 residues recorded, which STATUS already does) leaves `performance/` and
-this ledger as the only in-flight reviews — which is the true state. **PAY.**
+Archived to `review/archive/2026-07-20-cli-product/`. Parked leftovers:
+**P4/`--json`** → `IDEAS.md` / DD7; **Q4/`--raw`** → DD8.
 
 ## What is *not* drifting (checked, fine)
 
