@@ -22,10 +22,11 @@
       `FINDINGS.md`. `parallelization` 0 vs 1 identical for gzip.
       Upstream: soft-EOF is **by design** (`processNextChunk` / speculative `tryToDecode`);
       `parallelization=0` means all cores (`UPSTREAM_TRUNCATION_REPORT.md`).
-- [ ] 1.3 Repeat on macOS (arm64) and Linux to confirm the silent set is platform-independent.
-      → **Linux done.** CI workflow `.github/workflows/rapidgzip-truncation-sweep.yml`
-      runs the same script on macos-latest + windows-latest (+ ubuntu control); fold
-      artifacts into `results/` when green.
+- [x] 1.3 Repeat on macOS (arm64) and Linux to confirm the silent set is platform-independent.
+      → CI workflow ran successfully (run on PR). **Windows ≡ Linux** (wide silent set).
+      **macOS** mostly raises mid-body; residual silent set ≈ cut=10 + one multimember
+      short. Results in `results/macos-arm64.*`, `windows-amd64.*`. Stack still needed
+      cross-platform.
 - [x] 1.4 Do the same quick pass for `rapidgzip.IndexedBzip2File` (bzip2) so the bzip2 path's
       truncation behavior is documented too. Do not invent an ISIZE twin for raw
       deflate/zlib unless that sweep shows a real silent set (container CRC covers members today).

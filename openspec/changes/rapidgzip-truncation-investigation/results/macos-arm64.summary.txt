@@ -1,0 +1,9 @@
+tag=macos-arm64
+system=Darwin machine=arm64
+python=3.11.15
+n_results=1924
+silent_accelerator=65
+silent_rapidgzip=11
+timeouts=0
+crashes=0
+counts={"indexed_bzip2:par=0": {"full": 5, "raise": 293, "silent_zero": 54}, "rapidgzip:par=0": {"full": 7, "raise": 592, "silent_short": 1, "silent_zero": 10}, "stdlib": {"full": 7, "raise": 592, "silent_short": 1, "silent_zero": 10}, "stdlib_bz2": {"full": 5, "raise": 347}}

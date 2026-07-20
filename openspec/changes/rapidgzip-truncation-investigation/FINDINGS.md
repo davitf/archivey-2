@@ -1,14 +1,16 @@
-# Linux characterization results — rapidgzip truncation
+# Rapidgzip truncation characterization
 
 Canonical measurement + recommendation record for this change. Raw tables live under
-`results/`; the sweep tool is `scripts/rapidgzip_truncation_sweep.py`. Proposal /
-design / delta spec / tasks point here for the Linux outcome and the refined
-(empty→stdlib + ISIZE) recommendation pending lock-in.
+`results/`; the sweep tool is `scripts/rapidgzip_truncation_sweep.py`. §2 stack is
+**locked** (empty→stdlib + single-member ISIZE). Upstream soft-EOF design:
+`docs/internal/rapidgzip-upstream-report.md`.
 
-**Platform:** Linux x86_64 (Python 3.11 / rapidgzip 0.16.0)  
+**Platforms:** Linux x86_64 (local + CI), macOS arm64 (CI), Windows amd64 (CI) —
+rapidgzip 0.16.0 / Python 3.11.  
 **Script:** `scripts/rapidgzip_truncation_sweep.py`  
-**Raw data:** [`results/linux-x86_64.md`](results/linux-x86_64.md), [`results/linux-x86_64.json`](results/linux-x86_64.json)  
-**macOS / Windows:** not run here (task 1.3) — same script is portable; CI or local follow-up.
+**CI:** `.github/workflows/rapidgzip-truncation-sweep.yml`  
+**Raw data:** [`results/`](results/) (`linux-x86_64.*`, `macos-arm64.*`,
+`windows-amd64.*`, `linux-x86_64-ci.summary.txt`)
 
 ## Method
 
@@ -22,7 +24,34 @@ design / delta spec / tasks point here for the Linux outcome and the refined
 
 ## Headline (gzip)
 
-**The silent set is wide — not “header-only / ~10 bytes.”**
+**On Linux and Windows the silent set is wide — not “header-only / ~10 bytes.”**
+**On macOS arm64 it collapses almost to header-only (cut=10) — still not empty.**
+
+### Cross-platform CI (task 1.3) — par=0 only, same fixtures
+
+| Platform | rapidgzip silent_zero | silent_short | raise | full | timeouts/crashes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Linux x86_64 (CI) | 283 | 134 | 177 | 16 | 0 / 0 |
+| Windows amd64 (CI) | 283 | 134 | 177 | 16 | 0 / 0 |
+| macOS arm64 (CI) | 10 | 1 | 592 | 7 | 0 / 0 |
+
+Windows matches Linux exactly on this matrix. macOS raises on nearly all mid-body
+cuts that Linux/Windows leave silent; its silent∩stdlib-raise set is **11 cuts**,
+all also silent on Linux:
+
+- Every fixture at **cut=10** (header-only / first byte after header) → silent_zero
+- `gz_multimember` cut=38 → silent_short (len=18) — also silent on Linux; ISIZE
+  multi-member bailout still applies (sum deferred)
+
+Likely cause: different inflate backends (Archivey’s codec notes already distinguish
+Linux ISA-L vs non-ISA-L macOS error shapes). Soft EOF remains upstream design;
+macOS simply surfaces more paths as exceptions in 0.16.0.
+
+**Implication for the locked stack:** empty→stdlib + single-member ISIZE is still
+required for Linux/Windows (load-bearing) and still covers macOS’s residual
+header-only silence. Do not special-case “macOS needs no backstop.”
+
+## Headline detail (Linux / Windows gzip)
 
 For a typical single-member gzip, rapidgzip’s behaviour by cut offset is:
 

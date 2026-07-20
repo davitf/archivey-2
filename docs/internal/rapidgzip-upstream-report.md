@@ -19,6 +19,13 @@ version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.
 
 ---
 
+## Classification
+
+| Topic | Class |
+| --- | --- |
+| Soft EOF on truncated gzip / empty-short success | **by design** (not a bug) — Archivey limitation; mitigate with empty→stdlib + ISIZE. macOS raises more often than Linux/Windows but still silent at cut=10. |
+| `std::terminate` after some path-source errors | **bug-class** — see known-issues Bugs 1/3 + §2 below |
+
 ## 1. Soft EOF on truncated input (by design — Archivey limitation)
 
 ### Behaviour
@@ -27,9 +34,9 @@ With path sources and `parallelization=0` (**all cores** in upstream’s API —
 in Archivey):
 
 - Mid-body truncations of ordinary single-block gzip often make `RapidgzipFile.read()`
-  return `b""` **without raising**.
+  return `b""` **without raising** (**Linux / Windows**; macOS mostly raises after cut=10).
 - Multi-block / large streams often return a **correct short prefix** (or full payload if
-  only the trailer is missing) **without raising**.
+  only the trailer is missing) **without raising** on Linux/Windows.
 - Objects frequently report `block_offsets_complete=True` and `size == len(returned)`, so
   callers cannot tell a valid short member from a truncated stream via those APIs.
 - Stdlib `gzip` sized-reads still yield a prefix then raise `EOFError`.
