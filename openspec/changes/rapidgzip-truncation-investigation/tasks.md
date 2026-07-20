@@ -29,9 +29,11 @@
 
 ## 2. Decide the backstop's shape
 
-> **Agent recommendation (not locked):** **extend** (2.2), reject remove (2.3) and
-> reject narrow-only (2.1 alone). Details in `FINDINGS.md`. Maintainer analyzes before
-> locking; §3 waits on that call.
+> **Agent recommendation (not locked):** **extend**, refined after depth probe —
+> (a) empty→stdlib fallback when rapidgzip EOF-delivers 0 bytes (P1+P2 on
+> silent-empty), (b) keep/extend ISIZE for silent short/full that (a) misses,
+> (c) no DIY reverse deflate seek. Reject remove (2.3) and narrow-only (2.1).
+> Details in `FINDINGS.md`. Maintainer analyzes before locking; §3 waits.
 
 - [ ] 2.1 If the silent set is narrow and specific, replace the broad ISIZE compare with a
       targeted check for exactly those cases (and prefer rapidgzip's own errors otherwise).
@@ -39,13 +41,17 @@
       A small `< 18` / incomplete-member special-case is still needed *in addition to* ISIZE.
 - [ ] 2.2 If a size comparison is kept, define multi-member handling explicitly: sum per-member
       `ISIZE` by walking members, with a rule that cannot false-positive on a valid file.
-      → **Recommended path.**
+      → **Recommended** for silent short/full (empty-fallback does not cover these).
 - [ ] 2.3 If rapidgzip's own errors plus a tiny special-case suffice, remove the
       `_GzipTruncationCheckStream` machinery entirely.
-      → **Not supported by Linux data** (ISIZE already catches 337/416 silent∩raise cuts).
+      → **Not supported by Linux data** (ISIZE already catches 337/416 silent∩raise cuts;
+      empty-fallback alone misses silent short/full).
 - [ ] 2.4 Whichever outcome: re-check AUTO eligibility when only `gzip_isize_backstop` made
       truncation “verifiable” (bare `.gz` / single-file-compressed). Keep
       `_wrap_accelerated_length` / container `VerifyingStream` behavior intact.
+- [ ] 2.5 Decide empty→stdlib fallback on rapidgzip EOF with zero bytes delivered (recovers
+      partial data + loud error; valid empty gzip must still succeed). Compose with 2.2, not
+      as a replacement. Record lock-in in `design.md` / delta spec before §3.
 
 ## 3. Implement + test the chosen approach
 

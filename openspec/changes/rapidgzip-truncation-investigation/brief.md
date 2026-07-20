@@ -4,10 +4,10 @@
 
 **Why it matters:** rapidgzip does not reliably report truncation. Archivey’s ISIZE backstop was built on incomplete knowledge — including a hypothesis that silence might be limited to a bare ~10-byte header.
 
-**What Linux showed:** that hypothesis is **false**. Mid-body truncations with a valid header commonly return `b""` with no exception (stdlib raises). The current ISIZE check is load-bearing for `size ≥ 18` but misses the `< 18` band and multi-member bailouts. See `FINDINGS.md`.
+**What Linux showed:** that hypothesis is **false**. Mid-body truncations with a valid header commonly return `b""` with no exception (stdlib raises on `readall()`, but sized reads stream a correct prefix then raise). The current ISIZE check is load-bearing for `size ≥ 18` but misses the `< 18` band and multi-member bailouts; ISIZE-only also fails priority (2) by not recovering the prefix stdlib could have returned. See `FINDINGS.md`.
 
-**Recommendation (awaiting your lock-in):** **extend**, refined: empty→stdlib
-fallback for silent-empty (gets partial recovery) **plus** ISIZE for silent
-short/full; not remove; not narrow-only; not DIY reverse gzip seek.
+**Priorities:** (1) no silent success, (2) recover partial data, (3) seekability on good inputs.
 
-**Your call:** lock §2 (extend vs alternate) after reviewing `FINDINGS.md`; optionally run the sweep on macOS / add CI. §3 implements after that.
+**Recommendation (awaiting your lock-in):** **extend**, refined: empty→stdlib fallback for silent-empty (gets partial recovery) **plus** ISIZE for silent short/full; not remove; not narrow-only; not DIY reverse gzip seek (trailer is CRC+ISIZE only).
+
+**Your call:** lock §2 (including task 2.5 empty-fallback) after reviewing `FINDINGS.md`; optionally run the sweep on macOS / add CI. §3 implements after that.

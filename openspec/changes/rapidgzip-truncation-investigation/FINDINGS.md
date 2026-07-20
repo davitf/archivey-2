@@ -1,5 +1,10 @@
 # Linux characterization results — rapidgzip truncation
 
+Canonical measurement + recommendation record for this change. Raw tables live under
+`results/`; the sweep tool is `scripts/rapidgzip_truncation_sweep.py`. Proposal /
+design / delta spec / tasks point here for the Linux outcome and the refined
+(empty→stdlib + ISIZE) recommendation pending lock-in.
+
 **Platform:** Linux x86_64 (Python 3.11 / rapidgzip 0.16.0)  
 **Script:** `scripts/rapidgzip_truncation_sweep.py`  
 **Raw data:** [`results/linux-x86_64.md`](results/linux-x86_64.md), [`results/linux-x86_64.json`](results/linux-x86_64.json)  

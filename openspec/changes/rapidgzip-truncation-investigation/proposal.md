@@ -47,38 +47,68 @@ follow-up PR; `design.md` collects code/threat-model/ledger pointers so that wor
 have to re-discover AUTO↔ISIZE coupling, the VerifyingStream vs ISIZE split, or why fuzz
 jobs cannot stand in for the characterization matrix.
 
+## Investigation outcome (Linux; awaiting lock-in)
+
+Full write-up: [`FINDINGS.md`](FINDINGS.md). Headline results:
+
+- The “silent only for ~10-byte header” hypothesis is **false**. Mid-body truncations
+  with a valid header commonly return `b""` with no exception while stdlib raises.
+- **`readall()` misleads:** stdlib sized/`read(1)` loops **do** stream correct partial
+  prefixes then raise; a bare `read()` raises with no return value. rapidgzip’s defect
+  is staying **silent** at EOF (empty or short/full), not refusing to stream.
+- **Priorities for the fix:** (1) no silent success, (2) recover partial data,
+  (3) seekability on good inputs.
+- **Recommended shape (not locked):** keep rapidgzip for (3); on EOF with **0 bytes
+  delivered**, fall back to stdlib sized-reads (covers silent-empty → (1)+(2); valid
+  empty gzip still OK); **keep/extend ISIZE** for silent short/full that empty-fallback
+  misses (multi-block / trailer strip); close the `< 18` hole; safe multi-member ISIZE
+  sum. **Reject** remove, narrow-only, and DIY reverse deflate-block seek (gzip trailer
+  is CRC+ISIZE only — not an xz/lzip index).
+
+macOS/Windows confirmation (task 1.3) still open.
+
 ## What Changes
 
 - **`seekable-decompressor-streams`** — refine the truncation requirement for the rapidgzip gzip
   path once its behavior is characterized: state precisely which truncations rapidgzip reports
-  itself, which require a backstop, and how multi-member files are handled (or explicitly out of
-  scope). The backstop becomes "as small as correctness allows" rather than a broad ISIZE compare.
+  itself, which require a backstop, how silent-empty vs silent-short/full are handled
+  (stdlib fallback vs ISIZE), and how multi-member files are handled. Prefer recovering
+  partial data where stdlib can, without ever false-flagging a valid file.
 - No detection/format changes; this is about the gzip accelerator's truncation reporting only.
+- No DIY gzip seek index from trailers (out of scope / rejected — see `FINDINGS.md`).
 
-This change is **investigation + specs**: it records what to measure and the decision criteria. The
-chosen implementation (narrow / extend / remove) lands when the change is accepted.
+This change is **investigation + specs**: it records measurements, decision criteria, and a
+maintainer-facing recommendation. The chosen implementation lands when §2 is locked.
 
 ## Specs
 
 Proposed delta (kept here until accepted, per the "propose in `changes/`, don't edit shipped specs
-ad hoc" rule).
+ad hoc" rule). See also `specs/seekable-decompressor-streams/spec.md`.
 
 ### seekable-decompressor-streams — MODIFIED Requirement: Accelerator backends surface corruption and truncation uniformly
 
 The system SHALL surface corrupt or truncated input read through the rapidgzip accelerator as the
 same `compressed-streams` error types as the stdlib path (`CorruptionError` / `TruncatedError`),
 never a raw third-party exception. For truncation specifically, the system SHALL rely on
-rapidgzip's own end-of-input errors where it raises them, and SHALL apply a backstop **only** for
-the characterized cases where rapidgzip silently returns short/zero output. The backstop SHALL be
-the narrowest check that covers those cases without ever false-flagging a valid file, and its
-scope (single-member vs. multi-member) SHALL be stated explicitly rather than implied.
+rapidgzip's own end-of-input errors where it raises them. Where rapidgzip reaches EOF having
+delivered **no** decompressed bytes without raising, the system SHALL fall back to the stdlib
+gzip path (sized reads) so truncation is signaled and any recoverable prefix is available.
+Where rapidgzip delivered a non-empty prefix (or full payload) and reached EOF without raising,
+the system SHALL apply a length/ISIZE backstop that covers those characterized silent cases
+without ever false-flagging a valid file; multi-member scope SHALL be stated explicitly
+(safe per-member ISIZE sum, not “any further header ⇒ accept”).
 
 #### Scenario: a truncation rapidgzip reports itself
 
 - **WHEN** a truncated gzip is read through rapidgzip and rapidgzip raises its own end-of-input error
 - **THEN** that error is translated to `TruncatedError` (or `CorruptionError`), with no reliance on the ISIZE backstop
 
-#### Scenario: a truncation rapidgzip does not report
+#### Scenario: silent empty EOF from rapidgzip
 
-- **WHEN** a truncated gzip is read through rapidgzip in a characterized silent-truncation case (e.g. a bare-header-only input)
-- **THEN** the backstop raises `TruncatedError`, and the check is scoped so a valid single- or multi-member file is never false-flagged
+- **WHEN** a truncated gzip is read through rapidgzip and the first EOF delivers zero decompressed bytes without an exception
+- **THEN** the system falls back to stdlib gzip sized-reads on the same source, surfaces `TruncatedError` (from stdlib `EOFError`), and exposes any correct partial prefix stdlib recovered (a valid empty gzip still succeeds with zero bytes)
+
+#### Scenario: silent short or full EOF from rapidgzip
+
+- **WHEN** a truncated gzip is read through rapidgzip and a non-empty decompressed prefix (or full payload) is returned without an exception
+- **THEN** the ISIZE/length backstop raises `TruncatedError` at sequential EOF, and a valid single- or multi-member file is never false-flagged

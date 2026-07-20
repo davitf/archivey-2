@@ -14,7 +14,9 @@ across the ledger, threat model, and codecs code.
 | Backstop = narrowest check that covers silent cases; never false-positive on valid input | settled in delta spec |
 | Block-wise multi-member header scan (no full-file read) | done (#14) |
 | **Finish before 0.2.0** (debt-ledger Q4 = PAY) | decided 2026-07-20; implementation deferred |
-| Which of narrow / extend / remove | **open until maintainer lock-in** — Linux measurements recommend **extend** (see `FINDINGS.md`); macOS/Windows confirm still pending (task 1.3) |
+| Fix priorities: (1) no silent success, (2) recover partial data, (3) seek on good inputs | settled with maintainer (depth-probe follow-up) |
+| DIY reverse deflate-block / trailer seek for gzip | **rejected** — trailer is CRC+ISIZE only; use rapidgzip for RA, stdlib O(n) rewind otherwise |
+| Which of narrow / extend / remove (+ empty→stdlib fallback) | **open until maintainer lock-in** — Linux data recommend **extend** as **empty→stdlib fallback + ISIZE for non-empty silent EOF** (see `FINDINGS.md`); macOS/Windows confirm still pending (task 1.3) |
 
 Rejected framing: “KEEP the open change past 0.2.0 because accelerators are
 opt-in / threat-model-scoped.” Opt-in and non-defended still ship a
