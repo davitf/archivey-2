@@ -87,7 +87,7 @@ class SingleFileReader(BaseArchiveReader):
 
     Source shapes at open:
 
-    - Path → reopen per ``open()`` (or seekable shared handle under CONCURRENT)
+    - Path → reopen per ``open()`` (independent FDs; concurrent opens stay isolated)
     - Seekable stream → :class:`SharedSource` views from position 0
     - Non-seekable → one pending stream; first open consumes it
 

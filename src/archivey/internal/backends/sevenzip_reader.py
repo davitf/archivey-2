@@ -15,7 +15,8 @@ decode serves consecutive files.
 
 Password bytes for the 7z KDF are UTF-16LE (:func:`_password_to_kdf_bytes`). An
 empty header after decrypt is treated as a wrong password (never a silent empty
-listing); see threat-model O8 / ``DIGEST_UNVERIFIABLE`` for store+AES without CRC.
+listing) — threat-model O8. Separately, store/AES members with no folder digest
+and no member CRC emit ``DIGEST_UNVERIFIABLE`` (decryption cannot be authenticated).
 """
 
 from __future__ import annotations

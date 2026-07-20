@@ -9,7 +9,8 @@ Module split:
 Data-open shapes:
 
 - Solid archive → one ``unrar p`` ALL-pipe + :class:`SolidBlockReader` demux
-- Non-solid → per-member named ``unrar p -n./…`` opens
+- Non-solid stored (no encrypt / split) → direct sliced view (no ``unrar``)
+- Other non-solid → per-member named ``unrar p -n./…`` opens
 - Stream / non-path sources may be materialized to a temp ``.rar`` so ``unrar``
   can open a real path (and resolve sibling volumes)
 
