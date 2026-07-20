@@ -1,4 +1,10 @@
-"""Public entry points: open archives and query format support."""
+"""Public entry points: open archives and query format support.
+
+``open_archive`` pipeline (in order): register backends → validate streaming/
+concurrency → resolve source → detect or accept format → multi-volume checks →
+backend capability gates (password / seekability) → normalize stream origin →
+``backend.open_read(...)``.
+"""
 
 from __future__ import annotations
 
@@ -153,7 +159,8 @@ def open_archive(
     passwords *and* a colliding wrong candidate *and* a STORED member) but can matter
     for very large stored members.
     """
-    # Import backends to ensure they are registered
+    # Safety net for `from archivey.core import open_archive` (package __init__ also
+    # imports backends so list_supported_formats works on a bare `import archivey`).
     import archivey.internal.backends  # noqa: F401
 
     open_site = capture_open_site()
@@ -168,98 +175,95 @@ def open_archive(
     passwords = _PasswordCandidates.from_input(password)
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
-    # The reader's diagnostic collector is created here, before detection, so automatic
-    # detection and the reader share one budget/occurrence order (see diagnostics design)
-    # and ``reader.diagnostics`` covers the whole open — which is what one-shot extract()
-    # reads back, no cross-call collector plumbing needed.
+    # Collector is created before detection so open + detect share one budget /
+    # occurrence order; one-shot extract() then reads reader.diagnostics for the
+    # whole call without cross-call plumbing.
     collector = collector_from_config(effective_config)
     resolved = resolve_source(source)
-    open_source = resolved.open_source
+    # Mutated below (peekable wrap, RAR volume reopen, mid-stream origin fix).
+    reader_source = resolved.open_source
     archive_name = resolved.archive_name
 
-    # A path source: a directory short-circuits detection.
-    if isinstance(open_source, Path) and open_source.is_dir():
-        format = ArchiveFormat.DIRECTORY
+    # --- Resolve format: directory path forces DIRECTORY (overrides format=);
+    # else caller format, else magic detect. ---
+    resolved_format = format
+    if isinstance(reader_source, Path) and reader_source.is_dir():
+        resolved_format = ArchiveFormat.DIRECTORY
 
     detected: FormatInfo | None = None
-    if format is None:
-        # Non-seekable streams must be wrapped before detection so the peeked prefix is
-        # replayed to the backend; the same wrapper is then handed over.
-        if is_stream(open_source) and not is_seekable(open_source):
-            open_source = PeekableStream(open_source)
-        detected = detect_format(open_source, collector=collector)
-        format = detected.format
+    if resolved_format is None:
+        # Non-seekable streams: wrap before detection so the peeked prefix is
+        # replayed to the backend; the same wrapper is handed over.
+        if is_stream(reader_source) and not is_seekable(reader_source):
+            reader_source = PeekableStream(reader_source)
+        detected = detect_format(reader_source, collector=collector)
+        resolved_format = detected.format
 
-    if resolved.volume_count > 1 and format.container not in (
+    if resolved.volume_count > 1 and resolved_format.container not in (
         ContainerFormat.SEVEN_Z,
         ContainerFormat.RAR,
     ):
-        _raise_multi_volume_not_supported(format, archive_name)
+        _raise_multi_volume_not_supported(resolved_format, archive_name)
 
-    # RAR multi-volume: unrar needs real sibling volume files on disk. When
-    # resolve_source concatenated an explicit path sequence, reopen volume 1 only.
-    if format.container == ContainerFormat.RAR and isinstance(
-        open_source, ConcatenatedFile
+    # RAR multi-volume: unrar needs real sibling files on disk. When resolve_source
+    # concatenated an explicit path sequence, reopen volume 1 only.
+    if resolved_format.container == ContainerFormat.RAR and isinstance(
+        reader_source, ConcatenatedFile
     ):
-        volume_paths = open_source.volume_paths
+        volume_paths = reader_source.volume_paths
         if volume_paths:
-            open_source.close()
-            open_source = volume_paths[0]
+            reader_source.close()
+            reader_source = volume_paths[0]
 
     registry = get_registry()
-    backend_cls = registry.reader_for_format(format)
+    backend_cls = registry.reader_for_format(resolved_format)
 
-    # A concrete password for a format that has no encryption is API misuse, rejected
-    # centrally (backends declare SUPPORTS_PASSWORD as data and never see the argument
-    # otherwise). A PasswordProvider alone is fine — backends that never need a password
-    # never call it (CLI registers a TTY getpass provider by default).
+    # Concrete passwords for formats with no encryption are API misuse (rejected
+    # here). A PasswordProvider alone is fine — unused backends never call it.
     if passwords.has_static_candidates() and not backend_cls.SUPPORTS_PASSWORD:
         raise UnsupportedOperationError(
-            f"Format {format!r} does not support passwords (it carries no encryption).",
-            source_format=format,
+            f"Format {resolved_format!r} does not support passwords "
+            f"(it carries no encryption).",
+            source_format=resolved_format,
             archive_name=archive_name,
         )
 
-    # Fail fast on a non-seekable source (the access-mode contract: streaming=False
-    # promises repeatable random access, which a single forward pass cannot honor, and
-    # the library never implicitly buffers). Under streaming=True the source is usable
-    # only when the backend can walk its format front-to-back (TAR, single-file codecs);
-    # a trailing-index format (ZIP central directory, ISO descriptors) cannot.
-    if is_stream(open_source) and not is_seekable(open_source):
+    # Access-mode contract: streaming=False never implicitly buffers a pipe.
+    # streaming=True still needs a front-to-back format (TAR, raw codecs); trailing
+    # indexes (ZIP CD, ISO) cannot.
+    if is_stream(reader_source) and not is_seekable(reader_source):
         if not streaming:
             raise StreamNotSeekableError(
                 f"Random access (streaming=False) requires a seekable source. Open with "
-                f"streaming=True for a single forward pass over this {format!r} stream, "
+                f"streaming=True for a single forward pass over this "
+                f"{resolved_format!r} stream, "
                 f"or buffer it to disk or a BytesIO and reopen.",
-                source_format=format,
+                source_format=resolved_format,
                 archive_name=archive_name,
             )
         if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
             raise StreamNotSeekableError(
-                f"Format {format!r} cannot be read from a non-seekable source even in "
-                f"streaming mode (its index/metadata is not at the front of the stream). "
-                f"Buffer it to disk or a BytesIO and reopen.",
-                source_format=format,
+                f"Format {resolved_format!r} cannot be read from a non-seekable source "
+                f"even in streaming mode (its index/metadata is not at the front of "
+                f"the stream). Buffer it to disk or a BytesIO and reopen.",
+                source_format=resolved_format,
                 archive_name=archive_name,
             )
 
-    # Normalize the stream origin once for every backend: a seekable stream positioned
-    # mid-file is wrapped so the backend sees tell() == 0 at the archive's first byte
-    # (the stream-position contract in format-detection). Done after detection, which
-    # peeks from and restores the same origin.
-    if is_stream(open_source) and is_seekable(open_source):
-        open_source = fix_stream_start_position(open_source)
+    # Mid-file seekable streams: wrap so every backend sees tell()==0 at the first
+    # archive byte (done after detection, which peeked from the same origin).
+    if is_stream(reader_source) and is_seekable(reader_source):
+        reader_source = fix_stream_start_position(reader_source)
 
-    # Thread the encoding: an explicit caller encoding wins, else the detector's hint, else
-    # None (the backend auto-detects).
+    # Explicit encoding wins; else detector hint; else backend auto-detect.
     effective_encoding = encoding
     if effective_encoding is None and detected is not None:
         effective_encoding = detected.encoding_hint
 
     backend = backend_cls()
     return backend.open_read(
-        open_source,
-        format=format,
+        reader_source,
+        format=resolved_format,
         streaming=streaming,
         passwords=passwords,
         encoding=effective_encoding,
@@ -305,7 +309,7 @@ def open_stream(
         path = Path(source)
         if not path.is_file():
             raise FileNotFoundError(f"Compressed stream not found: {path}")
-        open_source: Path | BinaryIO = path
+        codec_input: Path | BinaryIO = path
         source_is_seekable = True
     else:
         if not is_stream(source):
@@ -314,9 +318,10 @@ def open_stream(
             )
         source_is_seekable = is_seekable(source)
         if not source_is_seekable:
-            open_source = PeekableStream(source)
+            codec_input = PeekableStream(source)
         else:
-            open_source = fix_stream_start_position(source)
+            # Same mid-stream origin contract as open_archive.
+            codec_input = fix_stream_start_position(source)
 
     if seekable and not source_is_seekable:
         raise StreamNotSeekableError(
@@ -325,7 +330,7 @@ def open_stream(
             "forward-only pass."
         )
 
-    stream_format = _resolve_stream_format(format, open_source, collector)
+    stream_format = _resolve_stream_format(format, codec_input, collector)
     if stream_format is StreamFormat.UNCOMPRESSED:
         raise UnsupportedFormatError(
             "open_stream requires a compressed stream format "
@@ -339,7 +344,7 @@ def open_stream(
         seekable=seekable and source_is_seekable,
     )
     codec_source: str | BinaryIO = (
-        str(open_source) if isinstance(open_source, Path) else open_source
+        str(codec_input) if isinstance(codec_input, Path) else codec_input
     )
     return open_codec_stream(
         codec,
@@ -355,6 +360,7 @@ def _resolve_stream_format(
     open_source: Path | BinaryIO,
     collector: DiagnosticCollector,
 ) -> StreamFormat:
+    """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat."""
     if isinstance(format, StreamFormat):
         return format
     if isinstance(format, ArchiveFormat):
@@ -406,10 +412,9 @@ def extract(
     Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
     detection, open, and extraction for this call.
     """
-    # Peek at the resolved open target only to pick the access mode; open_archive
-    # re-resolves the original source itself (resolution is cheap and idempotent).
-    resolved_target = resolve_source(source).open_source
-    streaming = is_stream(resolved_target) and not is_seekable(resolved_target)
+    # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap).
+    peek_target = resolve_source(source).open_source
+    streaming = is_stream(peek_target) and not is_seekable(peek_target)
 
     with open_archive(
         source,
@@ -419,8 +424,7 @@ def extract(
         encoding=encoding,
         config=config,
     ) as reader:
-        # The reader already carries `config` (passed to open_archive above), so
-        # extract_all falls back to it — no need to forward `config` a second time.
+        # Reader already carries ``config`` from open_archive — do not forward again.
         report = reader.extract_all(
             dest,
             policy=policy,
@@ -429,10 +433,8 @@ def extract(
             on_progress=on_progress,
             limits=limits,
         )
-        # `reader.diagnostics` is the reader's cumulative snapshot. Because this reader was
-        # opened fresh for this one-shot call, that already spans detection, open, and
-        # extraction exactly once — a superset of extract_all's extraction-only delta — so
-        # the one-shot report is assembled entirely from the public surface.
+        # extract_all's report.diagnostics is extraction-only. This reader was opened
+        # fresh for this call, so reader.diagnostics already spans detect+open+extract.
         return ExtractionReport(
             results=report.results,
             diagnostics=reader.diagnostics,

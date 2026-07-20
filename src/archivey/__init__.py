@@ -1,4 +1,20 @@
-"""Archivey — Python library for reading, streaming, and safely extracting archives."""
+"""Archivey — Python library for reading, streaming, and safely extracting archives.
+
+Public surface layout (this package root only — not ``internal`` / ``cli``):
+
+- :mod:`archivey.core` — ``open_archive`` / ``open_stream`` / ``extract`` / detection
+- :mod:`archivey.reader` — ``ArchiveReader`` ABC
+- :mod:`archivey.types` — formats, members, compression
+- :mod:`archivey.config` — ``ArchiveyConfig``, limits, passwords, accelerators
+- :mod:`archivey.cost` — listing/access cost receipt
+- :mod:`archivey.diagnostics` — advisory codes, summaries, extraction reports
+- :mod:`archivey.exceptions` — error hierarchy
+- :mod:`archivey.measurement` — optional I/O counters
+
+Names in ``__all__`` are the documented API. A few advanced types are also imported
+here (so ``from archivey import …`` keeps working) but omitted from ``__all__`` so
+they do not crowd the generated API reference — see the ``# noqa: F401`` imports.
+"""
 
 from importlib.metadata import PackageNotFoundError, version
 
@@ -9,7 +25,7 @@ except PackageNotFoundError:
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
-    RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,  # noqa: F401 — not in __all__ but kept importable
+    RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,  # noqa: F401 — advanced; not in __all__
     AcceleratorMode,
     ArchiveyConfig,
     ExtractionLimits,
@@ -39,7 +55,8 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import (
-    ArchiveEofContext,  # noqa: F401 — not in __all__ but kept importable
+    # Context payloads: importable for isinstance/match; omitted from __all__.
+    ArchiveEofContext,  # noqa: F401
     Diagnostic,
     DiagnosticCode,
     DiagnosticContext,
@@ -87,7 +104,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     UnsupportedFormatError,
     UnsupportedOperationError,
-    WriteError,  # noqa: F401 — not in __all__ but kept importable
+    WriteError,  # noqa: F401 — write API not shipped yet; kept importable
 )
 from archivey.internal.extraction_types import (
     ExtractionPolicy,
@@ -201,11 +218,9 @@ __all__ = [
     "UnsupportedOperationError",
 ]
 
-# Register the bundled backends eagerly (each module self-registers on import), so the
-# availability queries (list_supported_formats / format_availability) work immediately
-# after `import archivey`, without first calling open_archive().
+# Eager backend registration so list_supported_formats / format_availability work
+# immediately after `import archivey` (open_archive also imports as a safety net).
 import archivey.internal.backends  # noqa: E402,F401
 
-# Keep the importlib.metadata helpers out of the public `archivey` namespace
-# (so `__all__` stays the single, hand-curated description of the public API).
+# Keep importlib.metadata helpers out of the public namespace (__all__ is authoritative).
 del PackageNotFoundError, version

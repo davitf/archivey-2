@@ -2,6 +2,15 @@
 
 See ``openspec/specs/diagnostics`` (and the ``diagnostics-warnings-as-data`` change)
 for the lifecycle, retention, and policy contracts.
+
+Layout of this module:
+
+1. **Codes / severity / disposition** — stable enums callers match on.
+2. **Context payloads** — one frozen dataclass per ``kind``; fields are JSON-safe
+   scalars so :meth:`Diagnostic.to_dict` needs no per-class serializers.
+3. **Records** — :class:`Diagnostic`, :class:`DiagnosticSummary`, policy, reports.
+4. **Helpers** — ``validate_code_context``, ``raw_name_to_base64``, ``format_path_name``
+   (used when *emitting* diagnostics; end users mostly read the records).
 """
 
 from __future__ import annotations
@@ -34,12 +43,11 @@ def _freeze_mapping(mapping: Mapping[_K, _V] | None) -> Mapping[_K, _V]:
 
 @dataclass(frozen=True)
 class _JsonSafeContext:
-    """Base for the flat, frozen context dataclasses below: a single JSON-safe ``to_dict``.
+    """Shared ``to_dict`` for the flat context dataclasses below.
 
-    It carries no fields itself (so subclasses keep their own field lists) but is a
-    dataclass, which lets ``dataclasses.asdict`` accept ``self``. Every context field is a
-    ``str`` / ``int`` / ``None`` (or a ``Literal`` thereof), so ``asdict`` yields a
-    JSON-serializable mapping in field order — no per-class boilerplate needed.
+    Subclasses declare their own fields (this base adds none). Every field is a
+    JSON-safe scalar (``str`` / ``int`` / ``None`` / ``Literal``), so
+    ``dataclasses.asdict`` is enough — no per-class boilerplate.
     """
 
     def to_dict(self) -> dict[str, object]:
@@ -86,6 +94,8 @@ class DiagnosticDisposition(str, Enum):
 
 @dataclass(frozen=True)
 class NameNormalizationContext(_JsonSafeContext):
+    """Member path rewritten for display/lookup (separators, ``.``/``..``, etc.)."""
+
     kind: Literal["name_normalization"] = "name_normalization"
     archive_name: str | None = None
     member_name: str = ""
@@ -97,6 +107,8 @@ class NameNormalizationContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class NameEncodingContext(_JsonSafeContext):
+    """Member name bytes decoded with an inferred (not declared) encoding."""
+
     kind: Literal["name_encoding"] = "name_encoding"
     archive_name: str | None = None
     member_name: str = ""
@@ -108,6 +120,8 @@ class NameEncodingContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class FormatConflictContext(_JsonSafeContext):
+    """Extension suggested one format; content detection chose another."""
+
     kind: Literal["format_conflict"] = "format_conflict"
     source_name: str | None = None
     extension: str | None = None
@@ -117,6 +131,8 @@ class FormatConflictContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class ScanRaceContext(_JsonSafeContext):
+    """Directory-archive entry vanished between listing and open (TOCTOU)."""
+
     kind: Literal["scan_race"] = "scan_race"
     archive_name: str | None = None
     relative_path: str = ""
@@ -125,6 +141,8 @@ class ScanRaceContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class ArchiveEofContext(_JsonSafeContext):
+    """Expected end-of-archive marker missing, short, or non-null (e.g. TAR trailer)."""
+
     kind: Literal["archive_eof"] = "archive_eof"
     archive_name: str | None = None
     format: str = ""
@@ -136,6 +154,8 @@ class ArchiveEofContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class MemberTimestampContext(_JsonSafeContext):
+    """A stored timestamp field was present but unusable / out of range."""
+
     kind: Literal["member_timestamp"] = "member_timestamp"
     archive_name: str | None = None
     member_name: str = ""
@@ -147,6 +167,8 @@ class MemberTimestampContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SymlinkTargetContext(_JsonSafeContext):
+    """Symlink/hardlink target could not be resolved inside the archive."""
+
     kind: Literal["symlink_target"] = "symlink_target"
     archive_name: str | None = None
     member_name: str = ""
@@ -156,6 +178,8 @@ class SymlinkTargetContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class DigestContext(_JsonSafeContext):
+    """Stored digest present but not verifiable with the available data."""
+
     kind: Literal["digest"] = "digest"
     archive_name: str | None = None
     member_name: str = ""
@@ -166,6 +190,8 @@ class DigestContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SeekIndexContext(_JsonSafeContext):
+    """Seek index build failed or was skipped; stream may redecompress on rewind."""
+
     kind: Literal["seek_index"] = "seek_index"
     archive_name: str | None = None
     member_name: str | None = None
@@ -177,6 +203,8 @@ class SeekIndexContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class StreamRewindContext(_JsonSafeContext):
+    """A backward seek re-decompressed from an earlier offset (no accelerator)."""
+
     kind: Literal["stream_rewind"] = "stream_rewind"
     archive_name: str | None = None
     member_name: str | None = None
@@ -189,6 +217,8 @@ class StreamRewindContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class ExtractionOutcomeContext(_JsonSafeContext):
+    """Per-member extraction blocked by policy or failed with an error."""
+
     kind: Literal["extraction_outcome"] = "extraction_outcome"
     archive_name: str | None = None
     member_name: str = ""
@@ -265,7 +295,12 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
 
 
 def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> None:
-    """Reject unregistered or mismatched code→context pairings."""
+    """Reject unregistered or mismatched code→context pairings.
+
+    Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. A few
+    codes share a kind and need an extra field check so blocked≠failed, directory
+    vanish≠entry vanish, etc. — those guards live below the kind match.
+    """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:
         raise ValueError(f"Unknown diagnostic code: {code!r}")
@@ -274,6 +309,7 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
             f"Diagnostic code {code.value!r} requires context kind {expected!r}, "
             f"got {context.kind!r}"
         )
+    # Shared-kind codes: kind alone is not enough.
     if code is DiagnosticCode.SCAN_DIRECTORY_VANISHED and (
         not isinstance(context, ScanRaceContext) or context.entry_kind != "directory"
     ):
@@ -291,6 +327,7 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
     ):
         raise ValueError("EXTRACTION_MEMBER_FAILED requires status='failed'")
     if isinstance(context, ExtractionOutcomeContext):
+        # Group metadata is all-or-nothing so partial fills cannot look like a group.
         group_id, group_size = context.failure_group_id, context.failure_group_size
         if (group_id is None) ^ (group_size is None):
             raise ValueError(
