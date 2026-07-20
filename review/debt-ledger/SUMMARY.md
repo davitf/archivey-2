@@ -47,7 +47,7 @@ stable over time.
 | **D4** | `open-issues.md` contradicts its own bucket rules (P1 decided+implemented yet listed as to-fix; dead change-path refs) | `docs/internal/open-issues.md:34-55,185` | **F2** | **PAY** — 15-min sweep |
 | **D5/D6** | Lifecycle housekeeping: `stop-on-failure-not-policy` complete-but-unarchived; `cli-product/` review done-pending-archive | `openspec list`; `review/STATUS.md` | **F2** | **DONE** (2026-07-20) — OpenSpec → `archive/2026-07-20-stop-on-failure-not-policy/`; review → `archive/2026-07-20-cli-product/` |
 | **T7** | Corpus matrix thin spots post-oracle-retirement: ISO only in `basic`; encrypted-header 7z / multi-volume outside the nets | `tests/sample_archives.py:307-345` | **F2** | **PAY** — half-day audit + cheap extensions |
-| **DD4** | rapidgzip ISIZE truncation backstop ships self-describedly under-characterized (change at 1/11) | `openspec/changes/rapidgzip-truncation-investigation/` | **F2** | **KEEP** w/ justification (opt-in, gated, non-breaking to refine) — Q4 to confirm |
+| **DD4** | rapidgzip ISIZE truncation backstop ships self-describedly under-characterized (change at 1/11) | `openspec/changes/rapidgzip-truncation-investigation/` | **F2** | **PAY before 0.2.0** (Q4 decided 2026-07-20); implement later — see change `design.md` |
 | **T4** | Free-threaded CI core-only; no multithread `members_report_if_available` test | `ci.yml:168-191` | **F2** | **KEEP scope** (already published honestly) / **PAY one test** |
 | **DD7/DD8** | CLI `--json` (wait for schema) and `--raw` quoting remainder | cli-product Q2/Q4 | **F2** | **KEEP** — decided/additive; space reserved |
 | **DD9–DD12** | Threat-model residuals (O1/O6/O7/O8), C3 fidelity, api-coherence Q5, C4 scope | registers | **F1-F2** | **KEEP** — all additive, all already recorded with rationale |
@@ -67,6 +67,8 @@ stable over time.
 6. **D4 + T7** — the housekeeping sweep (open-issues, corpus-matrix audit).
    (**D5/D6** archived 2026-07-20.)
 7. Record the **S2/S3 entry-gate** decision (Q3) in `PLAN.md`/`IDEAS.md`.
+8. **DD4 / rapidgzip-truncation-investigation** — characterize + narrow/extend/remove
+   ISIZE backstop before 0.2.0 (Q4 = PAY; implementation deferred, change enriched).
 
 Nothing else on the ledger should block 0.2.0; every KEEP above has its
 justification written down here or in the register it points to, which is

@@ -52,16 +52,19 @@ happened). Both are defensible; the difference is release risk vs ledger
 purity. Which does the maintainer want? (If pre-release: do S2+S3 as one
 OpenSpec change, guarded by the T1 mutation-net extension landing *first*.)
 
-## Q4 — Is `rapidgzip-truncation-investigation` allowed to ride past 0.2.0?
+## Q4 — Is `rapidgzip-truncation-investigation` allowed to ride past 0.2.0? — **DECIDED (2026-07-20)**
+
+**Decision: PAY before 0.2.0.** Do not ship the under-characterized ISIZE
+backstop as release-done. Measurement + narrow/extend/remove stay in
+`openspec/changes/rapidgzip-truncation-investigation/` (enriched with
+`design.md`); implementation is a later PR, not triage.
 
 The shipped ISIZE backstop is, by its own proposal's words, "a heuristic built
 on incomplete knowledge of rapidgzip's actual behavior", and the
-characterization change is 1/11 tasks done. The ledger's verdict (DD4) is KEEP
-for 0.2.0: accelerators are opt-in, AUTO is gated on verifiable sizes, the
-threat model excludes accelerators from the defended surface, and refining the
-backstop later is non-breaking. Confirm — or, if the maintainer considers a
-knowingly-heuristic guard on a shipped path unacceptable debt for a release,
-the characterization (a measurement matrix, no design work) is the pay path.
+characterization change is 1/11 tasks done. The ledger's earlier lean was KEEP
+(accelerators opt-in, AUTO gated, threat model scopes accelerators out,
+refining later is non-breaking). Maintainer overrode: knowingly-heuristic guard
+on a supported path is unacceptable release debt even when opt-in.
 
 ## Q5 — Does a `CHANGELOG` entry-zero get written now?
 
