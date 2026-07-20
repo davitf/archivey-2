@@ -29,7 +29,6 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 | **T3** | Benchmark-gate RAR / encrypted / accelerator data cases (perf P6 remainder). |
 | **D4 / T7** | `open-issues.md` sweep; corpus-matrix audit. |
 | **DD4** | Finish `rapidgzip-truncation-investigation` (characterize → narrow/extend/remove) before 0.2.0 — later PR; see change `design.md`. |
-| **Q3 record** | S2/S3 entry gate for next backend → `PLAN.md` / `IDEAS.md`. |
 
 ### From `performance/`
 
