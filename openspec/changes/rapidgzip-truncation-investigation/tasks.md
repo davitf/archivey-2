@@ -15,10 +15,13 @@
       wall-clock timeout required (C++ hang risk). Do **not** rely on mutation/Atheris
       (accelerators off there). Compare cuts to stdlib `gzip` as oracle.
       → `scripts/rapidgzip_truncation_sweep.py` + `results/linux-x86_64.{md,json}`.
+      Upstream code map / intent: `UPSTREAM_TRUNCATION_REPORT.md`.
 - [x] 1.2 Confirm/curate the silent-truncation set (the maintainer's data suggests it may be as
       narrow as a header-only / ~10-byte input). Note any `parallelization` dependence.
       → **Not narrow:** silent∩stdlib-raise is the mid-body default (416 cuts). See
       `FINDINGS.md`. `parallelization` 0 vs 1 identical for gzip.
+      Upstream: soft-EOF is **by design** (`processNextChunk` / speculative `tryToDecode`);
+      `parallelization=0` means all cores (`UPSTREAM_TRUNCATION_REPORT.md`).
 - [ ] 1.3 Repeat on macOS (arm64) and Linux to confirm the silent set is platform-independent.
       → **Linux done.** macOS/Windows deferred (maintainer local run or CI job using the
       same script). Do not lock §2 solely on cross-platform identity, but confirm before 0.2.0.
@@ -26,6 +29,7 @@
       truncation behavior is documented too. Do not invent an ISIZE twin for raw
       deflate/zlib unless that sweep shows a real silent set (container CRC covers members today).
       → Short-prefix silent-empty only under `parallelization=0` (cuts 0..9); no ISIZE twin.
+      Upstream notes: report §2.8 / §6.
 
 ## 2. Decide the backstop's shape
 
@@ -33,7 +37,8 @@
 > (a) empty→stdlib fallback when rapidgzip EOF-delivers 0 bytes (P1+P2 on
 > silent-empty), (b) keep/extend ISIZE for silent short/full that (a) misses,
 > (c) no DIY reverse deflate seek. Reject remove (2.3) and narrow-only (2.1).
-> Details in `FINDINGS.md`. Maintainer analyzes before locking; §3 waits.
+> Details in `FINDINGS.md`. Upstream supports that stack (`UPSTREAM_TRUNCATION_REPORT.md`);
+> do not rely on stderr. Maintainer analyzes before locking; §3 waits.
 
 - [ ] 2.1 If the silent set is narrow and specific, replace the broad ISIZE compare with a
       targeted check for exactly those cases (and prefer rapidgzip's own errors otherwise).
@@ -45,7 +50,7 @@
 - [ ] 2.3 If rapidgzip's own errors plus a tiny special-case suffice, remove the
       `_GzipTruncationCheckStream` machinery entirely.
       → **Not supported by Linux data** (ISIZE already catches 337/416 silent∩raise cuts;
-      empty-fallback alone misses silent short/full).
+      empty-fallback alone misses silent short/full). Upstream: exceptions alone insufficient.
 - [ ] 2.4 Whichever outcome: re-check AUTO eligibility when only `gzip_isize_backstop` made
       truncation “verifiable” (bare `.gz` / single-file-compressed). Keep
       `_wrap_accelerated_length` / container `VerifyingStream` behavior intact.

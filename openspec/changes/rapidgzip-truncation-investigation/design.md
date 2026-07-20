@@ -84,6 +84,15 @@ From `_GzipTruncationCheckStream` / helpers (see `codecs.py`):
 | Accelerator hang sandbox / SECURITY.md wording | Threat-model residual; separate from truncation characterization. |
 | CLI misleading “install rapidgzip” when AUTO declined | cli-product polish; unrelated to ISIZE correctness. |
 
+## Upstream research (2026-07-20)
+
+See **`UPSTREAM_TRUNCATION_REPORT.md`** (companion to `FINDINGS.md`). Headline:
+rapidgzip’s parallel reader **intentionally** soft-EOFs many truncations
+(return empty/short, mark `block_offsets_complete`); stderr Unexpected-end is a
+rethrow path near the trailer, not a silent-success channel; `parallelization=0`
+means all cores. Upstream evidence supports FINDINGS’ **empty→stdlib + ISIZE**
+stack; do not remove ISIZE based on a “header-only only” hypothesis.
+
 ## Suggested measurement shape (refines tasks §1)
 
 For each fixture shape (empty payload, &lt;1 block, multi-block, multi-member,
