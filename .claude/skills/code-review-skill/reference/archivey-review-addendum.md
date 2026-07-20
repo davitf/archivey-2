@@ -140,6 +140,10 @@ when reality or a better design wins.
 ### Comments
 
 - [ ] Explain *why* (format quirks, hostile-input edges), not narrate *what*
+- [ ] Diff stands alone for a cold read (`CONTRIBUTING.md`); OpenSpec / PR prose is not
+  the only explanation
+- [ ] Links to specs / decisions / explorations / OpenSpec changes are fine for complex
+  decisions — but an inline summary should usually carry the *why*
 - [ ] Match surrounding comment density
 
 ---

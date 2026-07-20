@@ -103,9 +103,17 @@ workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /
   `openspec/specs/` that describe it in the same change. The one exception is the
   pause-and-ask rule below: when a cleanup would resolve a genuine design discrepancy,
   surface it instead of silently picking a direction.
+- **Write for a cold read.** Prefer diffs that a reviewer (or future you) can understand
+  from the code alone — names, structure, and nearby comments — without needing the
+  OpenSpec change, `design.md`, or a long PR body first. Those docs are for approach and
+  contract; they are not a substitute for local clarity. Reviews in this repo cold-read
+  the diff before loading design narrative (see the archivey review addendum §8).
 - **Comments explain *why*, not *what*.** Match the comment density and style of the
   surrounding code. Don't narrate what the code obviously does; do explain non-obvious
-  decisions, format quirks, and edge cases (these archives are full of them).
+  decisions, format quirks, and edge cases (these archives are full of them). For a
+  complex decision, a comment **may point** at a spec, `docs/decisions/`, architecture
+  note, exploration, or OpenSpec change — but **summarize the reason inline whenever
+  possible** so the pointer is optional depth, not the only explanation.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare
