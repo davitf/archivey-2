@@ -21,16 +21,18 @@ Round commissioned 2026-07-17 — the **non-security** pass toward the first pub
 `0.2.0`. Two of four reviews archived 2026-07-19 after parked leftovers were
 recorded (see `backlog.md` / `IDEAS.md`). Remaining:
 
-| Dir | Review | Status (2026-07-19) |
-|-----|--------|---------------------|
+| Dir | Review | Status |
+|-----|--------|--------|
+| `debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5: test-strategy + structural cleanliness) — every shortcut/duplication/drift/deferred-decision/test-hole with a pay-or-keep verdict, ranked by freezes-at-release cost | Findings in (2026-07-20); pay-list + `QUESTIONS.md` Q1–Q5 open |
 | `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | Findings in (#144); **P3/P5–P7/P9–P13/D1 done**; Q1–Q6 / P1/P2/P4/P8/P14 still open |
 | `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4** still open |
 
 **Live triage:** [`STATUS.md`](STATUS.md).
 
-`backlog.md` holds Topics 4–5 (test-strategy; structural-cleanliness), Topic 6
-(decode-engine perf, + parked stream-layering Q4), Topic 7 (outside-in
-adoption capstone), and the parked-from-archive table.
+`backlog.md` Topics 4–5 (test-strategy; structural-cleanliness) are now in flight
+as `debt-ledger/`. `backlog.md` still holds Topic 6 (decode-engine perf, + parked
+stream-layering Q4), Topic 7 (outside-in adoption capstone), and the
+parked-from-archive table.
 
 ## Archive (complete & addressed)
 
