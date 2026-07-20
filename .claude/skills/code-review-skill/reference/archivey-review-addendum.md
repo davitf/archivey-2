@@ -140,8 +140,8 @@ when reality or a better design wins.
 ### Comments
 
 - [ ] Explain *why* (format quirks, hostile-input edges), not narrate *what*
-- [ ] Diff stands alone for a cold read (`CONTRIBUTING.md`); OpenSpec / PR prose is not
-  the only explanation
+- [ ] Resulting code is self-explanatory (`CONTRIBUTING.md`); OpenSpec / PR prose is not
+  the only explanation — future editors see the tree, not the diff
 - [ ] Links to specs / decisions / explorations / OpenSpec changes are fine for complex
   decisions — but an inline summary should usually carry the *why*
 - [ ] Match surrounding comment density
@@ -274,17 +274,17 @@ Do **not** read the OpenSpec change, design notes, or long PR rationale yet.
 
 ### Pass 1 — code alone
 
-Read the diff (and nearby touched code) **cold**. Ask:
+Read the changed code (diff + nearby context) **cold**. Ask:
 
-- [ ] Does the change make sense **self-contained** — logic, edge cases, API shape,
-  safety/streaming/cost without needing external docs?
+- [ ] Does the **resulting** code make sense **self-contained** — logic, edge cases,
+  API shape, safety/streaming/cost without needing external docs?
 - [ ] Are **non-obvious** choices explained **in the code** (or an adjacent module
   docstring / comment) — format quirks, hostile-input edges, why this branch /
   sentinel / exception path exists?
-- [ ] Would a future reader who only has the tree (not the OpenSpec change) understand
-  *why*, not just *what*?
+- [ ] Would a future editor who only has the tree (not the PR or OpenSpec change)
+  understand *why*, not just *what*?
 - [ ] Tests: behavior coverage, red–green for fixes (§4); domain checklist rows that
-  are visible from the diff (§5)
+  are visible from the change (§5)
 
 Use the skill’s high-level + line-by-line techniques here
 (correctness / security / performance / maintainability / reuse). Skim this
@@ -293,7 +293,9 @@ addendum’s §1–§5 only as a **mental checklist**, not by loading linked des
 **Documentation debt rule:** if a pass-1 concern only dissolves after reading
 external prose (OpenSpec `design.md`, long PR body, `docs/decisions/`, …), that is
 usually **🟡 `[important]` documentation debt in the code** — not proof you should
-have absorbed the design first. Specs and design notes explain *why we chose this
+have absorbed the design first. A comment that **summarizes *why* inline** and
+optionally points at a spec / decision / exploration is fine; a bare “see design.md”
+with no local reason is not. Specs and design notes explain *why we chose this
 approach*; they are a poor substitute for *why this local path exists*.
 
 ### Pass 2 — whole context (do not skip)
@@ -314,7 +316,7 @@ Now open the narrative and contracts:
 
 | Pass | Job | Pass if… |
 |------|-----|----------|
-| **1. Code alone** | Correctness, clarity, local docs for non-obvious choices | Diff stands alone; surprises are explained near the code |
+| **1. Code alone** | Correctness, clarity, local docs for non-obvious choices | Resulting code is self-explanatory; surprises are explained near the code |
 | **2. Context** | Fit to OpenSpec / VISION / threat model / this addendum | Behavior matches (or intentionally revises) contracts; no silent discrepancies |
 
 **Do not treat a solid pass 1 as license to skip pass 2.** A locally clear change can

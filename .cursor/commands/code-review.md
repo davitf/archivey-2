@@ -23,9 +23,9 @@ Combine the priorities above with that skill’s process:
    — especially **§8 (code first, then context)**, plus VISION ranking, contracts,
    and the domain checklist. Do **not** absorb OpenSpec / design / long PR rationale
    before the cold code pass.
-2. **Pass 1 — code alone:** diff + nearby code for self-contained sense, local docs
-   for non-obvious choices, bugs/safety/tests. Use
-   `.claude/skills/code-review-skill/SKILL.md` techniques and severity labels;
+2. **Pass 1 — code alone:** changed code (+ nearby context) for self-explanatory
+   sense in the resulting tree, local docs for non-obvious choices, bugs/safety/tests.
+   Use `.claude/skills/code-review-skill/SKILL.md` techniques and severity labels;
    open deeper guides under `reference/` only as needed.
 3. **Pass 2 — context (required):** PR narrative, OpenSpec change, VISION / threat
    model / addendum rows that apply — check contract fit; pause-and-ask on

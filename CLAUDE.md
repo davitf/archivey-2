@@ -111,6 +111,6 @@ See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,
   (`[core-only]`) — since optional libraries change behaviour by both presence and version.
   The exact commands are in `CONTRIBUTING.md` ("Before pushing…").
 - See `CONTRIBUTING.md` for coding/testing standards (incl. behaviour-focused tests,
-  **write for a cold read** / self-explanatory diffs with inline *why*, and the rule to
+  **leave the code self-explanatory** with inline *why*, and the rule to
   **pause and ask the maintainer on spec/design discrepancies** rather than silently
   resolving them).
