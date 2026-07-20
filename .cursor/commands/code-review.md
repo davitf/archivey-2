@@ -19,12 +19,18 @@ changes unless the user explicitly asks for them.
 This repo vendors a fuller review skill under `.claude/skills/code-review-skill/`.
 Combine the priorities above with that skill’s process:
 
-1. **Read first:** `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
-   (VISION ranking, zero tech debt, specs-as-guidelines, domain checklist)
-2. **Then follow:** `.claude/skills/code-review-skill/SKILL.md`
-   (four-phase review, severity labels, constructive feedback norms)
-3. Open deeper guides under `.claude/skills/code-review-skill/reference/` only as needed
-   (security, performance, Python, error handling, architecture, quality)
+1. **Read process rules:** `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
+   — especially **§8 (code first, then context)**, plus VISION ranking, contracts,
+   and the domain checklist. Do **not** absorb OpenSpec / design / long PR rationale
+   before the cold code pass.
+2. **Pass 1 — code alone:** diff + nearby code for self-contained sense, local docs
+   for non-obvious choices, bugs/safety/tests. Use
+   `.claude/skills/code-review-skill/SKILL.md` techniques and severity labels;
+   open deeper guides under `reference/` only as needed.
+3. **Pass 2 — context (required):** PR narrative, OpenSpec change, VISION / threat
+   model / addendum rows that apply — check contract fit; pause-and-ask on
+   discrepancies. Findings that only dissolve after external prose are usually
+   documentation debt in the code (addendum §8).
 
 ## Scope
 

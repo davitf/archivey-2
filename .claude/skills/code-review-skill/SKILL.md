@@ -112,6 +112,11 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 
 ### Phase 1: Context Gathering (2-3 minutes)
 
+> **Archivey override:** For PRs in this repo, follow the addendum’s **§8 (code first,
+> then context)** instead of absorbing OpenSpec / design / long PR rationale here.
+> Keep only logistics (diff scope, size, CI, linked artifact *names*) before the cold
+> code pass; full narrative context is pass 2.
+
 Before diving into code, understand:
 1. Read PR description and linked issue / OpenSpec change / `review/` finding ID
 2. Skim the **[Archivey Review Addendum](reference/archivey-review-addendum.md)** for

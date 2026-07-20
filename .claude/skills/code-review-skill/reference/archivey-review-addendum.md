@@ -4,6 +4,9 @@
 > Use the skill’s process, severity labels, and Python/quality guides as the base;
 > use **this file** for what archivey uniquely cares about.
 >
+> **Review order:** archivey PRs use **code first, then context** (§8). That overrides
+> the skill’s Phase 1 “read the design narrative before the diff.”
+>
 > Do not merge these rules into the upstream-derived guides — keep the delta visible.
 
 **Authoritative sources (read these when a finding touches them):**
@@ -239,7 +242,7 @@ In-flight themes to know (see `STATUS.md` for live items):
 | Label | Archivey examples |
 |-------|-------------------|
 | 🔴 `[blocking]` | Path escape on default extract; catch-all exception translation; core grows a hard dep; unjustified type suppressions; silent solid O(n²) on a common API; deliberate new debt with no recorded decision; public contract change left undocumented *and* undiscussed |
-| 🟡 `[important]` | Dishonest cost signal; format parity hole without docs; missing red-green test for a bugfix; threat-model gap touched but unaddressed; CLI forced to import `internal/`; code contorted to match a questionable spec without raising a revision |
+| 🟡 `[important]` | Dishonest cost signal; format parity hole without docs; missing red-green test for a bugfix; threat-model gap touched but unaddressed; CLI forced to import `internal/`; code contorted to match a questionable spec without raising a revision; non-obvious logic that only makes sense after reading OpenSpec/`design.md`/long PR prose (pass-1 doc debt, §8) |
 | 🟢 `[nit]` | Naming, comment polish, non-user-facing refactor suggestions |
 | 💡 / 📚 / 🎉 | Alternatives, teaching notes, praise — non-blocking |
 
@@ -248,16 +251,70 @@ error/safety contract?** If yes → 🔴.
 
 ---
 
-## 8. Suggested review order (PR)
+## 8. Suggested review order (PR) — code first, then context
 
-1. Read PR description + linked issue / OpenSpec change / `review/` finding ID.
-2. Skim this addendum’s domain checklist (§5) for applicable rows.
-3. Run the skill’s four-phase process; pull generic Python/quality/security guides
-   only as needed.
-4. Verify gates relevant to the change (`ruff`, pyrefly/ty, targeted pytest; three
-   configs before push when behavior depends on extras/versions).
+This **overrides** the skill’s Phase 1 “absorb the design narrative before the
+diff.” For archivey PRs, use two passes with different jobs. Context is still
+**required** — it comes second, not never.
+
+### Before either pass (logistics only — ≤1 minute)
+
+Do **not** read the OpenSpec change, design notes, or long PR rationale yet.
+
+- [ ] Scope: `git diff main...HEAD` (or the paths / PR the author named); note size
+  (>400 lines? ask to split)
+- [ ] CI / local gates red or green (`ruff`, pyrefly/ty, pytest) — enough to know
+  whether failures are in-scope
+- [ ] Linked artifact **names** only (issue #, `openspec/changes/<name>/`,
+  `review/` finding ID) so you know what to open in pass 2 — not the prose yet
+
+### Pass 1 — code alone
+
+Read the diff (and nearby touched code) **cold**. Ask:
+
+- [ ] Does the change make sense **self-contained** — logic, edge cases, API shape,
+  safety/streaming/cost without needing external docs?
+- [ ] Are **non-obvious** choices explained **in the code** (or an adjacent module
+  docstring / comment) — format quirks, hostile-input edges, why this branch /
+  sentinel / exception path exists?
+- [ ] Would a future reader who only has the tree (not the OpenSpec change) understand
+  *why*, not just *what*?
+- [ ] Tests: behavior coverage, red–green for fixes (§4); domain checklist rows that
+  are visible from the diff (§5)
+
+Use the skill’s high-level + line-by-line techniques here
+(correctness / security / performance / maintainability / reuse). Skim this
+addendum’s §1–§5 only as a **mental checklist**, not by loading linked designs.
+
+**Documentation debt rule:** if a pass-1 concern only dissolves after reading
+external prose (OpenSpec `design.md`, long PR body, `docs/decisions/`, …), that is
+usually **🟡 `[important]` documentation debt in the code** — not proof you should
+have absorbed the design first. Specs and design notes explain *why we chose this
+approach*; they are a poor substitute for *why this local path exists*.
+
+### Pass 2 — whole context (do not skip)
+
+Now open the narrative and contracts:
+
+1. PR description + linked issue / full OpenSpec change (proposal, delta specs,
+   `design.md`) / `review/` brief or finding.
+2. Applicable rows in this addendum (§1 VISION ranking, §3 contracts, §5 domain)
+   and authoritative sources at the top of this file when a finding touches them.
+3. Spec ↔ code ↔ docs: match, intentional revision, or **pause-and-ask** (§3) —
+   including “self-contained and clear, but disagrees with the capability scenario
+   / invents undecided behavior / breaks format parity.”
+4. Gates relevant to the change (targeted pytest; three configs before push when
+   behavior depends on extras/versions).
 5. Write feedback with skill severity labels; put maintainer decisions in questions,
    not silent resolutions.
+
+| Pass | Job | Pass if… |
+|------|-----|----------|
+| **1. Code alone** | Correctness, clarity, local docs for non-obvious choices | Diff stands alone; surprises are explained near the code |
+| **2. Context** | Fit to OpenSpec / VISION / threat model / this addendum | Behavior matches (or intentionally revises) contracts; no silent discrepancies |
+
+**Do not treat a solid pass 1 as license to skip pass 2.** A locally clear change can
+still undercut a VISION claim, disagree with a scenario, or land unjustified debt.
 
 ---
 
