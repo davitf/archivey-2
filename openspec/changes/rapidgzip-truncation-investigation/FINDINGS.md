@@ -137,3 +137,67 @@ uv run --extra seekable python scripts/rapidgzip_truncation_sweep.py \
 For macOS arm64 / Windows CI: same command; compare
 `summary.silent_accelerator_cases` and the curated “rgz silent ∩ stdlib raise”
 table above.
+
+## Depth probe: how much data each returns (and is it correct?)
+
+Follow-up question (2026-07-20): at specific cut points, how much uncompressed
+output does stdlib vs rapidgzip produce, and is it a correct prefix of the true
+payload?
+
+**stdlib `gzip`:** on every truncated cut in this probe, **raises `EOFError`**
+and returns no data. It does **not** hand back a partial prefix. (Empty input
+`cut=0` is the odd case: `ok len=0`.)
+
+**rapidgzip** depends on whether the member has one deflate block or many.
+
+### Single-block files (`gzip.compress` — the common case)
+
+Small (108 B → 59 B gz) and large (280 KB → 908 B gz) behave the same:
+
+| Cut | stdlib | rapidgzip | Correctness |
+| --- | --- | --- | --- |
+| after header (10) | RAISE | `len=0` | empty (not a prefix of real data — just silence) |
+| after 18 | RAISE | `len=0` | empty |
+| after 100 (large) / N/A clamped (small) | RAISE | `len=0` | empty |
+| 50% | RAISE | `len=0` | empty |
+| 100 before end (large) | RAISE | `len=0` | empty |
+| 1 before end | RAISE | RAISE (`RuntimeError`) | — |
+| full | full exact | full exact | OK |
+
+Denser %-sample on the large single-block file: rapidgzip stays at **`len=0`**
+from ~5% through ~99%, then **raises** in the last ~0.5% (partial trailer),
+then **full** at 100%. It never emits a partial correct prefix for a
+single-block member — the incomplete block yields silence, not streaming output.
+
+### Multi-block file (`Z_FULL_FLUSH` ≈ 16 blocks, 280 KB → 2140 B gz)
+
+Here rapidgzip **does** return growing correct prefixes once whole blocks are
+present. stdlib still always raises on truncation.
+
+| Cut | stdlib | rapidgzip | Correctness |
+| --- | --- | --- | --- |
+| after 10 / 18 / 100 | RAISE | `len=0` | empty |
+| 50% (cut 1070) | RAISE | `len=140000` | **correct prefix** (exactly 50% of payload) |
+| ~100 before end | RAISE | often **crash** (`std::logic_error` / abort) or correct short prefix | mixed — see below |
+| 1 before end | RAISE | RAISE | — |
+| body complete, trailer stripped (miss 9..16 B) | RAISE | `len=280000` | **FULL exact** while stdlib still raises |
+| full | full exact | full exact | OK |
+
+When rapidgzip returns data on a truncated multi-block file, every sampled
+non-crash point was a **byte-correct prefix** of the true payload (sha256 of
+`expected[:out_len]` matched). No wrong-byte outputs observed in this probe.
+
+**Caveat:** some mid/late multi-block cuts **abort the process**
+(`terminate` / `std::logic_error`, rc −6) rather than raising into Python.
+That is a separate reliability defect from silent truncation (path source,
+so not Bug 3); worth tracking but out of band for the ISIZE-backstop decision.
+
+### Takeaway for the backstop
+
+- For ordinary single-block gzip, “silent” means **empty success**, not
+  “partial correct data.” An ISIZE / incompleteness check is about detecting
+  that false EOF, not about discarding bad bytes.
+- For multi-block (or multi-member) input, rapidgzip can return a **correct
+  but incomplete** prefix — or even a **full** payload with a missing trailer.
+  Length comparison against declared/trailer size is what catches those;
+  content corruption of the emitted prefix was not seen here.
