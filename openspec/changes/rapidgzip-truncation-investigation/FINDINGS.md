@@ -140,64 +140,63 @@ table above.
 
 ## Depth probe: how much data each returns (and is it correct?)
 
-Follow-up question (2026-07-20): at specific cut points, how much uncompressed
-output does stdlib vs rapidgzip produce, and is it a correct prefix of the true
-payload?
+Follow-up (2026-07-20), corrected after the maintainer noted that `readall()`
+hides streaming behaviour.
 
-**stdlib `gzip`:** on every truncated cut in this probe, **raises `EOFError`**
-and returns no data. It does **not** hand back a partial prefix. (Empty input
-`cut=0` is the odd case: `ok len=0`.)
+### Correction: `readall()` vs sized / bytewise reads
 
-**rapidgzip** depends on whether the member has one deflate block or many.
+The first probe used a single `f.read()` / `readall()`. That **mis-characterized
+stdlib**: `GzipFile.read()` with no size keeps going until the gzip EOF/CRC
+trailer; on a truncated member that call **raises `EOFError` and returns no
+value to the caller**, even when zlib had already produced decompressed bytes.
 
-### Single-block files (`gzip.compress` — the common case)
+A `read(1)` / `read(n)` loop **does** stream those bytes (seekable `BytesIO`
+or a non-seekable file object), pulling compressed input as needed, then raises
+on a later read when the member is incomplete.
 
-Small (108 B → 59 B gz) and large (280 KB → 908 B gz) behave the same:
+So: stdlib **does** read the input as needed and **can** yield a correct
+partial prefix — truncation is still **loud** (eventual `EOFError`).
+rapidgzip’s defect is not “emits data stdlib wouldn’t”; it is “often **stays
+silent** at EOF instead of raising,” and on single-block mid-cuts often emits
+**nothing** where sized stdlib reads already returned a prefix.
 
-| Cut | stdlib | rapidgzip | Correctness |
+### Single-block (`gzip.compress`) — large 280 KB example
+
+| Cut | stdlib `readall` | stdlib `read(1)` loop | rapidgzip `read` / `read(1)` |
 | --- | --- | --- | --- |
-| after header (10) | RAISE | `len=0` | empty (not a prefix of real data — just silence) |
-| after 18 | RAISE | `len=0` | empty |
-| after 100 (large) / N/A clamped (small) | RAISE | `len=0` | empty |
-| 50% | RAISE | `len=0` | empty |
-| 100 before end (large) | RAISE | `len=0` | empty |
-| 1 before end | RAISE | RAISE (`RuntimeError`) | — |
-| full | full exact | full exact | OK |
+| after 10 | RAISE, got 0 | RAISE, got 0 | silent `len=0` |
+| after 100 | RAISE, got 0 | **got 5733 correct prefix**, then RAISE | silent `len=0` |
+| 50% | RAISE, got 0 | **got ~127509 correct prefix**, then RAISE | silent `len=0` |
+| 100 before end | RAISE, got 0 | **got ~249285 correct prefix**, then RAISE | silent `len=0` |
+| 1 before end | RAISE, got 0 | **got full 280000**, then RAISE (bad trailer) | RAISE |
+| full | full exact | full exact | full exact |
 
-Denser %-sample on the large single-block file: rapidgzip stays at **`len=0`**
-from ~5% through ~99%, then **raises** in the last ~0.5% (partial trailer),
-then **full** at 100%. It never emits a partial correct prefix for a
-single-block member — the incomplete block yields silence, not streaming output.
+Same on a small file: e.g. cut 29/59 → stdlib `read(1)` got **18** correct
+bytes then RAISE; rapidgzip silent `len=0`.
 
-### Multi-block file (`Z_FULL_FLUSH` ≈ 16 blocks, 280 KB → 2140 B gz)
+### Multi-block (`Z_FULL_FLUSH`)
 
-Here rapidgzip **does** return growing correct prefixes once whole blocks are
-present. stdlib still always raises on truncation.
+| Cut | stdlib `read(1)` | rapidgzip |
+| --- | --- | --- |
+| after 10 | RAISE, empty | silent empty |
+| after 100 | correct prefix (~5733) then RAISE | silent empty |
+| 50% | correct prefix **140000** then RAISE | correct prefix **140000**, **no raise** |
+| ~100 before end | correct prefix then RAISE | prefix / or **abort** (`std::logic_error`) |
+| trailer stripped | full prefix then RAISE | **full exact**, **no raise** |
+| 1 before end | RAISE | RAISE |
 
-| Cut | stdlib | rapidgzip | Correctness |
-| --- | --- | --- | --- |
-| after 10 / 18 / 100 | RAISE | `len=0` | empty |
-| 50% (cut 1070) | RAISE | `len=140000` | **correct prefix** (exactly 50% of payload) |
-| ~100 before end | RAISE | often **crash** (`std::logic_error` / abort) or correct short prefix | mixed — see below |
-| 1 before end | RAISE | RAISE | — |
-| body complete, trailer stripped (miss 9..16 B) | RAISE | `len=280000` | **FULL exact** while stdlib still raises |
-| full | full exact | full exact | OK |
+When either library returned data in this probe, it was a **byte-correct
+prefix** (no wrong-byte garbage observed).
 
-When rapidgzip returns data on a truncated multi-block file, every sampled
-non-crash point was a **byte-correct prefix** of the true payload (sha256 of
-`expected[:out_len]` matched). No wrong-byte outputs observed in this probe.
-
-**Caveat:** some mid/late multi-block cuts **abort the process**
-(`terminate` / `std::logic_error`, rc −6) rather than raising into Python.
-That is a separate reliability defect from silent truncation (path source,
-so not Bug 3); worth tracking but out of band for the ISIZE-backstop decision.
+**Caveat:** some mid/late multi-block rapidgzip cuts **abort the process**
+(`terminate` / `std::logic_error`) rather than raising into Python — separate
+from silent truncation; out of band for the ISIZE-backstop decision.
 
 ### Takeaway for the backstop
 
-- For ordinary single-block gzip, “silent” means **empty success**, not
-  “partial correct data.” An ISIZE / incompleteness check is about detecting
-  that false EOF, not about discarding bad bytes.
-- For multi-block (or multi-member) input, rapidgzip can return a **correct
-  but incomplete** prefix — or even a **full** payload with a missing trailer.
-  Length comparison against declared/trailer size is what catches those;
-  content corruption of the emitted prefix was not seen here.
+- stdlib: partial output is normal on sized/streaming reads; **truncation is
+  still signaled** with `EOFError`.
+- rapidgzip: may return empty or a correct short/full prefix and **not raise** —
+  that missing signal is what the ISIZE / incompleteness backstop must cover.
+- Measuring only `readall()` makes stdlib look like “never returns partial
+  data”; that is an API artifact, not zlib/gzip behaviour.
