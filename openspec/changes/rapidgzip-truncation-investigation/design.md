@@ -14,7 +14,7 @@ across the ledger, threat model, and codecs code.
 | Backstop = narrowest check that covers silent cases; never false-positive on valid input | settled in delta spec |
 | Block-wise multi-member header scan (no full-file read) | done (#14) |
 | **Finish before 0.2.0** (debt-ledger Q4 = PAY) | decided 2026-07-20; implementation deferred |
-| Which of narrow / extend / remove | **open until measurements** |
+| Which of narrow / extend / remove | **open until maintainer lock-in** — Linux measurements recommend **extend** (see `FINDINGS.md`); macOS/Windows confirm still pending (task 1.3) |
 
 Rejected framing: “KEEP the open change past 0.2.0 because accelerators are
 opt-in / threat-model-scoped.” Opt-in and non-defended still ship a
@@ -105,3 +105,30 @@ and the suspected ~10-byte header-only case):
   updated to match the chosen backstop.
 - `openspec validate --strict rapidgzip-truncation-investigation` green;
   sync delta into main `seekable-decompressor-streams` when landing.
+
+## Linux measurement outcome (2026-07-20)
+
+Full write-up: [`FINDINGS.md`](FINDINGS.md). Raw tables:
+`results/linux-x86_64.{md,json}`. Sweep tool:
+`scripts/rapidgzip_truncation_sweep.py`.
+
+**Contradiction of the “~10-byte only” hypothesis:** on Linux x86_64 /
+rapidgzip 0.16.0, for every complete single-member fixture in the matrix,
+cuts from offset **10** through most of the body **silently return `b""`**
+while stdlib `gzip` raises `EOFError`. Near the trailer rapidgzip raises;
+the full file matches. `parallelization` 0 vs 1 did not change gzip
+outcomes. Multi-block/multi-member also show **silent_short**, and in a
+few trailer-stripped cuts rapidgzip returns the **full** payload while
+stdlib raises.
+
+**Current backstop:** catches most silent∩raise cuts when compressed size
+`≥ 18` (ISIZE mismatch). Misses the `< 18` band (including bare header-10)
+and multi-member bailouts. So the machinery is load-bearing — but incomplete.
+
+**Recommendation (awaiting lock-in):** **extend** (task 2.2), not remove
+(2.3) or narrow-to-header-only (2.1 alone). Keep ISIZE EOF compare; close
+the `< 18` hole with a small incomplete-member check; replace multi-member
+“any further header ⇒ accept” with a safe per-member ISIZE sum; keep AUTO’s
+`gzip_isize_backstop` verifiability signal. bzip2 (`IndexedBzip2File`,
+`parallelization=0`): silent empty only on very short prefixes (0..9) —
+document, no ISIZE twin.
