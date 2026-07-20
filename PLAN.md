@@ -119,7 +119,11 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
 - **Fully-native ZIP parser** — VISION's "eventually ZIP" memory-safety differentiator +
   salvage-via-local-headers. `zip-native-codec-streams` (item 4) captures most of the
   near-term compat value incrementally; the full central-directory/EOCD parser is a
-  post-`0.2.0` change.
+  post-`0.2.0` change. **Entry gate:** before landing a native streaming ZIP reader
+  (or any new format backend), pay the deferred **S2+S3** unification — one pass
+  driver + one member-list drive loop — so a fifth divergent copy is never written
+  (debt-ledger Q3, 2026-07-20; same shape as fuzzing-before-Phase-6). See
+  `review/debt-ledger/structural.md` and `IDEAS.md`.
 - Per the deep review: keep the **libarchive backend cut** (contradicts the memory-safety
   differentiator; only ever an off-by-default third-party plugin once the backend API is
   public), and defer `ArchivePath` and the fsspec **write** direction past 1.0.
@@ -628,6 +632,13 @@ coverage **reported, not gated**); no committed generated binaries.
 ---
 
 ## Cross-cutting concerns
+
+### Entry gates (do not skip)
+
+| Gate | Blocks | Why |
+| --- | --- | --- |
+| Fuzzing scaffold (Hypothesis + corpus mutation; Atheris with the parsers) | Phase 6 native 7z/RAR | Hostile-input surface must be exercised before shipping native parsers |
+| **S2+S3 unification** (one pass driver + one member-list drive loop) | Native streaming ZIP / any **new** format backend | Four divergent `stream_members` / materialization copies already exist (base/TAR/7z/RAR); a fifth is intolerable. Carry through `0.2.0` (no public-surface freeze); pay as one OpenSpec change **before** the next backend, with the solid-RAR mutation net (debt-ledger T1) landing first as the safety net. Decided debt-ledger Q3 (2026-07-20). |
 
 ### Fuzzing & benchmarks (cross-cutting scaffold)
 

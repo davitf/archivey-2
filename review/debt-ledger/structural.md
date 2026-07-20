@@ -24,19 +24,19 @@ review, not in the code). The `stream_members` ownership contract remains a
 **native streaming ZIP reader is the named next backend** (`IDEAS.md`,
 `open-issues.md` P2/P4) — adds a fifth copy carrying the same invariants.
 
-**Verdict: KEEP through 0.2.0, PAY before the next backend.** The duplication
-is invisible at the public surface — nothing about it freezes at release — and
-a behavior-preserving refactor of exactly the loops that carry the library's
-trickiest invariants (RAR pipe-offset demux, 7z solid swap) is the wrong thing
-to rush against a release date. The explicit justification for carrying it
-past 0.2.0: (a) zero public-surface exposure; (b) all four copies are
-currently guarded by the strongest suite the project has had (three dependency
-configs, corpus sweep, solid-RAR fixture tests). The debt becomes intolerable
-the moment a fifth copy is written, so the pay-trigger is hard: **the S3
-unification is an entry gate for the native-ZIP (or any new) backend**, the
-same way fuzzing was an entry gate for Phase 6. Recommend recording that gate
-in `PLAN.md`/`IDEAS.md` now so it cannot be forgotten. (Maintainer may
-override and pay pre-release — see `QUESTIONS.md` Q3.)
+**Verdict: KEEP through 0.2.0, PAY before the next backend. — CONFIRMED
+(debt-ledger Q3, 2026-07-20).** The duplication is invisible at the public
+surface — nothing about it freezes at release — and a behavior-preserving
+refactor of exactly the loops that carry the library's trickiest invariants
+(RAR pipe-offset demux, 7z solid swap) is the wrong thing to rush against a
+release date. The explicit justification for carrying it past 0.2.0: (a) zero
+public-surface exposure; (b) all four copies are currently guarded by the
+strongest suite the project has had (three dependency configs, corpus sweep,
+solid-RAR fixture tests). The debt becomes intolerable the moment a fifth copy
+is written, so the pay-trigger is hard: **the S3 unification is an entry gate
+for the native-ZIP (or any new) backend**, the same way fuzzing was an entry
+gate for Phase 6. Recorded in `PLAN.md` (cross-cutting entry gates + deferred
+native ZIP) and `IDEAS.md` (native streaming ZIP bullet).
 
 ## S2 — member-list pipeline: **half paid**; the remaining half is the risky half (PAY together with S3)
 

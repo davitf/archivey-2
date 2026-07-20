@@ -29,6 +29,11 @@
   adversarial string corpus pins that behavior). A native parser can decode such names
   with the same cp437/`surrogateescape` fallback used for unflagged names and keep the
   archive readable — likely with a diagnostic once warnings-as-data lands.
+  **Entry gate (debt-ledger Q3, 2026-07-20):** do **not** start this backend (or any
+  new format backend) until **S2+S3** are unified — one pass driver + one member-list
+  drive loop — so we never write a fifth divergent copy. Recorded in `PLAN.md`
+  (cross-cutting entry gates + deferred native ZIP). Pay as one OpenSpec change;
+  land debt-ledger T1 (solid-RAR mutation net) first as the migration safety net.
 
 - **libarchive backend** — `python-libarchive-c` as an **alternative / additional**
   backend for several formats (zip/tar/7z/iso/cpio/…), in the `[all]`/alternative tier

@@ -32,7 +32,15 @@ before release; the honest-number option costs nothing and the claim stays
 falsifiable-but-true. But this is a positioning call — VISION is the
 maintainer's document.
 
-## Q3 — S2+S3 unification: accept "entry gate for the next backend", or pay pre-release?
+## Q3 — S2+S3 unification: accept "entry gate for the next backend", or pay pre-release? — **DECIDED (2026-07-20)**
+
+**Decision: entry gate for the next backend** (ledger recommendation). Carry the
+four-copy pass driver and split materialization/progressive drive loops through
+`0.2.0`; unify S2+S3 as **one OpenSpec change before native streaming ZIP (or any
+new format backend)**. Recorded in `PLAN.md` (cross-cutting entry gates + deferred
+native ZIP) and `IDEAS.md` (native streaming ZIP bullet). T1 (solid-RAR mutation)
+should land before that refactor as the safety net — not as a 0.2.0 blocker for
+S2/S3 itself.
 
 The ledger's recommended verdict (structural.md) is: carry the four-copy pass
 driver and the split materialization/progressive drive loops **through**

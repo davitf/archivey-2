@@ -42,8 +42,8 @@ stable over time.
 | **T1** | Mutation-fuzz + conformance sweep cover only declarative `CORPUS`; **solid-RAR demux** (where RAR-review bugs lived) has no generative net | `tests/test_mutation_fuzz.py:118`; `rar_reader.py:578-649` | **F2** | **PAY** — mutate static fixtures / build solid RAR into corpus |
 | **T3** | Benchmark gate has no RAR/encrypted/accelerator data cases — D1's claim can't be honest for unmeasured paths | `tests/test_benchmark_gate.py` | **F2** | **PAY** (already tracked as perf P6 remainder) |
 | **T2** | Seek-interleaving property test exists only for XZ; lzip/`.Z` share the arithmetic class that hid F1 | `test_seekable_streams.py:507` | **F2** | **PAY** — parametrize existing test |
-| **S3** | Pass driver now **4 divergent copies** (base/TAR/7z/RAR; close-previous enforced 3 ways + not at all in one) — S3's prediction realized; next backend makes 5 | `base_reader.py:450`, `tar_reader.py:439`, `sevenzip_reader.py:303`, `rar_reader.py:578` | **F2** | **KEEP thru 0.2.0, PAY as entry gate for next backend** — Q3 to confirm |
-| **S2** | Member-list pipeline half-unified: shared stamper/publication landed, but dual drive loops + **mirrored double-fault guards** remain | `base_reader.py:782-816` vs `:1021-1048,1640-1690` | **F2** | **KEEP thru 0.2.0, PAY with S3** (one change) |
+| **S3** | Pass driver now **4 divergent copies** (base/TAR/7z/RAR; close-previous enforced 3 ways + not at all in one) — S3's prediction realized; next backend makes 5 | `base_reader.py:450`, `tar_reader.py:439`, `sevenzip_reader.py:303`, `rar_reader.py:578` | **F2** | **KEEP thru 0.2.0; PAY as entry gate for next backend** — **Q3 decided** (2026-07-20); `PLAN.md` / `IDEAS.md` |
+| **S2** | Member-list pipeline half-unified: shared stamper/publication landed, but dual drive loops + **mirrored double-fault guards** remain | `base_reader.py:782-816` vs `:1021-1048,1640-1690` | **F2** | **KEEP thru 0.2.0; PAY with S3** (one change) — **Q3 decided** |
 | **D4** | `open-issues.md` contradicts its own bucket rules (P1 decided+implemented yet listed as to-fix; dead change-path refs) | `docs/internal/open-issues.md:34-55,185` | **F2** | **PAY** — 15-min sweep |
 | **D5/D6** | Lifecycle housekeeping: `stop-on-failure-not-policy` complete-but-unarchived; `cli-product/` review done-pending-archive | `openspec list`; `review/STATUS.md` | **F2** | **DONE** (2026-07-20) — OpenSpec → `archive/2026-07-20-stop-on-failure-not-policy/`; review → `archive/2026-07-20-cli-product/` |
 | **T7** | Corpus matrix thin spots post-oracle-retirement: ISO only in `basic`; encrypted-header 7z / multi-volume outside the nets | `tests/sample_archives.py:307-345` | **F2** | **PAY** — half-day audit + cheap extensions |
@@ -66,7 +66,8 @@ stable over time.
 5. **T3** — benchmark-gate RAR/encrypted/accelerator cases (D1 dependency).
 6. **D4 + T7** — the housekeeping sweep (open-issues, corpus-matrix audit).
    (**D5/D6** archived 2026-07-20.)
-7. Record the **S2/S3 entry-gate** decision (Q3) in `PLAN.md`/`IDEAS.md`.
+7. ~~Record the **S2/S3 entry-gate** decision (Q3)~~ **done** (2026-07-20) —
+   `PLAN.md` / `IDEAS.md`.
 
 Nothing else on the ledger should block 0.2.0; every KEEP above has its
 justification written down here or in the register it points to, which is
