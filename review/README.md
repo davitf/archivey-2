@@ -18,21 +18,17 @@ completed changes out of `changes/`.
 ## In flight
 
 Round commissioned 2026-07-17 — the **non-security** pass toward the first public
-`0.2.0`. Two of four reviews archived 2026-07-19 after parked leftovers were
-recorded (see `backlog.md` / `IDEAS.md`). Remaining:
+`0.2.0`. `cli-product/` archived 2026-07-20 (parked leftovers recorded). Remaining:
 
 | Dir | Review | Status |
 |-----|--------|--------|
-| `debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5: test-strategy + structural cleanliness) — every shortcut/duplication/drift/deferred-decision/test-hole with a pay-or-keep verdict, ranked by freezes-at-release cost | Findings in (2026-07-20); pay-list + `QUESTIONS.md` Q1–Q5 open |
-| `cli-product/` | The CLI as a **product** — UX, grammar, exit codes, output (not code correctness; #131 did that) | Findings in (#144); **P3/P5–P7/P9–P13/D1 done**; Q1–Q6 / P1/P2/P4/P8/P14 still open |
+| `debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5: test-strategy + structural cleanliness) — every shortcut/duplication/drift/deferred-decision/test-hole with a pay-or-keep verdict, ranked by freezes-at-release cost | Findings in (2026-07-20); pay-list (D5/D6 done) + `QUESTIONS.md` Q1–Q5 open |
 | `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4** still open |
 
 **Live triage:** [`STATUS.md`](STATUS.md).
 
-`backlog.md` Topics 4–5 (test-strategy; structural-cleanliness) are now in flight
-as `debt-ledger/`. `backlog.md` still holds Topic 6 (decode-engine perf, + parked
-stream-layering Q4), Topic 7 (outside-in adoption capstone), and the
-parked-from-archive table.
+`backlog.md` still holds Topic 6 (decode-engine perf, + parked stream-layering
+Q4), Topic 7 (outside-in adoption capstone), and the parked-from-archive table.
 
 ## Archive (complete & addressed)
 
@@ -45,6 +41,7 @@ parked-from-archive table.
 | `archive/2026-07-17-cli/` | CLI design + implementation (PR #131 → #120) | F1–F12 + D1–D8 addressed in #120; R1–R4 and hoist H1–H3 / D4 logging follow-ups fixed before merge. |
 | `archive/2026-07-19-stream-layering/` | Stream wrapper stack correctness + verify fusion | F1/F2/D1/D2 done (#137); Q4 parked → Topic 6. |
 | `archive/2026-07-19-api-coherence/` | Public API & member-model coherence | Q1–Q7 decided + implemented (#153–#157); digest fill done (#160); Q5 → `IDEAS.md`; D1 → `cli-product/`. |
+| `archive/2026-07-20-cli-product/` | The CLI as a **product** (UX / grammar / exit codes / output) | P1–P3/P5–P14/D1 done (#144 + #163/#165); **P4/`--json`** → `IDEAS.md` / DD7; **Q4/`--raw`** → DD8. |
 
 ## Conventions every brief inherits
 

@@ -1,11 +1,10 @@
 # Review backlog — deferred review ideas
 
 Non-security review topics worth doing, but *after* the remaining in-flight
-round (`cli-product`, `performance`). They differ in character and timing:
+round (`debt-ledger`, `performance`). They differ in character and timing:
 
-- **Topics 4 + 5** (test-strategy, structural-cleanliness) — a single lighter
-  "quality & debt" pass; they overlap heavily and both feed the same pre-`0.2.0`
-  polish, so run them together rather than as two frontier deep dives.
+- **Topics 4 + 5** (test-strategy, structural-cleanliness) — now in flight as
+  `debt-ledger/` (findings 2026-07-20; pay-list + QUESTIONS open).
 - **Topic 6** (decode-engine performance) — a later *performance* round, once the
   `stream-layering` wrapper work has landed; mostly independent of it.
   *(stream-layering fusion landed in #137 — Topic 6 is unblocked on that axis.
@@ -20,14 +19,16 @@ round (`cli-product`, `performance`). They differ in character and timing:
 
 ## Parked from archived deep reviews (2026-07)
 
-Items consciously deferred when archiving `api-coherence/` and `stream-layering/`.
-Do not re-open those review directories for these.
+Items consciously deferred when archiving deep reviews. Do not re-open those
+review directories for these.
 
 | Item | Origin | Where it lives now |
 |------|--------|--------------------|
 | Library `verify` / `VerifyReport` (E2 / **Q5**) | api-coherence | `IDEAS.md` — deferred past 0.2.0 |
 | Stored stream digests (zlib Adler omit + lzip multi-member CRC) | api-coherence Q6 fill | **Done** #160 — archived OpenSpec `archive/2026-07-19-surface-stored-stream-digests` |
-| CLI list marks for `ANTI` / non-current (**D1**) | api-coherence | Folded into in-flight `cli-product/` (see its SUMMARY) |
+| CLI list marks for `ANTI` / non-current (**D1**) | api-coherence → cli-product | **Done** in `archive/2026-07-20-cli-product/` |
+| CLI **P4** `--json` (wait for `hash` / member schema) | cli-product Q2 | `IDEAS.md` (CLI follow-ups) / debt-ledger DD7 |
+| CLI **Q4** `--raw` / TTY-only quoting remainder | cli-product Q4 | debt-ledger DD8 (additive; recommended style already applied) |
 | `SlicingStream.readinto` (**Q4**) + optional `VerifyingStream` delete | stream-layering | Topic 6 adjacency above |
 
 Live triage of remaining *in-flight* reviews is in [`STATUS.md`](STATUS.md).
