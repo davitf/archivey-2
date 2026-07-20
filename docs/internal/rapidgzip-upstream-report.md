@@ -11,7 +11,8 @@ Deep dive (code citations, issue table, repros):
 `openspec/changes/rapidgzip-truncation-investigation/UPSTREAM_TRUNCATION_REPORT.md`.
 
 Archivey product mitigation (empty→stdlib fallback + single-member ISIZE backstop):
-OpenSpec change `rapidgzip-truncation-investigation`. Accelerator shutdown / dual-load /
+**implemented** in `_GzipTruncationCheckStream` (OpenSpec change
+`rapidgzip-truncation-investigation`). Accelerator shutdown / dual-load /
 Python-source `terminate()`: `docs/internal/known-issues.md` (Bugs 1–3).
 
 Pinned: **rapidgzip 0.16.0** ≡ librapidarchive `1221a30` (`[version] Bump rapidgzip

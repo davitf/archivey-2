@@ -155,12 +155,13 @@ fallbacks raise a normal `ValueError`, which the reader boundary translates to
 
 ### Soft EOF on truncated gzip (by design — not a bug)
 
-**Status: upstream design / Archivey limitation** (rapidgzip 0.16.0). The parallel
+**Status: upstream design / Archivey mitigated on path sources** (rapidgzip 0.16.0). The parallel
 reader often returns empty or a short/full prefix **without raising** on truncated
-input (`block_offsets_complete=True` is not trustworthy). Full write-up and Archivey
-mitigation plan: [`rapidgzip-upstream-report.md`](rapidgzip-upstream-report.md) and
-OpenSpec change `rapidgzip-truncation-investigation`. **Not filed upstream** (would be
-a feature request for an incompleteness flag, not a bug report).
+input (`block_offsets_complete=True` is not trustworthy). Archivey backstops **path** gzip with
+empty→stdlib fallback plus a single-member ISIZE compare; multi-member ISIZE sum is deferred.
+Full write-up: [`rapidgzip-upstream-report.md`](rapidgzip-upstream-report.md). End-user note:
+[Gotchas](../gotchas.md#format-limitations). **Not filed upstream** (would be a feature request
+for an incompleteness flag, not a bug report).
 
 ### The canary
 

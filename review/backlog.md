@@ -12,7 +12,10 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
   `SlicingStream.readinto` under lock so a fused hasher can hash a `memoryview`
   without a bytes copy; park until an extract path is shown `readinto`-bound;
   (2) optional cleanup — delete the thin leftover `VerifyingStream` wrapper once
-  nothing but unit tests / `codecs.py` length backstops need it.)*
+  nothing but unit tests / `codecs.py` length backstops need it. *Note (2026-07-20):
+  `_GzipTruncationCheckStream` remains after `rapidgzip-truncation-investigation`
+  (empty→stdlib + ISIZE); container `VerifyingStream` and unit tests still use the
+  wrapper — Topic 6 delete-when-unused stays parked.*)
 - **Topic 7** (outside-in adoption / confidence) — a **capstone**, meaningful only
   *after everything else is fully addressed*; it judges the finished library, not a
   work in progress.

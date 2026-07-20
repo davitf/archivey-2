@@ -67,15 +67,20 @@
 
 ## 3. Implement + test the chosen approach
 
-- [ ] 3.1 Implement the decision from §2 in `_open_gzip` / the gzip codec path.
-- [ ] 3.2 Tests: truncation at representative offsets for single- and multi-member gzip; assert
+- [x] 3.1 Implement the decision from §2 in `_open_gzip` / the gzip codec path.
+      → `_GzipTruncationCheckStream`: empty→stdlib fallback + single-member ISIZE
+      (raise on `size < 18` for non-empty soft EOF); keep further-magic multi-member bailout.
+- [x] 3.2 Tests: truncation at representative offsets for single- and multi-member gzip; assert
       `TruncatedError`/`CorruptionError` and that valid files (incl. multi-member) never raise.
-- [ ] 3.3 Update `seekable-decompressor-streams` (sync the delta), `docs/internal/known-issues.md`,
+      → `tests/test_accelerator_corruption.py` (header-only, mid-cut recovery, empty, multi).
+- [x] 3.3 Update `seekable-decompressor-streams` (sync the delta), `docs/internal/known-issues.md`,
       and the truncation notes in `docs/internal/library-analysis.md`.
-- [ ] 3.4 If `_GzipTruncationCheckStream` is gone and nothing else needs standalone
+      → Also scoped end-user notes in `docs/gotchas.md` / `docs/formats.md` (bare `.gz` vs
+      container CRC).
+- [x] 3.4 If `_GzipTruncationCheckStream` is gone and nothing else needs standalone
       `VerifyingStream` beyond unit tests / container bounds, note Topic 6 adjacency in
       `review/backlog.md` (do not delete in this change unless clearly unused).
-
+      → Wrapper kept; Topic 6 note updated.
 ## Already done (interim, in PR #14)
 
 - [x] Block-wise (bounded-memory) scan in `_GzipTruncationCheckStream._has_additional_gzip_member`
