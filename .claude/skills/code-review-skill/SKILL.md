@@ -112,13 +112,25 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 
 ### Phase 1: Context Gathering (2-3 minutes)
 
-Before diving into code, understand:
-1. Read PR description and linked issue / OpenSpec change / `review/` finding ID
-2. Skim the **[Archivey Review Addendum](reference/archivey-review-addendum.md)** for
-   applicable VISION / contract / domain checklist rows
-3. Check PR size (>400 lines? Ask to split)
-4. Review CI/CD status (tests / ruff / type-check)
-5. Note any relevant architectural decisions or open `QUESTIONS.md` items
+> **Archivey override:** For PRs in this repo, **do not** use the generic “read the
+> design narrative before the diff” Phase 1. Follow the addendum’s **§8 (code first,
+> then context)** instead. Keep only logistics before the cold code pass; full
+> narrative context is pass 2 (required — do not skip).
+
+**Logistics only** (≤1 minute — no OpenSpec / design / long PR rationale yet):
+
+1. Scope: `git diff main...HEAD` (or the paths / PR the author named); note size
+   (>400 lines? Ask to split)
+2. CI / local gates (`ruff`, pyrefly/ty, pytest) — enough to know whether failures
+   are in-scope
+3. Linked artifact **names** only (issue #, `openspec/changes/<name>/`, `review/`
+   finding ID) so you know what to open in pass 2 — not the prose yet
+4. Skim **[Archivey Review Addendum](reference/archivey-review-addendum.md) §8**
+   for the two-pass process (§1–§5 as a mental checklist only — do not load linked
+   designs yet)
+
+Then run Phases 2–3 as **pass 1 (code alone)**. Open the PR narrative, OpenSpec
+change, and contracts as **pass 2** per addendum §8 before writing the verdict.
 
 > For large diffs, pipe the diff through [`scripts/pr-analyzer.py`](scripts/pr-analyzer.py) (`git diff main...HEAD | python scripts/pr-analyzer.py`) to triage complexity and get a suggested review approach before reading.
 
