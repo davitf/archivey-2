@@ -4,9 +4,16 @@
 decode-once). Wall-time / VISION ≤1.3× runs off the PR path as a **change-guarded
 nightly** (`benchmark-wall.yml`): a daily schedule whose expensive realistic run is
 skipped unless the default branch changed since the previous run (this project is
-bursty/dormant, and per-PR taxed every PR). It records drift (JSON + markdown report
-artifacts, job summary table, and informational VISION print) and goes red only on a gross
-regression.
+bursty/dormant, and per-PR taxed every PR). When it runs it:
+
+- records drift (JSON + markdown report artifacts, job summary table);
+- hard-fails on the ~10× sanity ceiling **or** on **wall-ratio drift** vs the
+  previous successful nightly's JSON (relative regression gate — debt-ledger Q1 /
+  perf Q2 option (a));
+- prints absolute VISION / Q1 listing bands as informational only.
+
+`workflow_dispatch` can pass `skip_drift=true` to accept the current ratios as a
+new baseline after an intentional slowdown.
 
 Re-run with:
 
@@ -122,5 +129,6 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
   written to the Actions job summary so it is readable without downloading) — a daily
   schedule that skips its expensive run unless the default branch changed since the previous
   run (bursty/dormant project; per-PR was rejected for taxing every PR). `workflow_dispatch`
-  forces a run.
-- Wall timing: unmeasured archivey vs stdlib; VISION band informational.
+  forces a run (`skip_drift` re-seeds after intentional regressions).
+- Wall timing: unmeasured archivey vs stdlib; absolute VISION bands informational;
+  nightly hard-fails on wall-ratio *drift* vs the previous successful artifact.

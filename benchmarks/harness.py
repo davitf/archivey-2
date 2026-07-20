@@ -13,9 +13,12 @@ Modes:
   solid decode-once bounds, and a non-solid over-decode bound on ``read_all``.
   Under-decode remains an integrity check; over-decode catches silent re-open churn
   that the old seek slack (baseline×2+8) used to absorb.
-- ``full``: also report wall-time ratios vs stdlib peers. Ratios are noisy on
-  shared runners, so full mode is a **manual / nightly drift tool**, not the PR
-  gate. Sanity ceiling only (no committed wall-time baseline).
+- ``full``: also report wall-time ratios vs stdlib peers. Absolute ratios are noisy
+  on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
+  (``benchmark-wall.yml``) hard-fails on (1) the ~10× sanity ceiling and (2)
+  **wall-ratio drift** vs the previous successful nightly's JSON artifact
+  (perf-review Q2 / debt-ledger Q1 option (a)). VISION absolute bands stay
+  informational prints.
 
 Formats covered here: ZIP, TAR, gzip, tar.gz/tar.bz2 (+ accelerators), solid 7z
 (and solid RAR when the ``rar`` writer is available to build fixtures). Listing
@@ -64,13 +67,17 @@ SOLID_RANDOM_BYTES_FACTOR = 1.5
 # absorbed a full ZIP decode-twice seek doubling (28→52). Fixtures are
 # deterministic; baseline+8 still covers observed host jitter (e.g. gzip 1→3).
 SEEK_BASELINE_SLACK = 8
-# Wall-time sanity ceiling for --mode full. No committed wall_time.json: cold-pass
-# ci ratios were misleading, and shared-runner noise makes ratio regression gates
-# flake. VISION ≤1.3× / ~2× is informational on realistic full runs / nightly.
+# Wall-time sanity ceiling for --mode full. Absolute VISION ≤1.3× / ~2× bands stay
+# informational (shared-runner noise); nightly enforces *drift* vs the previous
+# successful run's JSON instead (debt-ledger Q1 / perf Q2 option (a)).
 WALL_RATIO_BUDGET = 10.0
 WALL_RATIO_VISION = 1.3
 WALL_RATIO_VISION_SAFETY = 2.0
-# Q1 listing bands (informational in full-mode reports; not PR-gated — see Q2):
+# Relative wall_ratio regression vs previous nightly. Dual gate: new > old×factor
+# AND new − old ≥ min abs delta (avoids failing 1.02→1.08 noise on near-parity paths).
+WALL_RATIO_DRIFT_FACTOR = 1.25
+WALL_RATIO_DRIFT_MIN_ABS = 0.15
+# Q1 listing bands (informational in full-mode reports; not PR-gated):
 # ZIP/TAR wrap stdlib → 2–3×/member; native 7z/RAR → ≈parity with py7zr/rarfile.
 LISTING_RATIO_ZIP_TAR = 3.0
 LISTING_RATIO_NATIVE = 1.25
@@ -849,7 +856,7 @@ def _wall_checks(
     *,
     enforce_vision: bool = False,
 ) -> list[str]:
-    """Sanity / informational wall checks — no committed wall-time baseline."""
+    """Sanity ceiling (+ optional informational VISION-band messages as failures)."""
     failures: list[str] = []
     for r in results:
         if r.wall_ratio is None:
@@ -875,6 +882,53 @@ def _wall_checks(
             failures.append(
                 f"{r.case}: wall_ratio={r.wall_ratio:.2f} > VISION safety "
                 f"{WALL_RATIO_VISION_SAFETY}× (target {WALL_RATIO_VISION}×)"
+            )
+    return failures
+
+
+def _previous_wall_ratios(previous: dict[str, Any]) -> dict[str, float]:
+    """Map case name → wall_ratio from a prior harness JSON payload."""
+    out: dict[str, float] = {}
+    for row in previous.get("results", []):
+        if not isinstance(row, dict):
+            continue
+        name = row.get("case")
+        ratio = row.get("wall_ratio")
+        if isinstance(name, str) and isinstance(ratio, (int, float)):
+            out[name] = float(ratio)
+    return out
+
+
+def _wall_drift_checks(
+    results: list[CaseResult],
+    previous: dict[str, Any] | None,
+    *,
+    factor: float = WALL_RATIO_DRIFT_FACTOR,
+    min_abs: float = WALL_RATIO_DRIFT_MIN_ABS,
+) -> list[str]:
+    """Fail when wall_ratio regresses vs a previous nightly JSON.
+
+    Compares peer ratios only (cases with ``wall_ratio`` on both sides). Absolute
+    wall seconds are not gated — machine skew dominates; the ratio cancels most of
+    it. Missing previous / new cases / dropped cases are skipped (seed or rename).
+    """
+    if previous is None:
+        return []
+    prior = _previous_wall_ratios(previous)
+    if not prior:
+        return []
+    failures: list[str] = []
+    for r in results:
+        if r.wall_ratio is None:
+            continue
+        old = prior.get(r.case)
+        if old is None or old <= 0:
+            continue
+        new = r.wall_ratio
+        if new > old * factor and (new - old) >= min_abs:
+            failures.append(
+                f"{r.case}: wall_ratio={new:.2f} drifted from previous {old:.2f} "
+                f"(>{factor:.2f}× and +{min_abs:.2f} abs; nightly drift gate)"
             )
     return failures
 
@@ -1028,8 +1082,10 @@ def format_text_report(payload: dict[str, Any]) -> str:
             "",
             f"- VISION target ≤{WALL_RATIO_VISION}× stdlib on common paths "
             f"(~{WALL_RATIO_VISION_SAFETY}× safety band is informational on nightly).",
-            f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job; VISION band "
-            "jitter is printed, not failed.",
+            f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job.",
+            f"- Nightly also fails on wall-ratio *drift* vs the previous successful "
+            f"run's JSON (>{WALL_RATIO_DRIFT_FACTOR:.2f}× and "
+            f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs) — not on absolute VISION bands.",
             "- Structural seek/bytes gates live on the PR path (`ci.yml`), not here.",
             "",
         ]
@@ -1072,6 +1128,24 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help="Write a human-friendly markdown report to this path",
+    )
+    parser.add_argument(
+        "--wall-drift-baseline",
+        type=Path,
+        default=None,
+        help=(
+            "Previous harness JSON (nightly artifact). When set, fail if any "
+            "case's wall_ratio regresses beyond --wall-drift-factor"
+        ),
+    )
+    parser.add_argument(
+        "--wall-drift-factor",
+        type=float,
+        default=WALL_RATIO_DRIFT_FACTOR,
+        help=(
+            "Max allowed relative wall_ratio increase vs --wall-drift-baseline "
+            f"(default {WALL_RATIO_DRIFT_FACTOR})"
+        ),
     )
     parser.add_argument(
         "--fixture-dir",
@@ -1137,14 +1211,35 @@ def main(argv: list[str] | None = None) -> int:
         check_seek_baselines=(args.scale == "ci"),
     )
     if args.mode == "full":
-        # Sanity ceiling only — no committed wall_time.json (shared-runner noise).
-        # VISION ≤1.3× / ~2× on realistic corpora is informational drift signal.
+        # Sanity ceiling always; absolute VISION bands stay informational prints.
+        # Nightly drift vs previous JSON is the hard wall-ratio gate (Q2 option a).
         for f in _wall_checks(results, enforce_vision=False):
             failures.append(f)
         if args.scale == "realistic":
             for f in _wall_checks(results, enforce_vision=True):
-                if "VISION safety" in f:
+                if "VISION safety" in f or "Q1 listing" in f or "Q1 native" in f:
                     print(f"VISION BUDGET (informational): {f}", file=sys.stderr)
+        if args.wall_drift_baseline is not None:
+            prev = load_json(args.wall_drift_baseline)
+            if prev is None:
+                print(
+                    f"wall-drift baseline missing: {args.wall_drift_baseline} "
+                    "(skipping drift check — seed run)",
+                    file=sys.stderr,
+                )
+            else:
+                drift = _wall_drift_checks(
+                    results,
+                    prev,
+                    factor=args.wall_drift_factor,
+                )
+                failures.extend(drift)
+                if not drift:
+                    print(
+                        f"Wall-ratio drift OK vs {args.wall_drift_baseline} "
+                        f"(factor={args.wall_drift_factor})",
+                        file=sys.stderr,
+                    )
 
     if failures:
         print("BENCHMARK GATE FAILURES:", file=sys.stderr)

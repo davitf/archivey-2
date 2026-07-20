@@ -1,11 +1,17 @@
 name: Benchmark wall-time
 
 # Wall-time drift tracker for the VISION perf budget. Off the PR path (shared-runner
-# ratios are too noisy to block merges) and NOT run per-PR (that taxed every PR with a
-# multi-minute realistic run). Instead: a daily schedule with a change guard — the
-# expensive run fires only when the default branch actually moved since the previous
-# nightly, so bursts of activity get next-morning signal while long dormant stretches
-# cost only the ~15s guard step. `workflow_dispatch` forces a run on demand.
+# absolute ratios are too noisy to block merges) and NOT run per-PR. Instead: a daily
+# schedule with a change guard — the expensive run fires only when the default branch
+# actually moved since the previous nightly, so bursts of activity get next-morning
+# signal while long dormant stretches cost only the ~15s guard step.
+# `workflow_dispatch` forces a run on demand (optional skip-drift to re-seed).
+#
+# Hard fails (when the run fires):
+#   1. ~10× wall-ratio sanity ceiling
+#   2. wall-ratio *drift* vs the previous successful run's JSON artifact
+#      (debt-ledger Q1 / perf Q2 option (a) — relative regression, not absolute ≤1.3×)
+# Absolute VISION / Q1 listing bands remain informational prints.
 #
 # The PR-blocking structural gate (seek baselines + solid decode-once) lives in
 # `ci.yml` (`benchmark` job) and runs on every PR.
@@ -13,10 +19,19 @@ on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      skip_drift:
+        description: "Skip wall-ratio drift check (accept current ratios as new baseline)"
+        type: boolean
+        default: false
 
 concurrency:
   group: benchmark-wall
   cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   benchmark-wall:
@@ -60,16 +75,58 @@ jobs:
       - name: Sync (dev + all extras)
         if: steps.guard.outputs.run == 'true'
         run: uv sync --group dev --extra all
-      # Not continue-on-error: off the PR path, so a red run is a useful notification.
-      # `--mode full` only hard-fails on a real structural regression or the ~10× wall
-      # sanity ceiling; VISION-band jitter is printed, not failed — so noise won't flake.
+      - name: Fetch previous wall JSON (drift baseline)
+        id: prev
+        if: steps.guard.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # Boolean workflow_dispatch input; false on schedule.
+          SKIP_DRIFT: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_drift || false }}
+        run: |
+          echo "baseline=" >> "$GITHUB_OUTPUT"
+          if [ "$SKIP_DRIFT" = "true" ]; then
+            echo "skip_drift input set — not loading a previous baseline (re-seed)."
+            exit 0
+          fi
+          mkdir -p previous-wall
+          # Prefer a successful prior run on the default branch that uploaded our
+          # artifact. Skip if this is the first run after enabling drift (seed).
+          mapfile -t runs < <(
+            gh run list \
+              --workflow benchmark-wall.yml \
+              --branch "$DEFAULT_BRANCH" \
+              --status success \
+              --limit 30 \
+              --json databaseId \
+              --jq '.[].databaseId'
+          )
+          for id in "${runs[@]}"; do
+            rm -rf previous-wall
+            mkdir -p previous-wall
+            if gh run download "$id" -n benchmark-wall-realistic -D previous-wall 2>/dev/null; then
+              if [ -f previous-wall/benchmark-wall-realistic.json ]; then
+                echo "Using drift baseline from run $id"
+                echo "baseline=previous-wall/benchmark-wall-realistic.json" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+          done
+          echo "No previous wall artifact found — seed run (drift check skipped)."
       - name: Full realistic wall-time run
         if: steps.guard.outputs.run == 'true'
-        run: >
-          uv run --no-sync python -m benchmarks.harness
-          --mode full --scale realistic
-          --json-out benchmark-wall-realistic.json
-          --text-out benchmark-wall-realistic.md
+        env:
+          BASELINE: ${{ steps.prev.outputs.baseline }}
+        run: |
+          extra=()
+          if [ -n "$BASELINE" ]; then
+            extra+=(--wall-drift-baseline "$BASELINE")
+          fi
+          uv run --no-sync python -m benchmarks.harness \
+            --mode full --scale realistic \
+            --json-out benchmark-wall-realistic.json \
+            --text-out benchmark-wall-realistic.md \
+            "${extra[@]}"
       - name: Publish report to job summary
         if: always() && steps.guard.outputs.run == 'true'
         run: |

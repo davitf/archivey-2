@@ -95,3 +95,53 @@ def test_format_text_report_table() -> None:
     assert "within ≤1.3×" in report
     assert "solid invariant" in report
     assert "64 × 256.0 KiB" in report or "64 × 256 KiB" in report
+    assert "wall-ratio *drift*" in report
+
+
+def test_wall_drift_checks_regressions_and_noise() -> None:
+    """Nightly drift gate: relative+abs dual threshold; seed/missing skipped."""
+    from benchmarks.harness import CaseResult, _wall_drift_checks
+
+    def _case(name: str, ratio: float | None) -> CaseResult:
+        return CaseResult(
+            case=name,
+            format="zip",
+            operation="read_all",
+            wall_s=0.02,
+            bytes_decompressed=100,
+            source_seek_count=1,
+            wall_ratio=ratio,
+        )
+
+    previous = {
+        "results": [
+            {"case": "zip_read_all", "wall_ratio": 1.20},
+            {"case": "gzip_read_all", "wall_ratio": 1.05},
+            {"case": "no_peer", "wall_ratio": None},
+        ]
+    }
+    # Clear regression: 1.20 → 1.80 (>1.25× and +0.15 abs).
+    bad = _wall_drift_checks(
+        [_case("zip_read_all", 1.80), _case("gzip_read_all", 1.06)],
+        previous,
+    )
+    assert len(bad) == 1
+    assert "zip_read_all" in bad[0]
+
+    # Small bump under both thresholds — OK (noise).
+    ok = _wall_drift_checks(
+        [_case("zip_read_all", 1.30), _case("gzip_read_all", 1.10)],
+        previous,
+    )
+    assert ok == []
+
+    # Improvement — OK.
+    better = _wall_drift_checks([_case("zip_read_all", 1.00)], previous)
+    assert better == []
+
+    # No previous / empty — seed.
+    assert _wall_drift_checks([_case("zip_read_all", 9.0)], None) == []
+    assert _wall_drift_checks([_case("zip_read_all", 9.0)], {"results": []}) == []
+
+    # New case not in previous — skip.
+    assert _wall_drift_checks([_case("brand_new_case", 5.0)], previous) == []

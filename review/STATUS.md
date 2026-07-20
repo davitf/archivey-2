@@ -7,8 +7,8 @@ Triage after archiving `cli-product/` and OpenSpec `stop-on-failure-not-policy`
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 open; **D5/D6 done**; **QUESTIONS Q1–Q5** open | no |
-| `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4 open** | no |
+| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 open; **D5/D6 done**; **Q1 decided**; Q2–Q5 open | no |
+| `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2 decided** (drift gate); **Q4 open** | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
 `archive/2026-07-19-stream-layering/`, `archive/2026-07-20-cli-product/`.
@@ -44,20 +44,20 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 
 ### `debt-ledger/QUESTIONS.md`
 
-| Q | Finding | Lean |
-|---|---------|------|
-| **Q1** | Perf wall-budget enforcement (perf Q2) | nightly drift-vs-previous JSON |
-| **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | publish honest number; L5 follow-up |
-| **Q3** | S2+S3: entry gate for next backend vs pay pre-release | entry gate |
-| **Q4** | rapidgzip-truncation rides past 0.2.0? | KEEP change open |
-| **Q5** | CHANGELOG form | committed `CHANGELOG.md` |
+| Q | Finding | Status |
+|---|---------|--------|
+| **Q1** | Perf wall-budget enforcement (perf Q2) | **decided** — nightly drift vs previous JSON (a); absolute bands informational |
+| **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | lean: publish honest number; L5 follow-up |
+| **Q3** | S2+S3: entry gate for next backend vs pay pre-release | lean: entry gate |
+| **Q4** | rapidgzip-truncation rides past 0.2.0? | lean: KEEP change open |
+| **Q5** | CHANGELOG form | lean: committed `CHANGELOG.md` |
 
 ### `performance/QUESTIONS.md`
 
-| Q | Finding |
-|---|---------|
-| **Q2** | **P1** wall-budget enforcement (= debt-ledger Q1) |
-| **Q4** | Verify-skip knob (lean leave-as-is; close when archiving) |
+| Q | Finding | Status |
+|---|---------|--------|
+| **Q2** | **P1** wall-budget enforcement | **decided** (= debt-ledger Q1 (a)) |
+| **Q4** | Verify-skip knob (lean leave-as-is; close when archiving) | open |
 
 ---
 

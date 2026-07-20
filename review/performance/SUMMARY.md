@@ -42,7 +42,7 @@ bounded.
 
 | # | Severity | Finding | Where | Status |
 |---|----------|---------|-------|--------|
-| P1 | **blocker** | ≤1.3× wall budget enforced nowhere; nightly hard-fails only at 10×, VISION band informational | `benchmarks/harness.py:55,826-834`, `benchmark-wall.yml` | **open** — decision needed (Q2) |
+| P1 | **blocker** | ≤1.3× wall budget enforced nowhere; nightly hard-fails only at 10×, VISION band informational | `benchmarks/harness.py:55,826-834`, `benchmark-wall.yml` | **done** — nightly drift gate (Q2 (a), 2026-07-20); absolute bands still informational |
 | P2 | **blocker** | Budget not met: ZIP read-all 2.2–2.3×, extract-all 2.4–3.7×, open+list 5–8×; TAR read 1.8× | `budget-table.md` | **partial** — #136/#137/#139: large-member ZIP read ≤1.25×, realistic extract ~1.9×; open+list / many-small remain under Q1 |
 | P3 | **blocker** | Selective solid-7z extraction decodes ~whole folder for one early member (31× needed bytes); CLI `extract archive.7z <name>` hits it | `sevenzip_reader.py:283-323`, `extraction.py:340` | **fixed by #136** — verified 31.0× → 1.00× |
 | P4 | high | Non-solid re-decompression is invisible to the gate: decode-twice-deliver-once ZIP regression passes (byte axis counts delivered output; seek slack ×2+8 absorbs churn; wall ungated) | `gate-efficacy.md` G4, `repro.py` probe 3 | **fixed by #139** — over-decode ×1.1 bound + seek slack baseline+8; probe CAUGHT |

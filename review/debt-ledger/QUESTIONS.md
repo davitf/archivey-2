@@ -4,7 +4,13 @@ Decisions this ledger cannot make unilaterally (pause-and-ask rule). Everything
 else in the ledger carries a recommended verdict the maintainer can simply
 accept or flip.
 
-## Q1 — Performance Q2 (wall-budget enforcement) is now blocking the release's honesty, not just the harness
+## Q1 — Performance Q2 (wall-budget enforcement) is now blocking the release's honesty, not just the harness — **DECIDED (2026-07-20)**
+
+**Decision: (a).** Nightly wall-ratio drift vs the previous successful
+`benchmark-wall` JSON artifact (`benchmark-wall.yml` +
+`--wall-drift-baseline`); absolute VISION bands remain informational; peers
+`(c)` already in harness. Unblocks D1 wording: CI enforces structural axes on
+every PR and wall-ratio *drift* on nightly — not absolute ≤1.3×.
 
 `review/performance/QUESTIONS.md` Q2 has been open since 2026-07-18. The
 ledger's D1 (re-word the ≤1.3× claim) can land its *band* changes without Q2,
