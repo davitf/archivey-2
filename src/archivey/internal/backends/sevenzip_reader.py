@@ -1,4 +1,23 @@
-"""Native 7z reader backend."""
+"""Native 7z reader backend (``BaseArchiveReader`` wiring).
+
+Module split:
+
+- :mod:`.sevenzip_methods` — method-id registry / :class:`MethodKind`
+- :mod:`.sevenzip_parser` — signature + header property tree → :class:`SevenZipArchive`
+- :mod:`.sevenzip_pipeline` — folder coder plan/execute + encoded-header decode
+- this module — passwords, member list, solid-folder demux, CRC/encryption mapping
+
+Open path: signature → ``parse_header_block`` → (decode ``EncodedHeader`` loop) →
+``materialize_archive`` → list members. Member open folds the folder's packed
+slice through :func:`open_folder_pipeline`; solid folders use
+:class:`~archivey.internal.streams.streamtools.solid.SolidBlockReader` so one
+decode serves consecutive files.
+
+Password bytes for the 7z KDF are UTF-16LE (:func:`_password_to_kdf_bytes`). An
+empty header after decrypt is treated as a wrong password (never a silent empty
+listing) — threat-model O8. Separately, store/AES members with no folder digest
+and no member CRC emit ``DIGEST_UNVERIFIABLE`` (decryption cannot be authenticated).
+"""
 
 from __future__ import annotations
 

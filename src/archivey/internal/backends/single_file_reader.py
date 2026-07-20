@@ -2,16 +2,17 @@
 
 A bare ``.gz`` / ``.bz2`` / ``.xz`` / ``.zst`` / ``.lz4`` / ``.lz`` (lzip) /
 ``.lzma`` (LZMA Alone) / ``.zz`` (zlib) / ``.br`` (brotli) / ``.Z`` (unix-compress)
-stream is presented as a one-member
-pseudo-archive: a single ``FILE`` member whose name is inferred from the source filename,
-decompressed through the ``compressed-streams`` codec layer. The backend is codec-agnostic;
-the only per-format logic lives in small **per-codec metadata hooks** (gzip's stored
-filename/mtime, xz/lzip/lzma-alone decompressed size), so a new standalone codec becomes
-readable by adding the codec + enum + detection entry — no new backend class (see
-``format-single-file-compressors``).
+stream is presented as a **one-member pseudo-archive**: exactly one ``FILE`` member
+whose name is inferred by stripping the codec extension (or ``.uncompressed`` when
+there is no known suffix). There is no member table — size/mtime/crc come from
+per-codec :class:`~archivey.internal.streams.codecs.MetadataContext` hooks when cheap
+(gzip FNAME/mtime, xz/lzip size, …); otherwise they are filled/verified on read via
+the shared codec layer.
 
-ZST and LZ4 are first-class standalone formats here (their codecs already exist from
-Phase 2); only their *seekable-decompressor* refinements remain for Phase 8.
+The backend is codec-agnostic; adding a standalone codec is "add codec + enum +
+detection" — no new backend class (see ``format-single-file-compressors``). Basic
+ZST/LZ4 read is already here; remaining seekable-index / accelerator work for those
+codecs is tracked under Phase 8 in ``PLAN.md``.
 """
 
 from __future__ import annotations
@@ -82,7 +83,17 @@ def _infer_member_name(archive_name: str | None) -> str:
 
 
 class SingleFileReader(BaseArchiveReader):
-    """Presents one standalone compressed stream as a one-member archive."""
+    """Presents one standalone compressed stream as a one-member archive.
+
+    Source shapes at open:
+
+    - Path → reopen per ``open()`` (independent FDs; concurrent opens stay isolated)
+    - Seekable stream → :class:`SharedSource` views from position 0
+    - Non-seekable → one pending stream; first open consumes it
+
+    Seekable sources may probe-open at init so format/size errors surface at
+    ``open_archive`` time rather than first ``read``.
+    """
 
     _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True

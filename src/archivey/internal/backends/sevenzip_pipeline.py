@@ -1,4 +1,25 @@
-"""7z folder decode pipeline — registry-driven linear coder chains."""
+"""7z folder decode pipeline — registry-driven linear coder chains.
+
+A *folder* is a coder graph over one packed slice. This module only accepts a
+**linear** 1-in/1-out chain (``bind_pairs == (i+1 → i)``, ``packed_indices == [0]``).
+
+Decode order (packed → unpacked)::
+
+    AES? → (COPY skipped) → SINGLE codecs | LZMA-family run | BCJ2 rejected
+
+``MethodKind.LZMA_FAMILY`` means “participates in a liblzma / BCJ staging run”,
+not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
+
+- LZMA2 ± Delta ± BCJ → one stdlib ``lzma`` raw filter chain
+- LZMA1 + BCJ → capped LZMA1 stages + separate ``pybcj`` (BPO-21872 truncation)
+- BCJ alone → ``pybcj`` stages
+- BCJ2 (``0x0303011B``) → ``UnsupportedFeatureError`` (never garbage output)
+
+Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
+:func:`open_folder_pipeline` / :func:`_execute_stage` fold stages onto the packed
+source. Encoded-header decode and the convenience :func:`parse_sevenzip_archive`
+also live here (parser stays structure-only).
+"""
 
 from __future__ import annotations
 
@@ -55,9 +76,10 @@ _decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_pro
 
 
 # A folder's coder chain is decoded in two phases: `plan_folder` resolves it into an
-# ordered list of these concrete stages (pure — no streams opened), then `execute`
-# folds each stage onto the packed source. Keeping the branchy LZMA1+BCJ staging in
-# the planner makes the decode flow inspectable and keeps I/O out of the decision.
+# ordered list of these concrete stages (pure — no streams opened), then
+# `_execute_stage` / `open_folder_pipeline` fold each stage onto the packed source.
+# Keeping the branchy LZMA1+BCJ staging in the planner makes the decode flow
+# inspectable and keeps I/O out of the decision.
 
 
 @dataclass
@@ -109,7 +131,7 @@ def plan_folder(folder: SevenZipFolder) -> list[_Stage]:
     """Resolve a folder's coder chain into ordered decode stages, opening no streams.
 
     Runs all wiring validation (1-in/1-out, linear chain, BCJ2 reject) and groups the
-    coders; ``execute`` turns the returned plan into a stream.
+    coders; :func:`open_folder_pipeline` turns the returned plan into a stream.
     """
     if any(
         coder.num_in_streams != 1 or coder.num_out_streams != 1

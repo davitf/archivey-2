@@ -1,4 +1,10 @@
-"""Locate RARLAB ``unrar`` and spawn ``unrar p`` for member data."""
+"""CLI wrapper around RARLAB ``unrar`` for member **payload** bytes.
+
+No RAR structure knowledge beyond argv safety — metadata/listing is
+:mod:`.rar_parser`. Locates RARLAB ``unrar`` on ``PATH`` (not ``unrar-free`` /
+``unar`` / ``7z``) and spawns ``unrar p`` with the password on stdin (bare ``-p``,
+secret not in argv) and optional ``-n./member`` include masks.
+"""
 
 from __future__ import annotations
 

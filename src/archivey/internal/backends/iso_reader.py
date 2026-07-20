@@ -1,23 +1,23 @@
 """ISO 9660 backend on the v2 ABC, backed by the optional ``pycdlib`` library (``[iso]``).
 
-ISO 9660 images carry up to three parallel filesystem namespaces — plain ISO 9660, Joliet,
-and Rock Ridge — with different filename and metadata fidelity. The backend auto-selects the
-**richest** available (Rock Ridge > Joliet > plain) and records the choice in
-``ArchiveInfo.extra["iso.namespace"]`` so callers can reason about what metadata to expect:
-Rock Ridge carries POSIX mode/uid/gid and symlinks; Joliet and plain carry none of those
-(those fields are ``None``), and plain names are upper-case 8.3 with a ``;version`` suffix.
+Image layout (what ``pycdlib`` addresses)::
 
-The directory tree lives in the header region, giving O(1) (``INDEXED``) listing and
-``DIRECT`` random access. A non-seekable source is rejected (random access needs seek,
-and the trailing metadata rules out non-seekable streaming too) and write is
-out of scope (``UnsupportedOperationError``). The image is read uncompressed in place — a
-compressed ``.iso.xz`` is a single-file compressor wrapping the image, not mounted here
-(see the seek-heavy-container note in the proposal).
+    Sector 16+ : volume descriptors (PVD at 16 * 2048 = 32768 bytes)
+    Directory records form the tree; file data at extent * block_size
 
-``pycdlib`` addresses the image with absolute offsets (the PVD at 32 KiB etc.), so it
-needs the archive to start at ``tell() == 0`` — which ``open_archive`` guarantees by
-wrapping any mid-positioned seekable stream in a zero-origin view before handing it to
-a backend (the stream-position contract in ``format-detection``).
+Namespaces — auto-select richest available (Rock Ridge > Joliet > plain) and record
+the choice in ``ArchiveInfo.extra["iso.namespace"]``:
+
+- Rock Ridge — POSIX mode/uid/gid and symlinks
+- Joliet / plain — those fields are ``None``; plain names are upper-case 8.3 with a
+  ``;version`` suffix
+
+The directory tree lives in the header region → ``INDEXED`` listing and ``DIRECT``
+random access. A non-seekable source is rejected (trailing metadata; no streaming).
+Write is out of scope (``UnsupportedOperationError``). ``pycdlib`` uses absolute
+offsets, so the image must start at ``tell() == 0`` — ``open_archive`` wraps
+mid-positioned streams (stream-position contract). A compressed ``.iso.xz`` is a
+single-file compressor wrapping the image, not mounted here.
 
 **Process-global side effect.** Importing this module (which ``import archivey`` does
 eagerly, to register backends) installs a directory-cycle guard *into pycdlib's own

@@ -3,6 +3,30 @@
 Reads the signature/end header and turns header blocks into small data objects.
 Encoded headers are returned as descriptors; the reader/pipeline materializes them.
 
+On-disk layout this parser assumes::
+
+    [ 32-byte signature header ]
+        magic 7z\\xBC\\xAF'\\x1C | ver | start-hdr CRC
+        | nextHeaderOffset | nextHeaderSize | nextHeaderCRC
+    [ packed streams … ]                 # from offset 32 + pack_pos (from header)
+    [ next header at 32 + nextHeaderOffset ]
+        either kHeader (plain property tree)
+        or kEncodedHeader (another packed folder; decode in sevenzip_pipeline)
+
+Plain header (property-tagged nesting)::
+
+    [ArchiveProperties?] [AdditionalStreams?] MainStreamsInfo FilesInfo
+    MainStreamsInfo = PackInfo + UnpackInfo(Folders/Coders) + SubstreamsInfo?
+    FilesInfo = names, empty/anti bits, times, attrs
+    Non-empty files map 1:1 onto folder substreams in order
+    (``_map_files_to_folders``). A *folder* is the solid pack unit (coder chain +
+    packed slice); files are substreams inside it.
+
+Call graph: ``read_signature_and_next_header`` → ``parse_header_block`` → (maybe
+``EncodedHeader``) → ``materialize_archive``. End-to-end open with encoded-header
+decode lives in :func:`sevenzip_pipeline.parse_sevenzip_archive` /
+:class:`SevenZipReader`.
+
 In-memory header walking uses a byte cursor over ``memoryview`` (not ``BytesIO``);
 ``read_signature_and_next_header`` stays on the real file stream.
 """
@@ -103,6 +127,8 @@ class SevenZipFileRecord:
     compressed_size: int | None
     is_encrypted: bool
     is_solid: bool
+    # Filled with raw on-disk method **bytes** here; the reader rebuilds public
+    # ``CompressionMethod`` tuples for ArchiveMember.compression.
     compression_methods: tuple[bytes | CompressionMethod, ...]
 
 
@@ -1098,9 +1124,10 @@ def _read_boolean(cur: _Cursor, count: int, *, check_all: bool = False) -> list[
 
 
 def _read_utf16(cur: _Cursor) -> str:
-    """Read one null-terminated UTF-16LE string (legacy / single-name helper).
+    """Read one null-terminated UTF-16LE string.
 
-    Prefer :func:`_decode_utf16_names` for the ``kName`` property (bulk path).
+    Unused on the current ``kName`` path (prefer :func:`_decode_utf16_names`); kept
+    as a single-name helper for tests / future properties.
     """
     chunks = bytearray()
     for _ in range(_MAX_UTF16_CHARS):
