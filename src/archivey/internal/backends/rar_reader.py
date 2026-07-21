@@ -204,6 +204,13 @@ class _UnrarOwnedStream(DelegatingStream):
     is authoritative, and some legacy archives (e.g. RAR 1.5) make ``unrar`` report a
     spurious CRC error (exit 3) while emitting correct, verified data. A wrong-password
     exit (11) always maps — it means no usable data regardless of any stored hash.
+
+    RAR4 often reports exit 3 (CRC) instead of 11 for a missing/wrong password, with
+    empty stdout. After verify's short-before-digest preference that would otherwise
+    surface only as ``TruncatedError`` (0 of N) while ``has_verifiable_hash`` suppresses
+    the CRC exit. When the member is encrypted and we read zero plaintext bytes, map
+    exit 2/3 to ``EncryptionError`` so ``with open(...): read()`` / ``archive.read()``
+    prefer the real cause (same pattern as RAR5's exit 11 replacing TruncatedError).
     """
 
     def __init__(
@@ -213,11 +220,20 @@ class _UnrarOwnedStream(DelegatingStream):
         *,
         named_member: bool = False,
         has_verifiable_hash: bool = False,
+        encrypted: bool = False,
     ) -> None:
-        super().__init__(stdout)
+        # Track bytes via read(); disable readinto passthrough so counting is not skipped.
+        super().__init__(stdout, readinto_passthrough=False)
         self._proc = proc
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash
+        self._encrypted = encrypted
+        self._bytes_read = 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        data = super().read(n)
+        self._bytes_read += len(data)
+        return data
 
     def close(self) -> None:
         if self.closed:
@@ -240,6 +256,11 @@ class _UnrarOwnedStream(DelegatingStream):
             # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass; a
             # negative code means we terminated it (early close) — not an error.
             if rc == 11:
+                raise EncryptionError("Incorrect RAR password or encrypted member")
+            # RAR4 wrong/missing password: often exit 3 + empty stdout, not exit 11.
+            # Prefer EncryptionError over letting verify's TruncatedError stand alone
+            # when has_verifiable_hash would suppress the CRC exit entirely.
+            if self._encrypted and self._bytes_read == 0 and rc in (2, 3):
                 raise EncryptionError("Incorrect RAR password or encrypted member")
             if self._has_verifiable_hash:
                 # archivey verifies this member's CRC32/BLAKE2sp itself; that check is
@@ -809,6 +830,7 @@ class RarReader(BaseArchiveReader):
                 proc,
                 named_member=True,
                 has_verifiable_hash=has_hash,
+                encrypted=raw.is_encrypted,
             )
         )
         try:
