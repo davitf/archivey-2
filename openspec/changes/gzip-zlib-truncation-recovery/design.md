@@ -151,7 +151,33 @@ forbidden by the recoverable-prefix / damaged-input goals.
 size unknown and fail the seek path with `TruncatedError`), never assert and
 never pretend the prefix is the full stream.
 
-### VerifyingStream: CRC after all bytes (chunked), raise on slurping `read(-1)`
+### Stdlib / third-party stream compatibility
+
+This contract is **stricter**, not BinaryIO-incompatible. Happy-path duck typing
+matches stdlib file objects: `read(n)` returns bytes; clean EOF returns `b""`
+without raising; `read(0)` is a no-op; `close()` does not raise content faults.
+
+| Situation | Stdlib analogue | Our contract | Compatible? |
+| --- | --- | --- | --- |
+| Clean EOF | `b""` | `b""` | Yes |
+| Truncated gzip, chunked `read` | `GzipFile` raises `EOFError` (often after a partial prefix; large `read(n)` may drop bytes) | Return recoverable prefix; next empty `read` raises `TruncatedError` | Yes — same “fail on read”, more bytes kept |
+| Truncated / bad CRC, `read(-1)` | `GzipFile` raises (`EOFError` / `BadGzipFile`), typically returns no bytes | Raise `TruncatedError` / `CorruptionError` | Yes |
+| Bad CRC, tiny chunked reads | `GzipFile` can deliver all bytes then raise `BadGzipFile` on the finishing read | Deliver all bytes; raise on terminal empty `read` | Yes — same shape |
+| `shutil.copyfileobj` | Raises mid-copy on truncate/CRC | Raises after writing delivered bytes | Yes — no silent short success |
+| `close()` after content fault | `GzipFile` quiet | Quiet for content faults | Yes |
+| Exception type | `BadGzipFile` ⊂ `OSError`; `BadZipFile` ⊂ `Exception`; `EOFError` ⊄ `OSError` | `ArchiveyError` ⊂ `Exception` (not `OSError`) | **Stricter typing** — `except OSError` will not catch us (same as `BadZipFile`). Faults still propagate; they do not become silent `b""` |
+
+**Migration / passing streams out:** consumers that loop `read(n)` until `b""`
+and treat exceptions as failure keep working; they may see a typed
+`ArchiveyError` where GzipFile raised `EOFError`/`BadGzipFile`. Consumers that
+only catch `OSError` around reads will **not** swallow our errors (good: no
+false empty). Do not wrap these streams in `io.BufferedReader` and expect
+identical pending-error timing — buffer read-ahead can pull the terminal empty
+`read` early (same class of issue as buffering any fault-at-EOF stream).
+
+**Rejected as compatibility goals:** matching GzipFile’s “large `read(n)` discards
+prefix” quirk; raising content faults from `close()`; subclassing `OSError` just
+to match `BadGzipFile`.
 
 Chunked digest mismatch already matches the desired shape
 (`test_verify_mismatch_raises_at_eof_without_losing_final_chunk`): every data
@@ -237,6 +263,11 @@ chunk is delivered, then the **terminal empty `read`** raises
 9. **Oracle:** for golden truncation tests, compare decompressed prefix and error
    type against `gzip.GzipFile` with a `read(1)` loop (max recovery), not against
    a single large `GzipFile.read()`.
+
+10. **Stdlib compatibility:** keep BinaryIO happy-path semantics; content faults
+    raise from `read` as typed `ArchiveyError` (stricter than `BadGzipFile` ⊂
+    `OSError`, aligned with `BadZipFile` ⊂ `Exception`). Do not adopt GzipFile’s
+    oversize-read prefix drop for “compatibility.”
 
 ## Risks / Trade-offs
 
