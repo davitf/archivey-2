@@ -111,17 +111,29 @@ Need a `GzipDecoder` that, when a member completes, strips leading NULs from
 `decompressobj` and continue inside `feed` (same idea as lzip’s member loop);
 anything else → `CorruptionError`.
 
-### `readall` vs recoverable prefix vs never-raise-on-close
+### `read(-1)` vs chunked: one rule, two call shapes
 
 Python cannot return bytes and raise from the same call. With **never raise on
-`close`**:
+`close`**, the VISION-safe split is:
 
-| API | Contract |
-| --- | --- |
-| Bounded `read(n)` (`n >= 0`) | Return recoverable prefix (including bytes already in `_buffer`); leave `pending_error`; **next empty `read` raises** |
-| `readall` / `read(-1)` | **Raise** `TruncatedError` when incomplete EOF is discovered (keep today’s unix-compress `readall` behavior — do not return a prefix here) |
-| `close()` | Never raises content `TruncatedError` / `CorruptionError` |
-| Abandon after `read(n)` got the full prefix then `close()` without a follow-up empty `read` | Acknowledged gap (caller stopped before observing the fault); accepted trade-off vs close-raises. Mitigate by not lying on size/`SEEK_END` |
+| API | Truncation (`DecompressorStream`) | Digest/CRC (`VerifyingStream`) |
+| --- | --- | --- |
+| Bounded `read(n)` (`n >= 0`) | Return recoverable prefix; next empty `read` raises | Return every valid byte; after full body, next empty `read` raises `CorruptionError` |
+| `readall` / `read(-1)` | **Raise** `TruncatedError` (complete-stream request includes EOF verdict) | **Raise** `CorruptionError` / short `TruncatedError` (same) |
+| `close()` | Never content fault | Never content fault |
+
+**Why `read(-1)` raises for both:** `data = stream.read()` is the default idiom.
+If slurping returned the body and only armed a pending verdict for a follow-up
+empty `read`, then `read(); close()` would **silently accept** bad CRC or a
+truncated prefix — a foot-gun that undercuts VISION “damaged input is
+first-class” and “don’t shoot yourself.” Chunked loops already express “give me
+data until empty”; they keep deliver-then-next-empty-raises. Slurping asks for
+the whole stream in one call and therefore must surface the EOF verdict in that
+call.
+
+**Rejected:** slurping returns body + raise only on a later empty `read` (CRC
+silent-success on `read(); close()`). **Rejected:** return truncated prefix from
+`readall` + raise on `close`.
 
 ### Size / `SEEK_END` hole (blocking if ignored)
 
@@ -139,7 +151,7 @@ forbidden by the recoverable-prefix / damaged-input goals.
 size unknown and fail the seek path with `TruncatedError`), never assert and
 never pretend the prefix is the full stream.
 
-### VerifyingStream: CRC after all bytes, never on close
+### VerifyingStream: CRC after all bytes (chunked), raise on slurping `read(-1)`
 
 Chunked digest mismatch already matches the desired shape
 (`test_verify_mismatch_raises_at_eof_without_losing_final_chunk`): every data
@@ -152,14 +164,19 @@ chunk is delivered, then the **terminal empty `read`** raises
   tests).
 - `_finish` sets `_short = True` and defers hash-less shortfall to close.
 
-**Required shape (CRC / digests):** provide **all** decompressed bytes on
-data-returning reads; check CRC/digest at clean EOF; raise `CorruptionError` on
-the **next** `read` (the empty/terminal one) — never by dropping the last data
-chunk, and never on `close()`. Same timing for hash-less short →
-`TruncatedError` on that terminal empty `read`. After a slurping `read()` that
-returned everything, arm the verdict so the following empty `read` raises;
-`finish_on_close` only closes the inner. Partial read then close stays quiet
-(abandon before clean EOF).
+**Required:**
+
+- **Chunked:** provide **all** decompressed bytes on data-returning reads; check
+  CRC/digest at clean EOF; raise `CorruptionError` on the **next** empty
+  `read` — never by dropping the last data chunk, never on `close()`.
+- **`read(-1)` / `readall`:** run the EOF verdict as part of the complete-stream
+  read and **raise** on mismatch/short (do not return success bytes then rely on
+  a follow-up `read` or on `close`). Implementation may drain via bounded reads
+  so the terminal empty `read` naturally fires inside `readall`.
+- Hash-less short uses the same timing (`TruncatedError`).
+- Partial read then close stays quiet (abandon before clean EOF).
+- Anti-footgun: `data = stream.read(); stream.close()` with a bad CRC MUST raise
+  on the `read()` (not succeed quietly).
 
 ## Decisions
 
@@ -176,11 +193,15 @@ returned everything, arm the verdict so the following empty `read` raises;
    after a successful body; diverges from GzipFile and from today’s
    `DecompressorStream`).
 
-3. **`readall` / `read(-1)` raises `TruncatedError`** when incomplete EOF is
-   known — does **not** return the recoverable prefix on that call. Bounded
-   `read(n)` remains the recoverable-prefix API. Keep unix-compress `readall`
-   tests’ raise-immediately shape; extend the same rule to zlib/gzip/deflate.
-   **Rejected:** return prefix from `readall` + raise on `close`.
+3. **`readall` / `read(-1)` raises on EOF content faults** — truncation →
+   `TruncatedError`; digest mismatch → `CorruptionError`; hash-less short →
+   `TruncatedError`. Complete-stream reads include the EOF verdict so
+   `read(); close()` cannot silently accept bad/truncated content. Bounded
+   `read(n)` remains the deliver-then-next-empty-raises API (recoverable
+   truncate prefix; CRC after all chunked bytes). Keep unix-compress `readall`
+   raise-immediately tests; align VerifyingStream slurping the same way.
+   **Rejected:** slurping returns body + pending verdict only for a later empty
+   `read` or for `close`.
 
 4. **Incomplete EOF must not publish a clean `_size`**; `SEEK_END` /
    `try_get_size` raise pending truncation or leave size unknown — never
@@ -205,14 +226,13 @@ returned everything, arm the verdict so the following empty `read` raises;
    engine (invariant from PR #177 review) — noted as compose step, not implemented
    here unless that backstop already exists on the branch.
 
-8. **`VerifyingStream` / `MemberVerifier` digest (CRC) contract:** deliver every
-   byte on data-returning reads; at clean EOF, raise `CorruptionError` on the
-   **read after** all data was provided (terminal empty `read`). Never raise
-   digest mismatch on `close()`. Hash-less short uses the same timing with
-   `TruncatedError`. Slurping `read()`/`read(-1)` that returns the full body
-   must leave the verdict armed for the next empty `read`, not for `close`.
-   **Rejected:** close-raises; **Rejected:** raise on the data-returning call
-   in a way that withholds the final bytes.
+8. **`VerifyingStream` / `MemberVerifier` digest (CRC) contract:** on bounded
+   reads, deliver every byte then raise `CorruptionError` on the terminal empty
+   `read`. On `read(-1)` / `readall`, raise `CorruptionError` as part of that
+   complete-stream call (same for hash-less short → `TruncatedError`). Never
+   raise digest/short on `close()`. **Rejected:** close-raises; **Rejected:**
+   slurping returns success bytes while leaving CRC failure only for a later
+   empty `read` (foot-gun with `read(); close()`).
 
 9. **Oracle:** for golden truncation tests, compare decompressed prefix and error
    type against `gzip.GzipFile` with a `read(1)` loop (max recovery), not against
@@ -223,13 +243,16 @@ returned everything, arm the verdict so the following empty `read` raises;
 | Risk | Mitigation |
 | --- | --- |
 | Multi-member edge cases (NUL padding, false headers, trailing junk) | Explicit GzipFile/`_read_eof` rules in decoder + tests |
-| Abandon after `read(n)` without follow-up empty `read` misses truncation | Documented; size/`SEEK_END` must not lie; prefer read-until-exception |
-| VerifyingStream behavior change (tests that expect close-raises) | Update tests: all bytes returned, then empty `read` raises; `close` quiet |
+| Abandon after bounded `read(n)` without follow-up empty `read` | Documented; size/`SEEK_END` must not lie; prefer read-until-exception; slurping `read(-1)` still raises |
+| `read(); close()` silently accepting bad CRC | Forbidden — slurping must raise; explicit anti-footgun test |
+| VerifyingStream behavior change (tests that expect close-raises) | Update tests: chunked = all bytes then empty `read` raises; slurping `read(-1)` raises; `close` quiet |
 | CRC failure mid-member vs truncation | zlib gzip window → `zlib.error` → existing `CorruptionError` translation |
+| Stdlib vs rapidgzip truncate behavior still differs | Documented known remaining inconsistency until rapidgzip follow-up |
 | Perf of member chaining | Only on member boundary; hot path unchanged |
 | Inner teardown errors on `close` | Still propagate; do not conflate with content truncation |
 
 ## Open Questions
 
-None blocking implement. Optional later: audit stdlib `bz2` for the same
-oversize-read trap.
+None blocking implement. Optional later: audit stdlib `bz2` / other
+`DecompressorStream` codecs for the same oversize-read / truncate-return gap
+(consistency sweep).

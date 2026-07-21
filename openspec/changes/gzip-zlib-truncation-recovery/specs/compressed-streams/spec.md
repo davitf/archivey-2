@@ -92,22 +92,24 @@ Decode and verify streams SHALL raise content `TruncatedError` and
 `CorruptionError` from `read` / `readall` (and from size/seek paths that would
 otherwise report a false clean completion). `close()` MUST NOT raise those
 content faults. `close()` MAY still propagate teardown failures (`OSError`,
-translated inner-close errors). A caller that reads a partial prefix with
-bounded `read(n)` and closes without a follow-up empty `read` MAY miss a
-deferred `pending_error` — that abandon gap is accepted; the implementation
-MUST still refuse silent success via size/`SEEK_END`. Deliberate partial read
-then close before clean EOF remains quiet for digest/length verification
-(abandon before verdict), matching prior verify semantics.
+translated inner-close errors). Bounded `read(n)` MAY deliver recoverable or
+valid bytes before a deferred empty-`read` fault; a caller that then closes
+without a follow-up empty `read` MAY miss that deferred fault — accepted for
+chunked abandons only. Complete-stream `read(-1)` / `readall` MUST raise when
+an EOF content fault is known so `read(); close()` cannot silently accept
+truncated or CRC-mismatched content. Deliberate partial read then close before
+clean EOF remains quiet for digest/length verification (abandon before verdict).
 
 `VerifyingStream` / fused `MemberVerifier` SHALL verify digests (CRC and other
-expected hashes) at clean EOF **after** every decompressed byte has been
-returned to the caller, and SHALL raise `CorruptionError` on the **next**
-`read` (the terminal empty `read`) — not on the data-returning call, and not
-from `finish_on_close`. Hash-less short-of-expected-size SHALL use the same
-timing with `TruncatedError`. A slurping `read()` / `read(-1)` that returns the
-full available body SHALL arm that verdict for the following empty `read`.
-`finish_on_close` SHALL close the inner and MUST NOT introduce a first content
-`TruncatedError` / `CorruptionError` solely because the caller is closing.
+expected hashes) at clean EOF. On bounded `read(n)`, every decompressed byte
+SHALL be returned first and `CorruptionError` SHALL raise on the **next**
+(terminal empty) `read` — not by dropping the last data chunk, and not from
+`finish_on_close`. On `readall` / `read(-1)`, the complete-stream read SHALL
+include the EOF verdict and SHALL raise `CorruptionError` on mismatch (and
+`TruncatedError` on hash-less short) so `read(); close()` cannot silently
+accept bad content. `finish_on_close` SHALL close the inner and MUST NOT
+introduce a first content `TruncatedError` / `CorruptionError` solely because
+the caller is closing.
 
 #### Scenario: close vs read matrix
 
@@ -116,8 +118,10 @@ full available body SHALL arm that verdict for the following empty `read`.
 | Truncated `DecompressorStream`; catch on empty `read`; then `close()` | `close()` succeeds |
 | Truncated gzip stdlib path; error already observed on `read`; then `close()` | `close()` succeeds |
 | Digest/CRC mismatch; chunked `read(n)` | All content bytes delivered; terminal empty `read` raises `CorruptionError`; `close()` quiet |
-| Digest/CRC mismatch; `read()`/`read(-1)` returns full body | Body returned; next empty `read` raises `CorruptionError`; `close()` alone does not |
-| Hash-less short member; all available bytes already returned | `TruncatedError` on terminal empty `read` (not on `close`) |
+| Digest/CRC mismatch; `read()` / `read(-1)` | Raises `CorruptionError` (complete-stream verdict); `close()` alone does not raise the digest fault |
+| `read(); close()` with bad CRC | `read()` raises — must not succeed quietly |
+| Hash-less short member; `read(-1)` | Raises `TruncatedError` |
+| Hash-less short; chunked until empty | All available bytes delivered; terminal empty `read` raises `TruncatedError` |
 | Partial read then `close` before clean EOF (verify) | No digest/length verdict |
 | Inner teardown fails on `close` | Teardown error may propagate |
 
@@ -125,14 +129,13 @@ full available body SHALL arm that verdict for the following empty `read`.
 
 The verification stage SHALL compute available expected digest algorithms
 incrementally over decompressed bytes and raise `CorruptionError` for a
-computable mismatch at clean EOF. The mismatch SHALL surface on the **read
-after** all data chunks have been delivered (the terminal empty `read`): every
-valid byte is returned first; the following empty `read` raises. A slurping
-`read()` / `read(-1)` that returns the full body SHALL likewise leave the
-verdict for the next empty `read`, not raise on the data-returning call and not
-defer solely to `close()`. Partial/random-access reads SHALL NOT produce a
-digest verdict. `close()` MUST NOT be the sole surface for a digest or
-short-length verdict.
+computable mismatch at clean EOF. On bounded reads, the mismatch SHALL surface
+on the **read after** all data chunks have been delivered (terminal empty
+`read`): every valid byte is returned first; the following empty `read` raises.
+On `readall` / `read(-1)`, the complete-stream call SHALL raise on mismatch
+rather than return success bytes and defer the verdict to a later `read` or to
+`close()`. Partial/random-access reads SHALL NOT produce a digest verdict.
+`close()` MUST NOT be the sole surface for a digest or short-length verdict.
 
 Supported computable algorithms SHALL include `crc32` (via `zlib.crc32`),
 `adler32` (via `zlib.adler32`), the `hashlib.algorithms_available` set, and
@@ -154,9 +157,9 @@ collection, logging/callback delivery, member attachment, and escalation.
 | Expected `blake2sp` on a well-formed RAR5 member | Computed and verified; mismatch raises `CorruptionError` |
 | Expected `adler32` on a verifying stream | Computed and verified; mismatch raises `CorruptionError` |
 | Expected digest under a genuinely-unknown algorithm name | `DIGEST_UNVERIFIABLE` counted/retained/logged; bytes still returned without that check |
-| Full member read reaches EOF with computable digest mismatch | All bytes delivered; terminal empty `read` raises `CorruptionError` naming the algorithm |
 | Chunked read reaches EOF with mismatch | All valid chunks delivered; following terminal empty `read` raises |
-| Single `read()`/`read(-1)` returns full body with mismatch | Body returned; next empty `read` raises; `close()` alone does not |
+| `read()` / `read(-1)` with mismatch | Raises `CorruptionError` naming the algorithm |
+| `read(); close()` with mismatch | Fault on `read()` — not a quiet success |
 | Caller abandons stream before clean EOF | No digest verdict or mismatch exception on `close` |
 | Unverifiable digest resolves to `RAISE` | `DiagnosticRaisedError` halts open/read |
 

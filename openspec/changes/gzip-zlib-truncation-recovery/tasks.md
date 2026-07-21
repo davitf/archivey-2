@@ -58,35 +58,37 @@
 - [ ] 3.6 Update existing gzip truncate tests that assume `read()`/`readall`
       shapes under the new stdlib backend (e.g. `test_truncated_gzip_translates_to_truncated`).
 
-## 4. VerifyingStream / MemberVerifier — CRC after all data
+## 4. VerifyingStream / MemberVerifier — CRC after all chunked data
 
-- [ ] 4.1 Digest/CRC mismatch: return every decompressed byte on data-returning
-      reads; at clean EOF raise `CorruptionError` on the **next** (terminal
-      empty) `read`. Do not withhold the last data chunk; do not raise from
+- [ ] 4.1 Bounded `read(n)` digest/CRC mismatch: return every decompressed byte;
+      at clean EOF raise `CorruptionError` on the **next** (terminal empty)
+      `read`. Do not withhold the last data chunk; do not raise from
       `finish_on_close`.
-- [ ] 4.2 After a slurping `read()` / `read(-1)` that returned the full body,
-      arm the digest/short verdict so the following empty `read` raises (same
-      timing as chunked). Hash-less short → `TruncatedError` on that empty
-      `read`.
+- [ ] 4.2 `readall` / `read(-1)` with digest mismatch or hash-less short: raise
+      on that complete-stream call (`CorruptionError` / `TruncatedError`) so
+      `read(); close()` cannot succeed quietly. (Drain via bounded reads or
+      finish-inside-`read(-1)` — either is fine if the slurping call raises.)
 - [ ] 4.3 `finish_on_close` closes the inner and MUST NOT introduce a first
       content `TruncatedError` / `CorruptionError` solely on close (may still
       avoid double-fault after `read` already failed).
 - [ ] 4.4 Update verify tests: keep
       `test_verify_mismatch_raises_at_eof_without_losing_final_chunk`; change
-      close-raises cases (`test_verify_on_close_after_full_single_read`,
-      `test_verify_expected_size_short_raises_truncated`, hashed short, etc.)
-      to “full body returned, next empty `read` raises, `close` quiet”; keep
-      “partial read then close is ok”.
+      close-raises cases to slurping-raises / chunked-then-empty-raises; add
+      anti-footgun `read(); close()` must raise on bad CRC; keep “partial read
+      then close is ok”; cover fused `ArchiveStream`+`MemberVerifier` path, not
+      only the standalone `VerifyingStream` wrapper.
 
 ## 5. Docs + compose notes
 
 - [ ] 5.1 Update `docs/internal/library-analysis.md` gzip row: stdlib path is
       gzip-window `DecompressorStream`, not `GzipFile`.
 - [ ] 5.2 Note in `docs/internal/open-issues.md` (or the rapidgzip change) that
-      empty→stdlib fallback SHOULD use this engine so a byte-at-a-time
-      workaround is unnecessary — do not implement the rapidgzip fallback
-      switch in this change unless that code is already present and trivial to
-      retarget. (`_STDLIB_READ_SIZE = 1` is not in tree today.)
+      (a) empty→stdlib fallback SHOULD use this engine so a byte-at-a-time
+      workaround is unnecessary, and (b) until that lands, truncated gzip
+      behavior can still differ between accelerator ON and OFF — do not
+      implement the rapidgzip fallback switch here unless that code is already
+      present and trivial to retarget. (`_STDLIB_READ_SIZE = 1` is not in tree
+      today.)
 
 ## 6. Verify
 
