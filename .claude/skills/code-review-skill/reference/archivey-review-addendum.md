@@ -446,8 +446,31 @@ Run every proposal — and every contract-moving code change — past these:
 - [ ] **Pause-and-ask** on conflicts with existing specs / docs / VISION — surface, don't
   silently reconcile (§3).
 
+### Decision gaps & unknown unknowns
+
+The checks above verify what the proposal *says*; this step hunts what it **doesn't**.
+Go looking, don't wait for gaps to surface during implementation.
+
+- [ ] **Implementor decision gaps** — read it as if you must implement it tomorrow. What
+  would force you to *guess*? Under-specified error behavior, ambiguous field meaning,
+  unhandled format/edge combinations, boundary/empty/overflow values, ordering,
+  defaults, concurrency. List each as an explicit question the proposal should **decide
+  before coding**, not during.
+- [ ] **Unknown unknowns** — what is the proposal not thinking about? Format quirks not
+  yet considered, interactions with existing capabilities, cross-format parity fallout
+  (§2 hot spots), perf/cost surprises, security edges, dependency/version assumptions.
+  Name what we *don't yet know* that could change the design, and how to shrink the
+  unknown (spike, oracle comparison against `archivey-dev`/`py7zr`/`rarfile`, corpus
+  probe, or a maintainer decision).
+- [ ] **Assumptions taken on faith** — for each load-bearing assumption, is it verified
+  or assumed? Flag the untested ones and the cheapest way to test them.
+
+These are findings too (§0): a decision gap that could send implementation down the wrong
+path is 🟡+ and belongs in **maintainer questions** (pause-and-ask), never a silent
+assumption baked into the review.
+
 Rank the same way (§0/§7): a proposal that undercuts a load-bearing VISION claim (§1) is
-🔴; a thin scenario or missing rationale is 🟡; wording nits are 🟢.
+🔴; a decision gap or thin scenario is 🟡; wording nits are 🟢.
 
 ---
 

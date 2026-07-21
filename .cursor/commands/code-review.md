@@ -40,7 +40,9 @@ Combine the priorities above with that skill’s process:
 - Prefer concrete `file:line` evidence and triggering inputs/states.
 - **Reviewing an OpenSpec proposal / `design.md` instead of code?** Skip the code-first
   order and use the addendum's **§9 (values-first)** — check the design against
-  VISION/CONTRIBUTING values and contracts, then proposal shape.
+  VISION/CONTRIBUTING values and contracts, then proposal shape, then hunt **decision
+  gaps & unknown unknowns** (what an implementor must decide first; what the proposal
+  isn't thinking about) and raise them as maintainer questions.
 
 ## Output format
 
