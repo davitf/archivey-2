@@ -69,6 +69,14 @@ with archivey.open_archive(
     ...
 ```
 
+**Truncated or CRC-mismatched streams:** `data = stream.read()` asks for the whole stream and
+raises (`TruncatedError` / `CorruptionError`) — it does not return a partial body. That is
+intentional: a silent lossy success is worse than not salvaging. To recover a truncated
+prefix, use a chunked loop (`read(n)` until empty or exception). Content faults raise from
+`read`, never from `close`. When a member is short *and* carries a digest, the error type is
+best-effort (`TruncatedError`); shortfall and digest mismatch are not always separable —
+`except archivey.ReadError` catches both.
+
 ## One-shot extract
 
 ```python

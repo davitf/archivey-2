@@ -105,3 +105,11 @@ and the suspected ~10-byte header-only case):
   updated to match the chosen backstop.
 - `openspec validate --strict rapidgzip-truncation-investigation` green;
   sync delta into main `seekable-decompressor-streams` when landing.
+
+## Compose with `gzip-zlib-truncation-recovery`
+
+The stdlib gzip path is now a gzip-window `DecompressorStream` that recovers a
+truncated prefix on large bounded `read(n)` (no byte-at-a-time requirement). Any
+empty→stdlib fallback designed here SHOULD retarget that engine rather than
+`gzip.GzipFile` / a `_STDLIB_READ_SIZE = 1` loop. Until that fallback lands,
+truncated gzip behavior can still differ between accelerator ON and OFF.

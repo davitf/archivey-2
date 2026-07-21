@@ -289,6 +289,7 @@ class _XzState:
         self._streams_seen = 0
         self._finished = False
         self._stream_decomp_bytes = 0
+        self.truncated = False
 
     def feed(
         self, data: bytes, max_length: int = -1
@@ -301,10 +302,23 @@ class _XzState:
             if self._streams_seen == 0:
                 raise CorruptionError("Not a valid XZ file: no streams found")
             if len(self._buf) >= 6 and bytes(self._buf[:6]) == _XZ_STREAM_MAGIC:
-                raise TruncatedError("XZ file truncated mid-header")
+                self.truncated = True
+                return b"", []
             self._finished = True
             return b"", []
-        raise TruncatedError("XZ file is truncated mid-stream")
+        # Mid-stream: drain any remaining buffered input for a recoverable prefix,
+        # then arm truncation (decoder owns pending_error).
+        out, units = self._process(max_length=-1)
+        if self._finished:
+            return out, units
+        if self._dec is not None and not self._dec.needs_input:
+            try:
+                more = self._dec.decompress(b"")
+                out = out + more
+            except lzma.LZMAError:
+                pass
+        self.truncated = True
+        return out, units
 
     def is_finished(self) -> bool:
         return self._finished
@@ -410,6 +424,7 @@ class _XzBlockChain:
         self._block_bytes_fed = 0
         self._pending = b""
         self._finished = len(blocks) == 0
+        self.truncated = False
         if not self._finished:
             self._start_block(0)
 
@@ -522,7 +537,11 @@ class _XzBlockChain:
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         if self._finished:
             return b"", []
-        raise TruncatedError("XZ block chain is not exhausted at flush")
+        out, units = self.feed(b"")
+        if self._finished:
+            return out, units
+        self.truncated = True
+        return out, units
 
     def is_finished(self) -> bool:
         return self._finished
@@ -611,11 +630,15 @@ class XzDecoder(BaseDecoder):
 
     def flush(self) -> DecodeOut:
         data, units = self._engine.flush()
+        if getattr(self._engine, "truncated", False):
+            self._pending_error = TruncatedError("XZ file is truncated")
         return DecodeOut(data, self._points_for_units(units))
 
     @property
     def finished(self) -> bool:
-        return self._engine.is_finished()
+        return self._engine.is_finished() and not getattr(
+            self._engine, "truncated", False
+        )
 
     @property
     def needs_input(self) -> bool:

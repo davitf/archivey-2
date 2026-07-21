@@ -13,6 +13,7 @@ import os
 import zlib
 from typing import Any, BinaryIO
 
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -20,6 +21,9 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
 )
+
+_GZIP_MAGIC = b"\x1f\x8b"
+_GZIP_WBITS = 16 + zlib.MAX_WBITS
 
 
 class ZlibDecoder(BaseDecoder):
@@ -46,8 +50,12 @@ class ZlibDecoder(BaseDecoder):
     def flush(self) -> DecodeOut:
         if self._decomp.unconsumed_tail:
             out = self._decomp.decompress(self._decomp.unconsumed_tail)
-            return DecodeOut(out + self._decomp.flush())
-        return DecodeOut(self._decomp.flush())
+            leftover = out + self._decomp.flush()
+        else:
+            leftover = self._decomp.flush()
+        if not self._decomp.eof:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(leftover)
 
     @property
     def finished(self) -> bool:
@@ -56,6 +64,199 @@ class ZlibDecoder(BaseDecoder):
     @property
     def needs_input(self) -> bool:
         return not self._decomp.unconsumed_tail
+
+
+class GzipDecoder(BaseDecoder):
+    """gzip-window inflate with GzipFile-parity multi-member chaining.
+
+    Uses ``wbits=16+MAX_WBITS`` so zlib validates CRC/ISIZE. After each member,
+    strips leading NUL padding from ``unused_data`` / retained input, then:
+    empty → clean EOF; ``1f 8b`` → new ``decompressobj`` and continue; anything
+    else → :class:`~archivey.exceptions.CorruptionError` (trailing junk / partial
+    magic at true EOF). Cross-``feed`` NUL runs and a lone trailing ``1f`` are
+    retained until the next header (or ``flush``) resolves them.
+
+    Mid-member ``max_length`` remainder stays in ``decompressobj.unconsumed_tail``
+    (same as :class:`ZlibDecoder`); ``_retained`` is only for post-member bytes.
+    """
+
+    def __init__(self) -> None:
+        self._decomp = zlib.decompressobj(_GZIP_WBITS)
+        # Post-member bytes not yet resolved (NUL padding / next magic / junk).
+        # Never store unconsumed_tail here — that lives on the decompressobj.
+        self._retained = b""
+        self._between_members = False
+        self._finished = False
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> GzipDecoder:
+        del point, inner
+        return GzipDecoder()
+
+    def _resolve_between(self, data: bytes) -> bytes:
+        """Strip NULs; start next member, retain partial magic, raise on junk, or wait."""
+        i = 0
+        while i < len(data) and data[i] == 0:
+            i += 1
+        data = data[i:]
+        if not data:
+            self._between_members = True
+            self._retained = b""
+            return b""
+        if data.startswith(_GZIP_MAGIC):
+            self._decomp = zlib.decompressobj(_GZIP_WBITS)
+            self._between_members = False
+            self._retained = b""
+            return data
+        if data == b"\x1f":
+            self._between_members = True
+            self._retained = data
+            return b""
+        raise CorruptionError(
+            "Trailing non-gzip data after a completed gzip member "
+            f"(starts with {data[:8]!r})"
+        )
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if self._finished:
+            return DecodeOut(b"")
+
+        if self._between_members:
+            data = self._retained + chunk
+            self._retained = b""
+        else:
+            data = self._decomp.unconsumed_tail + chunk
+
+        output = bytearray()
+        while True:
+            if max_length >= 0 and len(output) >= max_length:
+                if self._between_members and data:
+                    self._retained = data
+                break
+
+            if self._between_members:
+                data = self._resolve_between(data)
+                if self._retained or not data:
+                    # Partial magic retained, or only NULs/empty — need more input.
+                    break
+                continue
+
+            if not data:
+                break
+
+            limit = max_length - len(output) if max_length >= 0 else -1
+            if limit == 0:
+                break
+            if limit < 0:
+                produced = self._decomp.decompress(data)
+            else:
+                produced = self._decomp.decompress(data, limit)
+            output.extend(produced)
+
+            if self._decomp.eof:
+                data = self._decomp.unused_data
+                self._between_members = True
+                continue
+
+            # More compressed input remains under a max_length cap — leave it in
+            # unconsumed_tail for the next feed (do not copy into _retained).
+            data = self._decomp.unconsumed_tail
+            if data and produced and (max_length < 0 or len(output) < max_length):
+                continue
+            break
+
+        return DecodeOut(bytes(output))
+
+    def flush(self) -> DecodeOut:
+        out = bytearray()
+        # Drain mid-member unconsumed_tail / continue member chaining with no new input.
+        drained = self.feed(b"")
+        out.extend(drained.data)
+
+        if self._between_members:
+            data = self._retained
+            self._retained = b""
+            i = 0
+            while i < len(data) and data[i] == 0:
+                i += 1
+            data = data[i:]
+            if not data:
+                self._finished = True
+                return DecodeOut(bytes(out))
+            if data.startswith(_GZIP_MAGIC):
+                self._decomp = zlib.decompressobj(_GZIP_WBITS)
+                self._between_members = False
+                try:
+                    produced = self._decomp.decompress(data)
+                    out.extend(produced)
+                    if self._decomp.unconsumed_tail:
+                        out.extend(
+                            self._decomp.decompress(self._decomp.unconsumed_tail)
+                        )
+                    if not self._decomp.eof:
+                        out.extend(self._decomp.flush())
+                except zlib.error as e:
+                    raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+                if not self._decomp.eof:
+                    self._pending_error = TruncatedError("gzip stream is truncated")
+                    return DecodeOut(bytes(out))
+                trailing = self._decomp.unused_data
+                j = 0
+                while j < len(trailing) and trailing[j] == 0:
+                    j += 1
+                trailing = trailing[j:]
+                if trailing:
+                    raise CorruptionError(
+                        "Trailing non-gzip data after a completed gzip member "
+                        f"(starts with {trailing[:8]!r})"
+                    )
+                self._finished = True
+                return DecodeOut(bytes(out))
+            raise CorruptionError(
+                "Trailing non-gzip data after a completed gzip member "
+                f"(starts with {data[:8]!r})"
+            )
+
+        # Mid-member compressed EOF.
+        try:
+            if self._decomp.unconsumed_tail:
+                out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
+            out.extend(self._decomp.flush())
+        except zlib.error as e:
+            raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+        if not self._decomp.eof:
+            self._pending_error = TruncatedError("gzip stream is truncated")
+        else:
+            # Completed final member exactly at EOF.
+            trailing = self._decomp.unused_data
+            j = 0
+            while j < len(trailing) and trailing[j] == 0:
+                j += 1
+            trailing = trailing[j:]
+            if trailing == b"\x1f" or (
+                trailing and not trailing.startswith(_GZIP_MAGIC)
+            ):
+                raise CorruptionError(
+                    "Trailing non-gzip data after a completed gzip member "
+                    f"(starts with {trailing[:8]!r})"
+                )
+            if trailing.startswith(_GZIP_MAGIC):
+                self._pending_error = TruncatedError("gzip stream is truncated")
+            else:
+                self._finished = True
+        return DecodeOut(bytes(out))
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
+
+    @property
+    def needs_input(self) -> bool:
+        if self._decomp.unconsumed_tail:
+            return False
+        # Full next-member prefix retained — drain without reading more.
+        if self._retained.startswith(_GZIP_MAGIC):
+            return False
+        return True
 
 
 class BrotliDecoder(BaseDecoder):
@@ -118,6 +319,8 @@ class BrotliDecoder(BaseDecoder):
 
     def flush(self) -> DecodeOut:
         # Brotli decodes eagerly; there is nothing buffered to flush at EOF.
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
         return DecodeOut(b"")
 
     @property
@@ -271,15 +474,17 @@ class PpmdDecoder(BaseDecoder):
         # in a loop — on truncated data that decodes garbage through the native model,
         # which can silently complete a member and (on pyppmd 1.3.x, if unbounded)
         # corrupt the heap. Anything still missing after the single NUL is truncation,
-        # surfaced via ``finished``.
+        # surfaced via pending_error.
         max_length = self._max_length()
         if max_length == 0:
             return DecodeOut(b"")
-        if self._decomp.eof or not getattr(self._decomp, "needs_input", False):
-            return DecodeOut(b"")
-        chunk = self._decode(b"\0", max_length)
-        self._produced += len(chunk)
-        return DecodeOut(chunk)
+        out = b""
+        if not self._decomp.eof and getattr(self._decomp, "needs_input", False):
+            out = self._decode(b"\0", max_length)
+            self._produced += len(out)
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(out)
 
     @property
     def finished(self) -> bool:
@@ -333,7 +538,10 @@ class BcjDecoder(BaseDecoder):
         self._pending = b""
         out2 = self._decomp.decode(b"")
         self._produced += len(out) + len(out2)
-        return DecodeOut(out + out2)
+        leftover = out + out2
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(leftover)
 
     @property
     def finished(self) -> bool:
@@ -414,10 +622,13 @@ class Deflate64Decoder(BaseDecoder):
             self._pending_out = b""
             if not self._decomp.eof:
                 out += self._decomp.inflate(b"")
-            return DecodeOut(out)
-        if self._decomp.eof:
-            return DecodeOut(b"")
-        return DecodeOut(self._decomp.inflate(b""))
+        elif self._decomp.eof:
+            out = b""
+        else:
+            out = self._decomp.inflate(b"")
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(out)
 
     @property
     def finished(self) -> bool:
@@ -434,6 +645,17 @@ def ZlibDecompressorStream(
 ) -> DecompressorStream:
     """Inflate a raw-deflate or zlib-wrapped stream (forward-only)."""
     return DecompressorStream(path, make_decoder=lambda _p, _i: ZlibDecoder(wbits))
+
+
+def GzipDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+) -> DecompressorStream:
+    """Inflate a gzip stream with multi-member chaining (forward-only; O(n) rewind)."""
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: GzipDecoder(),
+        codec_name="gzip",
+    )
 
 
 def BrotliDecompressorStream(

@@ -125,6 +125,7 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 | Nested-archive stance + bounded recursion recipe | Behavior OK | Gotchas one-liner done; fuller recipe still nice for usage/O6 |
 | Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `safe-extraction.md` |
 | Accelerator opt-out for untrusted + latency budget | Mitigations in tree | Gotchas + costs cover it; P5 residual remains |
+| Truncated gzip: stdlib engine recovers prefix on large `read(n)` (`gzip-zlib-truncation-recovery`) | Done | **Compose:** rapidgzip empty→stdlib fallback SHOULD use this `DecompressorStream` gzip-window engine (no byte-at-a-time workaround). Until that lands, truncated gzip behavior can still differ between accelerator ON and OFF. |
 
 ---
 

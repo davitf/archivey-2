@@ -58,6 +58,7 @@ from archivey.internal.streams.archive_stream import (
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
     Deflate64DecompressorStream,
+    GzipDecompressorStream,
     PpmdDecompressorStream,
     ZlibDecompressorStream,
 )
@@ -65,7 +66,6 @@ from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ensure_binaryio,
-    ensure_bufferedio,
     fix_stream_start_position,
     source_byte_size,
 )
@@ -728,23 +728,19 @@ class GzipCodec(StreamCodec):
             if isinstance(source, (str, os.PathLike)):
                 return _GzipTruncationCheckStream(stream, os.fspath(source))
             return stream
-        # stdlib gzip can seek, but a rewind re-decompresses from the start; the outer
-        # ArchiveStream warns about that (see rewind_warning). The [seekable] rapidgzip
-        # accelerator (above) gives real random access.
-        if isinstance(source, (str, os.PathLike)):
-            return ensure_binaryio(gzip.open(source, "rb"))
-        return ensure_binaryio(
-            gzip.GzipFile(fileobj=ensure_bufferedio(source), mode="rb")
-        )
+        # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
+        # outcomes come from zlib's gzip window; multi-member chaining matches GzipFile
+        # (NUL pad / trailing zeros / trailing junk). O(n) rewind with a warning.
+        return GzipDecompressorStream(source)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
             return CorruptionError(f"Error reading gzip stream: {exc!r}")
         if isinstance(exc, zlib.error):
             # Corruption inside the deflate body (a valid gzip header, then bad data) is
-            # raised by stdlib gzip as a raw zlib.error rather than BadGzipFile. zlib does
-            # not flag truncation distinctly here (a short stream surfaces as EOFError
-            # below), so any zlib.error at this point is corruption.
+            # raised by zlib's gzip window as a raw zlib.error. zlib does not flag
+            # truncation distinctly here (a short stream surfaces as TruncatedError via
+            # the decompressor engine), so any zlib.error at this point is corruption.
             return CorruptionError(f"Error reading gzip stream: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"gzip stream is truncated: {exc!r}")

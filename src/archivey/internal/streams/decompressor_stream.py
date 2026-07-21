@@ -76,7 +76,18 @@ class Decoder(Protocol):
         """
         ...
 
-    def flush(self) -> DecodeOut: ...
+    def flush(self) -> DecodeOut:
+        """Finalize at compressed EOF — the sole truncation-detection point.
+
+        Called exactly once when the compressed source is exhausted. Implementations
+        MUST arm :attr:`pending_error` with a :class:`~archivey.exceptions.TruncatedError`
+        when the decode is incomplete (not :attr:`finished`, or finished alongside a
+        known truncation such as unix-compress leftover bits), and MUST return any
+        recoverable flush leftover rather than raising that truncation inline.
+        :class:`~archivey.exceptions.CorruptionError` for trailing junk / hard
+        corruption MAY still raise from ``flush``.
+        """
+        ...
 
     @property
     def finished(self) -> bool: ...
@@ -99,7 +110,14 @@ class Decoder(Protocol):
 
 
 class BaseDecoder:
-    """Default decoder behavior: empty points, no pending error, no-op index build."""
+    """Default decoder behavior: empty points, no pending error, no-op index build.
+
+    Subclasses that override :meth:`flush` own truncation detection: at compressed
+    EOF, arm :attr:`pending_error` when the stream is incomplete and return any
+    leftover bytes — do not raise :class:`~archivey.exceptions.TruncatedError` from
+    ``flush`` itself (the stream raises it on the next empty ``read``, or from
+    ``readall``).
+    """
 
     _pending_error: BaseException | None = None
 
@@ -367,10 +385,14 @@ class DecompressorStream(ReadOnlyIOStream):
         if not chunk:
             self._eof = True
             leftover = self._ingest_decode(self._decoder.flush())
-            if not self._decoder.finished:
-                raise TruncatedError("File is truncated")
-            self._size = self._pos + len(self._buffer) + len(leftover)
-            self._index_built = True  # a forward scan to EOF is a complete index
+            # Incomplete EOF: decoder owns TruncatedError via pending_error (set in
+            # flush). Deliver leftover now; bounded read raises on the next empty
+            # read. Only publish a clean complete size when truly finished and not
+            # truncated (pending_error alone is insufficient — unix-compress can be
+            # finished=True with leftover-bits truncation).
+            if self._decoder.pending_error is None and self._decoder.finished:
+                self._size = self._pos + len(self._buffer) + len(leftover)
+                self._index_built = True  # a forward scan to EOF is a complete index
             return leftover
         return self._ingest_decode(self._decoder.feed(chunk, max_length))
 
@@ -387,18 +409,19 @@ class DecompressorStream(ReadOnlyIOStream):
             if chunk:
                 chunks.append(chunk)
         data = b"".join(chunks)
-        if self._size is None or self._pos <= self._size:
-            self._pos += len(data)
-            self._size = self._pos
         # A read(-1)/readall() caller expects the complete stream and will not call
         # again, so a deferred pending_error (e.g. truncated .Z) must raise here —
         # unlike chunked read(n), which returns bytes now and raises on the next empty
         # read. Partial bytes from this call are dropped: the caller asked for the
-        # whole stream and it is incomplete.
+        # whole stream and it is incomplete. Gate _size *before* raising so a caller
+        # that catches TruncatedError cannot then read a clean prefix-as-complete size.
         err = self._decoder.pending_error
         if err is not None:
             self._decoder.clear_pending_error()
             raise err
+        if self._size is None or self._pos <= self._size:
+            self._pos += len(data)
+            self._size = self._pos
         return data
 
     def read(self, n: int = -1, /) -> bytes:
@@ -482,7 +505,18 @@ class DecompressorStream(ReadOnlyIOStream):
                 while not self._eof:
                     data = self._read_decompressed_chunk(_SEEK_OUTPUT_CHUNK)
                     self._pos += len(data)
-                assert self._size is not None
+                # Truncated streams must not publish a clean complete size; surface
+                # the deferred fault instead of asserting or treating the prefix as
+                # the full stream.
+                err = self._decoder.pending_error
+                if err is not None:
+                    self._decoder.clear_pending_error()
+                    raise err
+                if self._size is None:
+                    raise TruncatedError(
+                        "Cannot seek to end: decompressed size is unknown "
+                        "(stream ended incompletely)"
+                    )
             new_pos = self._size + offset
 
         if new_pos < 0:

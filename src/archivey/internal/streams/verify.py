@@ -17,8 +17,12 @@ Per the ``compressed-streams`` spec:
   read is never verified. ``read(0)`` is a no-op (not EOF).
 - A seek off the sequential frontier disables verification for the rest of the
   handle's life.
-- The mismatch is raised from the terminal empty read *after* every data chunk
-  has been delivered; ``close()`` also verifies when already at clean EOF.
+- On bounded ``read(n)``, the mismatch / hash-less short raises from the terminal
+  empty read *after* every data chunk has been delivered.
+- On ``read(-1)`` / ``readall``, the complete-stream call includes the EOF verdict
+  and raises (so ``read(); close()`` cannot silently accept bad content).
+- ``close()`` / ``finish_on_close`` MUST NOT introduce a first content
+  ``TruncatedError`` / ``CorruptionError`` (teardown errors may still propagate).
 - Missing/unknown digest algorithms emit ``DIGEST_UNVERIFIABLE`` and are skipped.
 """
 
@@ -49,6 +53,10 @@ if TYPE_CHECKING:
 # digest ``bytes`` (CRC-32 as four big-endian bytes).
 _ExpectedHashes = Mapping[Any, bytes]
 _DigestTransforms = Mapping[Any, Callable[[bytes], bytes]]
+
+# Bounded drain step for sized ``read(-1)``. Must not use ``inner.read(-1)`` on the
+# sized branch: ``expected_size`` is a decompression-bomb cap.
+_SIZED_DRAIN_CHUNK = 65536
 
 
 def _algo_key(algorithm: Any) -> str:
@@ -136,7 +144,6 @@ class MemberVerifier:
         digest_transforms: _DigestTransforms | None = None,
     ) -> None:
         self._expected_size = expected_size
-        self._short = False
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
         self._digest_transforms: dict[str, Callable[[bytes], bytes]] = {}
@@ -194,8 +201,17 @@ class MemberVerifier:
                     f"decompressed content."
                 )
 
-    def _finish(self, inner: BinaryIO) -> None:
-        """Run end-of-stream checks once: over-length, then digests, then note short."""
+    def _finish(self, inner: BinaryIO, *, raise_content_faults: bool) -> None:
+        """Run end-of-stream checks once.
+
+        When ``raise_content_faults`` is true (read path), short bodies raise
+        :class:`~archivey.exceptions.TruncatedError` and digest mismatches raise
+        :class:`~archivey.exceptions.CorruptionError`. A short body that also
+        carries a hash raises ``TruncatedError`` (best-effort: shortfall vs digest
+        mismatch are not always separable). When false (close path), content faults
+        are never raised — ``finish_on_close`` must not be a first content-fault
+        surface.
+        """
         self._verified = True
         if self._expected_size is not None and self._pos >= self._expected_size:
             # Delivered the declared size; the underlying must have nothing more.
@@ -207,22 +223,88 @@ class MemberVerifier:
             except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
                 trailing = b""
             if trailing:
-                raise CorruptionError(
-                    "Decompressed content exceeds its declared size of "
-                    f"{self._expected_size} bytes."
-                )
-        self._verify_digests()
+                if raise_content_faults:
+                    raise CorruptionError(
+                        "Decompressed content exceeds its declared size of "
+                        f"{self._expected_size} bytes."
+                    )
+                return
         if self._expected_size is not None and self._pos < self._expected_size:
-            # Short read. Defer raising to close so a more specific inner error (e.g. a
-            # subprocess exit code) takes precedence; a hashed short read already raised
-            # a digest mismatch above.
-            self._short = True
+            # Short — TruncatedError even when a hash is present (best-effort verdict).
+            if raise_content_faults:
+                raise TruncatedError(
+                    f"Decompressed content ended after {self._pos} of "
+                    f"{self._expected_size} expected bytes."
+                )
+            return
+        if raise_content_faults:
+            self._verify_digests()
+
+    def _read_sized_all(self, inner: BinaryIO) -> bytes:
+        """Drain to genuine EOF in bounded steps, capped by the declared size.
+
+        ``expected_size`` is a decompression-bomb bound: do **not** delegate to
+        ``inner.read(-1)``, which would pull an over-long adversarial payload into
+        RAM. A single ``inner.read(remaining)`` is also insufficient — ``BinaryIO``
+        may short-read without EOF.
+        """
+        assert self._expected_size is not None
+        chunks: list[bytes] = []
+        while self._pos < self._expected_size:
+            remaining = self._expected_size - self._pos
+            want = min(_SIZED_DRAIN_CHUNK, remaining)
+            try:
+                piece = inner.read(want)
+            except ArchiveyError:
+                self._verify_enabled = False
+                raise
+            except Exception as exc:
+                # Opaque accelerator EOF while still short of the declared size
+                # (macOS rapidgzip often raises instead of returning b""). Surface
+                # TruncatedError on this read path so close need not raise it.
+                raise TruncatedError(
+                    f"Decompressed content ended after {self._pos} of "
+                    f"{self._expected_size} expected bytes."
+                ) from exc
+            if not piece:
+                break
+            self._pos += len(piece)
+            if self._verify_enabled:
+                for hasher in self._hashers.values():
+                    hasher.update(piece)
+            chunks.append(piece)
+        # Run the EOF verdict in this complete-stream call.
+        if self._verify_enabled and not self._verified:
+            self._finish(inner, raise_content_faults=True)
+        return b"".join(chunks)
 
     def read(self, inner: BinaryIO, n: int = -1) -> bytes:
         """Read from ``inner``, update digests/bounds, and verify on clean EOF."""
         # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
         if n == 0:
             return b""
+        if n < 0:
+            # Complete-stream read: include the EOF verdict in this call.
+            if (
+                self._verify_enabled
+                and self._expected_size is not None
+                and not self._verified
+            ):
+                return self._read_sized_all(inner)
+            try:
+                data = inner.read(-1)
+            except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+                self._verify_enabled = False
+                raise
+            if data:
+                self._pos += len(data)
+                if self._verify_enabled:
+                    for hasher in self._hashers.values():
+                        hasher.update(data)
+            if self._verify_enabled and not self._verified:
+                self._finish(inner, raise_content_faults=True)
+            return data
+
         if (
             self._verify_enabled
             and self._expected_size is not None
@@ -234,7 +316,7 @@ class MemberVerifier:
                     b""  # at the declared size — fall through to end-of-stream checks
                 )
             else:
-                want = remaining if n < 0 else min(n, remaining)
+                want = min(n, remaining)
                 try:
                     data = inner.read(want)
                 except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
@@ -256,7 +338,7 @@ class MemberVerifier:
                     hasher.update(data)
             return data
         if self._verify_enabled and not self._verified:
-            self._finish(inner)
+            self._finish(inner, raise_content_faults=True)
         return data
 
     def note_seek(self, result: int) -> None:
@@ -266,24 +348,20 @@ class MemberVerifier:
         self._pos = result
 
     def finish_on_close(self, inner: BinaryIO) -> None:
-        """Run deferred EOF verification around an inner that is still open.
+        """Close ``inner`` without introducing a first content fault.
 
-        Always closes ``inner`` (and surfaces probe/finish errors after that close).
-        Callers that have not opened an inner yet should not call this.
+        May still propagate a teardown error, or a typed probe error already raised
+        from the inner (after ensuring the inner is closed). Never raises
+        ``TruncatedError`` / ``CorruptionError`` solely because the caller is closing.
         """
         finish_exc: ArchiveyError | None = None
         if self._verify_enabled and not self._verified:
+            # Drain/probe only to learn whether to mark verified; never raise content
+            # TruncatedError / CorruptionError from close.
             reached_declared = (
                 self._expected_size is not None and self._pos >= self._expected_size
             )
-            # Probe whether the stream ended cleanly. Accelerators (esp. rapidgzip on
-            # macOS) may raise on truncated input instead of returning b""; treat that
-            # as EOF when we are still short of the declared size so silent short-reads
-            # still become TruncatedError, without double-faulting after read() raised.
-            # Typed library errors (HMAC mismatch, etc.) must still propagate — but the
-            # inner must still be closed (F2).
             more = False
-            probe_raised = False
             if not reached_declared:
                 try:
                     more = bool(inner.read(1))
@@ -293,36 +371,19 @@ class MemberVerifier:
                     finish_exc = exc
                     more = True  # skip _finish; surface finish_exc after close
                 except Exception:  # noqa: BLE001 - accel truncate may raise any error
-                    probe_raised = True
                     more = False
             if finish_exc is None and (reached_declared or not more):
-                if probe_raised and (
-                    self._expected_size is not None and self._pos < self._expected_size
-                ):
-                    finish_exc = TruncatedError(
-                        f"Decompressed content ended after {self._pos} of "
-                        f"{self._expected_size} expected bytes."
-                    )
-                else:
-                    try:
-                        self._finish(inner)
-                    except CorruptionError as exc:
-                        finish_exc = (
-                            exc  # still close the inner below before re-raising
-                        )
-        short = self._short
-        # Close first. An inner teardown error (e.g. unrar wrong-password exit)
-        # must win over a deferred short/truncation verdict — same precedence as
-        # the pre-fusion VerifyingStream.close, so let a close error propagate over
-        # ``finish_exc`` / ``short`` below rather than swallowing it.
+                try:
+                    self._finish(inner, raise_content_faults=False)
+                except ArchiveyError as exc:
+                    # Over-length / digest from a raise_content_faults=False path
+                    # should not happen; if an ArchiveyError escapes the trailing
+                    # probe inside _finish, still close then re-raise.
+                    finish_exc = exc
+        # Close first. An inner teardown error must win over a deferred probe error.
         inner.close()
         if finish_exc is not None:
             raise finish_exc
-        if short:
-            raise TruncatedError(
-                f"Decompressed content ended after {self._pos} of "
-                f"{self._expected_size} expected bytes."
-            )
 
 
 def build_member_verifier(

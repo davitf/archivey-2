@@ -216,13 +216,14 @@ def test_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     ) as stream:
         with pytest.raises(CorruptionError) as excinfo:
             stream.read()
-    assert isinstance(excinfo.value.__cause__, gzip.BadGzipFile)
+    # Stdlib path uses zlib's gzip window (not GzipFile); bad magic → zlib.error.
+    assert isinstance(excinfo.value.__cause__, zlib.error)
 
 
 def test_mid_stream_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     # Corruption *inside* the deflate body (a valid header, then a flipped byte) surfaces as
-    # zlib.error from stdlib gzip — a different exception type than a broken header's
-    # BadGzipFile. It must still be translated to CorruptionError, not leak a raw zlib.error.
+    # zlib.error from the gzip-window decoder. It must still be translated to
+    # CorruptionError, not leak a raw zlib.error.
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[len(corrupt) // 2] ^= 0xFF  # flip a byte well past the 10-byte header
     with open_codec_stream(
@@ -563,9 +564,14 @@ def test_verify_matching_adler32_passes() -> None:
 def test_verify_adler32_mismatch_raises() -> None:
     bad = ((zlib.adler32(CONTENT) & 0xFFFFFFFF) ^ 0xFFFF).to_bytes(4, "big")
     stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.ADLER32: bad})
-    assert stream.read() == CONTENT  # data delivered first
+    collected = bytearray()
     with pytest.raises(CorruptionError, match="adler32"):
-        stream.read()  # terminal empty read verifies
+        while True:
+            chunk = stream.read(7)
+            if not chunk:
+                break
+            collected.extend(chunk)
+    assert bytes(collected) == CONTENT
 
 
 def test_verify_multiple_algorithms() -> None:
@@ -597,13 +603,22 @@ def test_verify_partial_read_is_not_verified() -> None:
     stream.close()  # abandoned before EOF — must not raise
 
 
-def test_verify_on_close_after_full_single_read() -> None:
-    """A single read()-to-end must still verify when the stream is closed."""
+def test_verify_slurp_raises_on_mismatch_not_close() -> None:
+    """Complete-stream read() must raise on bad CRC so read(); close() cannot succeed."""
     bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
     stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: bad})
-    assert stream.read() == CONTENT
     with pytest.raises(CorruptionError, match="crc32"):
+        stream.read()
+    stream.close()  # teardown-only; must not raise the digest fault again
+
+
+def test_verify_read_then_close_anti_footgun() -> None:
+    bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
+    stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: bad})
+    with pytest.raises(CorruptionError, match="crc32"):
+        data = stream.read()
         stream.close()
+        del data
 
 
 def test_verify_expected_size_exact_passes() -> None:
@@ -613,11 +628,24 @@ def test_verify_expected_size_exact_passes() -> None:
 
 
 def test_verify_expected_size_short_raises_truncated() -> None:
-    """A hash-less member that ends before its declared size raises TruncatedError."""
+    """A hash-less member that ends before its declared size raises TruncatedError on read."""
     stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT) + 100)
-    assert stream.read() == CONTENT  # all available bytes delivered
     with pytest.raises(TruncatedError):
-        stream.close()
+        stream.read()
+    stream.close()  # quiet after the fault was observed on read
+
+
+def test_verify_expected_size_short_chunked_then_empty_raises() -> None:
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT) + 100)
+    collected = bytearray()
+    with pytest.raises(TruncatedError):
+        while True:
+            chunk = stream.read(64)
+            if not chunk:
+                break
+            collected.extend(chunk)
+    assert bytes(collected) == CONTENT
+    stream.close()
 
 
 def test_verify_expected_size_overlong_stops_at_declared_size() -> None:
@@ -657,16 +685,16 @@ def test_verify_hashed_overlong_with_matching_crc_still_capped() -> None:
     assert len(out) == declared
 
 
-def test_verify_expected_size_short_with_hash_is_digest_mismatch() -> None:
-    """A hashed short read surfaces as the digest mismatch, not a truncation error."""
+def test_verify_expected_size_short_with_hash_is_truncated() -> None:
+    """Short+hash raises TruncatedError (best-effort; shortfall vs digest may coincide)."""
     stream = VerifyingStream(
         io.BytesIO(CONTENT),
         {HashAlgorithm.CRC32: _crc32(CONTENT + b"more")},
         expected_size=len(CONTENT) + 4,
     )
-    assert stream.read() == CONTENT
-    with pytest.raises(CorruptionError, match="crc32"):
-        stream.close()
+    with pytest.raises(TruncatedError):
+        stream.read()
+    stream.close()
 
 
 def test_verify_expected_size_partial_read_then_close_is_ok() -> None:
@@ -674,6 +702,33 @@ def test_verify_expected_size_partial_read_then_close_is_ok() -> None:
     stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT))
     assert stream.read(10) == CONTENT[:10]
     stream.close()  # must not raise
+
+
+def test_verify_sized_readall_gathers_across_short_reads() -> None:
+    """read(-1) must drain a short-reading BinaryIO and still fire the EOF verdict."""
+
+    class ShortReading(io.BytesIO):
+        def read(self, n: int = -1) -> bytes:  # noqa: A003
+            if n is None or n < 0:
+                n = 3
+            return super().read(min(3, n) if n else 0)
+
+    stream = VerifyingStream(
+        ShortReading(CONTENT),
+        {HashAlgorithm.CRC32: _crc32(CONTENT)},
+        expected_size=len(CONTENT),
+    )
+    assert stream.read(-1) == CONTENT
+
+
+def test_verify_sized_readall_overlong_stops_at_cap() -> None:
+    """Sized read(-1) must not slurp past the declared decompression-bomb cap."""
+    inner = io.BytesIO(CONTENT)
+    declared = len(CONTENT) - 200
+    stream = VerifyingStream(inner, {}, expected_size=declared)
+    with pytest.raises(CorruptionError, match="exceeds"):
+        stream.read(-1)
+    assert inner.tell() <= declared + 1
 
 
 def test_verify_read0_is_not_eof() -> None:
@@ -852,3 +907,186 @@ def test_codec_stream_size_via_cheap_index(tmp_path) -> None:
         Codec.GZIP, io.BytesIO(gzip.compress(payload)), config=_STDLIB_GZIP
     )
     assert gz.size is None
+
+
+def _gzipfile_read1_prefix(truncated: bytes) -> bytes:
+    """Max recoverable prefix via GzipFile read(1) loop (oracle for truncated gzip)."""
+    gf = gzip.GzipFile(fileobj=io.BytesIO(truncated))
+    buf = bytearray()
+    try:
+        while True:
+            c = gf.read(1)
+            if not c:
+                break
+            buf.extend(c)
+    except EOFError:
+        pass
+    return bytes(buf)
+
+
+def test_truncated_gzip_large_read_recovers_prefix_like_read1() -> None:
+    compressed = gzip.compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    oracle = _gzipfile_read1_prefix(truncated)
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
+    ) as stream:
+        data = stream.read(65536)
+        assert data == oracle
+        with pytest.raises(TruncatedError):
+            stream.read(1)
+        stream.close()  # quiet after observed truncation
+
+
+def test_truncated_gzip_readall_raises() -> None:
+    compressed = gzip.compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
+    ) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+
+
+def test_truncated_gzip_seek_end_does_not_report_clean_size() -> None:
+    compressed = gzip.compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
+    ) as stream:
+        stream.read(256)  # deliver some prefix
+        with pytest.raises(TruncatedError):
+            while True:
+                if not stream.read(256):
+                    break
+        with pytest.raises(TruncatedError):
+            stream.seek(0, io.SEEK_END)
+
+
+def test_truncated_zlib_deflate_large_read_recovers_prefix() -> None:
+    from archivey.internal.streams.decompress import ZlibDecompressorStream
+
+    for wbits, raw in (
+        (-15, zlib.compress(CONTENT)[2:-4]),  # raw deflate
+        (zlib.MAX_WBITS, zlib.compress(CONTENT)),
+    ):
+        truncated = raw[: len(raw) // 2]
+        with ZlibDecompressorStream(io.BytesIO(truncated), wbits=wbits) as stream:
+            prefix = stream.read(65536)
+            assert prefix
+            with pytest.raises(TruncatedError):
+                stream.read(1)
+            stream.close()
+        with ZlibDecompressorStream(io.BytesIO(truncated), wbits=wbits) as stream:
+            with pytest.raises(TruncatedError):
+                stream.read()
+
+
+def test_gzip_multi_member_and_padding_parity() -> None:
+    m1 = gzip.compress(b"first")
+    m2 = gzip.compress(b"second")
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(m1 + m2), config=_STDLIB_GZIP
+    ) as stream:
+        assert stream.read() == b"firstsecond"
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(m1 + b"\x00\x00\x00\x00" + m2), config=_STDLIB_GZIP
+    ) as stream:
+        assert stream.read() == b"firstsecond"
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(m1 + b"\x00\x00\x00"), config=_STDLIB_GZIP
+    ) as stream:
+        assert stream.read() == b"first"
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(m1 + b"NOTGZIP"), config=_STDLIB_GZIP
+    ) as stream:
+        with pytest.raises(CorruptionError):
+            stream.read()
+
+
+def test_gzip_multi_member_cross_feed_edges() -> None:
+    """NUL padding / magic split across small reads must still concatenate."""
+    m1 = gzip.compress(b"aa")
+    m2 = gzip.compress(b"bb")
+    # Bytewise output across a padded boundary.
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(m1 + b"\x00\x00" + m2), config=_STDLIB_GZIP
+    ) as stream:
+        buf = bytearray()
+        while True:
+            c = stream.read(1)
+            if not c:
+                break
+            buf.extend(c)
+        assert bytes(buf) == b"aabb"
+    # Lone trailing partial magic at EOF → CorruptionError.
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(m1 + b"\x1f"), config=_STDLIB_GZIP
+    ) as stream:
+        with pytest.raises(CorruptionError):
+            stream.read()
+
+
+def test_gzip_empty_and_empty_payload_member() -> None:
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(gzip.compress(b"")), config=_STDLIB_GZIP
+    ) as stream:
+        assert stream.read() == b""
+    # Empty-payload member concatenated with a real member.
+    with open_codec_stream(
+        Codec.GZIP,
+        io.BytesIO(gzip.compress(b"") + gzip.compress(b"x")),
+        config=_STDLIB_GZIP,
+    ) as stream:
+        assert stream.read() == b"x"
+
+
+def test_truncated_gzip_mid_second_member_delivers_first_plus_partial() -> None:
+    m1 = gzip.compress(b"AAAA" * 50)
+    m2 = gzip.compress(b"BBBB" * 50)
+    truncated = m1 + m2[: len(m2) // 2]
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
+    ) as stream:
+        data = stream.read(65536)
+        assert data.startswith(b"AAAA" * 50)
+        assert len(data) > len(b"AAAA" * 50)
+        with pytest.raises(TruncatedError):
+            stream.read(1)
+
+
+@requires("ncompress")
+def test_unix_compress_truncated_close_quiet_and_size_unknown() -> None:
+    compressed = make_unix_compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
+        chunk = stream.read(256)
+        assert chunk
+        with pytest.raises(TruncatedError, match="leftover bits"):
+            while True:
+                c = stream.read(256)
+                if not c:
+                    break
+        stream.close()  # quiet
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+        # Must not publish the prefix length as a clean complete size.
+        assert stream.size is None
+        with pytest.raises(TruncatedError):
+            stream.seek(0, io.SEEK_END)
+
+
+def test_verify_fused_archive_stream_slurp_raises() -> None:
+    """Fused MemberVerifier on ArchiveStream: read() raises on bad CRC (not close)."""
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
+    stream = ArchiveStream(
+        lambda: io.BytesIO(CONTENT),
+        translate=lambda _exc: None,
+        expected_hashes={HashAlgorithm.CRC32: bad},
+    )
+    with pytest.raises(CorruptionError, match="crc32"):
+        stream.read()
+    stream.close()

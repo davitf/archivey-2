@@ -45,7 +45,7 @@ Two recurring notes:
 
 | Codec | Chosen backend | Availability | Efficient seek | Corruption | Truncation |
 |-------|----------------|--------------|----------------|------------|------------|
-| gzip | stdlib `gzip` (+ `rapidgzip` for random access) | core (`[seekable]` for accel) | via `rapidgzip` | yes (CRC) | yes¹ |
+| gzip | gzip-window `DecompressorStream` (+ `rapidgzip` for random access) | core (`[seekable]` for accel) | via `rapidgzip` | yes (CRC) | yes¹ |
 | bzip2 | stdlib `bz2` (+ `rapidgzip.IndexedBzip2File`) | core (`[seekable]` for accel) | via `rapidgzip` | yes (block CRC) | yes |
 | xz | native `xz.py` over stdlib `lzma` | core | **yes** (block index) | yes (CRC) | yes |
 | lzip | native `lzip.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |
@@ -59,16 +59,22 @@ Two recurring notes:
 | Deflate64 | `inflate64` | `[7z]` | no | yes | yes |
 | PPMd (var.H) | `pyppmd` | `[7z]` | no | yes | yes |
 
-¹ gzip truncation: stdlib raises `EOFError`; the `rapidgzip` accelerator does **not** reliably
-report it, so Archivey adds an ISIZE backstop on a seekable path (see `known-issues.md`
-and `seekable-decompressor-streams`).
+¹ gzip truncation (stdlib / accelerator-off path): bounded `read(n)` returns the recoverable
+prefix, then `TruncatedError` on the next empty `read`; `read()` / `readall` raises and returns
+nothing (a silent lossy success is worse than not salvaging — recover the prefix only via a
+chunked loop). The `rapidgzip` accelerator does **not** reliably report truncation, so Archivey
+adds an ISIZE backstop on a seekable path (see `known-issues.md` and
+`seekable-decompressor-streams`). Until an empty→stdlib fallback uses this engine, truncated
+gzip behavior can still differ between accelerator ON and OFF.
 ² brotli has no length/CRC trailer, so a truncated stream is detected only when the
 decompressor never reports "finished" at EOF (surfaced as `TruncatedError`), not by a stored
 size.
 ³ `.Z` has no length/checksum; finished compressors zero-pad after the last complete code, so
 nonzero leftover bits at EOF are a best-effort `TruncatedError` (raised on the next empty
 `read()` after delivering bytes). Cuts that leave only zero leftover bits stay silent.
-
+When a verifying member is short *and* carries a digest, Archivey raises `TruncatedError`
+(best-effort: shortfall vs digest mismatch are not always separable; a corrupt stream may
+surface as truncation and vice versa). `except ReadError` catches both.
 ---
 
 ## zstd — the open question (decision: migrate off `zstandard`)
@@ -239,14 +245,22 @@ does not use it — so the `python-xz` pin that lingered in `[all]` was entirely
 
 ## The rest — chosen library, rejected alternatives, reason
 
-### gzip — stdlib `gzip`, accelerated by `rapidgzip`
+### gzip — gzip-window `DecompressorStream`, accelerated by `rapidgzip`
 
-Default decode is stdlib `gzip` (zero-dep core). For **random access**, the optional
-`rapidgzip` (`[seekable]`) builds an index for true seeking; without it, stdlib `gzip` seeks by
-re-decompressing from the start (rewind warning). `rapidgzip` is the single accelerator library
-for both gzip and bzip2 — see bzip2 below and `known-issues.md` for why the standalone
-`indexed_gzip`/`indexed_bzip2` are not used. Truncation: stdlib raises `EOFError`; `rapidgzip`
-needs the ISIZE backstop (`seekable-decompressor-streams`).
+Default decode is a gzip-window zlib decoder on `DecompressorStream` (`wbits=16+MAX_WBITS`,
+multi-member chaining with GzipFile parity: NUL padding, trailing zeros, trailing junk) —
+not `gzip.GzipFile`. CRC/ISIZE outcomes come from zlib’s gzip window. For **random access**,
+the optional `rapidgzip` (`[seekable]`) builds an index for true seeking; without it, the
+stdlib path seeks by re-decompressing from the start (rewind warning). `rapidgzip` is the
+single accelerator library for both gzip and bzip2 — see bzip2 below and `known-issues.md`
+for why the standalone `indexed_gzip`/`indexed_bzip2` are not used.
+
+**Truncation trade-off:** on a truncated stream, `data = f.read()` / `readall` **raises
+`TruncatedError` and returns nothing** — a silent lossy success is worse than not salvaging.
+The recoverable prefix is reachable only via a chunked `read(n)` loop (large `read(n)` is
+safe; no byte-at-a-time requirement). `rapidgzip` still needs the ISIZE backstop
+(`seekable-decompressor-streams`); an empty→stdlib fallback should retarget this engine so a
+byte-at-a-time workaround is unnecessary.
 
 ### bzip2 — stdlib `bz2`, accelerated by `rapidgzip.IndexedBzip2File`
 
