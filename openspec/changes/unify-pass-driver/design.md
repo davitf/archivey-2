@@ -24,8 +24,8 @@ S2 today: `_materialize_members` vs `_ProgressivePassIterator` + `_finalize_mate
 
 - Delete the *category* of hand-rolled close-previous loops and mirrored finalize guards.
 - Encode ownership (close_previous / last-stream close / pass resources) in one place —
-  the driver always closes the last stream in its `finally`, so there is no per-backend
-  leave-last-open flag (see Decision 3).
+  the driver always closes the last stream in its `finally` (before any resource hook),
+  so there is no per-backend leave-last-open flag (see Decision 3).
 - Land T1 solid-RAR mutation **before** touching demux loops.
 - Preserve all must-not-break behaviors listed in the exploration map (solid RAR/7z, progressive TAR, double-fault, stream_members close/ownership).
 
@@ -70,8 +70,10 @@ Introduce a single helper on `BaseArchiveReader` (name TBD in implement, e.g. `_
 - Iterate members.
 - Optionally close previous on advance (`close_previous`).
 - Call a per-member open hook → `ArchiveStream | None`.
-- In its own `finally`: run an optional resource-cleanup hook, then **always close the
-  last still-open stream**.
+- In its own `finally`: **close the last still-open stream first**, then run an
+  optional resource-cleanup hook (solid block / `unrar` pipe). Order matches
+  today’s 7z/RAR (`previous.close()` before `solid.close()`): do not tear down
+  the block/pipe under a live member wrapper.
 
 Backend `_iter_with_data` becomes: obtain member source + resource state, then `yield from` the driver with a closure/hook for open (7z folder swap and RAR `pipe_offset` live in the hook).
 
@@ -134,7 +136,8 @@ Q3=(b) supersedes any draft that added S2+S3 as a native-ZIP entry gate (`PLAN.m
 | Risk | Mitigation |
 | --- | --- |
 | Silent solid demux / pipe_offset skew | T1 mutation first; solid RAR/7z + measurement decode-once tests |
-| Double-close / leave-last-open mismatch | Explicit flags; cooperative close tests; idempotent `ArchiveStream.close` |
+| Double-close (driver `finally` + `stream_members` `finally`) | Idempotent `ArchiveStream.close`; cooperative close/abandon tests |
+| Resource `finally` before last-stream close | Forbidden — close last stream, then solid/`_live_unrar` (match 7z/RAR today) |
 | Progressive vs eager finalize order drift | Port existing call sites carefully; double-fault contract tests |
 | TAR streaming regresses without previous-close | `close_previous=False`; TAR materialize-from-pass tests |
 | Scope creep into L5 / corpus `-s` | Non-goals; keep PR focused |

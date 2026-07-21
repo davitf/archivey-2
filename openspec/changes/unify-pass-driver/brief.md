@@ -6,7 +6,7 @@
 
 **What it does:** First widen mutation fuzz over static solid RAR fixtures. Then collapse link finalization into one helper, and replace the four hand-rolled pass-stream loops with one shared driver that backends customize via hooks.
 
-**Decided:** Pay before 0.2.0, not an entry gate. TAR keeps no previous-close as an explicit flag. Seven-zip and solid RAR close the last stream in the driver finally. No public API or OpenSpec requirement deltas if behavior is preserved. Do not teach the declarative RAR corpus builder solid mode in this change.
+**Decided:** Pay before 0.2.0, not an entry gate. TAR keeps no previous-close as an explicit flag. The shared driver always closes the last stream in its `finally` (all backends — no `leave_last_open`); resource cleanup runs after that close. No public API or OpenSpec requirement deltas if behavior is preserved. Do not teach the declarative RAR corpus builder solid mode in this change.
 
 **Your call later:** Helper naming is implementer choice. Whether wave-one mutation also includes symlink or file-version solid fixtures, or only the two basic solid archives.
 

@@ -19,8 +19,9 @@ missing release artifacts (SECURITY.md, CHANGELOG); (2) the **S2/S3
 structural prediction came true** — the pass-driver skeleton now exists in
 four divergent copies (RAR's is the fourth, exactly as forecast in 2026-07-12)
 and the member-list pipeline still carries mirrored double-fault guards — but
-none of it is public surface, so the recommended verdict is a *hard entry gate
-on the next backend*, not a release blocker; (3) the **generative test nets
+none of it is public surface, so the *original* recommended verdict was a *hard
+entry gate on the next backend*, not a release blocker (**overridden 2026-07-20:
+Q3 = (b) pay before 0.2.0** via `unify-pass-driver`); (3) the **generative test nets
 stop at the declarative corpus** — solid-RAR demux, the code where the RAR
 review found its bugs, is never mutated or swept, and the seek-interleaving
 property test that closed stream-decoder F5 exists only for XZ.
@@ -42,8 +43,8 @@ stable over time.
 | **T1** | Mutation-fuzz + conformance sweep cover only declarative `CORPUS`; **solid-RAR demux** (where RAR-review bugs lived) has no generative net | `tests/test_mutation_fuzz.py:118`; `rar_reader.py:578-649` | **F2** | **PAY** — mutate static fixtures / build solid RAR into corpus |
 | **T3** | Benchmark gate has no RAR/encrypted/accelerator data cases — D1's claim can't be honest for unmeasured paths | `tests/test_benchmark_gate.py` | **F2** | **PAY** (already tracked as perf P6 remainder) |
 | **T2** | Seek-interleaving property test exists only for XZ; lzip/`.Z` share the arithmetic class that hid F1 | `test_seekable_streams.py:507` | **F2** | **PAY** — parametrize existing test |
-| **S3** | Pass driver now **4 divergent copies** (base/TAR/7z/RAR; close-previous enforced 3 ways + not at all in one) — S3's prediction realized; next backend makes 5 | `base_reader.py:450`, `tar_reader.py:439`, `sevenzip_reader.py:303`, `rar_reader.py:578` | **F2** | **KEEP thru 0.2.0, PAY as entry gate for next backend** — Q3 to confirm |
-| **S2** | Member-list pipeline half-unified: shared stamper/publication landed, but dual drive loops + **mirrored double-fault guards** remain | `base_reader.py:782-816` vs `:1021-1048,1640-1690` | **F2** | **KEEP thru 0.2.0, PAY with S3** (one change) |
+| **S3** | Pass driver now **4 divergent copies** (base/TAR/7z/RAR; close-previous enforced 3 ways + not at all in one) — S3's prediction realized; next backend makes 5 | `base_reader.py:450`, `backends/tar_reader.py`, `backends/sevenzip_reader.py:303`, `backends/rar_reader.py:578` | **F2** | **PAY before 0.2.0** (Q3 = b, 2026-07-20) — OpenSpec `unify-pass-driver`; T1 first |
+| **S2** | Member-list pipeline half-unified: shared stamper/publication landed, but dual drive loops + **mirrored double-fault guards** remain | `base_reader.py` finalize helpers | **F2** | **PAY with S3** in `unify-pass-driver` (Q3 = b) |
 | **D4** | `open-issues.md` contradicts its own bucket rules (P1 decided+implemented yet listed as to-fix; dead change-path refs) | `docs/internal/open-issues.md:34-55,185` | **F2** | **PAY** — 15-min sweep |
 | **D5/D6** | Lifecycle housekeeping: `stop-on-failure-not-policy` complete-but-unarchived; `cli-product/` review done-pending-archive | `openspec list`; `review/STATUS.md` | **F2** | **DONE** (2026-07-20) — OpenSpec → `archive/2026-07-20-stop-on-failure-not-policy/`; review → `archive/2026-07-20-cli-product/` |
 | **T7** | Corpus matrix thin spots post-oracle-retirement: ISO only in `basic`; encrypted-header 7z / multi-volume outside the nets | `tests/sample_archives.py:307-345` | **F2** | **PAY** — half-day audit + cheap extensions |
@@ -62,11 +63,12 @@ stable over time.
 3. **D3** — start `CHANGELOG.md`.
 4. **T1 + T2** — widen the generative nets (solid-RAR mutation; lzip/`.Z`
    seek property test). Cheap, reuses machinery, and T1 doubles as the
-   safety net for the eventual S2/S3 change.
+   safety net for `unify-pass-driver` (S2+S3).
 5. **T3** — benchmark-gate RAR/encrypted/accelerator cases (D1 dependency).
 6. **D4 + T7** — the housekeeping sweep (open-issues, corpus-matrix audit).
    (**D5/D6** archived 2026-07-20.)
-7. Record the **S2/S3 entry-gate** decision (Q3) in `PLAN.md`/`IDEAS.md`.
+7. **S2+S3 / `unify-pass-driver`** — pay before 0.2.0 (Q3 = b); proposal in
+   `openspec/changes/unify-pass-driver/` (do **not** add PLAN/IDEAS entry-gate language).
 8. **DD4 / rapidgzip-truncation-investigation** — characterize + narrow/extend/remove
    ISIZE backstop before 0.2.0 (Q4 = PAY; implementation deferred, change enriched).
 

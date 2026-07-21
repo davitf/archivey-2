@@ -23,11 +23,14 @@
 - [ ] 3.1 Add shared driver helper on `BaseArchiveReader` (`close_previous` / open hook /
       resource `finally`). The driver **always closes the last stream in its own `finally`**
       — no `leave_last_open` flag (design Decision 3): drop base's leave-open special case
-      and its `base_reader.py:493-495` comment.
+      and its `base_reader.py:493-495` comment. **`finally` order:** close last stream,
+      *then* resource cleanup (solid / clear `_live_unrar`) — same as today’s 7z/RAR;
+      never tear down the block/pipe under a live member wrapper.
 - [ ] 3.2 Rewrite base / TAR streaming / 7z / RAR solid `_iter_with_data` to use the
       driver (TAR: `close_previous=False`; 7z/RAR solid: add resource-cleanup hook). Rely on
       idempotent `ArchiveStream.close` for the driver `finally` + `stream_members` `finally`
-      double-close.
+      double-close. Module paths live under `internal/backends/`
+      (`sevenzip_reader.py`, `rar_reader.py`).
 
 ## 4. Triage docs
 

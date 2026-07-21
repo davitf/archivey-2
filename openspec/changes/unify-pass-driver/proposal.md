@@ -19,7 +19,8 @@ trickiest invariants is currently example-tested only — mutation fuzz never hi
 - **S3:** one shared pass-stream driver on `BaseArchiveReader`; backends supply
   open/resource hooks instead of re-copying the close-previous loop. TAR keeps
   “no previous-close” (tarfile owns invalidation) as an explicit hook flag, not an
-  undocumented omission.
+  undocumented omission. The driver always closes the last stream in its
+  `finally` (no `leave_last_open`); resource cleanup runs after that close.
 - **S2:** one link-finalizer + one double-fault policy used by both eager
   materialization and progressive pass finalize; eliminate mirrored guard prose.
 - No public API renames or behavior changes intended. **Not BREAKING** if the
@@ -39,7 +40,8 @@ trickiest invariants is currently example-tested only — mutation fuzz never hi
 ## Impact
 
 - **Modules:** `internal/base_reader.py` (driver + finalize); thin rewrites of
-  `_iter_with_data` in `tar_reader.py`, `sevenzip_reader.py`, `rar_reader.py`.
+  `_iter_with_data` in `internal/backends/tar_reader.py`,
+  `internal/backends/sevenzip_reader.py`, `internal/backends/rar_reader.py`.
 - **Public API:** none intended.
 - **Tests:** T1 mutation params; existing solid RAR/7z, progressive TAR,
   double-fault, `stream_members` close/ownership suites are the gate.
