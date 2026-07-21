@@ -45,7 +45,8 @@ contract guarantees.**
 
 - **A — raise on the read that reaches the end.** The read that completes the member
   and finds damage raises (returning no bytes for that call); `close()` never raises.
-  Matches stdlib `zipfile` / `gzip`.
+  Same *failure surface* as stdlib `zipfile` / `gzip` (fault on read, not close) — not
+  byte-identical timing (their large-read / EOF shapes differ).
 - **B — deliver every byte, then raise on the next read; `close()` as a backstop.**
   Uniform for corruption and truncation, but makes a *safety* guarantee depend on
   `close()` actually running — unreliable (GC-driven close is not guaranteed and
@@ -107,9 +108,15 @@ objects to be full-count — the wrapper coalesces.)
 
 Content-integrity verdicts (stored checksum / digest, encrypted-member authentication
 tag, truncation, and declared-size over-run) are delivered from a **`read()` call,
-never from `close()`**. `close()` is teardown-only: it may still propagate a
-resource/teardown error (a subprocess exit code, an inner stream that authenticates in
-its *own* `close()`), but it never introduces a first content fault.
+never from `close()`**. `close()` is teardown-only. It MAY still propagate an
+*unavoidable teardown signal raised by the underlying resource itself* — an `OSError`
+closing a file descriptor, or a subprocess exit code that only arrives when the process
+is reaped (e.g. `unrar` reporting a wrong password on close). It MUST NOT surface the
+**verifier's own** content verdict (checksum / auth / truncation) as a first fault on
+`close()`. One current construct violates this — the WinZip AES stream drains and
+verifies its HMAC in its own `close()` — and is treated as a **known inconsistency to
+remove** (`verification-integrity-mode` Decision 2), **not** a blessed carve-out; until
+it is removed, this guarantee is library-wide *except* for that one path.
 
 A member is verified at the moment a read **reaches its end** — whichever comes first:
 
@@ -126,11 +133,16 @@ At that moment:
 - **Over-run** (decode output exceeds the declared size — a corrupt length field): the
   read that would cross the declared size raises `CorruptionError`, **independent of
   the checksum** (the over-run itself is the corruption, even if the hash-so-far would
-  pass).
+  pass). This is the same stop-at-declared-size → `CorruptionError` bound that
+  `gzip-zlib-truncation-recovery` already specifies as the decompression-bomb cap.
 - **Truncation / short** (decoder end-of-stream before the declared size, or an
   incomplete decode): every recoverable byte was delivered on the preceding full-count
   reads; the read that reaches the short end returns the remaining prefix (a **short
   return**, not an exception), and the *next* read raises `TruncatedError`.
+
+Reaching the declared size is **always** a verifying event — checksum *and* over-run —
+regardless of how the caller got there (`read(n)` with `n == remaining`, or a chunked
+loop). The verdict is a property of *reaching the end*, not of the call shape.
 
 A read that **stops before the end** — at any offset — produces **no verdict**, and
 `close()` stays silent. A seek off the sequential frontier disables the **checksum**
@@ -173,6 +185,23 @@ Corruption is caught whenever such a read reaches the end — independent of whe
 `VerificationMode.STRICT` (`verification-integrity-mode`), which fully verifies a
 member before returning any of it.
 
+### Call × failure matrix (size-declared member)
+
+| Call | Corrupt at full length | Truncated short of declared size |
+| --- | --- | --- |
+| `read(member.size)` | raises `CorruptionError` | returns short (`len < size`), **no exception** |
+| `read(-1)` / `readall` | raises `CorruptionError` | raises `TruncatedError` |
+| chunked until `b""` | raises on the read that reaches the size (withholds that chunk) | delivers the whole prefix (final read returns short); the read *past* the prefix raises `TruncatedError` |
+| partial read, then `close()` | quiet (early stop) | quiet (early stop) |
+
+The load-bearing asymmetry: **`read(member.size)` raises on corruption but returns a
+short buffer on truncation** — because corruption yields wrong bytes (withheld) while
+truncation yields a correct-but-incomplete prefix (delivered). A single-call caller who
+wants to catch both must check `len(data) == member.size` (or use `read(-1)`); **"no
+exception" does not mean "complete."** Size-unknown members have no `member.size` to
+read to, so a bare `read(n)` cannot self-certify at all — use `read(-1)` /
+read-to-`b""`.
+
 ## Open questions
 
 1. **Encrypted members — a defaults question, not just docs.** Treating an
@@ -205,11 +234,32 @@ member before returning any of it.
 
 ## Consequences
 
+- **Resolves the open question that parked `gzip-zlib-truncation-recovery` (#183).**
+  This ADR exists *because* #183's review surfaced the read-vs-close / sized-read hole;
+  the #183 implementation is on hold pending it. #183's earlier Decision 8 — a bounded
+  `read(n)` on a digest mismatch delivers every byte and raises on the terminal empty
+  read ("do not withhold the last data chunk";
+  `test_verify_mismatch_raises_at_eof_without_losing_final_chunk`) — is **revised** by
+  this ADR for the corruption case: the read that reaches the declared size (or decoder
+  EOS) raises and **withholds** that chunk. When #183 resumes, its delta and that test
+  are updated to the withhold-on-reaching-read rule so the two texts agree — not a live
+  conflict, but the settlement that unblocks #183. **Truncation is unchanged** —
+  #183's recoverable-prefix delivery stands.
 - **`read(member.size)` on a corrupt size-declared member raises from that read** and
   returns nothing — closing the silent-acceptance regression, without depending on
-  `close()`. This **reverses "deliver every byte even on a checksum mismatch"**: a
-  corrupt member's final chunk is now withheld. Truncation is unchanged — its
-  recoverable prefix is still delivered.
+  `close()`.
+- **High-level helpers read to the true end.** `extract()` and any whole-member helper
+  MUST consume each member with a *completing* read (`read(-1)`, or a sized read plus a
+  drain to `b""`), so the default extraction path raises `TruncatedError` on a short
+  member rather than silently writing a truncated file. The quiet-truncation short
+  return is a **low-level** `read(member.size)` affordance for callers who opt into it,
+  never the default `extract` behavior.
+- **STRICT is proposed, not shipped (sequencing).** The escape hatch for "never release
+  unverified / unauthenticated bytes" is `VerificationMode.STRICT`
+  (`verification-integrity-mode`, still proposed). This ADR's STREAMING default is
+  accepted now; STRICT is sequenced after. Until it lands, STREAMING —
+  detection-not-prevention — is the only posture, so **encrypted members stream
+  unauthenticated plaintext by default** in the interim.
 - **Full-count `read` is now a contract**, not an accident. The wrapper must coalesce
   short inner reads (bounded reads must loop the inner to `n`-or-terminal, as the
   `read(-1)` drain already does). A short return from a public archivey stream is a
