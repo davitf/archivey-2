@@ -444,6 +444,10 @@ class TarReader(BaseArchiveReader):
         # stream_members, and scan_members share one cursor and finalization.
         # close_previous=False: tarfile invalidates the prior extractfile handle on
         # advance; tracking previous would be incorrect.
+        # The driver's finally closes the last stream inside this translation context
+        # (pre-unify, only stream_members's finally closed it, outside translation).
+        # Close-time faults on the final member now surface typed; the outer
+        # stream_members finally still idempotently closes afterward.
         with self._translated_errors():
 
             def _open(member: ArchiveMember) -> ArchiveStream | None:

@@ -807,6 +807,8 @@ class BaseArchiveReader(ArchiveReader):
 
         try:
             if child_scope:
+                # Also wraps ``_internal_member_opens()`` (live-stream gate exemption) —
+                # the two always travel together for eager link-data reads.
                 # Link-data reads are a private child scope under an active root when one
                 # exists; otherwise they only need the live-stream gate exemption.
                 root = self._state.current_root()
