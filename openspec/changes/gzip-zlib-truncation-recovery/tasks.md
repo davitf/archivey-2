@@ -58,18 +58,25 @@
 - [ ] 3.6 Update existing gzip truncate tests that assume `read()`/`readall`
       shapes under the new stdlib backend (e.g. `test_truncated_gzip_translates_to_truncated`).
 
-## 4. VerifyingStream / MemberVerifier never-raise-on-close
+## 4. VerifyingStream / MemberVerifier — CRC after all data
 
-- [ ] 4.1 Raise short-of-expected-size and digest-mismatch verdicts from the
-      read path (`readall` / terminal empty `read`), not from
+- [ ] 4.1 Digest/CRC mismatch: return every decompressed byte on data-returning
+      reads; at clean EOF raise `CorruptionError` on the **next** (terminal
+      empty) `read`. Do not withhold the last data chunk; do not raise from
       `finish_on_close`.
-- [ ] 4.2 `finish_on_close` closes the inner and MUST NOT introduce a first
+- [ ] 4.2 After a slurping `read()` / `read(-1)` that returned the full body,
+      arm the digest/short verdict so the following empty `read` raises (same
+      timing as chunked). Hash-less short → `TruncatedError` on that empty
+      `read`.
+- [ ] 4.3 `finish_on_close` closes the inner and MUST NOT introduce a first
       content `TruncatedError` / `CorruptionError` solely on close (may still
       avoid double-fault after `read` already failed).
-- [ ] 4.3 Update verify tests that currently expect raise-on-close
-      (`test_verify_expected_size_short_raises_truncated`,
-      `test_verify_on_close_after_full_single_read`, hashed short, etc.) to
-      expect the read-path verdict; keep “partial read then close is ok”.
+- [ ] 4.4 Update verify tests: keep
+      `test_verify_mismatch_raises_at_eof_without_losing_final_chunk`; change
+      close-raises cases (`test_verify_on_close_after_full_single_read`,
+      `test_verify_expected_size_short_raises_truncated`, hashed short, etc.)
+      to “full body returned, next empty `read` raises, `close` quiet”; keep
+      “partial read then close is ok”.
 
 ## 5. Docs + compose notes
 

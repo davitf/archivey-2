@@ -139,17 +139,26 @@ forbidden by the recoverable-prefix / damaged-input goals.
 size unknown and fail the seek path with `TruncatedError`), never assert and
 never pretend the prefix is the full stream.
 
-### VerifyingStream close-raises
+### VerifyingStream: CRC after all bytes, never on close
 
-`MemberVerifier._finish` sets `_short = True` on hash-less shortfall and defers
-the raise to `finish_on_close`. Digest mismatch after a slurping `read()` that
-never hits an empty follow-up also surfaces on `close`. That conflicts with the
-standing close contract and with the main-spec digest wording (“terminal read” /
-“bytes-returning full read raises and returns no bytes”). Align: raise short /
-digest verdicts from the read path (`readall` / terminal empty `read`);
-`finish_on_close` only closes the inner (and may still translate/probe only to
-**abandon** duplicate faults after `read` already failed — never introduce a
-first content error solely on close). Partial read then close remains quiet
+Chunked digest mismatch already matches the desired shape
+(`test_verify_mismatch_raises_at_eof_without_losing_final_chunk`): every data
+chunk is delivered, then the **terminal empty `read`** raises
+`CorruptionError`. What is wrong today:
+
+- A slurping `read()` / `read(-1)` that returns all available bytes never hits
+  that empty follow-up, so digest/short verdicts fall through to
+  `finish_on_close` (`test_verify_on_close_after_full_single_read`, short-size
+  tests).
+- `_finish` sets `_short = True` and defers hash-less shortfall to close.
+
+**Required shape (CRC / digests):** provide **all** decompressed bytes on
+data-returning reads; check CRC/digest at clean EOF; raise `CorruptionError` on
+the **next** `read` (the empty/terminal one) — never by dropping the last data
+chunk, and never on `close()`. Same timing for hash-less short →
+`TruncatedError` on that terminal empty `read`. After a slurping `read()` that
+returned everything, arm the verdict so the following empty `read` raises;
+`finish_on_close` only closes the inner. Partial read then close stays quiet
 (abandon before clean EOF).
 
 ## Decisions
@@ -196,9 +205,14 @@ first content error solely on close). Partial read then close remains quiet
    engine (invariant from PR #177 review) — noted as compose step, not implemented
    here unless that backstop already exists on the branch.
 
-8. **Align `VerifyingStream` / `MemberVerifier`** to the never-raise-on-close
-   rule in this change (same capability). **Rejected:** leave verifier
-   close-raises as permanent exceptions to the standing contract.
+8. **`VerifyingStream` / `MemberVerifier` digest (CRC) contract:** deliver every
+   byte on data-returning reads; at clean EOF, raise `CorruptionError` on the
+   **read after** all data was provided (terminal empty `read`). Never raise
+   digest mismatch on `close()`. Hash-less short uses the same timing with
+   `TruncatedError`. Slurping `read()`/`read(-1)` that returns the full body
+   must leave the verdict armed for the next empty `read`, not for `close`.
+   **Rejected:** close-raises; **Rejected:** raise on the data-returning call
+   in a way that withholds the final bytes.
 
 9. **Oracle:** for golden truncation tests, compare decompressed prefix and error
    type against `gzip.GzipFile` with a `read(1)` loop (max recovery), not against
@@ -210,7 +224,7 @@ first content error solely on close). Partial read then close remains quiet
 | --- | --- |
 | Multi-member edge cases (NUL padding, false headers, trailing junk) | Explicit GzipFile/`_read_eof` rules in decoder + tests |
 | Abandon after `read(n)` without follow-up empty `read` misses truncation | Documented; size/`SEEK_END` must not lie; prefer read-until-exception |
-| VerifyingStream behavior change (tests that expect close-raises) | Update tests to expect raise on `readall` / terminal empty `read` |
+| VerifyingStream behavior change (tests that expect close-raises) | Update tests: all bytes returned, then empty `read` raises; `close` quiet |
 | CRC failure mid-member vs truncation | zlib gzip window → `zlib.error` → existing `CorruptionError` translation |
 | Perf of member chaining | Only on member boundary; hot path unchanged |
 | Inner teardown errors on `close` | Still propagate; do not conflate with content truncation |

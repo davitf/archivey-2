@@ -28,8 +28,9 @@ DEFLATE-family decode.
   GzipFile’s manual trailer check).
 - **Standing close contract**: content/decode faults raise only from `read` (and
   size/seek paths that would otherwise lie); never from `close`. Align
-  `VerifyingStream` / fused `MemberVerifier.finish_on_close`, which today raise
-  short/digest errors on close.
+  `VerifyingStream` / fused `MemberVerifier`: **CRC/digest mismatch raises
+  `CorruptionError` on the read after all data was provided** (terminal empty
+  `read`), never on `close` and never by dropping the last data chunk.
 - Rapidgzip / ISIZE backstops remain **out of scope** for accelerator behavior;
   once this lands, any empty→stdlib fallback can call this engine with large
   reads safely.
@@ -58,7 +59,7 @@ DEFLATE-family decode.
   `TruncatedError`; `close()` stays teardown-only for content errors.
 - Deps/extras: none (stdlib `zlib` only).
 - Tests: truncated gzip/zlib with large `read(n)`; multi-member + padding/junk;
-  `SEEK_END` / size after truncate; VerifyingStream short/digest raise on read
-  not close; update expectations that assumed close-raises.
+  `SEEK_END` / size after truncate; VerifyingStream CRC: all bytes then empty
+  `read` raises `CorruptionError`; update expectations that assumed close-raises.
 - Docs: `library-analysis.md` gzip row; note that stdlib path is no longer
   `GzipFile`.
