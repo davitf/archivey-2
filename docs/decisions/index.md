@@ -22,6 +22,7 @@ not fully recovered yet.
 | [0011](0011-zero-dependency-core.md) | Zero third-party deps in core install | recorded |
 | [0012](0012-usage-errors-outside-archiveyerror.md) | `ArchiveyUsageError` ≠ `ArchiveyError` | recorded |
 | [0013](0013-cross-platform-name-safety-policies.md) | Cross-platform extraction name-safety policies | recorded |
+| [0014](0014-integrity-verdicts-from-reads-not-close.md) | Integrity verdicts surface from reads, never `close()` | proposed |
 
 Related long-form material (not ADRs):
 
