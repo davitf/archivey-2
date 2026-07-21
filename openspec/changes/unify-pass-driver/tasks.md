@@ -39,9 +39,9 @@
 
 ## 5. Verify
 
-- [ ] 5.1 Targeted: mutation solid-RAR slice; `test_rar_reader` solid; `test_sevenzip_reader` solid;
+- [x] 5.1 Targeted: mutation solid-RAR slice; `test_rar_reader` solid; `test_sevenzip_reader` solid;
       `test_measurement` solid decode-once; TAR progressive/materialize; double-fault
       (`test_reader_contract`); `stream_members` close/ownership cooperative tests.
-- [ ] 5.2 Full suite in `[all]` (and note `[core-only]` / `[all-lowest]` before merge).
-- [ ] 5.3 `openspec validate --strict unify-pass-driver`
-- [ ] 5.4 `ruff format` / `ruff check` / `pyrefly check` / `ty check` clean on touched paths
+- [x] 5.2 Full suite in `[all]` (and note `[core-only]` / `[all-lowest]` before merge).
+- [x] 5.3 `openspec validate --strict unify-pass-driver`
+- [x] 5.4 `ruff format` / `ruff check` / `pyrefly check` / `ty check` clean on touched paths
