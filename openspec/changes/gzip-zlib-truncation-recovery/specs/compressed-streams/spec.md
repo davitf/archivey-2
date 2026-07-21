@@ -242,10 +242,13 @@ decoder emits. The `Decoder` SHALL choose seek-point placement (member/stream st
 vs. post-realignment) and MAY perform progressive index enrichment during `feed`
 using the `inner` it retained from `recreate`, restoring `inner`'s position itself.
 Forward-only codecs SHALL emit empty `points` and inherit the no-op `build_index`.
-Deferred truncation (unix-compress leftover bits; incomplete zlib/gzip/deflate EOF)
-SHALL surface through `pending_error` after delivering recoverable bytes on bounded
-`read(n)`; the stream SHALL raise it on the next empty `read`, and SHALL clear it
-via `clear_pending_error` after raising (and on seek reset). `readall` / `read(-1)`
+Deferred truncation SHALL be uniform across **every** forward path of the shared
+engine — unix-compress leftover bits, and incomplete EOF for zlib/deflate, gzip,
+xz, and lzip — surfacing through `pending_error` after delivering recoverable
+bytes on bounded `read(n)`; the stream SHALL raise it on the next empty `read`,
+and SHALL clear it via `clear_pending_error` after raising (and on seek reset).
+No `Decoder.flush` SHALL raise a content `TruncatedError` in place of arming
+`pending_error` (the rapidgzip accelerator path is out of scope for this change). `readall` / `read(-1)`
 SHALL raise when `pending_error` is set after draining rather than returning a
 prefix. `close()` SHALL NOT raise `pending_error`. Incomplete EOF SHALL NOT
 publish a clean complete `_size`. Adding a codec SHALL add a `Decoder` and MUST NOT
@@ -270,6 +273,6 @@ require a new stream subclass or a `SegmentedDecompressorStream` layer.
 | Segmented boundary codec (lzip, xz stream start) | `feed` emits a `SeekPoint` at the boundary; stream stores it |
 | Progressive enrichment (xz block index) | `feed` scans footer via retained `inner`; restores position |
 | One-shot / forward walk (xz, lzip; future BGZF) | `build_index` returns points + size; demand-driven per seekable spec |
-| Deferred truncation (unix-compress; truncated zlib/gzip/deflate) | Bounded `read(n)` delivers prefix; `pending_error`; raise on next empty `read`; not on `close` |
+| Deferred truncation (unix-compress; truncated zlib/gzip/deflate/xz/lzip) | Bounded `read(n)` delivers prefix; `pending_error`; raise on next empty `read`; not on `close` — no `flush` raises in place of arming it |
 | `readall` on truncated stream | Raises `TruncatedError` |
 | A new codec is added | One `Decoder`; no new stream subclass |

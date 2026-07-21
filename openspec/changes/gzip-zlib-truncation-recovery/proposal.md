@@ -67,13 +67,15 @@ DEFLATE-family decode.
 
 - Modules: `internal/streams/decompressor_stream.py`, `decompress.py`,
   `codecs.py` (`GzipCodec`), possibly a small `GzipDecoder` next to `ZlibDecoder`;
+  `xz.py` / `lzip.py` (`flush` → `pending_error` for engine consistency);
   `verify.py` (`MemberVerifier.finish_on_close` / read-path EOF verdicts).
 - Public API: same `open_codec_stream` / archive surfaces; stronger guarantee that
-  truncated gzip/zlib/deflate streams yield a correct prefix on `read(n)` before
-  `TruncatedError`; `close()` stays teardown-only for content errors.
+  truncated gzip/zlib/deflate/xz/lzip streams yield a correct prefix on `read(n)`
+  before `TruncatedError`; `close()` stays teardown-only for content errors.
 - Deps/extras: none (stdlib `zlib` only).
-- Tests: truncated gzip/zlib with large `read(n)`; multi-member + padding/junk;
-  `SEEK_END` / size after truncate; VerifyingStream: chunked = all bytes then
-  empty `read` raises; slurping `read(-1)` raises; anti-footgun `read(); close()`.
-- Docs: `library-analysis.md` gzip row; note that stdlib path is no longer
-  `GzipFile`.
+- Tests: truncated gzip/zlib/xz/lzip with large `read(n)`; multi-member +
+  padding/junk; `SEEK_END` / size after truncate; VerifyingStream: chunked = all
+  bytes then empty `read` raises (incl. hash-less short); slurping `read(-1)`
+  raises; anti-footgun `read(); close()`.
+- Docs: `library-analysis.md` gzip row; truncation-vs-corruption best-effort
+  verdict; note that stdlib path is no longer `GzipFile`.

@@ -35,6 +35,13 @@
       `pending_error`), so `try_get_size` / `seek(SEEK_END)` report the prefix as
       complete. Assert (red→green) that after the size-gate fix a truncated `.Z`
       reports size unknown or raises `TruncatedError`, never the prefix length.
+- [ ] 1.8 **xz / lzip flush → pending_error (uniform engine, Open Question 3).**
+      `XZStreamDecoder.flush` (`xz.py`) and `LzipDecoder.flush` (`lzip.py`)
+      currently raise `TruncatedError` on incomplete EOF, dropping buffered
+      output. Convert both to arm `pending_error` + return any flush/leftover
+      bytes (mirroring the zlib/gzip/unix-compress decoders), and gate `_size`
+      the same way (1.1). The rapidgzip accelerator path is explicitly **not**
+      converted here (separate follow-up).
 
 ## 2. GzipDecoder + GzipCodec stdlib path
 
@@ -83,6 +90,11 @@
       clean complete prefix size (raise or unknown per 1.5).
 - [ ] 3.6 Update existing gzip truncate tests that assume `read()`/`readall`
       shapes under the new stdlib backend (e.g. `test_truncated_gzip_translates_to_truncated`).
+- [ ] 3.7 xz and lzip (1.8): truncated stream — large `read(n)` recovers the
+      prefix then `TruncatedError` on the next empty `read`; `readall` raises;
+      `close` after the observed error is quiet; `seek(SEEK_END)` / size does not
+      report a clean complete prefix size. Update any existing xz/lzip truncate
+      tests that assumed raise-from-`flush` shapes.
 
 ## 4. VerifyingStream / MemberVerifier — CRC after all chunked data
 
@@ -130,6 +142,12 @@
       2): `data = f.read()` / `readall` on a truncated stream **raises and returns
       nothing** — a silent lossy success is worse than not salvaging — and the
       recoverable prefix is reachable only via a chunked `read(n)` loop.
+- [ ] 5.1b Document the truncation-vs-corruption verdict (Open Question 4): a
+      short body that also carries a hash raises `TruncatedError`, but the two
+      causes can be indistinguishable, so the specific error type is **best-effort**
+      (a corrupt stream may surface as `TruncatedError` and vice versa). Reparenting
+      `TruncatedError` under `CorruptionError` is out of scope; `except ReadError`
+      already catches both.
 - [ ] 5.2 Note in `docs/internal/open-issues.md` (or the rapidgzip change) that
       (a) empty→stdlib fallback SHOULD use this engine so a byte-at-a-time
       workaround is unnecessary, and (b) until that lands, truncated gzip
@@ -141,7 +159,7 @@
 ## 6. Verify
 
 - [ ] 6.1 Targeted pytest for §§1–4 (`test_codecs`, accelerator-off gzip,
-      zlib/deflate truncation, verify close/read contracts).
+      zlib/deflate/xz/lzip truncation, verify close/read contracts).
 - [ ] 6.2 `uv run --no-sync ruff check` / `ruff format` on touched paths;
       `pyrefly check` + `ty check` clean.
 - [ ] 6.3 `openspec validate --strict gzip-zlib-truncation-recovery`

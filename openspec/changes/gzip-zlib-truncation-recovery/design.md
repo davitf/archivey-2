@@ -263,14 +263,14 @@ chunk is delivered, then the **terminal empty `read`** raises
    dropping it moves that responsibility into each decoder. **Rejected:** add
    `set_pending_error` to the `Decoder` protocol and keep detection in the stream.
 
-   **Scope caveat — xz / lzip (see Open Question 3).** `XZStreamDecoder.flush`
-   and `LzipDecoder.flush` currently **raise `TruncatedError` directly** instead
-   of arming `pending_error` + returning leftover, so on the shared engine they
-   still drop already-buffered output on a large truncating `read(n)` — the same
-   bug class this change exists to fix. So "the decoder owns detection" is **not**
-   yet uniform across all `DecompressorStream` codecs. This is called out
-   explicitly (not implied) as an open scope decision, not silently assumed
-   converted.
+   **Scope — xz / lzip converted too (resolved, Open Question 3 → in-scope).**
+   `XZStreamDecoder.flush` and `LzipDecoder.flush` today **raise `TruncatedError`
+   directly** instead of arming `pending_error` + returning leftover, so on the
+   shared engine they still drop already-buffered output on a large truncating
+   `read(n)` — the same bug. This change converts them to the pending-error +
+   return-leftover shape too, so the decoder-owns-detection rule is **uniform
+   across every `DecompressorStream` codec**. The only remaining inconsistency is
+   the rapidgzip accelerator path, which stays a separate follow-up.
 
    **Make the responsibility legible (self-explanatory code).** `flush()` today
    reads as "emit any final buffered output at EOF"; it does not advertise that it
@@ -400,34 +400,25 @@ chunk is delivered, then the **terminal empty `read`** raises
    documented user-facing (task 5.1): `data = f.read()` on a truncated stream
    raises and returns nothing; chunked reads recover the prefix.
 
-**Decide (raised in review round 2):**
+**Resolved (review round 2):**
 
-3. **xz / lzip scope.** `XZStreamDecoder.flush` / `LzipDecoder.flush` raise
-   `TruncatedError` from `flush` instead of arming `pending_error` + returning
-   leftover, so they still drop buffered output on a truncating large `read(n)` —
-   the same bug this change fixes for zlib/gzip. Pick one, explicitly:
-   **(a) in-scope now** — convert both `flush`es to the pending-error + return-
-   leftover shape (adds tasks + truncation tests for xz/lzip), making the shared-
-   engine fix actually uniform; or **(b) out-of-scope** — record a tracked
-   follow-up and state here that the shared-engine truncate-return fix is
-   *incomplete* until then. Recommendation: (a) if cheap (the segmented decoders
-   already return leftover on the happy path), else (b) with the follow-up filed —
-   do not leave it implied.
+3. **xz / lzip scope → in-scope.** Convert `XZStreamDecoder.flush` /
+   `LzipDecoder.flush` from raise-on-`flush` to the pending-error + return-leftover
+   shape (mirroring zlib/gzip/unix-compress), with truncation tests, so the shared
+   `DecompressorStream` truncate-return fix is uniform across **every** codec. The
+   rapidgzip accelerator path stays a separate follow-up (the one acknowledged
+   remaining inconsistency).
 
-4. **Truncation vs corruption on a short-with-hash body (verdict + hierarchy).**
-   When a body is short *and* carries a hash, the shortfall and the digest
-   mismatch are often genuinely indistinguishable (a corruption could also shorten
-   output). Maintainer lean: raise **`TruncatedError`** (truncation is the more
-   likely cause), documented as *best-effort* since the two can be
-   indistinguishable. Broader option to weigh separately: make `TruncatedError` a
-   **subclass of `CorruptionError`** (truncation *is* a kind of corruption), so
-   "when uncertain, raise `CorruptionError`" is a safe superset and
-   `except CorruptionError` catches both. Note the tree already has a shared
-   `ReadError` parent (`CorruptionError`/`TruncatedError` are siblings under it),
-   so "catch both" is *already* available via `except ReadError`; the reparent
-   only changes what `except CorruptionError` catches. Because it touches the
-   library-wide exception hierarchy and every catcher, treat the reparent as its
-   **own** decision/change, not folded in here silently.
+4. **Truncation vs corruption on a short-with-hash body → raise `TruncatedError`,
+   documented best-effort.** When a body is short *and* carries a hash, the
+   shortfall and the digest mismatch can be genuinely indistinguishable (a
+   corruption could also shorten output). Raise **`TruncatedError`** (truncation is
+   the more likely cause), and **document** it as a *best-effort* verdict — the two
+   causes are not always separable, so the specific error type is a best guess, not
+   a guarantee. Deferred (not in this change): reparenting `TruncatedError` under
+   `CorruptionError`. That is a library-wide exception-hierarchy change touching
+   every catcher, and `except ReadError` already catches both today, so it is left
+   as its own future decision.
 
 **Optional later (non-blocking):** audit stdlib `bz2` / other
 `DecompressorStream` codecs for the same oversize-read / truncate-return gap
