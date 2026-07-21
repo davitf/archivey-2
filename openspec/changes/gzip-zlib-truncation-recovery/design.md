@@ -240,20 +240,29 @@ chunk is delivered, then the **terminal empty `read`** raises
    never set `pending_error`, so today the *stream* raises on `not finished`.
    Task 1.1 as originally worded ("set `pending_error` in `_read_decompressed_chunk`")
    would have the **stream** populate a **decoder** field the readers consult —
-   inconsistent. **Chosen (recommend):** mirror unix-compress — give
-   `ZlibDecoder`/`GzipDecoder` a `flush()` that sets
-   `self._pending_error = TruncatedError(...)` when `not self._decomp.eof`, so the
-   decoder is the single owner for *all* codecs and the stream's EOF branch simply
-   checks `self._decoder.pending_error` (dropping its own `raise`). The `_size`
-   gate then keys off that one predicate (see the size-hole note above).
-   **Alternative (if preferred):** add an explicit `set_pending_error` to the
-   `Decoder` protocol and keep detection in the stream. Confirm which before
-   implementing 1.1 / 2.x — it changes the decoder API surface either way.
-   Note: forward-only decoders whose `finished` is size-driven (BCJ, PPMd,
-   Deflate64) also reach EOF `not finished` on truncation; whichever mechanism is
-   chosen must cover them, not just zlib/gzip (today the stream's `not finished`
-   raise covers them uniformly — dropping it means each such `flush` must set the
-   error, or the stream must retain a fallback).
+   inconsistent. **Resolved — decoder-owned.** Mirror unix-compress: each
+   `Decoder.flush()` sets `self._pending_error = TruncatedError(...)` when it
+   reaches compressed EOF `not finished`, so the decoder is the single owner for
+   *all* codecs and the stream's EOF branch simply checks
+   `self._decoder.pending_error` (dropping its own `raise`). The `_size` gate then
+   keys off that one predicate (see the size-hole note above). Forward-only
+   decoders whose `finished` is size-driven (BCJ, PPMd, Deflate64) also reach EOF
+   `not finished` on truncation, so **every** `flush` must arm the error, not just
+   zlib/gzip — today the stream's `not finished` raise covers them uniformly, and
+   dropping it moves that responsibility into each decoder. **Rejected:** add
+   `set_pending_error` to the `Decoder` protocol and keep detection in the stream.
+
+   **Make the responsibility legible (self-explanatory code).** `flush()` today
+   reads as "emit any final buffered output at EOF"; it does not advertise that it
+   is the single point where a decoder detects truncation and arms
+   `pending_error`. That contract MUST be documented on the `Decoder` protocol and
+   `BaseDecoder` — `flush` is called exactly once at compressed EOF and is where
+   incompleteness is recorded — so a future decoder author does not silently omit
+   it. **Optional:** rename `flush` → `finish` / `finalize` to convey the
+   end-of-stream-verdict role; weigh against the churn (it touches every decoder:
+   `ZlibDecoder`, `BrotliDecoder`, `PpmdDecoder`, `BcjDecoder`, `Deflate64Decoder`,
+   unix-compress, xz, lzip). Implementor's call; the documentation is required
+   regardless.
 
 2. **Never raise content `TruncatedError` / `CorruptionError` on `close()`** for
    decode and verify streams. Faults surface from `read` (bounded next-empty,
@@ -353,23 +362,23 @@ chunk is delivered, then the **terminal empty `read`** raises
 
 ## Open Questions
 
-**Decide before implementing:**
+**Resolved (maintainer, review round):**
 
-1. **`pending_error` ownership (Decision 1).** Confirm the recommended
-   decoder-owned mechanism (each `Decoder.flush` sets its own `pending_error` on
-   `not finished`, mirroring unix-compress; the stream drops its `not finished`
-   raise) vs. adding a `set_pending_error` to the protocol. Affects tasks 1.1 and
-   2.x and the `Decoder` API. The chosen mechanism must also cover the size-driven
-   forward-only decoders (BCJ / PPMd / Deflate64), not only zlib/gzip.
+1. **`pending_error` ownership (Decision 1).** Resolved decoder-owned: each
+   `Decoder.flush` sets its own `pending_error` on `not finished` (mirroring
+   unix-compress), the stream drops its `not finished` raise, and every
+   size-driven forward-only decoder (BCJ / PPMd / Deflate64) arms it too. The
+   `flush` truncation-detection responsibility MUST be documented on the `Decoder`
+   protocol and `BaseDecoder`; renaming `flush` → `finish`/`finalize` is an
+   optional implementor call, weighed against touching every decoder.
 
 2. **Recoverable prefix is unreachable via `data = f.read()` (values trade-off).**
-   Decision 3 makes `readall` / `read(-1)` **raise** on truncation and drop the
-   prefix; only a chunked `read(n)` loop can salvage it. This trades VISION §1.4
-   "damaged input is first-class / recoverable members" against the
-   `read(); close()` anti-foot-gun — a deliberate, defensible call, but it pits two
-   VISION values against each other, so it wants explicit maintainer sign-off
-   rather than living only here. If accepted, the user-facing docs (task 5.1) must
-   state that prefix salvage requires chunked reads. Confirm.
+   Resolved: keep the anti-foot-gun. Salvage does **not** oblige `readall` /
+   `read(-1)` to return partial data — a silent/lossy success is worse than not
+   salvaging, so the complete-stream call raises and the prefix is reachable only
+   via a chunked `read(n)` loop. The behavior **and** the trade-off MUST be
+   documented user-facing (task 5.1): `data = f.read()` on a truncated stream
+   raises and returns nothing; chunked reads recover the prefix.
 
 **Optional later (non-blocking):** audit stdlib `bz2` / other
 `DecompressorStream` codecs for the same oversize-read / truncate-return gap

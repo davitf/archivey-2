@@ -4,10 +4,14 @@
 
 - [ ] 1.1 Change `_read_decompressed_chunk` incomplete-EOF path: return flush
       leftover and surface `TruncatedError` via `pending_error` instead of raising
-      inline (do not drop bytes already in `_buffer`). Resolve **where** the error
-      is set per design Decision 1 / Open Question 1 (recommended: the decoder's
-      `flush` sets its own `pending_error`, so the stream drops the `not finished`
-      raise). Gate the `_size` assignment on "not truncated" (`pending_error is
+      inline (do not drop bytes already in `_buffer`). Per resolved Decision 1 the
+      **decoder** owns detection: its `flush` sets its own `pending_error` on
+      `not finished`, and the stream drops the `not finished` raise and checks
+      `self._decoder.pending_error`. Document that `flush` responsibility on the
+      `Decoder` protocol + `BaseDecoder` (it is the once-at-EOF truncation-detection
+      point); optionally rename `flush` → `finish`/`finalize` (touches every
+      decoder — implementor's call). Gate the `_size` assignment on "not truncated"
+      (`pending_error is
       None` **and** `finished`) at **both** writer sites — the EOF branch **and**
       `readall`'s post-loop `self._size = self._pos` (which currently runs before
       it raises the deferred error). Cover the size-driven forward-only decoders
@@ -115,10 +119,11 @@
 ## 5. Docs + compose notes
 
 - [ ] 5.1 Update `docs/internal/library-analysis.md` gzip row: stdlib path is
-      gzip-window `DecompressorStream`, not `GzipFile`. If Open Question 2 is
-      accepted, also document (user-facing) that a truncated stream's recoverable
-      prefix is reachable only via a chunked `read(n)` loop — `data = f.read()`
-      raises and returns nothing.
+      gzip-window `DecompressorStream`, not `GzipFile`. Document (user-facing) the
+      truncation behavior **and** its trade-off (resolved Decision, Open Question
+      2): `data = f.read()` / `readall` on a truncated stream **raises and returns
+      nothing** — a silent lossy success is worse than not salvaging — and the
+      recoverable prefix is reachable only via a chunked `read(n)` loop.
 - [ ] 5.2 Note in `docs/internal/open-issues.md` (or the rapidgzip change) that
       (a) empty→stdlib fallback SHOULD use this engine so a byte-at-a-time
       workaround is unnecessary, and (b) until that lands, truncated gzip
