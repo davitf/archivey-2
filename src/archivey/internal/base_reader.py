@@ -447,6 +447,45 @@ class BaseArchiveReader(ArchiveReader):
         """
         ...
 
+    def _drive_pass_streams(
+        self,
+        members: Iterator[ArchiveMember],
+        *,
+        open_member: Callable[[ArchiveMember], ArchiveStream | None],
+        close_previous: bool = True,
+        cleanup: Callable[[], None] | None = None,
+        after_members: Callable[[], None] | None = None,
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        """Shared close-previous / open / yield / finally driver for ``_iter_with_data``.
+
+        Backends supply an ``open_member`` hook (return ``None`` for non-file members)
+        and an optional ``cleanup`` for pass-scoped resources (solid block, ``unrar``
+        pipe). ``close_previous=False`` is for TAR streaming, where tarfile invalidates
+        the prior ``extractfile`` handle on advance.
+
+        The driver **always** closes the last still-open stream in its ``finally``
+        before running ``cleanup`` — never tear down a solid block / pipe under a live
+        member wrapper. Double-close with ``stream_members``'s ``finally`` is fine:
+        ``ArchiveStream.close`` is idempotent.
+        """
+        previous: ArchiveStream | None = None
+        try:
+            for member in members:
+                if close_previous and previous is not None:
+                    previous.close()
+                    previous = None
+                stream = open_member(member)
+                if stream is not None:
+                    previous = stream
+                yield member, stream
+            if after_members is not None:
+                after_members()
+        finally:
+            if previous is not None:
+                previous.close()
+            if cleanup is not None:
+                cleanup()
+
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs in archive order; backs ``stream_members``.
 
@@ -477,22 +516,22 @@ class BaseArchiveReader(ArchiveReader):
         if members is None:
             report = self._materialize_members(enforce_listing_limits=False).report
             members = iter(report.members)
-        previous: ArchiveStream | None = None
-        for member in members:
-            if previous is not None:
-                previous.close()
-                previous = None
+
+        def _open(member: ArchiveMember) -> ArchiveStream | None:
             if member.is_file:
-                stream = self._lazy_member_stream(member)
-                previous = stream
-                yield member, stream
-            else:
-                yield member, None
-        if report is not None and report.error is not None:
-            raise report.error
-        # The last yielded stream (``previous``) is intentionally left open: the caller
-        # still holds it until they advance/close the generator (stream_members closes it
-        # in its finally). Closing it here would invalidate a handle the caller may still read.
+                return self._lazy_member_stream(member)
+            return None
+
+        def _raise_report_error() -> None:
+            if report is not None and report.error is not None:
+                raise report.error
+
+        yield from self._drive_pass_streams(
+            members,
+            open_member=_open,
+            close_previous=True,
+            after_members=_raise_report_error,
+        )
 
     def _lazy_member_stream(self, member: ArchiveMember) -> ArchiveStream:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
@@ -732,31 +771,64 @@ class BaseArchiveReader(ArchiveReader):
         self._materialized = holder
         return holder
 
-    def _finalize_materialized_links(
+    def _finalize_links(
         self,
         members: list[ArchiveMember],
         by_name_lists: dict[str, list[ArchiveMember]],
+        *,
+        error: ArchiveyError | None = None,
+        child_scope: bool = False,
+        is_current_first: bool = False,
     ) -> None:
-        _apply_last_entry_wins_is_current(members)
-        if not any(member.is_link for member in members):
-            return
-        # Link-data reads are a private child scope under an active root when one
-        # exists; otherwise they only need the live-stream gate exemption.
-        root = self._state.current_root()
-        child = (
-            self._state.enter_child(root, "link_reads") if root is not None else None
-        )
+        """Resolve hardlink/symlink targets with one double-fault policy.
+
+        When ``error is not None`` (incomplete listing / terminal pass damage), a
+        secondary ``CorruptionError`` / ``TruncatedError`` during link-target reads is
+        swallowed so the recovered prefix stays publishable. When ``error is None``
+        (clean EOF / complete listing), secondary faults propagate.
+
+        Eager materialization stamps ``is_current`` *before* link resolve and uses a
+        child scope + internal-open exemption for link-data reads. Progressive finalize
+        stamps ``is_current`` *after* link resolve and does not open a child scope —
+        preserve those orderings unless a failing test forces convergence.
+        """
+        if is_current_first:
+            _apply_last_entry_wins_is_current(members)
+            if not any(member.is_link for member in members):
+                return
+
+        def _resolve() -> None:
+            for member in members:
+                if member.is_link:
+                    self._ensure_link_target(member)
+            for member in members:
+                if member.is_link and member.link_target:
+                    self._resolve_link(member, by_name_lists)
+
         try:
-            with self._internal_member_opens():
-                for member in members:
-                    if member.is_link:
-                        self._ensure_link_target(member)
-                for member in members:
-                    if member.is_link and member.link_target:
-                        self._resolve_link(member, by_name_lists)
-        finally:
-            if child is not None:
-                self._state.release_child(child)
+            if child_scope:
+                # Link-data reads are a private child scope under an active root when one
+                # exists; otherwise they only need the live-stream gate exemption.
+                root = self._state.current_root()
+                child = (
+                    self._state.enter_child(root, "link_reads")
+                    if root is not None
+                    else None
+                )
+                try:
+                    with self._internal_member_opens():
+                        _resolve()
+                finally:
+                    if child is not None:
+                        self._state.release_child(child)
+            else:
+                _resolve()
+        except (CorruptionError, TruncatedError):
+            if error is None:
+                raise
+
+        if not is_current_first:
+            _apply_last_entry_wins_is_current(members)
 
     def _materialize_members(
         self, *, enforce_listing_limits: bool = True
@@ -792,16 +864,15 @@ class BaseArchiveReader(ArchiveReader):
                     self._index_member_name(by_name_lists, member)
                     members.append(member)
             except (CorruptionError, TruncatedError) as exc:
-                # Keep the recovered prefix even if link finalization hits a second
-                # archive-damage fault (e.g. ZIP/7z/RAR symlink target bytes in the
-                # prefix are also truncated). Prefer the original listing error on the
-                # report; leave unresolved links as-is. Without this guard the secondary
-                # fault escapes to the outer BaseException handler and members_report()
-                # loses the prefix (members() raises either way).
-                try:
-                    self._finalize_materialized_links(members, by_name_lists)
-                except (CorruptionError, TruncatedError):
-                    pass
+                # Prefer the original listing error on the report; leave unresolved
+                # links as-is when a secondary link-target fault is swallowed.
+                self._finalize_links(
+                    members,
+                    by_name_lists,
+                    error=exc,
+                    child_scope=True,
+                    is_current_first=True,
+                )
                 holder = self._publish_materialized(
                     members,
                     by_name_lists,
@@ -810,7 +881,13 @@ class BaseArchiveReader(ArchiveReader):
                 self._state.complete_materialization()
                 return holder
 
-            self._finalize_materialized_links(members, by_name_lists)
+            self._finalize_links(
+                members,
+                by_name_lists,
+                error=None,
+                child_scope=True,
+                is_current_first=True,
+            )
             holder = self._publish_materialized(members, by_name_lists, error=None)
             self._state.complete_materialization()
             return holder
@@ -1025,22 +1102,13 @@ class BaseArchiveReader(ArchiveReader):
         # scan_members drains with enforcement: refuse to publish an over-limit report.
         if self._progressive_enforce_listing_limits:
             self._listing_tracker.assert_within_limits()
-        try:
-            for member in self._pass_scanned:
-                if member.is_link:
-                    self._ensure_link_target(member)
-            for member in self._pass_scanned:
-                if member.is_link and member.link_target:
-                    self._resolve_link(member, self._pass_by_name_lists)
-        except (CorruptionError, TruncatedError):
-            # Same double-fault guard as the RA incomplete path: when finalizing after
-            # terminal listing damage, a secondary link-target fault must not wipe the
-            # recovered prefix. On a clean EOF finalize (error is None) the secondary
-            # fault still propagates — caller poisons the pass instead of publishing
-            # a false-complete report.
-            if error is None:
-                raise
-        _apply_last_entry_wins_is_current(self._pass_scanned)
+        self._finalize_links(
+            self._pass_scanned,
+            self._pass_by_name_lists,
+            error=error,
+            child_scope=False,
+            is_current_first=False,
+        )
         self._publish_materialized(
             self._pass_scanned,
             self._pass_by_name_lists,
@@ -1663,9 +1731,9 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
                 self._reader._finalize_pass_links(error=exc)
             except BaseException as finalize_exc:
                 # Non-archive-damage finalize failures (e.g. listing-limit refusal) must
-                # not leave a half-published cache. CorruptionError/TruncatedError during
+                # not leave a half-published cache. Secondary Corruption/Truncated during
                 # link finalization after terminal listing damage is swallowed inside
-                # _finalize_pass_links so the recovered prefix stays published.
+                # _finalize_links so the recovered prefix stays published.
                 self._error = finalize_exc
                 raise
             raise

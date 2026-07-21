@@ -303,44 +303,41 @@ class SevenZipReader(BaseArchiveReader):
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         current_folder: int | None = None
         solid: SolidBlockReader | None = None
-        previous: ArchiveStream | None = None
-        try:
-            for member in self._members:
-                if previous is not None:
-                    previous.close()
-                    previous = None
-                if not member.is_file:
-                    yield member, None
-                    continue
-                raw = member._raw
-                assert isinstance(raw, _MemberRaw)
-                if raw.folder_index is None:
-                    stream = self._wrap_member_stream(
-                        io.BytesIO(b""), member.name, size=member.size
+
+        def _open(member: ArchiveMember) -> ArchiveStream | None:
+            nonlocal current_folder, solid
+            if not member.is_file:
+                return None
+            raw = member._raw
+            assert isinstance(raw, _MemberRaw)
+            if raw.folder_index is None:
+                return self._wrap_member_stream(
+                    io.BytesIO(b""), member.name, size=member.size
+                )
+            if raw.folder_index != current_folder:
+                if solid is not None:
+                    solid.close()
+                current_folder = raw.folder_index
+                # Count at the folder decode layer (solid invariant); member wraps
+                # pass track_output=False so sequential reads are not double-counted.
+                solid = SolidBlockReader(
+                    self._track_decompressed(
+                        self._open_folder_stream(raw.folder_index, member)
                     )
-                    previous = stream
-                    yield member, stream
-                    continue
-                if raw.folder_index != current_folder:
-                    if solid is not None:
-                        solid.close()
-                    current_folder = raw.folder_index
-                    # Count at the folder decode layer (solid invariant); member wraps
-                    # pass track_output=False so sequential reads are not double-counted.
-                    solid = SolidBlockReader(
-                        self._track_decompressed(
-                            self._open_folder_stream(raw.folder_index, member)
-                        )
-                    )
-                assert solid is not None
-                member_stream = self._member_stream_from_solid(solid, member)
-                previous = member_stream
-                yield member, member_stream
-        finally:
-            if previous is not None:
-                previous.close()
+                )
+            assert solid is not None
+            return self._member_stream_from_solid(solid, member)
+
+        def _cleanup() -> None:
             if solid is not None:
                 solid.close()
+
+        yield from self._drive_pass_streams(
+            iter(self._members),
+            open_member=_open,
+            close_previous=True,
+            cleanup=_cleanup,
+        )
 
     def _to_member(self, record: SevenZipFileRecord) -> ArchiveMember:
         member_type = self._member_type(record)
