@@ -59,9 +59,11 @@ Two recurring notes:
 | Deflate64 | `inflate64` | `[7z]` | no | yes | yes |
 | PPMd (var.H) | `pyppmd` | `[7z]` | no | yes | yes |
 
-¹ gzip truncation: stdlib raises `EOFError`; the `rapidgzip` accelerator does **not** reliably
-report it, so Archivey adds an ISIZE backstop on a seekable path (see `known-issues.md`
-and `seekable-decompressor-streams`).
+¹ gzip truncation: stdlib raises `EOFError` (sized reads can yield a correct prefix first).
+The `rapidgzip` accelerator often soft-EOFs by design (empty or short/full with no exception).
+Archivey backstops **path** gzip with empty→stdlib fallback plus a single-member ISIZE
+compare (`seekable-decompressor-streams`; see `rapidgzip-upstream-report.md`). Multi-member
+ISIZE summing is deferred. Container members still rely on container CRC/`VerifyingStream`.
 ² brotli has no length/CRC trailer, so a truncated stream is detected only when the
 decompressor never reports "finished" at EOF (surfaced as `TruncatedError`), not by a stored
 size.
@@ -246,7 +248,8 @@ Default decode is stdlib `gzip` (zero-dep core). For **random access**, the opti
 re-decompressing from the start (rewind warning). `rapidgzip` is the single accelerator library
 for both gzip and bzip2 — see bzip2 below and `known-issues.md` for why the standalone
 `indexed_gzip`/`indexed_bzip2` are not used. Truncation: stdlib raises `EOFError`; `rapidgzip`
-needs the ISIZE backstop (`seekable-decompressor-streams`).
+soft-EOFs by design — Archivey uses empty→stdlib fallback + single-member ISIZE on path
+sources (`seekable-decompressor-streams`, `rapidgzip-upstream-report.md`).
 
 ### bzip2 — stdlib `bz2`, accelerated by `rapidgzip.IndexedBzip2File`
 

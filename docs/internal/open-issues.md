@@ -148,6 +148,9 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 - **ISO import patches pycdlib’s collections** (cycle guard) — visible if the process
   also uses pycdlib directly.
 - **`.Z` truncation:** only nonzero leftover bits are loud.
+- **Bare `.gz` / `open_stream` + rapidgzip:** truncation detection is best-effort (empty→stdlib
+  + single-member ISIZE on path sources); use `use_rapidgzip=OFF` when you need certainty.
+  ZIP/7z/… **members** are a different story (container CRC/`VerifyingStream`) — see Gotchas.
 - **Metadata fidelity** (xattrs/ACLs/forks) not claimed on extract.
 - **Concurrent hostile modification** of the destination during extract — out of scope.
 
@@ -165,6 +168,7 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 | Free-threading support matrix | Document core vs ISO vs accelerators |
 | Public backend API / plugins | Home for exotic formats without libarchive-in-core |
 | CLI UX polish | CLI shipped (#120); remaining design Qs under `review/archive/2026-07-17-cli/` |
+| Container CRC vs rapidgzip soft-EOF | Separate check: under `use_rapidgzip=ON`, confirm **corrupted** (and truncated) **ZIP/7z** DEFLATE *member payloads* still fail via `VerifyingStream`/CRC. Whole-archive truncation is less the worry for ZIP (missing central directory → open fails); **in-member corruption** is the sneaky case where rapidgzip soft-EOF could otherwise look like a short clean decode. Codec backstop is bare-stream only. From `rapidgzip-truncation-investigation`. |
 
 ---
 

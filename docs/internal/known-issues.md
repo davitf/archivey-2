@@ -146,9 +146,22 @@ still open cannot trigger the abort (and member streams stay readable after read
 with every other backend). The remaining exposure — the **caller** closes their own source
 stream while an accelerator-backed member stream is still in use — predates the SharedSource
 retrofit (the accelerator used to sit directly on the caller's stream) and can only be fixed
-upstream. Path sources are unaffected (rapidgzip owns an independent handle). The stdlib codec
+upstream. Path sources are unaffected (rapidgzip owns an independent handle) for the
+*Python-source-raises* trigger. Separately, some **path**-source truncations / CRC
+mismatches can still `std::terminate` during worker finalization after a Python
+exception — see `docs/internal/rapidgzip-upstream-report.md` §2. The stdlib codec
 fallbacks raise a normal `ValueError`, which the reader boundary translates to
 `UnsupportedOperationError`.
+
+### Soft EOF on truncated gzip (by design — not a bug)
+
+**Status: upstream design / Archivey mitigated on path sources** (rapidgzip 0.16.0). The parallel
+reader often returns empty or a short/full prefix **without raising** on truncated
+input (`block_offsets_complete=True` is not trustworthy). Archivey backstops **path** gzip with
+empty→stdlib fallback plus a single-member ISIZE compare; multi-member ISIZE sum is deferred.
+Full write-up: [`rapidgzip-upstream-report.md`](rapidgzip-upstream-report.md). End-user note:
+[Gotchas](../gotchas.md#format-limitations). **Not filed upstream** (would be a feature request
+for an incompleteness flag, not a bug report).
 
 ### The canary
 
