@@ -40,17 +40,17 @@ before release; the honest-number option costs nothing and the claim stays
 falsifiable-but-true. But this is a positioning call — VISION is the
 maintainer's document.
 
-## Q3 — S2+S3 unification: accept "entry gate for the next backend", or pay pre-release?
+## Q3 — S2+S3 unification: accept "entry gate for the next backend", or pay pre-release? — **DECIDED (2026-07-20)**
 
-The ledger's recommended verdict (structural.md) is: carry the four-copy pass
-driver and the split materialization/progressive drive loops **through**
-0.2.0, and make their unification a hard *entry gate* for the next backend
-(native streaming ZIP), recorded in `PLAN.md`. The alternative reading of the
-zero-debt goal is that 0.2.0 itself should ship debt-free and this is the
-best-motivated structural item on the books (S3 predicted the RAR copy; it
-happened). Both are defensible; the difference is release risk vs ledger
-purity. Which does the maintainer want? (If pre-release: do S2+S3 as one
-OpenSpec change, guarded by the T1 mutation-net extension landing *first*.)
+**Decision: (b) pay before 0.2.0.** Unify S2+S3 as one OpenSpec change
+(`unify-pass-driver`) now — clean structure preferred over shipping with four
+divergent pass-driver copies; the suite is the regression net. T1 (solid-RAR
+mutation) lands first as the safety net. **Rejected:** (a) entry gate for the
+next backend (do not add PLAN/IDEAS entry-gate language).
+
+The ledger's recommended verdict (structural.md) had been: carry the four-copy
+pass driver through 0.2.0 and gate the next backend. Maintainer overrode toward
+ledger purity / release-risk tolerance in favor of paying now.
 
 ## Q4 — Is `rapidgzip-truncation-investigation` allowed to ride past 0.2.0? — **DECIDED (2026-07-20)**
 
