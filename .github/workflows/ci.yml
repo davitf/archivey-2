@@ -166,13 +166,17 @@ jobs:
         # Isolate Hypothesis property-safety in a fresh process. On Linux [all] CI the
         # suite intermittently leaves the heap corrupted (rapidgzip / pyppmd natives);
         # when property tests then validate strategies (charmap), the process SIGSEGV /
-        # SIGABRTs. Main-suite green + property-suite green in separate interpreters
-        # keeps coverage without coupling them to that corruption.
-        run: |
-          uv run --python ${{ matrix.python-version }} --no-sync \
-            pytest tests/ --ignore=tests/test_property_safety.py -q
-          uv run --python ${{ matrix.python-version }} --no-sync \
-            pytest tests/test_property_safety.py -q
+        # SIGABRTs. Two separate steps (not a multiline script with shell continuations)
+        # keep this Windows/PowerShell-safe.
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          pytest tests/ --ignore=tests/test_property_safety.py -q
+
+      - name: Run property-safety tests
+        if: matrix.install == 'all' || matrix.install == 'all-lowest'
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          pytest tests/test_property_safety.py -q
 
   # Free-threaded correctness for the declared MemberStreams.CONCURRENT seam (core backends).
   # Optional extras are not claimed covered here — skips do not count as free-threaded support.
