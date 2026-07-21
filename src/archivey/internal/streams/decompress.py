@@ -72,9 +72,11 @@ class GzipDecoder(BaseDecoder):
     Uses ``wbits=16+MAX_WBITS`` so zlib validates CRC/ISIZE. After each member,
     strips leading NUL padding from ``unused_data`` / retained input, then:
     empty → clean EOF; ``1f 8b`` → new ``decompressobj`` and continue; anything
-    else → :class:`~archivey.exceptions.CorruptionError` (trailing junk / partial
-    magic at true EOF). Cross-``feed`` NUL runs and a lone trailing ``1f`` are
-    retained until the next header (or ``flush``) resolves them.
+    else → deferred :class:`~archivey.exceptions.CorruptionError` (trailing junk /
+    partial magic at true EOF) via :attr:`pending_error`, after returning any
+    already-decoded member bytes — same deliver-then-raise shape as truncation.
+    Cross-``feed`` NUL runs and a lone trailing ``1f`` are retained until the next
+    header (or ``flush``) resolves them.
 
     Mid-member ``max_length`` remainder stays in ``decompressobj.unconsumed_tail``
     (same as :class:`ZlibDecoder`); ``_retained`` is only for post-member bytes.
@@ -92,8 +94,23 @@ class GzipDecoder(BaseDecoder):
         del point, inner
         return GzipDecoder()
 
+    def _arm_trailing_junk(self, data: bytes) -> None:
+        """Defer trailing-junk CorruptionError so already-decoded bytes can return.
+
+        Raising from ``feed``/``flush`` would discard the local output buffer (and
+        any prior members in the same call). Mirror truncation: arm pending_error
+        and let the stream raise on the next empty ``read`` / ``readall``.
+        """
+        self._pending_error = CorruptionError(
+            "Trailing non-gzip data after a completed gzip member "
+            f"(starts with {data[:8]!r})"
+        )
+        self._retained = b""
+        self._between_members = False
+        self._finished = True
+
     def _resolve_between(self, data: bytes) -> bytes:
-        """Strip NULs; start next member, retain partial magic, raise on junk, or wait."""
+        """Strip NULs; start next member, retain partial magic, arm junk, or wait."""
         i = 0
         while i < len(data) and data[i] == 0:
             i += 1
@@ -111,13 +128,11 @@ class GzipDecoder(BaseDecoder):
             self._between_members = True
             self._retained = data
             return b""
-        raise CorruptionError(
-            "Trailing non-gzip data after a completed gzip member "
-            f"(starts with {data[:8]!r})"
-        )
+        self._arm_trailing_junk(data)
+        return b""
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
-        if self._finished:
+        if self._finished or self._pending_error is not None:
             return DecodeOut(b"")
 
         if self._between_members:
@@ -128,6 +143,8 @@ class GzipDecoder(BaseDecoder):
 
         output = bytearray()
         while True:
+            if self._pending_error is not None:
+                break
             if max_length >= 0 and len(output) >= max_length:
                 if self._between_members and data:
                     self._retained = data
@@ -135,6 +152,8 @@ class GzipDecoder(BaseDecoder):
 
             if self._between_members:
                 data = self._resolve_between(data)
+                if self._pending_error is not None:
+                    break
                 if self._retained or not data:
                     # Partial magic retained, or only NULs/empty — need more input.
                     break
@@ -167,10 +186,14 @@ class GzipDecoder(BaseDecoder):
         return DecodeOut(bytes(output))
 
     def flush(self) -> DecodeOut:
+        if self._finished and self._pending_error is not None:
+            return DecodeOut(b"")
         out = bytearray()
         # Drain mid-member unconsumed_tail / continue member chaining with no new input.
         drained = self.feed(b"")
         out.extend(drained.data)
+        if self._pending_error is not None:
+            return DecodeOut(bytes(out))
 
         if self._between_members:
             data = self._retained
@@ -205,16 +228,12 @@ class GzipDecoder(BaseDecoder):
                     j += 1
                 trailing = trailing[j:]
                 if trailing:
-                    raise CorruptionError(
-                        "Trailing non-gzip data after a completed gzip member "
-                        f"(starts with {trailing[:8]!r})"
-                    )
+                    self._arm_trailing_junk(trailing)
+                    return DecodeOut(bytes(out))
                 self._finished = True
                 return DecodeOut(bytes(out))
-            raise CorruptionError(
-                "Trailing non-gzip data after a completed gzip member "
-                f"(starts with {data[:8]!r})"
-            )
+            self._arm_trailing_junk(data)
+            return DecodeOut(bytes(out))
 
         # Mid-member compressed EOF.
         try:
@@ -235,11 +254,8 @@ class GzipDecoder(BaseDecoder):
             if trailing == b"\x1f" or (
                 trailing and not trailing.startswith(_GZIP_MAGIC)
             ):
-                raise CorruptionError(
-                    "Trailing non-gzip data after a completed gzip member "
-                    f"(starts with {trailing[:8]!r})"
-                )
-            if trailing.startswith(_GZIP_MAGIC):
+                self._arm_trailing_junk(trailing)
+            elif trailing.startswith(_GZIP_MAGIC):
                 self._pending_error = TruncatedError("gzip stream is truncated")
             else:
                 self._finished = True
@@ -251,6 +267,8 @@ class GzipDecoder(BaseDecoder):
 
     @property
     def needs_input(self) -> bool:
+        if self._pending_error is not None or self._finished:
+            return True
         if self._decomp.unconsumed_tail:
             return False
         # Full next-member prefix retained — drain without reading more.

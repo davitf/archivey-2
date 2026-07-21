@@ -704,6 +704,18 @@ def test_verify_expected_size_partial_read_then_close_is_ok() -> None:
     stream.close()  # must not raise
 
 
+def test_verify_expected_size_short_abandon_before_empty_read_close_ok() -> None:
+    """Deliver all available short bytes, then close without the terminal empty read.
+
+    The TruncatedError surfaces only on the follow-up empty ``read`` (or on
+    ``read(-1)``). Abandoning at the boundary — after the last data chunk, before
+    that empty read — must not raise from ``close``.
+    """
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT) + 100)
+    assert stream.read(len(CONTENT)) == CONTENT
+    stream.close()  # must not raise TruncatedError
+
+
 def test_verify_sized_readall_gathers_across_short_reads() -> None:
     """read(-1) must drain a short-reading BinaryIO and still fire the EOF verdict."""
 
@@ -997,10 +1009,45 @@ def test_gzip_multi_member_and_padding_parity() -> None:
         Codec.GZIP, io.BytesIO(m1 + b"\x00\x00\x00"), config=_STDLIB_GZIP
     ) as stream:
         assert stream.read() == b"first"
+
+
+def test_gzip_trailing_junk_delivers_member_then_corruption() -> None:
+    """Trailing junk after a valid member: deliver every member byte, then raise.
+
+    Matches GzipFile read(1) oracle / deliver-then-raise (F1). ``readall`` still
+    raises without returning the prefix (complete-stream contract).
+    """
+    payload = b"hello world " * 10
+    member = gzip.compress(payload)
+    junked = member + b"NOTGZIP!"
+
+    # Large bounded read recovers the full member, then empty read raises.
     with open_codec_stream(
-        Codec.GZIP, io.BytesIO(m1 + b"NOTGZIP"), config=_STDLIB_GZIP
+        Codec.GZIP, io.BytesIO(junked), config=_STDLIB_GZIP
     ) as stream:
-        with pytest.raises(CorruptionError):
+        assert stream.read(65536) == payload
+        with pytest.raises(CorruptionError, match="Trailing non-gzip"):
+            stream.read(1)
+        stream.close()
+
+    # Chunked reads deliver every byte before the verdict.
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(junked), config=_STDLIB_GZIP
+    ) as stream:
+        collected = bytearray()
+        with pytest.raises(CorruptionError, match="Trailing non-gzip"):
+            while True:
+                chunk = stream.read(7)
+                if not chunk:
+                    break
+                collected.extend(chunk)
+        assert bytes(collected) == payload
+
+    # Slurping readall raises (no silent lossy success).
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(junked), config=_STDLIB_GZIP
+    ) as stream:
+        with pytest.raises(CorruptionError, match="Trailing non-gzip"):
             stream.read()
 
 
@@ -1019,12 +1066,13 @@ def test_gzip_multi_member_cross_feed_edges() -> None:
                 break
             buf.extend(c)
         assert bytes(buf) == b"aabb"
-    # Lone trailing partial magic at EOF → CorruptionError.
+    # Lone trailing partial magic at EOF → deliver member, then CorruptionError.
     with open_codec_stream(
         Codec.GZIP, io.BytesIO(m1 + b"\x1f"), config=_STDLIB_GZIP
     ) as stream:
-        with pytest.raises(CorruptionError):
-            stream.read()
+        assert stream.read(65536) == b"aa"
+        with pytest.raises(CorruptionError, match="Trailing non-gzip"):
+            stream.read(1)
 
 
 def test_gzip_empty_and_empty_payload_member() -> None:
