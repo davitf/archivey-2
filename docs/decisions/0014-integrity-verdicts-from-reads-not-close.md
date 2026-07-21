@@ -19,85 +19,97 @@ design question rather than an implementation detail:
    completes the member is the one that reveals the checksum is bad, we must choose
    between returning those bytes and raising.
 
-A subtle third fact governs how callers *reach* the end, and it corrects a tempting
-but wrong heuristic:
+A third fact governs how callers *reach* the end, and it forced an explicit contract
+choice (see the **full-count `read`** decision below):
 
-3. **A short read is not an end-of-stream signal.** The stream `read(n)` contract
-   (for `n ≥ 1`) guarantees *at least one* byte and permits *fewer than `n`*; only a
-   return of `b""` means EOF. So `read(500)` returning `110` does **not** tell the
-   caller the stream ended — a caller who wants the whole member is expected to keep
-   reading. What actually reveals truncation is: **keep reading toward the size you
-   expect, and you eventually get an error (or `b""`) from a `read()`.**
+3. **In general, `read(n)` may return fewer than `n` bytes on non-terminal data** —
+   the stream contract for `n ≥ 1` guarantees *at least one* byte; only `b""` means
+   EOF. A short return, in the general contract, is *not* an end-of-stream signal.
 
 This came to a head in review. An earlier iteration verified on `close()` when the
-member had been fully consumed. That was then made teardown-only ("`close()` never
-raises a content fault"), which reintroduced a **silent-acceptance regression**: a
-routine full-member read via a sized call —
+member had been fully consumed. Making `close()` teardown-only then reintroduced a
+**silent-acceptance regression** for the most ordinary full-member read:
 
 ```python
 with archive.open(member) as f:   # member.size == 500, stored CRC is wrong
     data = f.read(member.size)     # returns 500 bytes; nothing raises
-process(data)                      # acts on corrupt data
+process(data)                      # acts on corrupt data — no verdict, ever
 ```
 
-— produced no error at all. A checksum library must never silently hand back content
-it knows (or could know) is corrupt. So we must decide, precisely, **which call
-raises**.
+A checksum library must never silently hand back content it knows (or could know) is
+corrupt. So we must decide, precisely, **which call raises** — and, because fact (3)
+means `read(member.size)` might not even reach the end, **what our own `read`
+contract guarantees.**
 
 ### Options considered
 
 - **A — raise on the read that reaches the end.** The read that completes the member
   and finds damage raises (returning no bytes for that call); `close()` never raises.
-  Matches stdlib `zipfile` / `gzip`. Downside as first stated: naively applied to
-  *truncation*, it would drop the recoverable prefix (which this whole change exists
-  to deliver).
+  Matches stdlib `zipfile` / `gzip`.
 - **B — deliver every byte, then raise on the next read; `close()` as a backstop.**
-  Every read returns its bytes; the trailing (empty) read raises, or `close()` does if
-  the caller stops exactly at the end. Uniform for corruption and truncation, but
-  makes a *safety* guarantee depend on `close()` actually running — unreliable
-  (GC-driven close is not guaranteed and swallows exceptions), and a content error
-  from `close()` can mask or be masked by an exception already unwinding a `with`
-  body.
-- **C — verify only when the caller reads to `b""` (or `read(-1)`); silent otherwise.**
+  Uniform for corruption and truncation, but makes a *safety* guarantee depend on
+  `close()` actually running — unreliable (GC-driven close is not guaranteed and
+  swallows exceptions), and a content error from `close()` can mask or be masked by an
+  exception already unwinding a `with` body.
+- **C — verify only when the caller reads to `b""` / `read(-1)`; silent otherwise.**
   Simplest `close()` semantics, but silently skips verification on
-  `read(member.size)` — the most natural way to consume a whole member. Silent false
-  confidence is the one outcome a checksum library must not produce.
+  `read(member.size)` — the most natural whole-member read. Silent false confidence is
+  the one outcome a checksum library must not produce.
 
-### The distinction that resolves A-vs-B
+### Two distinctions that resolve it
 
-Corruption and truncation are not the same failure:
+**Corruption vs. truncation.** These are not the same failure:
 
 - **Truncation** yields bytes that are *correct but incomplete* — worth delivering
-  (the recoverable-prefix salvage this change is built on). The failing read is the
-  one that reaches the end while still short.
-- **Corruption** yields bytes that are *wrong* — there is no value in handing back the
-  final chunk of a member whose checksum just failed.
+  (the recoverable-prefix salvage this change is built on).
+- **Corruption** yields bytes that are *wrong* — no value in returning the final chunk
+  of a member whose checksum just failed.
 
 So "deliver every byte before failing" is right for truncation and pointless for
 corruption. Option A is correct *for corruption*; truncation naturally serves its
-prefix and fails on the read that reaches the end.
+prefix and fails on a later read.
+
+**Full-count vs. up-to-`n` `read`.** The regression example only reaches the end — and
+is therefore verifiable — if our `read(n)` returns the full count. Under an "up-to-`n`"
+`read`, `f.read(500)` could hand back 400 on *healthy* data; a single-call caller stops
+at 400, never reaches the declared size, and gets no verdict — the regression, intact.
+The guarantee "read the declared size → verified" is real only if `read(n)` coalesces
+up to `n` (like `io.BufferedReader`), returning short **only** at a terminal boundary.
+We therefore commit to full-count `read`, which is also what `DecompressorStream`
+already implements.
 
 ### Why leaving early stops unverified is sound
 
-Given fact (3), a caller who genuinely wants the whole member keeps reading until they
-have the expected size (or `b""`) — and therefore *reaches the end on some read* and
-gets the verdict there. A caller who stops before the end has deliberately opted out.
-There is no principled line between "stopped at byte 50 of 110 available" and "stopped
-at byte 110 of 110 available": both are early stops, and a short read did not tell the
-second caller anything the first didn't know. Verifying one but not the other only
-because it sits on the EOF boundary would be arbitrary. So **all** early stops are
-treated identically: no verdict.
-
-This keeps the safety property — *a member read to its end that is damaged always
-raises* — while making it independent of `close()`.
+Under full-count `read`, a caller who wants the whole member reaches its end (they read
+`member.size`, or read until `b""`) and gets the verdict there. A caller who stops
+before the end deliberately opted out. There is no principled line between "stopped at
+byte 50 of a 500-byte member" and "stopped at byte 110 of that same 500-byte member
+when only 110 were decodable": both are early stops of a member whose declared size is
+500. Verifying one but not the other only because it sits on the current EOF boundary
+would be arbitrary. So **all** early stops are treated identically: no verdict, and
+`close()` stays silent — while a member *read to its end* that is damaged always
+raises, independent of whether `close()` runs.
 
 ## Decision
 
+### Full-count `read`
+
+archivey's stream `read(n)` (`n ≥ 1`) returns **exactly `n` bytes until a terminal
+boundary** — clean end-of-stream, truncation, or a raised content error. It never
+returns short on healthy, non-terminal data. Consequently a short return **means a
+terminal boundary was reached**, and reading is a reliable way to reach a member's end
+(`read(-1)`, read-until-`b""`, or `read(member.size)` for a size-declared member).
+(`read(0)` is a no-op, never EOF. This full-count guarantee applies to the public
+`ArchiveStream`/codec-stream `read`; it does not require arbitrary *inner* `BinaryIO`
+objects to be full-count — the wrapper coalesces.)
+
+### Where the verdict fires
+
 Content-integrity verdicts (stored checksum / digest, encrypted-member authentication
-tag, and short/truncation) are delivered from a **`read()` call, never from
-`close()`**. `close()` is teardown-only; it may still propagate a resource/teardown
-error (a subprocess exit code, an inner stream that authenticates in its *own*
-`close()`), but it never introduces a first content fault.
+tag, truncation, and declared-size over-run) are delivered from a **`read()` call,
+never from `close()`**. `close()` is teardown-only: it may still propagate a
+resource/teardown error (a subprocess exit code, an inner stream that authenticates in
+its *own* `close()`), but it never introduces a first content fault.
 
 A member is verified at the moment a read **reaches its end** — whichever comes first:
 
@@ -107,54 +119,133 @@ A member is verified at the moment a read **reaches its end** — whichever come
 
 At that moment:
 
-- **Corruption** (checksum / auth mismatch): the reaching read raises `CorruptionError`
-  and returns no bytes. The final chunk of a member known to be corrupt is **withheld**.
-- **Truncation / short** (decoder EOF before the declared size, or an incomplete
-  decode): every recoverable byte was delivered on the preceding bounded reads; the
-  read that reaches the end while still short raises `TruncatedError`.
+- **Corruption** (checksum / auth mismatch, or a mid-stream structural error): the
+  reaching read raises `CorruptionError` and returns no bytes. The final chunk of a
+  member known to be corrupt is **withheld** (for size-declared members; see the
+  size-unknown consequence and open question below).
+- **Over-run** (decode output exceeds the declared size — a corrupt length field): the
+  read that would cross the declared size raises `CorruptionError`, **independent of
+  the checksum** (the over-run itself is the corruption, even if the hash-so-far would
+  pass).
+- **Truncation / short** (decoder end-of-stream before the declared size, or an
+  incomplete decode): every recoverable byte was delivered on the preceding full-count
+  reads; the read that reaches the short end returns the remaining prefix (a **short
+  return**, not an exception), and the *next* read raises `TruncatedError`.
 
-A read that **stops before the end** — at any offset, including exactly the bytes
-currently available — produces **no verdict**, and `close()` stays silent. A seek off
-the sequential frontier disables verification for the rest of the handle's life
-(incremental hashing assumes linear consumption).
+A read that **stops before the end** — at any offset — produces **no verdict**, and
+`close()` stays silent. A seek off the sequential frontier disables the **checksum**
+verdict for the rest of the handle's life (incremental hashing assumes linear
+consumption); structural truncation past the seek remains detectable in principle, but
+for simplicity we disable both under one rule (see open question 3).
 
-**Guarantee, stated for users:** *Read a member to its end and a damaged member raises
-on a `read()`. Stop before the end and it is not verified. `close()` never raises a
-content error.* "To its end" means `read(-1)` / `readall`, reading until `read()`
-returns `b""`, or reading the declared size. Corruption is caught whenever such a read
-reaches the end — independent of whether `close()` is ever called.
+### Short returns are never corrupt bytes
 
-Callers who must verify **regardless** of access pattern — partial reads, seeks, or
-"never release unverified bytes" — use `VerificationMode.STRICT`
-(`verification-integrity-mode`), which fully verifies a member before returning any of
-it. This is the required posture for untrusted input where release of unauthenticated
-plaintext is unacceptable (see Consequences).
+Because corruption *raises* rather than returning short, a short return from a
+full-count `read` is only ever **clean-but-complete** (you asked for more than the
+member holds) or **truncated** (correct-but-incomplete prefix). It is never "here are
+some wrong bytes." A single-call reader distinguishes the two by length:
+
+- size-declared member: `len(data) == member.size` → complete and verified;
+  `len(data) < member.size` → truncated (the shortfall is the tell), and reading again
+  raises `TruncatedError`;
+- size-unknown member: a bare `read(n)` cannot self-certify — read `-1` or to `b""`.
+
+## Guarantee (for users)
+
+> **Read a member to its end and a damaged member raises on a `read()`. Stop before
+> the end and it is not verified. `close()` never raises a content error.**
+
+"To its end" means `read(-1)` / `readall`, reading until `read()` returns `b""`, or —
+for a member with a **declared** size — reading that many bytes. For that whole-member
+read:
+
+- an **exception** means the member is corrupt (`CorruptionError`) or truncated
+  (`TruncatedError`) — **discard everything read; none of it is trustworthy**;
+- a **full-length** return (`len == member.size`, or a subsequent `b""`) means the
+  content was **checksum-verified**;
+- a **short** return (`len < member.size`, no exception) means **truncation** — the
+  bytes are correct but the member is incomplete; **"no exception" does not mean
+  "complete."** Check the length, or read again to get the `TruncatedError`.
+
+Corruption is caught whenever such a read reaches the end — independent of whether
+`close()` is ever called. Callers who must verify **regardless** of access pattern
+(partial reads, seeks, or "never release unverified bytes") use
+`VerificationMode.STRICT` (`verification-integrity-mode`), which fully verifies a
+member before returning any of it.
+
+## Open questions
+
+1. **Encrypted members — a defaults question, not just docs.** Treating an
+   authentication tag as just-another-checksum in streaming mode means the default
+   *releases unauthenticated plaintext* before the tag is checked — a sharper footgun
+   than emitting bytes with a bad CRC, and arguably in tension with VISION's "no silent
+   success." Should **authenticated** members default to `STRICT` (or refuse to stream
+   unless the caller explicitly opts into detection-not-prevention), rather than
+   inheriting the CRC default? A deliberate defaults decision to make, not inherit; it
+   does not change any mechanism above.
+2. **Size-unknown "withhold the corrupt final chunk" requires lookahead.** For a
+   size-declared member we know the boundary before releasing the final chunk, so we
+   can withhold it. For a size-unknown member (e.g. standalone gzip) the CRC lives in a
+   trailer *after* the last plaintext byte: the decoder emits the final plaintext and
+   only sees end-of-stream on the next pull. Honoring "corruption caught on the last
+   data read / final chunk withheld" for size-unknown members requires a **one-chunk
+   delayed-release buffer** (never hand out chunk *N* until chunk *N+1*-or-EOS has been
+   pulled). Do we (a) require that lookahead for uniform behavior (small constant
+   buffering), or (b) accept that size-unknown members surface the verdict on the read
+   that observes end-of-stream — possibly *after* the final data chunk was released —
+   which still honors the top-level guarantee via `read(-1)` / read-to-`b""`?
+   Recommendation: **(b)**, documented — the realistic size-unknown reader reads to
+   `b""` anyway, and "detection, not prevention" already permits pre-verdict bytes.
+3. **Seek and truncation.** A premature decoder end-of-stream before the declared size
+   is a *structural* fact independent of the incremental hash, so `TruncatedError`
+   could in principle still be raised after a seek even though `CorruptionError` cannot.
+   We currently disable both under one "seek disables verification" rule for
+   simplicity. Keep the simple rule, or preserve the still-sound truncation check across
+   seeks? Recommendation: keep it simple, acknowledging we forgo a deliverable verdict.
 
 ## Consequences
 
-- **`read(member.size)` on a corrupt member raises from that read** and returns
-  nothing — closing the silent-acceptance regression, and doing so without depending
-  on `close()`.
-- **This reverses "deliver every byte even on a checksum mismatch."** A corrupt
-  member's final chunk is now withheld (the reaching read raises instead of returning
-  it). Truncation is unchanged — its recoverable prefix is still delivered.
+- **`read(member.size)` on a corrupt size-declared member raises from that read** and
+  returns nothing — closing the silent-acceptance regression, without depending on
+  `close()`. This **reverses "deliver every byte even on a checksum mismatch"**: a
+  corrupt member's final chunk is now withheld. Truncation is unchanged — its
+  recoverable prefix is still delivered.
+- **Full-count `read` is now a contract**, not an accident. The wrapper must coalesce
+  short inner reads (bounded reads must loop the inner to `n`-or-terminal, as the
+  `read(-1)` drain already does). A short return from a public archivey stream is a
+  documented terminal signal.
 - **`close()` never raises a content fault.** Cleanup is safe; a content error can
   neither mask nor be masked by an exception unwinding a `with` body; safety does not
   hinge on `close()` running.
-- **Detection, not prevention, in streaming mode.** Any bounded read returns some
-  bytes before the final verdict is known; the guarantee is "you are told before you
-  can conclude the member is complete-and-intact," not "you are told before you touch
-  any bytes." Prevention is `VerificationMode.STRICT`.
-- **Encrypted members are a sharper case.** With a single authentication tag over the
-  whole member, streaming *must* release unverified plaintext (the classic
-  release-of-unverified-plaintext problem); the tag is checked only when the member is
-  read to its end. Segment-authenticated formats (per-chunk AEAD) could verify each
-  chunk before release, but archivey's current formats do not. Threat models that
-  cannot tolerate unauthenticated plaintext must use STRICT. The docs state this
-  distinction explicitly even though the API surface treats CRC and auth-tag members
-  the same.
-- **Requires knowing "the end" on the reaching read.** Members with a declared size
-  (most container members, e.g. ZIP) verify on the read that reaches that size.
-  Size-unknown members (e.g. standalone gzip) rely on the decoder's in-band
-  end-of-stream so corruption is still caught on the last data read, matching stdlib
-  `gzip` — not deferred to a trailing empty read.
+- **Detection, not prevention, in streaming mode.** Any bounded read returns some bytes
+  before the final verdict; the guarantee is "you are told before you can conclude the
+  member is complete-and-intact," not "you are told before you touch any bytes."
+  Prevention is `VerificationMode.STRICT`.
+- **Size-declared vs. size-unknown timing differs** (open question 2). Size-declared:
+  verdict on the read that reaches the declared size (the decoder must also consume the
+  trailing CRC/tag to validate before that read returns or raises). Size-unknown:
+  verdict on the read that observes end-of-stream — the last data read only if a
+  lookahead buffer is adopted, otherwise the following read.
+- **Encrypted members are a sharper case** (open question 1). With a single tag over
+  the whole member, streaming *must* release unverified plaintext; segment-authenticated
+  (per-chunk AEAD) formats could verify each chunk before release, but archivey's
+  current formats do not.
+- **Exception type tells you what you can trust.** `CorruptionError` ⇒ the content is
+  wrong; trust **nothing** already read from this member. `TruncatedError` ⇒ the bytes
+  already returned are correct but the member is **incomplete**; a caller may keep a
+  salvaged prefix if incompleteness is acceptable, but must not treat it as the whole
+  member. Documented on the exceptions and in the streaming guide.
+
+## Implementation notes
+
+- **Trailer consumption on exact-size reads.** For a size-declared member,
+  `read(member.size)` must pull the underlying CRC/auth trailer and validate *before*
+  the call returns or raises — the read that reaches the declared size finalizes the
+  hash.
+- **Seek-state tracking.** Once a seek off the sequential frontier disables the
+  checksum verdict, it stays disabled — a seek-forward-then-back-to-end must not
+  re-enable a hash comparison over a non-contiguous byte range (false-positive
+  `CorruptionError`).
+- **Full-count coalescing.** Bounded `read(n)` on the verifier/wrapper must loop the
+  inner stream until it has `n` bytes or a terminal boundary, so the full-count
+  contract holds even over a short-reading inner `BinaryIO`.
