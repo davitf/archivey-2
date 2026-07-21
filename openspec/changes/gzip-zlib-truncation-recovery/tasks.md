@@ -86,10 +86,13 @@
 
 ## 4. VerifyingStream / MemberVerifier — CRC after all chunked data
 
-- [ ] 4.1 Bounded `read(n)` digest/CRC mismatch: return every decompressed byte;
-      at clean EOF raise `CorruptionError` on the **next** (terminal empty)
-      `read`. Do not withhold the last data chunk; do not raise from
-      `finish_on_close`.
+- [ ] 4.1 Bounded `read(n)` digest/CRC mismatch **and hash-less short**: return
+      every decompressed byte; at clean EOF raise on the **next** (terminal empty)
+      `read` — `CorruptionError` for a digest mismatch, `TruncatedError` for a
+      hash-less short. Do not withhold the last data chunk; do not raise from
+      `finish_on_close`. The terminal empty `read` is the content-fault surface
+      for chunked, not `close` (this replaces today's `_short`→`finish_on_close`
+      deferral).
 - [ ] 4.2 `readall` / `read(-1)` with digest mismatch or hash-less short: raise
       on that complete-stream call (`CorruptionError` / `TruncatedError`) so
       `read(); close()` cannot succeed quietly. Implement the sized branch as a
@@ -100,12 +103,15 @@
       the declared-size cap is a decompression-bomb bound (an over-long stream
       must stop at the declared size), so state that rationale in an inline
       comment. The unsized branch may keep `inner.read(-1)` then `_finish`. Also
-      change `_finish` to **raise** the hash-less short (`TruncatedError`) on this
-      complete-stream path instead of setting `self._short` (which stays the
-      chunked/close mechanism).
+      change `_finish` so the hash-less short **raises** `TruncatedError` on any
+      read path (the terminal empty chunked `read` per 4.1, and this
+      complete-stream call). `self._short`/`finish_on_close` MUST NOT stay a
+      content-fault surface — `_finish` needs to distinguish a read-path call
+      (raise the short) from a close-path call (never raise it).
 - [ ] 4.3 `finish_on_close` closes the inner and MUST NOT introduce a first
-      content `TruncatedError` / `CorruptionError` solely on close (may still
-      avoid double-fault after `read` already failed).
+      content `TruncatedError` / `CorruptionError` solely on close — for **either**
+      a digest mismatch **or** a hash-less short (may still avoid a double-fault
+      after `read` already failed, and may still surface a *teardown* error).
 - [ ] 4.4 Update verify tests: keep
       `test_verify_mismatch_raises_at_eof_without_losing_final_chunk`; change
       close-raises cases to slurping-raises / chunked-then-empty-raises; add

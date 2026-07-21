@@ -200,6 +200,8 @@ identical pending-error timing — buffer read-ahead can pull the terminal empty
 prefix” quirk; raising content faults from `close()`; subclassing `OSError` just
 to match `BadGzipFile`.
 
+### VerifyingStream / MemberVerifier — read-vs-close today
+
 Chunked digest mismatch already matches the desired shape
 (`test_verify_mismatch_raises_at_eof_without_losing_final_chunk`): every data
 chunk is delivered, then the **terminal empty `read`** raises
@@ -220,7 +222,16 @@ chunk is delivered, then the **terminal empty `read`** raises
   read and **raise** on mismatch/short (do not return success bytes then rely on
   a follow-up `read` or on `close`). Implementation may drain via bounded reads
   so the terminal empty `read` naturally fires inside `readall`.
-- Hash-less short uses the same timing (`TruncatedError`).
+- Hash-less short uses the **same** timing (`TruncatedError`): the terminal empty
+  chunked `read` raises, and `read(-1)` raises — **not** `close`. `_short`/
+  `finish_on_close` MUST NOT remain a content-fault surface (that is the current
+  bug at line "*`_finish` sets `_short = True` and defers … to close*"). Under
+  Decision 2 `finish_on_close` closes the inner, avoids a double-fault after a
+  read already raised, and may still surface a *teardown* error — but it never
+  introduces a first `TruncatedError` / `CorruptionError`. Implementation-wise
+  `_finish` must know whether it runs on a read path (raise short) vs. from
+  `close` (never raise the short); the read paths above are the only content-fault
+  surfaces.
 - Partial read then close stays quiet (abandon before clean EOF).
 - Anti-footgun: `data = stream.read(); stream.close()` with a bad CRC MUST raise
   on the `read()` (not succeed quietly).
@@ -247,10 +258,19 @@ chunk is delivered, then the **terminal empty `read`** raises
    `self._decoder.pending_error` (dropping its own `raise`). The `_size` gate then
    keys off that one predicate (see the size-hole note above). Forward-only
    decoders whose `finished` is size-driven (BCJ, PPMd, Deflate64) also reach EOF
-   `not finished` on truncation, so **every** `flush` must arm the error, not just
+   `not finished` on truncation, so their `flush` must arm the error too, not just
    zlib/gzip — today the stream's `not finished` raise covers them uniformly, and
    dropping it moves that responsibility into each decoder. **Rejected:** add
    `set_pending_error` to the `Decoder` protocol and keep detection in the stream.
+
+   **Scope caveat — xz / lzip (see Open Question 3).** `XZStreamDecoder.flush`
+   and `LzipDecoder.flush` currently **raise `TruncatedError` directly** instead
+   of arming `pending_error` + returning leftover, so on the shared engine they
+   still drop already-buffered output on a large truncating `read(n)` — the same
+   bug class this change exists to fix. So "the decoder owns detection" is **not**
+   yet uniform across all `DecompressorStream` codecs. This is called out
+   explicitly (not implied) as an open scope decision, not silently assumed
+   converted.
 
    **Make the responsibility legible (self-explanatory code).** `flush()` today
    reads as "emit any final buffered output at EOF"; it does not advertise that it
@@ -380,9 +400,35 @@ chunk is delivered, then the **terminal empty `read`** raises
    documented user-facing (task 5.1): `data = f.read()` on a truncated stream
    raises and returns nothing; chunked reads recover the prefix.
 
+**Decide (raised in review round 2):**
+
+3. **xz / lzip scope.** `XZStreamDecoder.flush` / `LzipDecoder.flush` raise
+   `TruncatedError` from `flush` instead of arming `pending_error` + returning
+   leftover, so they still drop buffered output on a truncating large `read(n)` —
+   the same bug this change fixes for zlib/gzip. Pick one, explicitly:
+   **(a) in-scope now** — convert both `flush`es to the pending-error + return-
+   leftover shape (adds tasks + truncation tests for xz/lzip), making the shared-
+   engine fix actually uniform; or **(b) out-of-scope** — record a tracked
+   follow-up and state here that the shared-engine truncate-return fix is
+   *incomplete* until then. Recommendation: (a) if cheap (the segmented decoders
+   already return leftover on the happy path), else (b) with the follow-up filed —
+   do not leave it implied.
+
+4. **Truncation vs corruption on a short-with-hash body (verdict + hierarchy).**
+   When a body is short *and* carries a hash, the shortfall and the digest
+   mismatch are often genuinely indistinguishable (a corruption could also shorten
+   output). Maintainer lean: raise **`TruncatedError`** (truncation is the more
+   likely cause), documented as *best-effort* since the two can be
+   indistinguishable. Broader option to weigh separately: make `TruncatedError` a
+   **subclass of `CorruptionError`** (truncation *is* a kind of corruption), so
+   "when uncertain, raise `CorruptionError`" is a safe superset and
+   `except CorruptionError` catches both. Note the tree already has a shared
+   `ReadError` parent (`CorruptionError`/`TruncatedError` are siblings under it),
+   so "catch both" is *already* available via `except ReadError`; the reparent
+   only changes what `except CorruptionError` catches. Because it touches the
+   library-wide exception hierarchy and every catcher, treat the reparent as its
+   **own** decision/change, not folded in here silently.
+
 **Optional later (non-blocking):** audit stdlib `bz2` / other
 `DecompressorStream` codecs for the same oversize-read / truncate-return gap
-(consistency sweep). Minor honesty nuance: for a truncated stream that *also*
-carries a hash, `_finish` raises `CorruptionError` (partial-data digest mismatch)
-rather than `TruncatedError`; not wrong, but `TruncatedError` would be the more
-honest verdict — worth a glance, not a blocker.
+(consistency sweep).
