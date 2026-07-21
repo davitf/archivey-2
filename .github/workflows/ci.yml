@@ -167,7 +167,8 @@ jobs:
         # suite intermittently leaves the heap corrupted (rapidgzip / pyppmd natives);
         # when property tests then validate strategies (charmap), the process SIGSEGV /
         # SIGABRTs. Two separate steps (not a multiline script with shell continuations)
-        # keep this Windows/PowerShell-safe.
+        # keep this Windows/PowerShell-safe. Full write-up + soak/A/B recipe:
+        # docs/internal/known-issues.md ("Intermittent Linux full-suite heap corruption").
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
           pytest tests/ --ignore=tests/test_property_safety.py -q
