@@ -38,16 +38,25 @@ Combine the priorities above with that skill’s process:
   paths or PR the user named.
 - If the user is asking about uncommitted work, include the working-tree diff.
 - Prefer concrete `file:line` evidence and triggering inputs/states.
+- **Reviewing an OpenSpec proposal / `design.md` instead of code?** Skip the code-first
+  order and use the addendum's **§9 (values-first)** — check the design against
+  VISION/CONTRIBUTING values and contracts, then proposal shape.
 
 ## Output format
 
-Lead with findings (no long preamble). For each finding:
+Lead with findings (no long preamble). Follow **addendum §0 (finding discipline)**:
+over-report on existence, label honestly, verification *reclassifies* (a disproven bug
+often becomes a clarity/doc-debt finding) — it never silently culls. For each finding:
 
-- Severity from the skill: 🔴 `[blocking]` / 🟡 `[important]` / 🟢 `[nit]` /
+- **Severity** (impact if real): 🔴 `[blocking]` / 🟡 `[important]` / 🟢 `[nit]` /
   💡 `[suggestion]` / 📚 `[learning]` / 🎉 `[praise]`
+- **Confidence** (how well traced): `CONFIRMED` / `PLAUSIBLE` / `DISPROVEN→reclassified`
 - Rank archivey blockers using the addendum (VISION claims, exception contract,
-  path/bomb safety, silent solid re-decode, unjustified debt, etc.)
+  path/bomb safety, silent solid re-decode, unjustified debt, etc.); order by severity,
+  then confidence
 - Location, what’s wrong, why it matters, and a concrete fix direction
+- A concrete trigger where possible (`CONFIRMED` + trigger = red–green regression-test
+  candidate); missing trigger lowers confidence, not existence
 - Call out missing tests when behavior changed
 
 After findings, a short **Verdict**: Approve / Comment / Request Changes — plus any

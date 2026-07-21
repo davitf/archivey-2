@@ -22,6 +22,73 @@
 
 ---
 
+## 0. Finding discipline (how to report)
+
+Archivey reviews optimize for **maximum code quality with a human maintainer as the
+filter** — not for an automated gate that must minimize false positives. So
+**over-report on existence, be rigorous on labeling.** Raise the concern; never suppress
+a real one because you're unsure. The discipline is *honest labeling*, not silence.
+
+Output stays **markdown prose** (portable across Cursor / Claude Code / others). Do not
+route findings through a host-specific findings tool — the two-axis + reclassification
+model below is richer than those schemas, and prose is the source of truth.
+
+### Two axes: severity ≠ confidence
+
+Rate every finding on two independent axes so the maintainer can read
+**severity × confidence** and decide:
+
+- **Severity** — impact *if the finding is real*: 🔴 `[blocking]` / 🟡 `[important]` /
+  🟢 `[nit]` (plus 💡 / 📚 / 🎉 non-blocking). See §7.
+- **Confidence** — how well you traced it:
+  - `CONFIRMED` — you traced the actual failing path (definitions, callers, guards).
+  - `PLAUSIBLE` — real risk, not fully traced or no repro built.
+  - `DISPROVEN` — you traced it and the code is actually correct. **Do not delete it** —
+    route it (below).
+
+Low confidence lowers the *confidence tag*, never the decision to report. A
+🔴 / `PLAUSIBLE` finding is still reported.
+
+### Verification routes findings; it never silently culls them
+
+After the code + context passes, re-trace each candidate (§8 "trace, don't
+pattern-match"). Tracing changes the tag and may *reclassify* — it does not delete real
+concerns. When a finding comes back `DISPROVEN`, ask *"why did I, reading carefully,
+think this was broken?"*:
+
+- A careful reader could reasonably have misread it → the code isn't self-documenting.
+  Re-file as 🟡 **clarity / doc-debt** (§8's documentation-debt rule) — a comment,
+  clearer name, or an `assert` that encodes the invariant.
+- Tracing revealed a genuine but non-obvious invariant → 💡 / 📚: suggest the comment or
+  assertion that would have made it obvious.
+- It was a careless misread ordinary attention would have avoided → drop it; if it still
+  cost real review effort, a 🟢 nit is fair.
+
+Only a careless self-misread is ever dropped. Everything else becomes a (possibly
+smaller) finding.
+
+### Failure scenario: requested, not gating
+
+Try to name a concrete trigger for every finding — input / archive / state → wrong
+result, crash, or contract violation:
+
+- `CONFIRMED` + repro → flag it as a **red–green regression-test candidate**
+  (CONTRIBUTING wants red–green for bug fixes, §4).
+- Can't build one → the finding still stands, tagged `PLAUSIBLE` / needs-repro. A missing
+  repro lowers confidence, never existence.
+
+### Keep it scannable
+
+Over-reporting fails only when it is *unlabeled*. Hold the noise down by discipline, not
+suppression:
+
+- **Dedupe by root cause** — one finding per cause; cite one site, list the rest.
+- **Rank** by severity, then confidence within a tier.
+- Every finding carries: severity, confidence tag, location (`file:line`), why it
+  matters, a fix direction, and (where possible) a trigger.
+
+---
+
 ## 1. What you are reviewing
 
 Archivey is a **sync-first, zero-dep-core Python library** for reading, streaming, and
@@ -261,6 +328,10 @@ This **overrides** the skill’s Phase 1 “absorb the design narrative before t
 diff.” For archivey PRs, use two passes with different jobs. Context is still
 **required** — it comes second, not never.
 
+> **Scope:** this order is for **code / PR reviews**. Reviewing an OpenSpec proposal,
+> delta spec, or `design.md` instead? There is no resulting code tree to read cold —
+> use **§9** (values-first), not this order.
+
 ### Before either pass (logistics only — ≤1 minute)
 
 Do **not** read the OpenSpec change, design notes, or long PR rationale yet.
@@ -305,7 +376,9 @@ Now open the narrative and contracts:
 1. PR description + linked issue / full OpenSpec change (proposal, delta specs,
    `design.md`) / `review/` brief or finding.
 2. Applicable rows in this addendum (§1 VISION ranking, §3 contracts, §5 domain)
-   and authoritative sources at the top of this file when a finding touches them.
+   and authoritative sources at the top of this file when a finding touches them. For a
+   contract-moving change, run the **values & contracts consistency check (§9)** — the
+   same checklist proposals get, applied to the resulting behavior.
 3. Spec ↔ code ↔ docs: match, intentional revision, or **pause-and-ask** (§3) —
    including “self-contained and clear, but disagrees with the capability scenario
    / invents undecided behavior / breaks format parity.”
@@ -324,7 +397,61 @@ still undercut a VISION claim, disagree with a scenario, or land unjustified deb
 
 ---
 
-## 9. Out of scope for *this* addendum
+## 9. Reviewing OpenSpec proposals & design docs (not code)
+
+§8's **code-first** ordering is for **actual code / PR reviews**. When the artifact under
+review is an OpenSpec **proposal**, delta spec, or `design.md` — not a diff — there is no
+"resulting tree" to read cold. Review it against the project's **values and contracts**
+instead. (This same check is pass-2 step 2 for code reviews — see §8; for a proposal it
+is the *whole* review.)
+
+Finding discipline (§0) applies unchanged: severity × confidence, over-report and label,
+pause-and-ask on conflicts rather than silently reconciling.
+
+### Values & contracts consistency check (VISION / CONTRIBUTING)
+
+Run every proposal — and every contract-moving code change — past these:
+
+- [ ] **Uniform interface / no surprises (§2):** one honest interface preserved? Every
+  per-format behavior difference expressed as **data** (`None`, enums, documented
+  sentinels), never a silent guess?
+- [ ] **Safe by default (§1.2):** zip-slip / symlink escape / bombs still require explicit
+  opt-out; the design doesn't quietly relax a safety contract.
+- [ ] **Memory-safe hostile parsing (§1.3):** pure-Python parse boundaries preserved;
+  crafted input yields honest errors, not native-memory corruption.
+- [ ] **Damaged input is first-class (§1.4):** recoverable-members + honest-error posture
+  preserved; salvage isn't invented where the backlog hasn't committed to it.
+- [ ] **Cost honesty & perf budget (§1.5):** cost signals stay truthful; ≤ ~1.3× budget
+  acknowledged in bytes/seeks (not vibes) where the design touches hot paths.
+- [ ] **Contracts (§3):** zero-dep core, exception-translation model, sync-first, typing
+  story, extras layering — none silently broken by the *design*.
+- [ ] **Non-goals (§1):** not smuggling in an async public API, `zipfile`/`py7zr`/`rarfile`
+  compat shims, quirk-driven architecture, or in-place 7z/RAR modification.
+- [ ] **Threat-model gaps (`O*`):** open gaps the proposal touches are addressed in
+  substance, not closed by marketing language.
+
+### Proposal-shape checks
+
+- [ ] **Scope right-sized (§3):** does this actually need a spec/change, or is it a
+  bugfix/refactor that moves no contract?
+- [ ] **Scenarios are falsifiable:** WHEN/THEN reads as testable behavior, not aspiration
+  — a reviewer could write the conformance assertion.
+- [ ] **Cross-format parity considered:** the parity hot spots in §2 are addressed where
+  the change spans backends.
+- [ ] **Error / edge / hostile paths specified**, not just the happy path (§4, §5).
+- [ ] **Rationale present:** `design.md` records alternatives considered and the *why*,
+  per the library schema — not just the *what* (stub OK for trivial deltas).
+- [ ] **Docs move together:** if the contract moves, the matching `openspec/specs/` and
+  user/decision docs move in the same change (§3).
+- [ ] **Pause-and-ask** on conflicts with existing specs / docs / VISION — surface, don't
+  silently reconcile (§3).
+
+Rank the same way (§0/§7): a proposal that undercuts a load-bearing VISION claim (§1) is
+🔴; a thin scenario or missing rationale is 🟡; wording nits are 🟢.
+
+---
+
+## 10. Out of scope for *this* addendum
 
 Generic SOLID, Python footguns, and review etiquette stay in the skill’s existing
 docs (`architecture-review-guide.md`, `python.md`, `code-review-best-practices.md`,

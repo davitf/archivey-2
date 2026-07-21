@@ -37,6 +37,15 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 > **Cursor entrypoint:** project command [`.cursor/commands/code-review.md`](../../.cursor/commands/code-review.md)
 > wires `/code-review` to this skill + addendum (findings-first defaults + archivey
 > process). Invoking `/code-review-skill` also loads this skill directly.
+>
+> **Repo default — findings first, no edits:** in archivey, `/code-review` and
+> `/code-review-skill` **report findings**; they do **not** modify code unless you
+> explicitly ask. Lead with findings ranked by **severity × confidence** (see
+> [addendum §0](reference/archivey-review-addendum.md)); output is markdown prose, not a
+> host-specific findings tool. This holds however the skill is invoked (Cursor command or
+> `Skill`). Reviewing an OpenSpec proposal rather than code? Use
+> [addendum §9](reference/archivey-review-addendum.md) (values-first), not the code-first
+> order.
 
 ## When to Use This Skill
 
