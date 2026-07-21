@@ -10,7 +10,11 @@
 
 - [ ] 2.1 Collapse `_finalize_materialized_links` / `_finalize_pass_links` into one
       helper with explicit double-fault policy (`error is not None` → swallow secondary
-      Corruption/Truncated; clean EOF → re-raise).
+      Corruption/Truncated; clean EOF → re-raise). Scope note: "one helper" unifies the
+      *double-fault policy and guard prose*, not necessarily byte-identical behavior —
+      per design Decision 4, preserve each path's existing `is_current`/link-resolve
+      ordering (a branch inside the shared helper is acceptable) unless a failing test
+      forces convergence. Don't reorder eager vs progressive finalize on faith.
 - [ ] 2.2 Point eager materialization and `_ProgressivePassIterator` at the shared
       finalizer; delete mirrored guard comments.
 

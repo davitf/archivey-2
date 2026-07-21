@@ -48,13 +48,8 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 |---|---------|--------|
 | **Q1** | Perf wall-budget enforcement (perf Q2) | **decided** — nightly drift vs previous JSON (a); absolute bands informational |
 | **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | lean: publish honest number; L5 follow-up |
-<<<<<<< HEAD
-| **Q3** | S2+S3: entry gate for next backend vs pay pre-release | lean: entry gate |
-| **Q4** | rapidgzip-truncation rides past 0.2.0? | **decided** — PAY before 0.2.0; implement later |
-=======
 | **Q3** | S2+S3: entry gate vs pay pre-release | **decided** — (b) pay now; OpenSpec `unify-pass-driver` |
-| **Q4** | rapidgzip-truncation rides past 0.2.0? | lean: KEEP change open |
->>>>>>> 87fb147 (Triage: mark debt-ledger Q3 decided in STATUS glance)
+| **Q4** | rapidgzip-truncation rides past 0.2.0? | **decided** — PAY before 0.2.0; implement later |
 | **Q5** | CHANGELOG form | lean: committed `CHANGELOG.md` |
 
 ### `performance/QUESTIONS.md`
