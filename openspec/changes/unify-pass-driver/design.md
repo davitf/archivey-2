@@ -11,7 +11,10 @@ Today’s S3 copies (`_iter_with_data`):
 | 7z | yes | close in `finally` | `SolidBlockReader` / folder swap |
 | RAR solid | yes | close in `finally` | `unrar p` pipe + `SolidBlockReader` + `pipe_offset` |
 
-Outer `stream_members` always owns pass acquire/release and closes the *current* handle in its `finally` — so 7z/RAR may double-close the last stream (must stay idempotent).
+Outer `stream_members` always owns pass acquire/release and closes the *current* handle in its `finally` — so 7z/RAR may double-close the last stream (must stay idempotent). The
+unified driver leans into that: it closes the last stream in **its own** `finally` for
+every backend, and `stream_members`'s `finally` becomes an idempotent backstop (Decision 3
+drops the base-only leave-open special case).
 
 S2 today: `_materialize_members` vs `_ProgressivePassIterator` + `_finalize_materialized_links` vs `_finalize_pass_links`, with near-identical double-fault comments. Shared already: `_register_member`, `_stamp_progressive_member` → register, `_publish_materialized`, `_index_member_name`.
 
@@ -20,7 +23,9 @@ S2 today: `_materialize_members` vs `_ProgressivePassIterator` + `_finalize_mate
 **Goals:**
 
 - Delete the *category* of hand-rolled close-previous loops and mirrored finalize guards.
-- Encode ownership (close_previous / leave_last_open / pass resources) in one place.
+- Encode ownership (close_previous / last-stream close / pass resources) in one place —
+  the driver always closes the last stream in its `finally`, so there is no per-backend
+  leave-last-open flag (see Decision 3).
 - Land T1 solid-RAR mutation **before** touching demux loops.
 - Preserve all must-not-break behaviors listed in the exploration map (solid RAR/7z, progressive TAR, double-fault, stream_members close/ownership).
 
@@ -65,19 +70,46 @@ Introduce a single helper on `BaseArchiveReader` (name TBD in implement, e.g. `_
 - Iterate members.
 - Optionally close previous on advance (`close_previous`).
 - Call a per-member open hook → `ArchiveStream | None`.
-- On exit: optional resource cleanup hook; optionally close last stream (`leave_last_open`).
+- In its own `finally`: run an optional resource-cleanup hook, then **always close the
+  last still-open stream**.
 
 Backend `_iter_with_data` becomes: obtain member source + resource state, then `yield from` the driver with a closure/hook for open (7z folder swap and RAR `pipe_offset` live in the hook).
+
+**Drop `leave_last_open` — the driver always closes the last stream.** Base today
+uniquely *leaves the last stream open* and lets `stream_members`'s `finally` close it
+(`base_reader.py:493-495`); 7z/RAR close it in their own `finally`. That asymmetry is the
+only thing a `leave_last_open` flag would encode, and it is not a contract: the
+`archive-reading` spec (`spec.md:459-483`) requires only close-previous-on-advance and
+close-current-on-abandon; it never asks for a last stream that outlives iteration. The
+shared driver already needs a `finally` for the resource hook, so closing the last stream
+there is free for every backend — removing the flag, and removing a latent trap (any
+*direct* `_iter_with_data` consumer that is not `stream_members` — e.g. a future native
+streaming-ZIP backend — silently leaks base's last stream today). Double-close (driver
+`finally` + `stream_members` `finally`) is fine: `ArchiveStream.close` is idempotent, which
+7z/RAR already rely on.
+
+> **Provenance of `leave_last_open` (why it exists at all).** It is not a designed
+> feature. Initial scaffold (#5) closed *nothing* on the selected path. #59
+> ("declared member-stream capabilities") added close-previous to **both**
+> `_iter_with_data` *and* `stream_members` at once, and — having no `finally` of its own in
+> the inner method — deferred the last close to `stream_members` with a bare `pass` +
+> terse note. #73 (a comment-only "docstring fix") then rewrote that note into the
+> confident "intentionally left open … closing it here would invalidate a handle the
+> caller may still read." That justification is inaccurate: a loop-level `try/finally`
+> closes the last stream at *teardown*, after the caller's final loop body — exactly what
+> v1/`archivey-dev` base did (`base_reader.py:637-641`). So the current behavior is an
+> incidental #59 division-of-labor choice later rationalized as intentional, not a
+> requirement to preserve.
 
 | Hook / flag | Base | TAR stream | 7z | RAR solid |
 | --- | --- | --- | --- | --- |
 | member source | progressive or materialized | progressive | `_members` | `_members` |
 | open hook | `_lazy_member_stream` | `extractfile` wrap | folder swap + lazy solid | `pipe_offset` + lazy solid |
 | `close_previous` | True | False | True | True |
-| `leave_last_open` | True | True | False | False |
 | resource `finally` | none | none | close solid | close solid + clear `_live_unrar` |
+| last stream | closed by driver `finally` (all backends) | | | |
 
-**Rejected:** force TAR onto close-previous tracking. **Rejected:** five abstract classes / strategy objects — keep one helper + closures.
+**Rejected:** force TAR onto close-previous tracking. **Rejected:** five abstract classes / strategy objects — keep one helper + closures. **Rejected:** keep `leave_last_open` as a per-backend flag — it only re-encodes base's incidental leave-open (see provenance above); the driver `finally` closes the last stream uniformly.
 
 ### 4. Shared link finalize (S2)
 

@@ -20,11 +20,14 @@
 
 ## 3. S3 — one pass-stream driver
 
-- [ ] 3.1 Add shared driver helper on `BaseArchiveReader` (`close_previous` /
-      `leave_last_open` / open hook / resource `finally`).
+- [ ] 3.1 Add shared driver helper on `BaseArchiveReader` (`close_previous` / open hook /
+      resource `finally`). The driver **always closes the last stream in its own `finally`**
+      — no `leave_last_open` flag (design Decision 3): drop base's leave-open special case
+      and its `base_reader.py:493-495` comment.
 - [ ] 3.2 Rewrite base / TAR streaming / 7z / RAR solid `_iter_with_data` to use the
-      driver (TAR: `close_previous=False`; 7z/RAR solid: `leave_last_open=False` +
-      resource cleanup).
+      driver (TAR: `close_previous=False`; 7z/RAR solid: add resource-cleanup hook). Rely on
+      idempotent `ArchiveStream.close` for the driver `finally` + `stream_members` `finally`
+      double-close.
 
 ## 4. Triage docs
 
