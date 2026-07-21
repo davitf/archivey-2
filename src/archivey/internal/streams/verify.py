@@ -348,42 +348,20 @@ class MemberVerifier:
         self._pos = result
 
     def finish_on_close(self, inner: BinaryIO) -> None:
-        """Close ``inner`` without introducing a first content fault.
+        """Close ``inner`` — teardown only, never a content-fault surface.
 
-        May still propagate a teardown error, or a typed probe error already raised
-        from the inner (after ensuring the inner is closed). Never raises
-        ``TruncatedError`` / ``CorruptionError`` solely because the caller is closing.
+        Every content verdict (digest mismatch, hash-less short, over-length) fires
+        from the completing read: the terminal empty ``read`` of a chunked drain, or
+        ``read(-1)`` / ``readall``. ``close`` therefore does **not** read, probe, or
+        drain the inner to force a late verdict — a partial read before clean EOF is
+        a deliberate abandon with no verdict, so ``close`` stays quiet and lazy, and
+        never surfaces a first ``TruncatedError`` / ``CorruptionError`` (including an
+        inner decoder's *deferred* truncation, which a bare ``read(1)`` probe would
+        otherwise trip). A teardown error raised by ``inner.close()`` itself — a
+        subprocess exit code, or an inner stream that authenticates in its own
+        ``close`` (e.g. WinZip AES HMAC) — still propagates.
         """
-        finish_exc: ArchiveyError | None = None
-        if self._verify_enabled and not self._verified:
-            # Drain/probe only to learn whether to mark verified; never raise content
-            # TruncatedError / CorruptionError from close.
-            reached_declared = (
-                self._expected_size is not None and self._pos >= self._expected_size
-            )
-            more = False
-            if not reached_declared:
-                try:
-                    more = bool(inner.read(1))
-                except ArchiveyError as exc:
-                    # Close the inner first, then re-raise (F2: never leave the
-                    # wrapper/inner unclosed on a typed probe error).
-                    finish_exc = exc
-                    more = True  # skip _finish; surface finish_exc after close
-                except Exception:  # noqa: BLE001 - accel truncate may raise any error
-                    more = False
-            if finish_exc is None and (reached_declared or not more):
-                try:
-                    self._finish(inner, raise_content_faults=False)
-                except ArchiveyError as exc:
-                    # Over-length / digest from a raise_content_faults=False path
-                    # should not happen; if an ArchiveyError escapes the trailing
-                    # probe inside _finish, still close then re-raise.
-                    finish_exc = exc
-        # Close first. An inner teardown error must win over a deferred probe error.
         inner.close()
-        if finish_exc is not None:
-            raise finish_exc
 
 
 def build_member_verifier(

@@ -761,33 +761,61 @@ def test_verify_read0_hashless_does_not_truncate_on_close() -> None:
     stream.close()  # must not raise TruncatedError
 
 
-def test_verify_close_closes_inner_on_typed_probe_error() -> None:
-    """F2: a typed probe error must still close the wrapper and inner."""
+def test_verify_close_propagates_inner_close_error_and_closes_wrapper() -> None:
+    """A teardown/integrity error raised by the inner's *own* close() propagates,
+    and the wrapper is still marked closed. close() never probes/reads the inner to
+    force a verdict — that is the read path's job — so this error can only come from
+    inner.close() itself (e.g. WinZip AES HMAC verification on close)."""
     from archivey.exceptions import EncryptionError
 
-    class Boom(io.BytesIO):
+    class AuthOnClose(io.BytesIO):
         def __init__(self) -> None:
             super().__init__(b"ab")
             self.close_called = False
 
-        def read(self, n: int = -1) -> bytes:
-            data = super().read(n)
-            if not data:
-                raise EncryptionError("boom")
-            return data
-
         def close(self) -> None:
             self.close_called = True
             super().close()
+            raise EncryptionError("boom")  # integrity verified in the inner's close
 
-    inner = Boom()
+    inner = AuthOnClose()
     stream = VerifyingStream(inner, {}, expected_size=3)
     assert stream.read(2) == b"ab"
     with pytest.raises(EncryptionError, match="boom"):
         stream.close()
     assert stream.closed
-    assert inner.closed
     assert inner.close_called
+
+
+def test_verify_close_quiet_when_inner_defers_truncation() -> None:
+    """Abandon a truncated verified stream at the recoverable-prefix boundary: close
+    must stay quiet. close() must not probe-read the inner and trip its *deferred*
+    TruncatedError — that is the never-raise-a-first-content-fault-on-close rule, and
+    it must match the plain (non-verified) DecompressorStream, which closes quietly."""
+    from archivey.internal.streams.decompress import GzipDecompressorStream
+
+    body = b"payload-" * 8
+    trunc = gzip.compress(body)[:-6]  # cut the gzip trailer → deferred TruncatedError
+
+    # Recoverable prefix length via the plain stream (read until the deferred raise).
+    plain = GzipDecompressorStream(io.BytesIO(trunc))
+    prefix = bytearray()
+    with pytest.raises(TruncatedError):
+        while True:
+            c = plain.read(4)
+            if not c:
+                break
+            prefix.extend(c)
+    plain.close()  # plain stream: quiet after the error was observed
+
+    # Verified stream: read exactly the prefix (no terminal empty read), then close.
+    inner = GzipDecompressorStream(io.BytesIO(trunc))
+    vs = VerifyingStream(inner, {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(body))})
+    got = bytearray()
+    while len(got) < len(prefix):
+        got.extend(vs.read(min(4, len(prefix) - len(got))))
+    assert bytes(got) == bytes(prefix)
+    vs.close()  # quiet: abandon before clean EOF, close never surfaces the truncation
 
 
 def test_verify_unverifiable_algorithm_skipped_with_warning(
