@@ -151,6 +151,27 @@ forbidden by the recoverable-prefix / damaged-input goals.
 size unknown and fail the seek path with `TruncatedError`), never assert and
 never pretend the prefix is the full stream.
 
+**Two writer sites, not one.** The size hole is not only in the
+`_read_decompressed_chunk` EOF branch. `readall` (`decompressor_stream.py`) also
+does `self._size = self._pos` unconditionally after its drain loop, *before* it
+raises the deferred `pending_error`. Under the new contract that runs for a
+truncated stream too, so a caller that catches the `TruncatedError` and then
+calls `try_get_size` / `seek(SEEK_END)` reads the prefix length back as a clean
+complete size. Both writer sites (the EOF branch and `readall`) MUST gate the
+`_size` assignment on "not truncated" — i.e. `pending_error is None` **and** the
+decoder is genuinely finished.
+
+**Unix-compress already leaks this today (existing latent bug).** A truncated
+`.Z` flush sets `finished=True` *and* `pending_error` (`unix_compress.py`), so
+the current EOF branch skips the `not finished` raise and runs
+`self._size = ...` + `self._index_built = True`. `try_get_size` / `seek(SEEK_END)`
+on a truncated `.Z` therefore already report the prefix as a clean complete
+stream — the very thing this change forbids. So the size-integrity fix is a
+**behavior change for `.Z`**, not just gzip/zlib: the `.Z` tasks must add a
+truncated-size assertion, not merely "confirm it stays green." The gate above
+(`pending_error is None and finished`) is what makes the rule uniform, because
+`finished` alone cannot distinguish clean-complete from truncated-but-finished.
+
 ### Stdlib / third-party stream compatibility
 
 This contract is **stricter**, not BinaryIO-incompatible. Happy-path duck typing
@@ -179,6 +200,8 @@ identical pending-error timing — buffer read-ahead can pull the terminal empty
 prefix” quirk; raising content faults from `close()`; subclassing `OSError` just
 to match `BadGzipFile`.
 
+### VerifyingStream / MemberVerifier — read-vs-close today
+
 Chunked digest mismatch already matches the desired shape
 (`test_verify_mismatch_raises_at_eof_without_losing_final_chunk`): every data
 chunk is delivered, then the **terminal empty `read`** raises
@@ -199,7 +222,16 @@ chunk is delivered, then the **terminal empty `read`** raises
   read and **raise** on mismatch/short (do not return success bytes then rely on
   a follow-up `read` or on `close`). Implementation may drain via bounded reads
   so the terminal empty `read` naturally fires inside `readall`.
-- Hash-less short uses the same timing (`TruncatedError`).
+- Hash-less short uses the **same** timing (`TruncatedError`): the terminal empty
+  chunked `read` raises, and `read(-1)` raises — **not** `close`. `_short`/
+  `finish_on_close` MUST NOT remain a content-fault surface (that is the current
+  bug at line "*`_finish` sets `_short = True` and defers … to close*"). Under
+  Decision 2 `finish_on_close` closes the inner, avoids a double-fault after a
+  read already raised, and may still surface a *teardown* error — but it never
+  introduces a first `TruncatedError` / `CorruptionError`. Implementation-wise
+  `_finish` must know whether it runs on a read path (raise short) vs. from
+  `close` (never raise the short); the read paths above are the only content-fault
+  surfaces.
 - Partial read then close stays quiet (abandon before clean EOF).
 - Anti-footgun: `data = stream.read(); stream.close()` with a bad CRC MUST raise
   on the `read()` (not succeed quietly).
@@ -210,6 +242,47 @@ chunk is delivered, then the **terminal empty `read`** raises
    that drops buffered bytes). Rationale: matches unix-compress; probe showed full
    recovery with large `read(n)`. **Rejected:** keep hard raise + document
    `read(1)` only; **Rejected:** reopen-on-EOFError hybrid for GzipFile fallback.
+
+   **Where the error is set (decision — please confirm).** `pending_error` is a
+   *decoder*-owned property (getter + `clear_pending_error`, no setter). The two
+   codec families reach truncation differently: unix-compress self-detects it and
+   sets `self._pending_error` inside its own `flush()` while reporting
+   `finished=True`; zlib/deflate report `finished=False` (`decompressobj.eof`) and
+   never set `pending_error`, so today the *stream* raises on `not finished`.
+   Task 1.1 as originally worded ("set `pending_error` in `_read_decompressed_chunk`")
+   would have the **stream** populate a **decoder** field the readers consult —
+   inconsistent. **Resolved — decoder-owned.** Mirror unix-compress: each
+   `Decoder.flush()` sets `self._pending_error = TruncatedError(...)` when it
+   reaches compressed EOF `not finished`, so the decoder is the single owner for
+   *all* codecs and the stream's EOF branch simply checks
+   `self._decoder.pending_error` (dropping its own `raise`). The `_size` gate then
+   keys off that one predicate (see the size-hole note above). Forward-only
+   decoders whose `finished` is size-driven (BCJ, PPMd, Deflate64) also reach EOF
+   `not finished` on truncation, so their `flush` must arm the error too, not just
+   zlib/gzip — today the stream's `not finished` raise covers them uniformly, and
+   dropping it moves that responsibility into each decoder. **Rejected:** add
+   `set_pending_error` to the `Decoder` protocol and keep detection in the stream.
+
+   **Scope — xz / lzip converted too (resolved, Open Question 3 → in-scope).**
+   `XZStreamDecoder.flush` and `LzipDecoder.flush` today **raise `TruncatedError`
+   directly** instead of arming `pending_error` + returning leftover, so on the
+   shared engine they still drop already-buffered output on a large truncating
+   `read(n)` — the same bug. This change converts them to the pending-error +
+   return-leftover shape too, so the decoder-owns-detection rule is **uniform
+   across every `DecompressorStream` codec**. The only remaining inconsistency is
+   the rapidgzip accelerator path, which stays a separate follow-up.
+
+   **Make the responsibility legible (self-explanatory code).** `flush()` today
+   reads as "emit any final buffered output at EOF"; it does not advertise that it
+   is the single point where a decoder detects truncation and arms
+   `pending_error`. That contract MUST be documented on the `Decoder` protocol and
+   `BaseDecoder` — `flush` is called exactly once at compressed EOF and is where
+   incompleteness is recorded — so a future decoder author does not silently omit
+   it. **Optional:** rename `flush` → `finish` / `finalize` to convey the
+   end-of-stream-verdict role; weigh against the churn (it touches every decoder:
+   `ZlibDecoder`, `BrotliDecoder`, `PpmdDecoder`, `BcjDecoder`, `Deflate64Decoder`,
+   unix-compress, xz, lzip). Implementor's call; the documentation is required
+   regardless.
 
 2. **Never raise content `TruncatedError` / `CorruptionError` on `close()`** for
    decode and verify streams. Faults surface from `read` (bounded next-empty,
@@ -260,6 +333,31 @@ chunk is delivered, then the **terminal empty `read`** raises
    slurping returns success bytes while leaving CRC failure only for a later
    empty `read` (foot-gun with `read(); close()`).
 
+   **`read(-1)` implementation — bounded drain, not a single read, and not
+   `inner.read(-1)`.** Two current defects on the sized `read(-1)` path
+   (`MemberVerifier.read` with `n<0`, `expected_size` set): (a) it issues a single
+   `inner.read(remaining)`, but `inner` is an arbitrary `BinaryIO` that MAY short-
+   read (return `< n` without EOF), so the slurp under-returns on any non-buffering
+   inner — masked today only because `BytesIO`/`DecompressorStream` happen to read
+   to EOF; and (b) on a full return it does `if data: return data` *before*
+   `_finish`, deferring the verdict to a later empty read / `close`. The fix is a
+   **bounded drain loop**: read `min(chunk, remaining)` until `inner` returns
+   `b""`, then run the EOF verdict in the same call. It CANNOT delegate to
+   `inner.read(-1)` on the sized branch: the declared `expected_size` is a hard
+   **decompression-bomb cap** (`test_verify_expected_size_overlong_stops_at_declared_size`
+   asserts `inner.tell() <= declared + 1`), and `inner.read(-1)` would pull a
+   corrupt/adversarial over-long payload wholesale into RAM. The unsized branch
+   (no cap) MAY keep `inner.read(-1)` then `_finish`. Because this is a safety
+   bound, the draining code must state the cap rationale inline.
+   Note the plain `if n < 0: _finish()` shortcut is sufficient *only* for the
+   unsized branch; the sized branch needs the loop even so.
+
+   **`_finish` must raise the hash-less short on this path, not defer it.** Today
+   `_finish` sets `self._short = True` for a hash-less shortfall and leaves the
+   raise to `finish_on_close`. On the complete-stream `read(-1)` path it must
+   instead raise `TruncatedError` directly; `self._short`/close stays the
+   mechanism only for the chunked terminal-empty-read shape.
+
 9. **Oracle:** for golden truncation tests, compare decompressed prefix and error
    type against `gzip.GzipFile` with a `read(1)` loop (max recovery), not against
    a single large `GzipFile.read()`.
@@ -284,6 +382,44 @@ chunk is delivered, then the **terminal empty `read`** raises
 
 ## Open Questions
 
-None blocking implement. Optional later: audit stdlib `bz2` / other
+**Resolved (maintainer, review round):**
+
+1. **`pending_error` ownership (Decision 1).** Resolved decoder-owned: each
+   `Decoder.flush` sets its own `pending_error` on `not finished` (mirroring
+   unix-compress), the stream drops its `not finished` raise, and every
+   size-driven forward-only decoder (BCJ / PPMd / Deflate64) arms it too. The
+   `flush` truncation-detection responsibility MUST be documented on the `Decoder`
+   protocol and `BaseDecoder`; renaming `flush` → `finish`/`finalize` is an
+   optional implementor call, weighed against touching every decoder.
+
+2. **Recoverable prefix is unreachable via `data = f.read()` (values trade-off).**
+   Resolved: keep the anti-foot-gun. Salvage does **not** oblige `readall` /
+   `read(-1)` to return partial data — a silent/lossy success is worse than not
+   salvaging, so the complete-stream call raises and the prefix is reachable only
+   via a chunked `read(n)` loop. The behavior **and** the trade-off MUST be
+   documented user-facing (task 5.1): `data = f.read()` on a truncated stream
+   raises and returns nothing; chunked reads recover the prefix.
+
+**Resolved (review round 2):**
+
+3. **xz / lzip scope → in-scope.** Convert `XZStreamDecoder.flush` /
+   `LzipDecoder.flush` from raise-on-`flush` to the pending-error + return-leftover
+   shape (mirroring zlib/gzip/unix-compress), with truncation tests, so the shared
+   `DecompressorStream` truncate-return fix is uniform across **every** codec. The
+   rapidgzip accelerator path stays a separate follow-up (the one acknowledged
+   remaining inconsistency).
+
+4. **Truncation vs corruption on a short-with-hash body → raise `TruncatedError`,
+   documented best-effort.** When a body is short *and* carries a hash, the
+   shortfall and the digest mismatch can be genuinely indistinguishable (a
+   corruption could also shorten output). Raise **`TruncatedError`** (truncation is
+   the more likely cause), and **document** it as a *best-effort* verdict — the two
+   causes are not always separable, so the specific error type is a best guess, not
+   a guarantee. Deferred (not in this change): reparenting `TruncatedError` under
+   `CorruptionError`. That is a library-wide exception-hierarchy change touching
+   every catcher, and `except ReadError` already catches both today, so it is left
+   as its own future decision.
+
+**Optional later (non-blocking):** audit stdlib `bz2` / other
 `DecompressorStream` codecs for the same oversize-read / truncate-return gap
 (consistency sweep).

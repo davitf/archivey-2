@@ -20,6 +20,11 @@ DEFLATE-family decode.
 - **Size / seek integrity**: incomplete EOF MUST NOT publish a clean decompressed
   `_size`; `seek(SEEK_END)` / `try_get_size` must not treat a truncated prefix as
   a successful complete stream (raise pending truncation or leave size unknown).
+  The gate applies at **both** writer sites (the EOF branch *and* `readall`'s
+  post-loop `_size` assignment, which today runs before it raises) and is
+  codec-agnostic: it also corrects truncated **unix-compress `.Z`**, which
+  currently leaks a clean size because its decoder reports `finished` alongside
+  the pending truncation.
 - **`GzipCodec` stdlib backend**: stop using `gzip.GzipFile`; decode through a
   gzip-window decoder on `DecompressorStream` (`wbits=16+MAX_WBITS`) with
   **GzipFile-parity multi-member chaining** (zero-pad skip, trailing zeros =
@@ -31,7 +36,15 @@ DEFLATE-family decode.
   `VerifyingStream` / fused `MemberVerifier`: on **chunked** reads, CRC/digest
   mismatch raises `CorruptionError` on the empty read after all data was
   provided; on **`read(-1)`**, raise as part of the complete-stream call so
-  `read(); close()` cannot silently accept bad content.
+  `read(); close()` cannot silently accept bad content. Implement `read(-1)` as a
+  **bounded drain loop** (not a single `inner.read`, which under-returns on a
+  short-reading `BinaryIO`; not `inner.read(-1)` on the sized branch, which would
+  defeat the declared-size decompression-bomb cap), and make `_finish` raise the
+  hash-less short on that path instead of deferring it to `close`.
+- **Scope of the never-raise-on-close rule**: the standing rule applies to the
+  `DecompressorStream` family and `VerifyingStream` / `MemberVerifier`; the
+  rapidgzip accelerator and other wrappers are out of scope (they already signal
+  content faults from `read`, not `close`).
 - Rapidgzip / ISIZE backstops remain **out of scope** for accelerator behavior;
   once this lands, any empty→stdlib fallback can call this engine with large
   reads safely.
@@ -54,13 +67,15 @@ DEFLATE-family decode.
 
 - Modules: `internal/streams/decompressor_stream.py`, `decompress.py`,
   `codecs.py` (`GzipCodec`), possibly a small `GzipDecoder` next to `ZlibDecoder`;
+  `xz.py` / `lzip.py` (`flush` → `pending_error` for engine consistency);
   `verify.py` (`MemberVerifier.finish_on_close` / read-path EOF verdicts).
 - Public API: same `open_codec_stream` / archive surfaces; stronger guarantee that
-  truncated gzip/zlib/deflate streams yield a correct prefix on `read(n)` before
-  `TruncatedError`; `close()` stays teardown-only for content errors.
+  truncated gzip/zlib/deflate/xz/lzip streams yield a correct prefix on `read(n)`
+  before `TruncatedError`; `close()` stays teardown-only for content errors.
 - Deps/extras: none (stdlib `zlib` only).
-- Tests: truncated gzip/zlib with large `read(n)`; multi-member + padding/junk;
-  `SEEK_END` / size after truncate; VerifyingStream: chunked = all bytes then
-  empty `read` raises; slurping `read(-1)` raises; anti-footgun `read(); close()`.
-- Docs: `library-analysis.md` gzip row; note that stdlib path is no longer
-  `GzipFile`.
+- Tests: truncated gzip/zlib/xz/lzip with large `read(n)`; multi-member +
+  padding/junk; `SEEK_END` / size after truncate; VerifyingStream: chunked = all
+  bytes then empty `read` raises (incl. hash-less short); slurping `read(-1)`
+  raises; anti-footgun `read(); close()`.
+- Docs: `library-analysis.md` gzip row; truncation-vs-corruption best-effort
+  verdict; note that stdlib path is no longer `GzipFile`.
