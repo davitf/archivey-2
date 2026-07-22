@@ -129,6 +129,20 @@ inner (e.g. ZIP's `ZipExtFile`). Adopting this ADR makes full-count part of the
 The contract binds the public `ArchiveStream` / codec-stream surface; arbitrary *inner*
 `BinaryIO` objects need not be full-count — the wrapper coalesces over them.
 
+**Stop-on-short (not RawIO `read_exact`).** The coalesce helper is
+`streamtools.read_full_count`: loop while each piece returns the full ask, and
+**stop on the first short non-empty return** (or empty). That is deliberate —
+`DecompressorStream` deferred truncation returns a short recoverable prefix on the
+completing call and raises on the *next* empty `read`; continuing after a short
+(as `read_exact` does) would pull that deferred `TruncatedError` into the same
+call and collapse the deliver-then-raise shape. Archivey's real inners are
+fill-or-EOF (`DecompressorStream`, typical `ZipExtFile`, `BytesIO`), so
+stop-on-short is full-count for healthy data. It is **not** a promise to keep
+pulling over a RawIO that shorts mid-stream; such an inner needs a buffer in
+front if a caller needs true `BufferedReader` mid-stream coalesce. The public
+contract still holds: a healthy archivey stream does not return short except at
+a terminal boundary.
+
 ### Where the verdict fires
 
 Content-integrity verdicts (stored checksum / digest, encrypted-member authentication
@@ -145,12 +159,14 @@ carve-outs:
 - **WinZip AES** drains and verifies its HMAC in its own `close()` — remove
   (`verification-integrity-mode` Decision 2).
 - **`unrar` / subprocess backends** may only surface wrong-password or CRC exit codes
-  when the process is reaped on close. Work toward parity by **eagerly finalizing** the
-  underlying resource as part of the *completing* read (after the last content byte,
-  reap / close the inner so the fault raises on that `read()`), and on an *early-stop*
-  `close()` **suppress** content-class faults that arrive only from teardown (the
-  caller opted out of a completing read). Until those land, a content error from
-  `close()` on those paths is a known inconsistency, not the contract.
+  when the process is reaped. **Eager-finalize on the completing/empty read** (reap
+  and map the exit there) is the parity path — #183 does this for
+  `_UnrarOwnedStream` so RAR4 encrypted empty exit 2/3 becomes `EncryptionError` on
+  `read()`, not only on `close()`. Early-stop `close()` still maps if no completing
+  read ran; the longer-term follow-up is to **suppress** teardown-only content-class
+  faults on early-stop close (emit the suppressed-fault diagnostic instead). Until
+  that lands, a content error from early-stop `close()` on those paths remains a
+  known inconsistency, not the contract.
 
 `close()` MAY still propagate a true resource teardown signal (`OSError` closing a
 file descriptor, and similar non-content failures).
@@ -198,14 +214,17 @@ A seek off the sequential frontier breaks *incremental hashing* (non-linear
 consumption), so the **checksum** verdict is best-effort and forfeited for the rest of
 that handle's life — a seek-forward-then-back-to-end must not re-enable a hash
 comparison over a non-contiguous byte range (false-positive `CorruptionError`). The
-**length / structural** verdict is position-based, not hash-based: at EOF the stream
-knows its total decompressed position, so **truncation** (short of the expected size)
-and **over-run** (past it) stay detectable and SHALL still raise, even after a seek.
-A member that is not *truly* seekable — one satisfied by rewinding / re-decoding from
-the start — preserves linear hashing, so the checksum is not lost there either.
-Honest scope: **checksum detection is best-effort, forfeited only on a genuine
-intra-stream seek of a truly-seekable member (itself an opt-in capability); length /
-truncation / over-run detection is always on.**
+**length / structural** verdict stays on after a seek, but it MUST key off **bytes
+actually read** through the verifier (a read high-water mark), **not** a
+seek-updated logical position alone. Inners like `BytesIO` (and many file objects)
+allow past-EOF seek; `seek(member.size)` on a truncated body must not fabricate a
+clean end and silence `TruncatedError`. Over-run still requires having delivered the
+declared size via reads before probing for trailing data. A member that is not
+*truly* seekable — one satisfied by rewinding / re-decoding from the start —
+preserves linear hashing, so the checksum is not lost there either. Honest scope:
+**checksum detection is best-effort, forfeited only on a genuine intra-stream seek
+of a truly-seekable member (itself an opt-in capability); length / truncation /
+over-run detection is always on, measured by bytes read.**
 
 ### Short returns are never *known*-corrupt bytes
 
@@ -263,7 +282,7 @@ an integrity verdict to a diagnostic and hope `RAISE` disposition will stand in 
 
 The two new codes are **follow-ups** (emitter + `diagnostics` / OpenSpec delta when the
 seek-forfeit and close-parity paths land) — not blockers for accepting this ADR or for
-resuming #183. Exact code names are TBD at implementation.
+#183's implementation. Exact code names are TBD at implementation.
 
 ## Guarantee (for users)
 
@@ -466,19 +485,16 @@ does neither.
 
 ## Consequences
 
-- **Resolves the open question that parked `gzip-zlib-truncation-recovery` (#183).**
-  This ADR exists *because* #183's review surfaced the read-vs-close / sized-read hole;
-  the #183 implementation is on hold pending it. #183's earlier Decision 8 — a bounded
-  `read(n)` on a digest mismatch delivers every byte and raises on the terminal empty
-  read ("do not withhold the last data chunk";
-  `test_verify_mismatch_raises_at_eof_without_losing_final_chunk`) — is **revised** by
-  this ADR for the corruption case: the read that reaches the declared size (or decoder
-  EOS) raises and **withholds** that chunk for size-declared members. When #183 resumes,
-  its delta and that test are updated to the withhold-on-reaching-read rule so the two
-  texts agree — not a live conflict, but the settlement that unblocks #183.
-  **Truncation-shaped delivery is unchanged** — #183's recoverable-prefix delivery
-  stands (with the best-effort correctness caveat above). Size-unknown timing is
-  decided: verdict on the EOS-observing read, no mandatory lookahead withhold.
+- **Settles the contract that #183 implements.** This ADR exists *because* #183's
+  review surfaced the read-vs-close / sized-read hole. #183's earlier Decision 8 — a
+  bounded `read(n)` on a digest mismatch delivers every byte and raises on the
+  terminal empty read ("do not withhold the last data chunk") — is **revised** here
+  for size-declared corruption: the reaching read raises and **withholds** that
+  chunk. #183 is the implementation vehicle (no longer on hold): its delta, tests,
+  and OpenSpec prose match this ADR. **Truncation-shaped delivery is unchanged** —
+  recoverable-prefix delivery stands (with the best-effort correctness caveat
+  above). Size-unknown timing is decided: verdict on the EOS-observing read, no
+  mandatory lookahead withhold.
 - **`read(member.size)` on a corrupt size-declared member raises from that read** and
   returns nothing — closing the silent-acceptance regression, without depending on
   `close()`.
@@ -495,16 +511,15 @@ does neither.
   detection-not-prevention — is the only posture, so **encrypted members stream
   unauthenticated plaintext by default** in the interim.
 - **Full-count `read` becomes part of the `compressed-streams` contract** — a
-  cross-backend delta, not a local tweak (every public `read(n)` path must coalesce to
-  `n`-or-terminal). See *Full-count `read`: rationale and trade-offs* for the full
-  accounting; the short version is that the decompressor engine already does this and
-  the verifier / passthrough paths must be brought in line.
+  cross-backend delta, not a local tweak. Public paths use stop-on-short coalesce
+  (`read_full_count`) so deferred `DecompressorStream` truncation stays deferred;
+  see *Full-count `read`: rationale and trade-offs* and the stop-on-short note under
+  Decision.
 - **`close()` never raises a content fault — target contract, best-effort today.**
   Cleanup is safe when the target holds; a content error can neither mask nor be masked
   by an exception unwinding a `with` body; safety does not hinge on `close()` running.
-  AES HMAC-on-close and unrar-exit-on-close are documented debt toward that parity
-  (eager finalize on completing read; suppress teardown-only content faults on
-  early-stop close).
+  AES HMAC-on-close remains debt. Unrar eager-finalize on completing/empty read is
+  partially landed in #183; early-stop close suppression is still follow-up.
 - **Detection, not prevention, in streaming mode.** Any bounded read returns some bytes
   before the final verdict; the guarantee is "you are told before you can conclude the
   member is complete-and-intact," not "you are told before you touch any bytes."
@@ -540,17 +555,21 @@ does neither.
   the call returns or raises — the read that reaches the declared size finalizes the
   hash.
 - **Seek-state tracking.** Once a seek off the sequential frontier disables the
-  checksum verdict, it stays disabled for that handle; length / over-run / truncation
-  checks remain active.
-- **Full-count coalescing.** Bounded `read(n)` on the verifier/wrapper must loop the
-  inner stream until it has `n` bytes or a terminal boundary, so the full-count
-  contract holds even over a short-reading inner `BinaryIO`.
+  checksum verdict, it stays disabled for that handle. Length / over-run / truncation
+  key off a **read high-water mark** (bytes actually delivered by `read`), not
+  seek-updated `tell` alone — so past-EOF `seek(declared_size)` cannot silence
+  truncation.
+- **Full-count coalescing.** Bounded `read(n)` on the verifier/wrapper uses
+  `streamtools.read_full_count` (stop on short) so deferred decompressor truncation
+  stays on the next empty `read`. Do not use `read_exact` here. Opaque accelerator
+  EOF on the sized `read(-1)` drain may become `TruncatedError`; `OSError` /
+  `MemoryError` must propagate.
 - **Eager finalize on completing reads (parity path).** Where a backend only reports
   content faults at process/resource teardown (`unrar` exit codes, similar), the
-  completing-read path should reap/finalize immediately after the last content byte so
-  the fault raises on that `read()`; early-stop `close()` should not promote those
-  teardown-only content faults into the caller's close — emit the suppressed-fault
-  diagnostic instead (when that code lands).
+  completing/empty-read path should reap/finalize immediately so the fault raises on
+  that `read()` (#183 for `_UnrarOwnedStream`). Early-stop `close()` should eventually
+  not promote those teardown-only content faults into the caller's close — emit the
+  suppressed-fault diagnostic instead (when that code lands).
 - **Seek-forfeit diagnostic.** When a true intra-stream seek disables the checksum
   verdict for the handle, emit the forfeited-checksum diagnostic once; length /
   over-run / truncation checks remain active without a diagnostic of their own.
