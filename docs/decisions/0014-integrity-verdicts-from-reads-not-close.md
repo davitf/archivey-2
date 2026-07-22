@@ -275,16 +275,56 @@ decompressor path already has, and the payoff is a simpler, `BufferedReader`-com
 contract that makes the whole read-to-end verification guarantee — and the honest
 `read(member.size)` idiom — actually true.
 
+### Does full-count *add* a footgun?
+
+A fair worry: because `read(n)` usually returns `n`, callers will make a single call and
+trust it — and on **truncation**, `read(member.size)` returns a short buffer with *no
+exception*, so a caller who neither checks the length nor reads again never sees the
+`TruncatedError`. Two things bound this:
+
+- Full-count **removes the worse footgun and leaves a milder one.** Under up-to-`n`, a
+  single-call `read(member.size)` is unverified for *both* failures — including
+  **corruption**, which hands back *wrong* bytes silently. Full-count converts that into
+  a raised `CorruptionError`. What remains is truncation returning a short buffer of
+  *correct-but-incomplete* bytes — strictly less dangerous than silently trusting wrong
+  bytes, and detectable with a one-line `len == member.size` check that up-to-`n` gives
+  you no honest basis for.
+- The residual is closed by **`read_exact(n)`** (open question 4) for a one-call check,
+  by the length test, and by the `extract()` / whole-member-helper rule that always uses
+  a completing read. Naive single-call `read(n)` is the *low-level* surface; the safe
+  high-level paths never expose the trap.
+
+So full-count does not introduce a new class of danger — it trades a silent
+*wrong-bytes* acceptance for a silent *short-but-correct* one, and hands callers the
+length signal (plus `read_exact`) to close even that.
+
 ## Open questions
 
-1. **Encrypted members — a defaults question, not just docs.** Treating an
-   authentication tag as just-another-checksum in streaming mode means the default
-   *releases unauthenticated plaintext* before the tag is checked — a sharper footgun
-   than emitting bytes with a bad CRC, and arguably in tension with VISION's "no silent
-   success." Should **authenticated** members default to `STRICT` (or refuse to stream
-   unless the caller explicitly opts into detection-not-prevention), rather than
-   inheriting the CRC default? A deliberate defaults decision to make, not inherit; it
-   does not change any mechanism above.
+1. **Encrypted members — default posture, constrained by what STRICT can afford.**
+   Streaming releases unauthenticated plaintext before the tag is checked — sharper than
+   a bad CRC, and in tension with VISION's "no silent success." But "verify before
+   releasing any plaintext" is **not free, and its cost depends on the member**, which
+   is why a blanket `STRICT` default is not simply "buffer everything":
+   - **Compressed + encrypted:** a wrong password almost always yields plaintext the
+     decompressor rejects almost immediately (an early `CorruptionError`), so streaming
+     already fails fast **without buffering**. (Confirm against the existing
+     wrong-password tests.)
+   - **Stored (uncompressed) + encrypted:** wrong-password plaintext is just bytes — no
+     decompressor to reject it — so the authentication tag at the end is the **only**
+     detector. This is the real streaming exposure.
+   - **Very small members:** the stream may end before a decompression error can
+     surface, so the tag is again the only tell.
+
+   So a memory-safe "authenticate before release" cannot buffer arbitrarily. The viable
+   shapes per member are: **buffer in memory only up to a bounded size**; **decrypt
+   twice** (verify pass → rewind → re-decrypt) for a **seekable** stored member (cheap
+   for a local file, costly over a network); and **refuse to stream / require an explicit
+   opt-in** for a **non-seekable** stored member above the buffer bound. Decision: keep
+   STREAMING the default (accepting the stored / tiny residual, which this ADR still
+   surfaces on the completing read / `read(-1)`), or default authenticated members to
+   STRICT with the per-shape strategy above? **Leaning: STREAMING default** — compressed
+   wrong-password fails fast and a blanket STRICT is not implementable memory-safely — but
+   document the stored/tiny exposure sharply and make STRICT the easy opt-in.
 2. **Size-unknown "withhold the corrupt final chunk" requires lookahead.** For a
    size-declared member we know the boundary before releasing the final chunk, so we
    can withhold it. For a size-unknown member (e.g. standalone gzip) the CRC lives in a
