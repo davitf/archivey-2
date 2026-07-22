@@ -338,22 +338,27 @@ length signal (plus `read_exact`) to close even that.
    which still honors the top-level guarantee via `read(-1)` / read-to-`b""`?
    Recommendation: **(b)**, documented — the realistic size-unknown reader reads to
    `b""` anyway, and "detection, not prevention" already permits pre-verdict bytes.
-3. **Seek and truncation.** A premature decoder end-of-stream before the declared size
-   is a *structural* fact independent of the incremental hash, so `TruncatedError`
-   could in principle still be raised after a seek even though `CorruptionError` cannot.
-   We currently disable both under one "seek disables verification" rule for
-   simplicity. Keep the simple rule, or preserve the still-sound truncation check across
-   seeks? Recommendation: keep it simple, acknowledging we forgo a deliverable verdict.
-4. **A `read_exact(n)` helper for the sized-read truncation footgun?** Full-count makes
-   `read(member.size)` catch corruption, but truncation still comes back as a *silent
-   short buffer* on that single call (the matrix asymmetry) — and typical code passes
-   `data` downstream assuming "no exception" means "complete." A dedicated
-   `read_exact(n)` that raises `TruncatedError` when it cannot deliver `n` would make the
-   whole-member read a single call that catches **both** failures, matching developer
-   intuition. Do we add it (small API surface, kills the footgun for callers who use it),
-   or rely on `read(-1)` / the length check / the `extract()` helper rule? Leaning:
-   add it — it is the natural counterpart to full-count and the cheapest fix for the one
-   footgun both reviews flagged.
+3. **Seek and structural detection — keep length checks; lose only the checksum**
+   (leaning *narrow*, not "disable everything"). A seek off the sequential frontier
+   breaks *incremental hashing* (non-linear consumption), so the **checksum** verdict is
+   best-effort and forfeited there. But the **length / structural** verdict is
+   position-based, not hash-based: at EOF the stream knows its total decompressed
+   position, so **truncation** (short of the expected size) and **over-run** (past it)
+   stay detectable and SHALL still raise, even after a seek. And a member that is not
+   *truly* seekable — one satisfied by rewinding / re-decoding from the start — preserves
+   linear hashing, so the checksum is not lost there either. Honest scope: **checksum
+   detection is best-effort, forfeited only on a genuine intra-stream seek of a
+   truly-seekable member (itself an opt-in capability); length / truncation detection is
+   always on.**
+4. **`read_exact(n)` — rejected.** A dedicated `read_exact` would kill the sized-read
+   truncation footgun in one call, but it adds a **non-standard method** to the stream
+   surface. A core goal is that code written against archivey streams also works against
+   ordinary file objects (and vice versa), so we do **not** add methods a plain
+   `BinaryIO` lacks. The truncation-short residual is handled with **standard means**
+   instead: the guaranteed whole-member idioms are `read()` / `read(-1)` /
+   iterate-to-`b""` (all standard, all raise on truncation); `read(member.size)` is a
+   *bounded* read whose short return the caller checks by length; and `extract()` /
+   whole-member helpers use a completing read.
 
 ## Consequences
 
