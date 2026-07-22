@@ -96,43 +96,38 @@
       report a clean complete prefix size. Update any existing xz/lzip truncate
       tests that assumed raise-from-`flush` shapes.
 
-## 4. VerifyingStream / MemberVerifier — CRC after all chunked data
+## 4. VerifyingStream / MemberVerifier — ADR 0014 read-path verdicts
 
-- [x] 4.1 Bounded `read(n)` digest/CRC mismatch **and hash-less short**: return
-      every decompressed byte; at clean EOF raise on the **next** (terminal empty)
-      `read` — `CorruptionError` for a digest mismatch, `TruncatedError` for a
-      hash-less short. Do not withhold the last data chunk; do not raise from
-      `finish_on_close`. The terminal empty `read` is the content-fault surface
-      for chunked, not `close` (this replaces today's `_short`→`finish_on_close`
-      deferral).
+- [x] 4.1 Bounded `read(n)` digest/CRC mismatch:
+      - **Size-declared:** raise `CorruptionError` on the reaching read and
+        **withhold** that chunk (ADR 0014 revises the earlier "deliver every
+        byte" Decision 8 text).
+      - **Size-unknown:** return every decompressed byte; raise on the terminal
+        empty `read`.
+      Hash-less short: deliver available prefix; raise `TruncatedError` on the
+      next empty `read`. Do not raise from `finish_on_close`.
+- [x] 4.1b **Full-count `read(n)`** on `MemberVerifier` and `ArchiveStream`
+      passthrough (via `streamtools.read_full_count` (stop on short)) so `read(member.size)` reaches
+      the declared size over short-reading inners.
+- [x] 4.1c **Seek:** forfeit checksum only; length / truncation / over-run
+      checks remain active after a seek off the sequential frontier.
 - [x] 4.2 `readall` / `read(-1)` with digest mismatch or hash-less short: raise
       on that complete-stream call (`CorruptionError` / `TruncatedError`) so
       `read(); close()` cannot succeed quietly. Implement the sized branch as a
       **bounded drain loop** — read `min(chunk, remaining)` until `inner` returns
-      `b""`, then run the EOF verdict. Do **not** rely on a single
-      `inner.read(remaining)` (a `BinaryIO` inner may short-read, under-returning
-      the body) and do **not** delegate to `inner.read(-1)` on the sized branch:
-      the declared-size cap is a decompression-bomb bound (an over-long stream
-      must stop at the declared size), so state that rationale in an inline
-      comment. The unsized branch may keep `inner.read(-1)` then `_finish`. Also
-      change `_finish` so the hash-less short **raises** `TruncatedError` on any
-      read path (the terminal empty chunked `read` per 4.1, and this
-      complete-stream call). `self._short`/`finish_on_close` MUST NOT stay a
-      content-fault surface — `_finish` needs to distinguish a read-path call
-      (raise the short) from a close-path call (never raise it).
+      `b""`, then run the EOF verdict (withhold on fault). Do **not** rely on a
+      single `inner.read(remaining)` and do **not** delegate to `inner.read(-1)`
+      on the sized branch (decompression-bomb cap). The unsized branch may keep
+      `inner.read(-1)` then `_finish`.
 - [x] 4.3 `finish_on_close` closes the inner and MUST NOT introduce a first
       content `TruncatedError` / `CorruptionError` solely on close — for **either**
       a digest mismatch **or** a hash-less short (may still avoid a double-fault
       after `read` already failed, and may still surface a *teardown* error).
-- [x] 4.4 Update verify tests: keep
-      `test_verify_mismatch_raises_at_eof_without_losing_final_chunk`; change
-      close-raises cases to slurping-raises / chunked-then-empty-raises; add
-      anti-footgun `read(); close()` must raise on bad CRC; keep “partial read
-      then close is ok”; cover fused `ArchiveStream`+`MemberVerifier` path, not
-      only the standalone `VerifyingStream` wrapper. Add a short-reading-inner
-      case: `read(-1)` over an inner that returns `< n` without EOF must gather
-      the full body and still fire the EOF verdict; and an over-long inner with a
-      declared size must stop at the cap (`CorruptionError`), not slurp unbounded.
+- [x] 4.4 Update verify tests: size-unknown keep deliver-then-empty; add
+      size-declared withhold on reaching read; full-count over short-reading
+      inners; seek forfeits checksum but keeps length; slurping-raises /
+      anti-footgun `read(); close()`; fused `ArchiveStream`+`MemberVerifier`
+      path; over-long inner stops at the cap.
 
 ## 5. Docs + compose notes
 

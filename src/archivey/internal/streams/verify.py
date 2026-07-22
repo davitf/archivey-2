@@ -11,14 +11,20 @@ Two delivery shapes (same rules, different wrappers):
 - :class:`VerifyingStream` — standalone ``BinaryIO`` wrapper around an inner +
   verifier. Kept for codec length backstops and tests; prefer fusion for members.
 
-Per the ``compressed-streams`` spec:
+Per ADR 0014 / ``compressed-streams``:
 
-- Verification runs **only on a full sequential read to clean EOF**. A partial
-  read is never verified. ``read(0)`` is a no-op (not EOF).
-- A seek off the sequential frontier disables verification for the rest of the
-  handle's life.
-- On bounded ``read(n)``, the mismatch / hash-less short raises from the terminal
-  empty read *after* every data chunk has been delivered.
+- Public ``read(n)`` (``n ≥ 1``) is **full-count**: coalesce to ``n`` or a terminal
+  boundary (stop on empty or short — see ``read_full_count``).
+- Verification runs on a read that **reaches the end** (declared size, or decoder
+  EOS). A partial read is never verified. ``read(0)`` is a no-op (not EOF).
+- A seek off the sequential frontier forfeits the **checksum** only; length /
+  truncation / over-run checks stay on.
+- **Size-declared corruption** (digest mismatch / over-run at the declared size):
+  the reaching read raises and **withholds** that chunk.
+- **Size-unknown corruption**: deliver data bytes; raise on the EOS-observing
+  (typically empty) read — no mandatory lookahead withhold.
+- **Truncation-shaped**: first read past available returns a short prefix; the
+  next empty read raises ``TruncatedError``.
 - On ``read(-1)`` / ``readall``, the complete-stream call includes the EOF verdict
   and raises (so ``read(); close()`` cannot silently accept bad content).
 - ``close()`` / ``finish_on_close`` MUST NOT introduce a first content
@@ -43,6 +49,7 @@ from archivey.internal.logs import integrity as logger
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
+    read_full_count,
 )
 from archivey.types import HashAlgorithm
 
@@ -178,11 +185,19 @@ class MemberVerifier:
             self._expected[key] = value
         self._verified = False
         self._pos = 0  # bytes read so far — the sequential verification frontier
-        self._verify_enabled = True  # cleared by a seek off the frontier
+        # Decode-error abandon: skip all end-of-stream checks on later reads.
+        self._abandoned = False
+        # Seek off the frontier forfeits checksum only (ADR 0014); length stays on.
+        self._digests_enabled = True
 
     @property
     def enabled(self) -> bool:
-        return self._verify_enabled
+        """True when end-of-stream checks may still run (not abandoned by a decode error)."""
+        return not self._abandoned
+
+    @property
+    def digests_enabled(self) -> bool:
+        return self._digests_enabled and not self._abandoned
 
     @property
     def pos(self) -> int:
@@ -208,9 +223,8 @@ class MemberVerifier:
         :class:`~archivey.exceptions.TruncatedError` and digest mismatches raise
         :class:`~archivey.exceptions.CorruptionError`. A short body that also
         carries a hash raises ``TruncatedError`` (best-effort: shortfall vs digest
-        mismatch are not always separable). When false (close path), content faults
-        are never raised — ``finish_on_close`` must not be a first content-fault
-        surface.
+        mismatch are not always separable). Length / over-run checks run even after
+        a seek forfeited digests; digests run only while :attr:`digests_enabled`.
         """
         self._verified = True
         if self._expected_size is not None and self._pos >= self._expected_size:
@@ -237,8 +251,17 @@ class MemberVerifier:
                     f"{self._expected_size} expected bytes."
                 )
             return
-        if raise_content_faults:
+        if raise_content_faults and self._digests_enabled:
             self._verify_digests()
+
+    def _update_digests(self, data: bytes) -> None:
+        if self._digests_enabled and data:
+            for hasher in self._hashers.values():
+                hasher.update(data)
+
+    def _abandon(self) -> None:
+        self._abandoned = True
+        self._digests_enabled = False
 
     def _read_sized_all(self, inner: BinaryIO) -> bytes:
         """Drain to genuine EOF in bounded steps, capped by the declared size.
@@ -247,6 +270,9 @@ class MemberVerifier:
         ``inner.read(-1)``, which would pull an over-long adversarial payload into
         RAM. A single ``inner.read(remaining)`` is also insufficient — ``BinaryIO``
         may short-read without EOF.
+
+        On digest / over-run fault the verdict raises here and returns no bytes
+        (withhold), matching ADR 0014's size-declared reaching-read rule.
         """
         assert self._expected_size is not None
         chunks: list[bytes] = []
@@ -254,9 +280,9 @@ class MemberVerifier:
             remaining = self._expected_size - self._pos
             want = min(_SIZED_DRAIN_CHUNK, remaining)
             try:
-                piece = inner.read(want)
+                piece = read_full_count(inner, want)
             except ArchiveyError:
-                self._verify_enabled = False
+                self._abandon()
                 raise
             except Exception as exc:
                 # Opaque accelerator EOF while still short of the declared size
@@ -269,24 +295,27 @@ class MemberVerifier:
             if not piece:
                 break
             self._pos += len(piece)
-            if self._verify_enabled:
-                for hasher in self._hashers.values():
-                    hasher.update(piece)
+            self._update_digests(piece)
             chunks.append(piece)
-        # Run the EOF verdict in this complete-stream call.
-        if self._verify_enabled and not self._verified:
+        # EOF verdict in this complete-stream call — raise withholds the body.
+        if not self._abandoned and not self._verified:
             self._finish(inner, raise_content_faults=True)
         return b"".join(chunks)
 
     def read(self, inner: BinaryIO, n: int = -1) -> bytes:
-        """Read from ``inner``, update digests/bounds, and verify on clean EOF."""
+        """Read from ``inner``, update digests/bounds, and verify on clean EOF.
+
+        Bounded ``read(n)`` is full-count (coalesces via ``read_full_count``). A
+        size-declared reaching read that fails digest / over-run raises and
+        returns no bytes for that call.
+        """
         # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
         if n == 0:
             return b""
         if n < 0:
             # Complete-stream read: include the EOF verdict in this call.
             if (
-                self._verify_enabled
+                not self._abandoned
                 and self._expected_size is not None
                 and not self._verified
             ):
@@ -294,72 +323,77 @@ class MemberVerifier:
             try:
                 data = inner.read(-1)
             except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
-                self._verify_enabled = False
+                self._abandon()
                 raise
             if data:
                 self._pos += len(data)
-                if self._verify_enabled:
-                    for hasher in self._hashers.values():
-                        hasher.update(data)
-            if self._verify_enabled and not self._verified:
+                self._update_digests(data)
+            if not self._abandoned and not self._verified:
                 self._finish(inner, raise_content_faults=True)
             return data
 
-        if (
-            self._verify_enabled
-            and self._expected_size is not None
-            and not self._verified
-        ):
+        # Bounded full-count read.
+        if self._abandoned or self._verified:
+            try:
+                return read_full_count(inner, n)
+            except Exception:  # noqa: BLE001
+                self._abandon()
+                raise
+
+        want = n
+        reaches_declared = False
+        if self._expected_size is not None:
             remaining = self._expected_size - self._pos
             if remaining <= 0:
-                data = (
-                    b""  # at the declared size — fall through to end-of-stream checks
-                )
-            else:
-                want = min(n, remaining)
-                try:
-                    data = inner.read(want)
-                except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
-                    # Abandon length/digest checks: close must not raise a second fault
-                    # after the caller already saw this decode error (macOS rapidgzip
-                    # mid-cut often raises here, then again on finish_on_close).
-                    self._verify_enabled = False
-                    raise
-        else:
-            try:
-                data = inner.read(n)
-            except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
-                self._verify_enabled = False
-                raise
+                # Already at the declared size — terminal empty read runs checks.
+                self._finish(inner, raise_content_faults=True)
+                return b""
+            want = min(n, remaining)
+            reaches_declared = want == remaining
+
+        try:
+            data = read_full_count(inner, want)
+        except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+            self._abandon()
+            raise
+
         if data:
             self._pos += len(data)
-            if self._verify_enabled:
-                for hasher in self._hashers.values():
-                    hasher.update(data)
+            self._update_digests(data)
+            if (
+                reaches_declared
+                and self._expected_size is not None
+                and self._pos >= self._expected_size
+            ):
+                # Size-declared verifying event: withhold this chunk on fault.
+                self._finish(inner, raise_content_faults=True)
             return data
-        if self._verify_enabled and not self._verified:
+
+        # Empty: size-unknown digest / truncation-shaped terminal read.
+        if not self._verified:
             self._finish(inner, raise_content_faults=True)
         return data
 
     def note_seek(self, result: int) -> None:
-        """Update the frontier after a successful inner seek; disable if off-frontier."""
+        """Update the frontier after a successful inner seek.
+
+        A seek off the sequential frontier forfeits the **checksum** (incremental
+        hashing assumes linear consumption). Length / truncation / over-run checks
+        stay enabled (ADR 0014).
+        """
         if result != self._pos:
-            self._verify_enabled = False
+            self._digests_enabled = False
         self._pos = result
 
     def finish_on_close(self, inner: BinaryIO) -> None:
         """Close ``inner`` — teardown only, never a content-fault surface.
 
         Every content verdict (digest mismatch, hash-less short, over-length) fires
-        from the completing read: the terminal empty ``read`` of a chunked drain, or
-        ``read(-1)`` / ``readall``. ``close`` therefore does **not** read, probe, or
+        from a completing read. ``close`` therefore does **not** read, probe, or
         drain the inner to force a late verdict — a partial read before clean EOF is
-        a deliberate abandon with no verdict, so ``close`` stays quiet and lazy, and
-        never surfaces a first ``TruncatedError`` / ``CorruptionError`` (including an
-        inner decoder's *deferred* truncation, which a bare ``read(1)`` probe would
-        otherwise trip). A teardown error raised by ``inner.close()`` itself — a
-        subprocess exit code, or an inner stream that authenticates in its own
-        ``close`` (e.g. WinZip AES HMAC) — still propagates.
+        a deliberate abandon with no verdict. A teardown error raised by
+        ``inner.close()`` itself — a subprocess exit code, or an inner stream that
+        authenticates in its own ``close`` (e.g. WinZip AES HMAC) — still propagates.
         """
         inner.close()
 

@@ -31,16 +31,19 @@ DEFLATE-family decode.
   clean EOF, trailing non-gzip junk = `CorruptionError`).
 - CRC/ISIZE outcomes stay equivalent to stdlib gzip (via zlib’s gzip window, not
   GzipFile’s manual trailer check).
-- **Standing close contract**: content/decode faults raise only from `read` (and
-  size/seek paths that would otherwise lie); never from `close`. Align
-  `VerifyingStream` / fused `MemberVerifier`: on **chunked** reads, CRC/digest
-  mismatch raises `CorruptionError` on the empty read after all data was
-  provided; on **`read(-1)`**, raise as part of the complete-stream call so
-  `read(); close()` cannot silently accept bad content. Implement `read(-1)` as a
-  **bounded drain loop** (not a single `inner.read`, which under-returns on a
-  short-reading `BinaryIO`; not `inner.read(-1)` on the sized branch, which would
-  defeat the declared-size decompression-bomb cap), and make `_finish` raise the
-  hash-less short on that path instead of deferring it to `close`.
+- **Standing close contract (ADR 0014):** content/decode faults raise only from
+  `read` (and size/seek paths that would otherwise lie); never from `close`. Align
+  `VerifyingStream` / fused `MemberVerifier`:
+  - **Size-declared** digest mismatch / over-run: raise on the reaching read and
+    **withhold** that chunk.
+  - **Size-unknown** digest mismatch: deliver data bytes; raise on the
+    EOS-observing empty `read`.
+  - **`read(-1)`**: raise as part of the complete-stream call so
+    `read(); close()` cannot silently accept bad content (bounded drain loop;
+    never `inner.read(-1)` on the sized bomb-cap branch).
+  - **Full-count `read(n)`** on the public `ArchiveStream` / verifier surface so
+    `read(member.size)` reaches the end.
+  - **Seek:** forfeit checksum only; keep length / truncation / over-run.
 - **Scope of the never-raise-on-close rule**: the standing rule applies to the
   `DecompressorStream` family and `VerifyingStream` / `MemberVerifier`; the
   rapidgzip accelerator and other wrappers are out of scope (they already signal
@@ -74,8 +77,9 @@ DEFLATE-family decode.
   before `TruncatedError`; `close()` stays teardown-only for content errors.
 - Deps/extras: none (stdlib `zlib` only).
 - Tests: truncated gzip/zlib/xz/lzip with large `read(n)`; multi-member +
-  padding/junk; `SEEK_END` / size after truncate; VerifyingStream: chunked = all
-  bytes then empty `read` raises (incl. hash-less short); slurping `read(-1)`
-  raises; anti-footgun `read(); close()`.
+  padding/junk; `SEEK_END` / size after truncate; VerifyingStream: size-declared
+  mismatch withholds on reaching read; size-unknown delivers then empty raises;
+  slurping `read(-1)` raises; anti-footgun `read(); close()`; full-count over
+  short-reading inners; seek forfeits checksum but keeps length checks.
 - Docs: `library-analysis.md` gzip row; truncation-vs-corruption best-effort
   verdict; note that stdlib path is no longer `GzipFile`.

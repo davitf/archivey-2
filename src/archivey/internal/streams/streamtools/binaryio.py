@@ -53,6 +53,33 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     return bytes(data)
 
 
+def read_full_count(stream: ReadableStream, n: int) -> bytes:
+    """Full-count gather of up to ``n`` bytes, stopping on empty or a short read.
+
+    Like :func:`read_exact` for healthy full-count inners, but **stops on the first
+    short non-empty return**. That preserves deferred truncation on
+    ``DecompressorStream`` (return the prefix now; raise on the next empty
+    ``read``). Continuing after a short — as ``read_exact`` does for RawIOBase —
+    would pull that deferred error into the same call.
+    """
+    if n < 0:
+        raise ValueError("n must be non-negative")
+    if n == 0:
+        return b""
+    chunks: list[bytes] = []
+    got = 0
+    while got < n:
+        ask = n - got
+        piece = stream.read(ask)
+        if not piece:
+            break
+        chunks.append(piece)
+        got += len(piece)
+        if len(piece) < ask:
+            break
+    return b"".join(chunks) if chunks else b""
+
+
 def _is_fifo_or_chardev(stream: Any) -> bool:
     """Whether ``stream`` is backed by an OS pipe/FIFO or character device.
 

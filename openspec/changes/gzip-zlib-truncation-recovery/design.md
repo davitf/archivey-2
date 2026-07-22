@@ -325,13 +325,30 @@ chunk is delivered, then the **terminal empty `read`** raises
    engine (invariant from PR #177 review) — noted as compose step, not implemented
    here unless that backstop already exists on the branch.
 
-8. **`VerifyingStream` / `MemberVerifier` digest (CRC) contract:** on bounded
-   reads, deliver every byte then raise `CorruptionError` on the terminal empty
-   `read`. On `read(-1)` / `readall`, raise `CorruptionError` as part of that
-   complete-stream call (same for hash-less short → `TruncatedError`). Never
-   raise digest/short on `close()`. **Rejected:** close-raises; **Rejected:**
-   slurping returns success bytes while leaving CRC failure only for a later
-   empty `read` (foot-gun with `read(); close()`).
+8. **`VerifyingStream` / `MemberVerifier` digest (CRC) contract (ADR 0014):**
+   Content verdicts fire from a **`read()` that reaches the end**, never from
+   `close()`. Size-declared vs size-unknown differ on *when* corruption is
+   raised relative to the final data chunk:
+
+   - **Size-declared** (`expected_size` set): the read that reaches the declared
+     size is a verifying event (checksum **and** over-run). On digest mismatch or
+     over-run it raises `CorruptionError` and **withholds** that chunk (returns no
+     bytes for that call). Truncation-shaped ends still deliver the available
+     prefix as a short return; the next empty `read` raises `TruncatedError`.
+   - **Size-unknown**: deliver data bytes; raise `CorruptionError` on the
+     EOS-observing (typically terminal empty) `read` — no mandatory one-chunk
+     lookahead withhold. `read(-1)` / `readall` still raise in that call.
+   - **`close()` / `finish_on_close`**: teardown only — never a first content
+     `TruncatedError` / `CorruptionError`.
+   - **Full-count `read(n)`** (`n ≥ 1`): every public path coalesces to `n` or a
+     terminal boundary (reuse `streamtools.read_exact`); required so
+     `read(member.size)` actually reaches the declared size.
+   - **Seek:** forfeit checksum only; length / truncation / over-run stay on.
+
+   **Rejected:** close-raises; **Rejected:** size-declared "deliver every byte then
+   raise on empty" for digest mismatch (ADR revises the earlier Decision 8 text);
+   **Rejected:** slurping returns success bytes while leaving CRC failure only for
+   a later empty `read` (foot-gun with `read(); close()`).
 
    **`read(-1)` implementation — bounded drain, not a single read, and not
    `inner.read(-1)`.** Two current defects on the sized `read(-1)` path
@@ -342,21 +359,14 @@ chunk is delivered, then the **terminal empty `read`** raises
    to EOF; and (b) on a full return it does `if data: return data` *before*
    `_finish`, deferring the verdict to a later empty read / `close`. The fix is a
    **bounded drain loop**: read `min(chunk, remaining)` until `inner` returns
-   `b""`, then run the EOF verdict in the same call. It CANNOT delegate to
-   `inner.read(-1)` on the sized branch: the declared `expected_size` is a hard
-   **decompression-bomb cap** (`test_verify_expected_size_overlong_stops_at_declared_size`
-   asserts `inner.tell() <= declared + 1`), and `inner.read(-1)` would pull a
-   corrupt/adversarial over-long payload wholesale into RAM. The unsized branch
-   (no cap) MAY keep `inner.read(-1)` then `_finish`. Because this is a safety
-   bound, the draining code must state the cap rationale inline.
-   Note the plain `if n < 0: _finish()` shortcut is sufficient *only* for the
-   unsized branch; the sized branch needs the loop even so.
-
-   **`_finish` must raise the hash-less short on this path, not defer it.** Today
-   `_finish` sets `self._short = True` for a hash-less shortfall and leaves the
-   raise to `finish_on_close`. On the complete-stream `read(-1)` path it must
-   instead raise `TruncatedError` directly; `self._short`/close stays the
-   mechanism only for the chunked terminal-empty-read shape.
+   `b""`, then run the EOF verdict in the same call (withhold on fault). It CANNOT
+   delegate to `inner.read(-1)` on the sized branch: the declared `expected_size`
+   is a hard **decompression-bomb cap**
+   (`test_verify_expected_size_overlong_stops_at_declared_size`), and
+   `inner.read(-1)` would pull a corrupt/adversarial over-long payload wholesale
+   into RAM. The unsized branch (no cap) MAY keep `inner.read(-1)` then `_finish`.
+   Because this is a safety bound, the draining code must state the cap rationale
+   inline.
 
 9. **Oracle:** for golden truncation tests, compare decompressed prefix and error
    type against `gzip.GzipFile` with a `read(1)` loop (max recovery), not against
@@ -374,7 +384,7 @@ chunk is delivered, then the **terminal empty `read`** raises
 | Multi-member edge cases (NUL padding, false headers, trailing junk) | Explicit GzipFile/`_read_eof` rules in decoder + tests |
 | Abandon after bounded `read(n)` without follow-up empty `read` | Documented; size/`SEEK_END` must not lie; prefer read-until-exception; slurping `read(-1)` still raises |
 | `read(); close()` silently accepting bad CRC | Forbidden — slurping must raise; explicit anti-footgun test |
-| VerifyingStream behavior change (tests that expect close-raises) | Update tests: chunked = all bytes then empty `read` raises; slurping `read(-1)` raises; `close` quiet |
+| VerifyingStream behavior change (tests that expect close-raises) | Update tests per ADR 0014: size-declared mismatch = withhold on reaching read; size-unknown = deliver then empty raises; slurping `read(-1)` raises; `close` quiet |
 | CRC failure mid-member vs truncation | zlib gzip window → `zlib.error` → existing `CorruptionError` translation |
 | Stdlib vs rapidgzip truncate behavior still differs | Documented known remaining inconsistency until rapidgzip follow-up |
 | Perf of member chaining | Only on member boundary; hot path unchanged |
