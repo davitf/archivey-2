@@ -235,6 +235,36 @@ truncation-shaped failure); `read(member.size)` is a *bounded* read whose short 
 the caller checks by length; and `extract()` / whole-member helpers use a completing
 read.
 
+### Diagnostics — raise vs advisory
+
+This ADR does not invent a new diagnostic taxonomy; it draws the line against the
+existing `diagnostics` model (`DIGEST_UNVERIFIABLE`, rewind / seek-index advisories as
+data; digest mismatch and truncation as hard errors).
+
+**Rule of thumb:** **raise** when the library knows the member is damaged (or
+over-ran). **Diagnose** when the library could not or did not finish a check, or
+*hid* a backend signal — especially when silence would look like success. Never demote
+an integrity verdict to a diagnostic and hope `RAISE` disposition will stand in for
+`CorruptionError` / `TruncatedError`.
+
+| Situation | Raise? | Diagnostic? |
+| --- | --- | --- |
+| Checksum / auth mismatch, over-run, mid-stream decode failure | `CorruptionError` | No |
+| Read past available / completing read short of declared size | `TruncatedError` (or short, then next read) | No |
+| Expected digest present but algorithm / hasher unavailable | No (bytes still flow) | **Yes — already** `DIGEST_UNVERIFIABLE` |
+| Early stop / partial read then `close()` | No (by design) | **No** (default) — deliberate opt-out; diagnosing every peek is noise |
+| Seek forfeits checksum for the handle | No | **Yes — add** (name TBD, e.g. `CHECKSUM_FORFEITED_AFTER_SEEK`): once per handle when a true intra-stream seek drops incremental hashing; same honesty family as `STREAM_REWIND_REDECOMPRESSES` / `SEEK_INDEX_DEGRADED` |
+| Early-stop `close()` suppresses a teardown-only content fault (`unrar` / AES-style parity path) | No (swallowed for close parity) | **Yes — add** (name TBD, e.g. `CONTENT_FAULT_SUPPRESSED_ON_CLOSE`): backend knew something; swallowing without a trace is the surprise |
+| Completing read surfaces that fault via eager finalize | Exception on that `read()` | No extra diagnostic |
+| Streaming released bytes before a later CRC / auth fail | Later `CorruptionError` | No (default) — detection-not-prevention is the mode |
+| `read(member.size)` short; caller ignores length | No | No — idiom + length check; diagnostics are not a `len` substitute |
+| “Could be corruption mislabeled as truncation” | Still `TruncatedError` | No for now — documented caveat; a confidence field waits until something consumes it |
+| Every encrypted member under STREAMING | No | No — accepted default posture; STRICT is the opt-in |
+
+The two new codes are **follow-ups** (emitter + `diagnostics` / OpenSpec delta when the
+seek-forfeit and close-parity paths land) — not blockers for accepting this ADR or for
+resuming #183. Exact code names are TBD at implementation.
+
 ## Guarantee (for users)
 
 > **Read a member to its end: a corrupt member raises `CorruptionError` on a `read()`;
@@ -497,6 +527,11 @@ does neither.
   truncation-shaped bodies is a first step toward VISION's damaged-input salvage story;
   it makes **no** claims about recovering archives that lost structural metadata (e.g.
   truncated ZIP without a central directory).
+- **Diagnostics stay advisory; integrity verdicts stay exceptions.** Early stops and
+  STREAMING pre-verdict byte release are silent by design. Follow-up codes (when those
+  paths land): checksum forfeited after seek, and content fault suppressed on
+  early-stop close — so capability loss and swallowed backend signals stay queryable.
+  `DIGEST_UNVERIFIABLE` is unchanged. See *Diagnostics — raise vs advisory*.
 
 ## Implementation notes
 
@@ -514,4 +549,8 @@ does neither.
   content faults at process/resource teardown (`unrar` exit codes, similar), the
   completing-read path should reap/finalize immediately after the last content byte so
   the fault raises on that `read()`; early-stop `close()` should not promote those
-  teardown-only content faults into the caller's close.
+  teardown-only content faults into the caller's close — emit the suppressed-fault
+  diagnostic instead (when that code lands).
+- **Seek-forfeit diagnostic.** When a true intra-stream seek disables the checksum
+  verdict for the handle, emit the forfeited-checksum diagnostic once; length /
+  over-run / truncation checks remain active without a diagnostic of their own.
