@@ -385,12 +385,10 @@ gets its own accounting. The two candidate contracts:
 ### What it costs
 
 - **A stream can no longer "read one block, decompress it, return those bytes."** Every
-  public `read(n)` must **coalesce**: loop-decode until it holds `n` output bytes or
-  hits a terminal boundary, and **buffer any overflow** (a block that yields more than
-  `n`) for the next call. `DecompressorStream` already works this way; but
-  `MemberVerifier.read` (a single `inner.read(want)`) and an unverified `ArchiveStream`
-  passthrough (straight to `inner.read(n)`) do **not** — they must be updated. This is a
-  **`compressed-streams` contract delta across backends**, not a local verifier tweak.
+  public `read(n)` must **coalesce** to `n` or a terminal boundary. #183 does this via
+  `read_full_count` (stop on short) on `MemberVerifier` / `ArchiveStream` — see the
+  stop-on-short note under Decision. This is a **`compressed-streams` contract delta
+  across backends**, not a local verifier tweak.
 - **More work inside a single call for large `n`.** `read(n)` may decode several blocks
   before returning. The work is still **bounded by `n`** (the caller's output budget),
   so the `max_length` output cap and decompression-bomb bounds are unaffected — the same
@@ -401,6 +399,10 @@ gets its own accounting. The two candidate contracts:
   delivery can pass a small `n`.
 - **A small buffer + fill loop in each wrapper.** Already carried by the decompressor
   engine; the cost is extending it to the verifier and passthrough paths.
+- **Stop-on-short vs true RawIO coalesce.** Preserving deferred decompressor truncation
+  means the wrapper does not keep pulling after a mid-stream short the way
+  `BufferedReader` would over RawIO. That is acceptable because archivey inners are
+  fill-or-EOF; document it rather than over-claim drop-in RawIO buffering.
 
 **Verdict: worth it.** The cost is concentrated in wrapper plumbing that the
 decompressor path already has, and the payoff is a simpler, `BufferedReader`-compatible
