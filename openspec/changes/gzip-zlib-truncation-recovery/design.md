@@ -213,25 +213,23 @@ chunk is delivered, then the **terminal empty `read`** raises
   tests).
 - `_finish` sets `_short = True` and defers hash-less shortfall to close.
 
-**Required:**
+**Required (ADR 0014):**
 
-- **Chunked:** provide **all** decompressed bytes on data-returning reads; check
-  CRC/digest at clean EOF; raise `CorruptionError` on the **next** empty
-  `read` — never by dropping the last data chunk, never on `close()`.
+- **Size-unknown chunked:** deliver every data byte; raise `CorruptionError` on
+  the terminal empty `read` — never on `close()`.
+- **Size-declared:** the read that reaches the declared size is a verifying
+  event; on digest mismatch / over-run raise `CorruptionError` and **withhold**
+  that chunk. Truncation-shaped ends still deliver the available prefix as a
+  short return; the next empty `read` raises `TruncatedError`.
 - **`read(-1)` / `readall`:** run the EOF verdict as part of the complete-stream
   read and **raise** on mismatch/short (do not return success bytes then rely on
-  a follow-up `read` or on `close`). Implementation may drain via bounded reads
-  so the terminal empty `read` naturally fires inside `readall`.
+  a follow-up `read` or on `close`). Sized `read(-1)` drains in bounded steps
+  capped by `expected_size` (decompression-bomb bound — never `inner.read(-1)`).
 - Hash-less short uses the **same** timing (`TruncatedError`): the terminal empty
-  chunked `read` raises, and `read(-1)` raises — **not** `close`. `_short`/
-  `finish_on_close` MUST NOT remain a content-fault surface (that is the current
-  bug at line "*`_finish` sets `_short = True` and defers … to close*"). Under
-  Decision 2 `finish_on_close` closes the inner, avoids a double-fault after a
-  read already raised, and may still surface a *teardown* error — but it never
-  introduces a first `TruncatedError` / `CorruptionError`. Implementation-wise
-  `_finish` must know whether it runs on a read path (raise short) vs. from
-  `close` (never raise the short); the read paths above are the only content-fault
-  surfaces.
+  chunked `read` raises, and `read(-1)` raises — **not** `close`.
+  `finish_on_close` closes the inner only; it never introduces a first
+  `TruncatedError` / `CorruptionError`. Teardown errors from `inner.close()` may
+  still propagate.
 - Partial read then close stays quiet (abandon before clean EOF).
 - Anti-footgun: `data = stream.read(); stream.close()` with a bad CRC MUST raise
   on the `read()` (not succeed quietly).
@@ -341,9 +339,17 @@ chunk is delivered, then the **terminal empty `read`** raises
    - **`close()` / `finish_on_close`**: teardown only — never a first content
      `TruncatedError` / `CorruptionError`.
    - **Full-count `read(n)`** (`n ≥ 1`): every public path coalesces to `n` or a
-     terminal boundary (reuse `streamtools.read_exact`); required so
-     `read(member.size)` actually reaches the declared size.
-   - **Seek:** forfeit checksum only; length / truncation / over-run stay on.
+     terminal boundary via `streamtools.read_full_count` (loop while full pieces
+     arrive; **stop on the first short**). Stop-on-short preserves deferred
+     `DecompressorStream` truncation (return the prefix now; raise on the next
+     empty `read`). Do **not** reuse `read_exact`, which keeps pulling after a
+     short and would collapse that deferral into the same call. Archivey inners
+     are fill-or-EOF (`DecompressorStream`, typical `ZipExtFile`, `BytesIO`), so
+     stop-on-short is full-count for healthy data; it is not a RawIO
+     mid-stream-short coalesce.
+   - **Seek:** forfeit checksum only; length / truncation / over-run stay on and
+     key off bytes **actually read** (`_read_high_water`), so a past-EOF
+     `seek(declared_size)` cannot silence truncation.
 
    **Rejected:** close-raises; **Rejected:** size-declared "deliver every byte then
    raise on empty" for digest mismatch (ADR revises the earlier Decision 8 text);
@@ -358,15 +364,16 @@ chunk is delivered, then the **terminal empty `read`** raises
    inner — masked today only because `BytesIO`/`DecompressorStream` happen to read
    to EOF; and (b) on a full return it does `if data: return data` *before*
    `_finish`, deferring the verdict to a later empty read / `close`. The fix is a
-   **bounded drain loop**: read `min(chunk, remaining)` until `inner` returns
-   `b""`, then run the EOF verdict in the same call (withhold on fault). It CANNOT
-   delegate to `inner.read(-1)` on the sized branch: the declared `expected_size`
-   is a hard **decompression-bomb cap**
+   **bounded drain loop**: `read_full_count` of `min(chunk, remaining)` until
+   `inner` returns `b""`, then run the EOF verdict in the same call (withhold on
+   fault). It CANNOT delegate to `inner.read(-1)` on the sized branch: the
+   declared `expected_size` is a hard **decompression-bomb cap**
    (`test_verify_expected_size_overlong_stops_at_declared_size`), and
    `inner.read(-1)` would pull a corrupt/adversarial over-long payload wholesale
    into RAM. The unsized branch (no cap) MAY keep `inner.read(-1)` then `_finish`.
-   Because this is a safety bound, the draining code must state the cap rationale
-   inline.
+   Opaque accelerator EOF exceptions may become `TruncatedError`, but `OSError` /
+   `MemoryError` MUST propagate (CONTRIBUTING). Because this is a safety bound,
+   the draining code must state the cap rationale inline.
 
 9. **Oracle:** for golden truncation tests, compare decompressed prefix and error
    type against `gzip.GzipFile` with a `read(1)` loop (max recovery), not against

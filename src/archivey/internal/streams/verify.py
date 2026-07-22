@@ -18,7 +18,9 @@ Per ADR 0014 / ``compressed-streams``:
 - Verification runs on a read that **reaches the end** (declared size, or decoder
   EOS). A partial read is never verified. ``read(0)`` is a no-op (not EOF).
 - A seek off the sequential frontier forfeits the **checksum** only; length /
-  truncation / over-run checks stay on.
+  truncation / over-run checks stay on and key off bytes **actually read**
+  (``_read_high_water``), so a past-EOF ``seek(declared_size)`` cannot silence
+  truncation.
 - **Size-declared corruption** (digest mismatch / over-run at the declared size):
   the reaching read raises and **withholds** that chunk.
 - **Size-unknown corruption**: deliver data bytes; raise on the EOS-observing
@@ -184,7 +186,11 @@ class MemberVerifier:
             self._hashers[key] = hasher
             self._expected[key] = value
         self._verified = False
-        self._pos = 0  # bytes read so far — the sequential verification frontier
+        self._pos = 0  # logical position (updated by read and seek)
+        # Highest position reached by an actual read — length / truncation / over-run
+        # use this, not seek-updated ``_pos``, so ``seek(declared_size)`` on a short
+        # body cannot fabricate a clean end (ADR 0014).
+        self._read_high_water = 0
         # Decode-error abandon: skip all end-of-stream checks on later reads.
         self._abandoned = False
         # Seek off the frontier forfeits checksum only (ADR 0014); length stays on.
@@ -216,20 +222,31 @@ class MemberVerifier:
                     f"decompressed content."
                 )
 
-    def _finish(self, inner: BinaryIO, *, raise_content_faults: bool) -> None:
-        """Run end-of-stream checks once.
+    def _record_read(self, data: bytes) -> None:
+        """Advance logical position and read high-water after a data-returning read."""
+        if not data:
+            return
+        self._pos += len(data)
+        if self._pos > self._read_high_water:
+            self._read_high_water = self._pos
+        self._update_digests(data)
 
-        When ``raise_content_faults`` is true (read path), short bodies raise
-        :class:`~archivey.exceptions.TruncatedError` and digest mismatches raise
-        :class:`~archivey.exceptions.CorruptionError`. A short body that also
-        carries a hash raises ``TruncatedError`` (best-effort: shortfall vs digest
-        mismatch are not always separable). Length / over-run checks run even after
-        a seek forfeited digests; digests run only while :attr:`digests_enabled`.
+    def _finish(self, inner: BinaryIO) -> None:
+        """Run end-of-stream checks once (read path only — never called from close).
+
+        Short bodies raise :class:`~archivey.exceptions.TruncatedError` and digest
+        mismatches raise :class:`~archivey.exceptions.CorruptionError`. A short body
+        that also carries a hash raises ``TruncatedError`` (best-effort: shortfall vs
+        digest mismatch are not always separable). Length / over-run use
+        :attr:`_read_high_water` (bytes actually read), not seek-updated ``_pos``.
+        Digests run only while :attr:`digests_enabled`.
         """
         self._verified = True
-        if self._expected_size is not None and self._pos >= self._expected_size:
-            # Delivered the declared size; the underlying must have nothing more.
-            # This probe also drains post-payload authenticators (e.g. WinZip AES HMAC).
+        delivered = self._read_high_water
+        if self._expected_size is not None and delivered >= self._expected_size:
+            # Delivered the declared size via reads; the underlying must have nothing
+            # more. This probe also drains post-payload authenticators (e.g. WinZip AES
+            # HMAC).
             try:
                 trailing = inner.read(1)
             except ArchiveyError:
@@ -237,21 +254,18 @@ class MemberVerifier:
             except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
                 trailing = b""
             if trailing:
-                if raise_content_faults:
-                    raise CorruptionError(
-                        "Decompressed content exceeds its declared size of "
-                        f"{self._expected_size} bytes."
-                    )
-                return
-        if self._expected_size is not None and self._pos < self._expected_size:
-            # Short — TruncatedError even when a hash is present (best-effort verdict).
-            if raise_content_faults:
-                raise TruncatedError(
-                    f"Decompressed content ended after {self._pos} of "
-                    f"{self._expected_size} expected bytes."
+                raise CorruptionError(
+                    "Decompressed content exceeds its declared size of "
+                    f"{self._expected_size} bytes."
                 )
-            return
-        if raise_content_faults and self._digests_enabled:
+        elif self._expected_size is not None and delivered < self._expected_size:
+            # Short of declared size by actual reads — TruncatedError even when a hash
+            # is present (best-effort verdict). Seek alone cannot satisfy this check.
+            raise TruncatedError(
+                f"Decompressed content ended after {delivered} of "
+                f"{self._expected_size} expected bytes."
+            )
+        if self._digests_enabled:
             self._verify_digests()
 
     def _update_digests(self, data: bytes) -> None:
@@ -284,6 +298,11 @@ class MemberVerifier:
             except ArchiveyError:
                 self._abandon()
                 raise
+            except (OSError, MemoryError):
+                # Real resource failures must propagate (CONTRIBUTING); do not relabel
+                # them as TruncatedError.
+                self._abandon()
+                raise
             except Exception as exc:
                 # Opaque accelerator EOF while still short of the declared size
                 # (macOS rapidgzip often raises instead of returning b""). Surface
@@ -294,12 +313,11 @@ class MemberVerifier:
                 ) from exc
             if not piece:
                 break
-            self._pos += len(piece)
-            self._update_digests(piece)
+            self._record_read(piece)
             chunks.append(piece)
         # EOF verdict in this complete-stream call — raise withholds the body.
         if not self._abandoned and not self._verified:
-            self._finish(inner, raise_content_faults=True)
+            self._finish(inner)
         return b"".join(chunks)
 
     def read(self, inner: BinaryIO, n: int = -1) -> bytes:
@@ -326,10 +344,9 @@ class MemberVerifier:
                 self._abandon()
                 raise
             if data:
-                self._pos += len(data)
-                self._update_digests(data)
+                self._record_read(data)
             if not self._abandoned and not self._verified:
-                self._finish(inner, raise_content_faults=True)
+                self._finish(inner)
             return data
 
         # Bounded full-count read.
@@ -345,8 +362,9 @@ class MemberVerifier:
         if self._expected_size is not None:
             remaining = self._expected_size - self._pos
             if remaining <= 0:
-                # Already at the declared size — terminal empty read runs checks.
-                self._finish(inner, raise_content_faults=True)
+                # Logical position already at/past declared size (e.g. after seek).
+                # Length uses read high-water — seek alone cannot pass.
+                self._finish(inner)
                 return b""
             want = min(n, remaining)
             reaches_declared = want == remaining
@@ -358,20 +376,19 @@ class MemberVerifier:
             raise
 
         if data:
-            self._pos += len(data)
-            self._update_digests(data)
+            self._record_read(data)
             if (
                 reaches_declared
                 and self._expected_size is not None
-                and self._pos >= self._expected_size
+                and self._read_high_water >= self._expected_size
             ):
                 # Size-declared verifying event: withhold this chunk on fault.
-                self._finish(inner, raise_content_faults=True)
+                self._finish(inner)
             return data
 
         # Empty: size-unknown digest / truncation-shaped terminal read.
         if not self._verified:
-            self._finish(inner, raise_content_faults=True)
+            self._finish(inner)
         return data
 
     def note_seek(self, result: int) -> None:
@@ -379,7 +396,8 @@ class MemberVerifier:
 
         A seek off the sequential frontier forfeits the **checksum** (incremental
         hashing assumes linear consumption). Length / truncation / over-run checks
-        stay enabled (ADR 0014).
+        stay enabled and key off bytes actually read (``_read_high_water``), so a
+        past-EOF ``seek(declared_size)`` cannot silence truncation (ADR 0014).
         """
         if result != self._pos:
             self._digests_enabled = False
@@ -487,6 +505,6 @@ class VerifyingStream(ReadOnlyIOStream):
             self._verifier.finish_on_close(self._inner)
         finally:
             # finish_on_close closes the inner; always mark the wrapper closed even
-            # when a typed probe error propagates (F2).
+            # when a teardown error from inner.close() propagates.
             if not self.closed:
                 super().close()

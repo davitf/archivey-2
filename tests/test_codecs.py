@@ -846,6 +846,50 @@ def test_verify_seek_forfeits_checksum_keeps_length() -> None:
     stream.close()
 
 
+def test_verify_seek_to_declared_size_cannot_silence_truncation() -> None:
+    """Seek to/past declared size must not fabricate a clean end (ADR 0014).
+
+    Inners like BytesIO allow past-EOF seek; length checks key off bytes actually
+    read, not the seek-updated logical position.
+    """
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT) + 50)
+    stream.seek(len(CONTENT) + 50)
+    with pytest.raises(TruncatedError, match=r"ended after 0 of"):
+        stream.read(1)
+    stream.close()
+
+    stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT) + 50)
+    assert stream.read(20) == CONTENT[:20]
+    stream.seek(len(CONTENT) + 50)
+    with pytest.raises(TruncatedError, match=r"ended after 20 of"):
+        stream.read(-1)
+    stream.close()
+
+
+def test_verify_sized_readall_propagates_oserror_not_truncation() -> None:
+    """Resource errors on the sized drain must not be relabeled TruncatedError."""
+
+    class Boom(io.BytesIO):
+        def read(self, n: int = -1) -> bytes:  # noqa: A003
+            raise OSError("disk died")
+
+    stream = VerifyingStream(Boom(b""), {}, expected_size=10)
+    with pytest.raises(OSError, match="disk died"):
+        stream.read(-1)
+    stream.close()
+
+
+def test_verify_sized_readall_propagates_memoryerror_not_truncation() -> None:
+    class Boom(io.BytesIO):
+        def read(self, n: int = -1) -> bytes:  # noqa: A003
+            raise MemoryError("oom")
+
+    stream = VerifyingStream(Boom(b""), {}, expected_size=10)
+    with pytest.raises(MemoryError, match="oom"):
+        stream.read(-1)
+    stream.close()
+
+
 def test_archive_stream_passthrough_full_count() -> None:
     """Unverified ArchiveStream.read(n) coalesces until n or a terminal short."""
     from archivey.internal.streams.archive_stream import ArchiveStream

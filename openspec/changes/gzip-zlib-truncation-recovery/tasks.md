@@ -110,7 +110,11 @@
       passthrough (via `streamtools.read_full_count` (stop on short)) so `read(member.size)` reaches
       the declared size over short-reading inners.
 - [x] 4.1c **Seek:** forfeit checksum only; length / truncation / over-run
-      checks remain active after a seek off the sequential frontier.
+      checks remain active after a seek off the sequential frontier and key off
+      bytes actually read (`_read_high_water`), so `seek(declared_size)` cannot
+      silence truncation.
+- [x] 4.1d Sized `read(-1)` drain: `OSError` / `MemoryError` propagate; only
+      opaque accelerator EOF may become `TruncatedError`.
 - [x] 4.2 `readall` / `read(-1)` with digest mismatch or hash-less short: raise
       on that complete-stream call (`CorruptionError` / `TruncatedError`) so
       `read(); close()` cannot succeed quietly. Implement the sized branch as a
@@ -125,9 +129,13 @@
       after `read` already failed, and may still surface a *teardown* error).
 - [x] 4.4 Update verify tests: size-unknown keep deliver-then-empty; add
       size-declared withhold on reaching read; full-count over short-reading
-      inners; seek forfeits checksum but keeps length; slurping-raises /
-      anti-footgun `read(); close()`; fused `ArchiveStream`+`MemberVerifier`
-      path; over-long inner stops at the cap.
+      inners; seek forfeits checksum but keeps length; seek-to-declared-size
+      cannot silence truncation; sized-drain resource errors propagate;
+      slurping-raises / anti-footgun `read(); close()`; fused
+      `ArchiveStream`+`MemberVerifier` path; over-long inner stops at the cap.
+- [x] 4.5 RAR4 encrypted empty exit 2/3 → `EncryptionError` on the
+      completing/empty read (eager finalize), with close as fallback when no
+      completing read ran.
 
 ## 5. Docs + compose notes
 

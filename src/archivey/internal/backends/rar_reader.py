@@ -209,8 +209,12 @@ class _UnrarOwnedStream(DelegatingStream):
     empty stdout. After verify's short-before-digest preference that would otherwise
     surface only as ``TruncatedError`` (0 of N) while ``has_verifiable_hash`` suppresses
     the CRC exit. When the member is encrypted and we read zero plaintext bytes, map
-    exit 2/3 to ``EncryptionError`` so ``with open(...): read()`` / ``archive.read()``
-    prefer the real cause (same pattern as RAR5's exit 11 replacing TruncatedError).
+    exit 2/3 to ``EncryptionError``.
+
+    Exit mapping runs on the **empty/completing read** when the process has already
+    exited (ADR 0014 eager-finalize parity), so ``archive.read()`` / a completing
+    ``read()`` see ``EncryptionError`` on the read path rather than only from
+    ``close()``. ``close()`` still maps if the empty-read path never ran (early stop).
     """
 
     def __init__(
@@ -229,11 +233,53 @@ class _UnrarOwnedStream(DelegatingStream):
         self._has_verifiable_hash = has_verifiable_hash
         self._encrypted = encrypted
         self._bytes_read = 0
+        self._exit_mapped = False
 
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
         self._bytes_read += len(data)
+        if not data:
+            # Completing / EOF read: reap and map exit here so content faults raise on
+            # read (not only on close).
+            self._map_exit_if_reaped(wait_timeout=1.0)
         return data
+
+    def _raise_for_returncode(self, rc: int) -> None:
+        """Map an unrar exit code to an archivey error, or return quietly."""
+        # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
+        # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass; a
+        # negative code means we terminated it (early close) — not an error.
+        if rc == 11:
+            raise EncryptionError("Incorrect RAR password or encrypted member")
+        # RAR4 wrong/missing password: often exit 3 + empty stdout, not exit 11.
+        if self._encrypted and self._bytes_read == 0 and rc in (2, 3):
+            raise EncryptionError("Incorrect RAR password or encrypted member")
+        if self._has_verifiable_hash:
+            # archivey verifies this member's CRC32/BLAKE2sp itself; that check is
+            # authoritative, so ignore unrar's (sometimes spurious) corruption codes.
+            return
+        if rc in (2, 3):
+            raise CorruptionError(
+                f"unrar reported a fatal or CRC error (exit {rc}) reading member data"
+            )
+        if rc == 10 and self._named_member:
+            raise CorruptionError(
+                "unrar found no matching member (exit 10); the member could not be read"
+            )
+
+    def _map_exit_if_reaped(self, *, wait_timeout: float | None) -> None:
+        """If unrar has exited (or exits within ``wait_timeout``), map its status once."""
+        if self._exit_mapped:
+            return
+        if self._proc.poll() is None:
+            if wait_timeout is None:
+                return
+            try:
+                self._proc.wait(timeout=wait_timeout)
+            except subprocess.TimeoutExpired:
+                return
+        self._exit_mapped = True
+        self._raise_for_returncode(self._proc.returncode)
 
     def close(self) -> None:
         if self.closed:
@@ -249,31 +295,11 @@ class _UnrarOwnedStream(DelegatingStream):
                     self._proc.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     terminate_unrar(self._proc)
-            rc = self._proc.returncode
             # Mark closed without relying on DelegatingStream (already closed inner).
             super(DelegatingStream, self).close()
-            # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
-            # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass; a
-            # negative code means we terminated it (early close) — not an error.
-            if rc == 11:
-                raise EncryptionError("Incorrect RAR password or encrypted member")
-            # RAR4 wrong/missing password: often exit 3 + empty stdout, not exit 11.
-            # Prefer EncryptionError over letting verify's TruncatedError stand alone
-            # when has_verifiable_hash would suppress the CRC exit entirely.
-            if self._encrypted and self._bytes_read == 0 and rc in (2, 3):
-                raise EncryptionError("Incorrect RAR password or encrypted member")
-            if self._has_verifiable_hash:
-                # archivey verifies this member's CRC32/BLAKE2sp itself; that check is
-                # authoritative, so ignore unrar's (sometimes spurious) corruption codes.
-                return
-            if rc in (2, 3):
-                raise CorruptionError(
-                    f"unrar reported a fatal or CRC error (exit {rc}) reading member data"
-                )
-            if rc == 10 and self._named_member:
-                raise CorruptionError(
-                    "unrar found no matching member (exit 10); the member could not be read"
-                )
+            # Early-stop close: map now if the completing-read path never did.
+            # (If read already mapped, ``_exit_mapped`` skips a second raise.)
+            self._map_exit_if_reaped(wait_timeout=None)
 
 
 class RarReader(BaseArchiveReader):

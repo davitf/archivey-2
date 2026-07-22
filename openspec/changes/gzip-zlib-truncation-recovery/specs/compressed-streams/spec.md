@@ -141,7 +141,10 @@ SHALL close the inner and MUST NOT introduce a first content `TruncatedError` /
 `CorruptionError` solely because the caller is closing.
 
 A seek off the sequential frontier SHALL forfeit digest verification for the rest
-of the handle's life. Length / truncation / over-run checks SHALL remain active.
+of the handle's life. Length / truncation / over-run checks SHALL remain active and
+SHALL key off bytes actually read (not a seek-updated logical position alone), so a
+past-EOF `seek(declared_size)` on an inner that allows it MUST NOT silence
+`TruncatedError`.
 
 Deliberate partial read then close before clean EOF remains quiet for
 digest/length verification (abandon before verdict), modulo the length checks
@@ -195,8 +198,9 @@ when present; see the "Content faults" requirement above) and raise on mismatch
 rather than return success bytes and defer the verdict to a later `read` or to
 `close()`. Partial reads that stop before the end SHALL NOT produce a digest
 verdict. A seek off the sequential frontier SHALL forfeit digest checks but
-MUST NOT disable length / truncation / over-run checks. `close()` MUST NOT be
-the sole surface for a digest or short-length verdict.
+MUST NOT disable length / truncation / over-run checks; those checks SHALL use
+bytes actually read so a past-EOF seek cannot fabricate a clean end. `close()`
+MUST NOT be the sole surface for a digest or short-length verdict.
 
 Supported computable algorithms SHALL include `crc32` (via `zlib.crc32`),
 `adler32` (via `zlib.adler32`), the `hashlib.algorithms_available` set, and
