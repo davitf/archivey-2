@@ -93,16 +93,27 @@ raises, independent of whether `close()` runs.
 
 ## Decision
 
-### Full-count `read`
+### Full-count `read` — a committed contract, not an accident
 
-archivey's stream `read(n)` (`n ≥ 1`) returns **exactly `n` bytes until a terminal
-boundary** — clean end-of-stream, truncation, or a raised content error. It never
-returns short on healthy, non-terminal data. Consequently a short return **means a
-terminal boundary was reached**, and reading is a reliable way to reach a member's end
-(`read(-1)`, read-until-`b""`, or `read(member.size)` for a size-declared member).
-(`read(0)` is a no-op, never EOF. This full-count guarantee applies to the public
-`ArchiveStream`/codec-stream `read`; it does not require arbitrary *inner* `BinaryIO`
-objects to be full-count — the wrapper coalesces.)
+archivey's public stream `read(n)` (for `n ≥ 1`) is **full-count**: it returns
+**exactly `n` bytes** unless it reaches a terminal boundary — clean end-of-stream,
+truncation, or a raised content error. It does **not** return short on healthy,
+non-terminal data (unlike a raw `io.RawIOBase.read`; like `io.BufferedReader`). Two
+consequences the rest of this ADR depends on:
+
+- a **short return is a terminal signal** — clean EOF, or a truncation prefix; never
+  "healthy data, ask again";
+- **`read(member.size)` reaches the declared size in one call**, which is what makes it
+  a verifying event and closes the motivating regression.
+
+This is a **library-wide contract delta**, not something already true everywhere. Today
+`DecompressorStream.read` coalesces, but `MemberVerifier.read` issues a single
+`inner.read(want)`, and an unverified `ArchiveStream` passes `read(n)` straight to its
+inner (e.g. ZIP's `ZipExtFile`). Adopting this ADR makes full-count part of the
+`compressed-streams` stream contract: **every public `read(n)` path must coalesce to
+`n`-or-terminal** (or document an explicit exception). `read(0)` is a no-op, never EOF.
+The contract binds the public `ArchiveStream` / codec-stream surface; arbitrary *inner*
+`BinaryIO` objects need not be full-count — the wrapper coalesces over them.
 
 ### Where the verdict fires
 
@@ -164,20 +175,25 @@ some wrong bytes." A single-call reader distinguishes the two by length:
 
 ## Guarantee (for users)
 
-> **Read a member to its end and a damaged member raises on a `read()`. Stop before
-> the end and it is not verified. `close()` never raises a content error.**
+> **Read a member to its end: a corrupt member raises `CorruptionError` on a `read()`;
+> a truncated member raises `TruncatedError` or returns short of its declared size; a
+> clean member returns all its bytes, checksum-verified. Stop before the end and it is
+> not verified. `close()` never raises a content error.**
 
 "To its end" means `read(-1)` / `readall`, reading until `read()` returns `b""`, or —
 for a member with a **declared** size — reading that many bytes. For that whole-member
-read:
+read, each outcome tells you exactly what you can trust:
 
-- an **exception** means the member is corrupt (`CorruptionError`) or truncated
-  (`TruncatedError`) — **discard everything read; none of it is trustworthy**;
+- a **`CorruptionError`** means the content is wrong — **discard everything read from
+  this member; none of it is trustworthy** (the raising call returns nothing);
+- a **`TruncatedError`** means the member is incomplete — the bytes **already returned
+  on prior reads are correct** (a salvageable prefix), but the member is not whole; the
+  raising call itself returns nothing;
 - a **full-length** return (`len == member.size`, or a subsequent `b""`) means the
-  content was **checksum-verified**;
+  content was **checksum-verified** — trust it;
 - a **short** return (`len < member.size`, no exception) means **truncation** — the
-  bytes are correct but the member is incomplete; **"no exception" does not mean
-  "complete."** Check the length, or read again to get the `TruncatedError`.
+  bytes returned are correct but the member is incomplete; **"no exception" does not
+  mean "complete."** Check the length, or read again to get the `TruncatedError`.
 
 Corruption is caught whenever such a read reaches the end — independent of whether
 `close()` is ever called. Callers who must verify **regardless** of access pattern
@@ -201,6 +217,63 @@ wants to catch both must check `len(data) == member.size` (or use `read(-1)`); *
 exception" does not mean "complete."** Size-unknown members have no `member.size` to
 read to, so a bare `read(n)` cannot self-certify at all — use `read(-1)` /
 read-to-`b""`.
+
+## Full-count `read`: rationale and trade-offs
+
+Of everything in this ADR, the full-count `read` commitment has the **broadest blast
+radius** — it changes a cross-cutting stream contract, not just the verifier — so it
+gets its own accounting. The two candidate contracts:
+
+- **up-to-`n`** (raw `io.RawIOBase` semantics): `read(n)` may return *any* number of
+  bytes `1..n` on healthy data; only `b""` means end. A stream is free to "decode one
+  compressed block and return whatever it yielded."
+- **full-count** (`io.BufferedReader` / `BytesIO` / on-disk file semantics): `read(n)`
+  returns *exactly* `n` bytes unless it reaches a terminal boundary (EOF, truncation,
+  or a raised content error). We adopt this.
+
+### Why full-count
+
+- **It is what makes the verification story true.** Under up-to-`n`,
+  `data = f.read(member.size)` can return a prefix on healthy data; the single-call
+  caller never reaches the declared size, and corruption is silently accepted — the
+  exact regression this ADR closes. Only full-count guarantees `read(member.size)`
+  reaches the end and therefore verifies.
+- **Simpler contract, simpler docs.** "You get what you asked for; you get less only at
+  the end (EOF or truncation)." That one sentence replaces a page of "a short read
+  might mean anything." A short return regains a single, useful meaning: a terminal
+  boundary (and, with a declared size, a length check distinguishes clean-complete from
+  truncated).
+- **Interchangeable with a buffered file.** Most Python code written against an object
+  from `open(..., 'rb')` (a `BufferedReader`) assumes full-count and breaks subtly
+  against an up-to-`n` object. Full-count makes archivey streams drop-in wherever a
+  buffered binary file is expected, which is the common case.
+- **Reviewers converged on it** as the right load-bearing fix once the sized-read
+  guarantee was on the table.
+
+### What it costs
+
+- **A stream can no longer "read one block, decompress it, return those bytes."** Every
+  public `read(n)` must **coalesce**: loop-decode until it holds `n` output bytes or
+  hits a terminal boundary, and **buffer any overflow** (a block that yields more than
+  `n`) for the next call. `DecompressorStream` already works this way; but
+  `MemberVerifier.read` (a single `inner.read(want)`) and an unverified `ArchiveStream`
+  passthrough (straight to `inner.read(n)`) do **not** — they must be updated. This is a
+  **`compressed-streams` contract delta across backends**, not a local verifier tweak.
+- **More work inside a single call for large `n`.** `read(n)` may decode several blocks
+  before returning. The work is still **bounded by `n`** (the caller's output budget),
+  so the `max_length` output cap and decompression-bomb bounds are unaffected — the same
+  bound `BufferedReader` operates under.
+- **Latency shift on pipe / non-seekable sources.** `read(n)` may wait for enough input
+  to fill `n` rather than returning what is immediately available. Archives are almost
+  always seekable files, so this is minor; a caller wanting incremental low-latency
+  delivery can pass a small `n`.
+- **A small buffer + fill loop in each wrapper.** Already carried by the decompressor
+  engine; the cost is extending it to the verifier and passthrough paths.
+
+**Verdict: worth it.** The cost is concentrated in wrapper plumbing that the
+decompressor path already has, and the payoff is a simpler, `BufferedReader`-compatible
+contract that makes the whole read-to-end verification guarantee — and the honest
+`read(member.size)` idiom — actually true.
 
 ## Open questions
 
@@ -231,6 +304,16 @@ read-to-`b""`.
    We currently disable both under one "seek disables verification" rule for
    simplicity. Keep the simple rule, or preserve the still-sound truncation check across
    seeks? Recommendation: keep it simple, acknowledging we forgo a deliverable verdict.
+4. **A `read_exact(n)` helper for the sized-read truncation footgun?** Full-count makes
+   `read(member.size)` catch corruption, but truncation still comes back as a *silent
+   short buffer* on that single call (the matrix asymmetry) — and typical code passes
+   `data` downstream assuming "no exception" means "complete." A dedicated
+   `read_exact(n)` that raises `TruncatedError` when it cannot deliver `n` would make the
+   whole-member read a single call that catches **both** failures, matching developer
+   intuition. Do we add it (small API surface, kills the footgun for callers who use it),
+   or rely on `read(-1)` / the length check / the `extract()` helper rule? Leaning:
+   add it — it is the natural counterpart to full-count and the cheapest fix for the one
+   footgun both reviews flagged.
 
 ## Consequences
 
@@ -260,10 +343,11 @@ read-to-`b""`.
   accepted now; STRICT is sequenced after. Until it lands, STREAMING —
   detection-not-prevention — is the only posture, so **encrypted members stream
   unauthenticated plaintext by default** in the interim.
-- **Full-count `read` is now a contract**, not an accident. The wrapper must coalesce
-  short inner reads (bounded reads must loop the inner to `n`-or-terminal, as the
-  `read(-1)` drain already does). A short return from a public archivey stream is a
-  documented terminal signal.
+- **Full-count `read` becomes part of the `compressed-streams` contract** — a
+  cross-backend delta, not a local tweak (every public `read(n)` path must coalesce to
+  `n`-or-terminal). See *Full-count `read`: rationale and trade-offs* for the full
+  accounting; the short version is that the decompressor engine already does this and
+  the verifier / passthrough paths must be brought in line.
 - **`close()` never raises a content fault.** Cleanup is safe; a content error can
   neither mask nor be masked by an exception unwinding a `with` body; safety does not
   hinge on `close()` running.
