@@ -142,9 +142,16 @@ SHALL close the inner and MUST NOT introduce a first content `TruncatedError` /
 
 A seek off the sequential frontier SHALL forfeit digest verification for the rest
 of the handle's life. Length / truncation / over-run checks SHALL remain active and
-SHALL key off bytes actually read (not a seek-updated logical position alone), so a
-past-EOF `seek(declared_size)` on an inner that allows it MUST NOT silence
-`TruncatedError`.
+SHALL key off bytes actually read (not a seek-updated logical position alone). When a
+seek jumps the logical position to/past the declared size without reading the
+intervening bytes, concluding SHALL read that skipped gap (bounded by the declared
+size) to determine completeness rather than returning `b""` blind, so a past-EOF
+`seek(declared_size)` on a **truncated** member MUST NOT silence `TruncatedError`.
+Symmetrically, the same jump on a **complete** member MUST NOT fabricate one: a
+seek to/past the declared size followed by `read` returns `b""` (standard `BinaryIO`
+past-EOF semantics), and the `seek(member.size); read(1)` completeness idiom works.
+A member already read to its declared size is length-verified, so a later seek past
+the end concludes with no extra reads.
 
 Deliberate partial read then close before clean EOF remains quiet for
 digest/length verification (abandon before verdict), modulo the length checks
@@ -181,6 +188,8 @@ MAY delegate to `inner.read(-1)` and then run the EOF verdict.
 | Bounded `read(n)` over a short-reading inner | Full-count: returns `n` or short only at terminal boundary |
 | `read(-1)` over an over-long inner with a declared size | Stopped at the declared size; `CorruptionError`; inner not read unbounded past the cap |
 | Seek off frontier then short of declared size | Checksum forfeited; `TruncatedError` still raises on completing/empty read |
+| Seek to/past declared size on a **complete** member, then `read` (incl. `seek(size); read(1)`) | Returns `b""`; no fabricated `TruncatedError` (checksum forfeited by the seek) |
+| Seek to/past declared size on a **truncated** member, then `read` | Concluding reads the skipped gap; `TruncatedError` with the true recoverable length |
 | Partial read then `close` before clean EOF (verify) | No digest/length verdict |
 | Inner teardown fails on `close` | Teardown error may propagate |
 

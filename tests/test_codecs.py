@@ -849,20 +849,54 @@ def test_verify_seek_forfeits_checksum_keeps_length() -> None:
 def test_verify_seek_to_declared_size_cannot_silence_truncation() -> None:
     """Seek to/past declared size must not fabricate a clean end (ADR 0014).
 
-    Inners like BytesIO allow past-EOF seek; length checks key off bytes actually
-    read, not the seek-updated logical position.
+    Inners like BytesIO allow past-EOF seek. A seek that jumps to/past the declared
+    size without reading the gap does not return a clean ``b""``: concluding reads the
+    skipped bytes to verify completeness, so a short member still raises — and the
+    verdict reports the true recoverable length, not the pre-seek read count.
     """
     stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT) + 50)
     stream.seek(len(CONTENT) + 50)
-    with pytest.raises(TruncatedError, match=r"ended after 0 of"):
+    with pytest.raises(TruncatedError, match=rf"ended after {len(CONTENT)} of"):
         stream.read(1)
     stream.close()
 
     stream = VerifyingStream(io.BytesIO(CONTENT), {}, expected_size=len(CONTENT) + 50)
     assert stream.read(20) == CONTENT[:20]
     stream.seek(len(CONTENT) + 50)
-    with pytest.raises(TruncatedError, match=r"ended after 20 of"):
+    with pytest.raises(TruncatedError, match=rf"ended after {len(CONTENT)} of"):
         stream.read(-1)
+    stream.close()
+
+
+def test_verify_seek_past_end_of_complete_member_returns_empty() -> None:
+    """Seek to/past the declared size on a *complete* member reads ``b""`` quietly.
+
+    Regression (ADR 0014): the length verdict must not fire merely because a seek
+    advanced the logical position to/past the declared size — the member is intact,
+    so seek-past-end then read returns ``b""`` (standard ``BinaryIO``), never a false
+    ``TruncatedError``. Covers the completeness idiom ``seek(size); read(1)`` and
+    read-a-prefix-then-seek-to-the-end. The checksum is forfeited by the seek, so a
+    matching CRC is simply not consulted here.
+    """
+    hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(CONTENT))}
+
+    # seek exactly to the declared size — the completeness-test boundary.
+    stream = VerifyingStream(io.BytesIO(CONTENT), hashes, expected_size=len(CONTENT))
+    stream.seek(len(CONTENT))
+    assert stream.read(1) == b""
+    stream.close()
+
+    # seek well past the end.
+    stream = VerifyingStream(io.BytesIO(CONTENT), hashes, expected_size=len(CONTENT))
+    stream.seek(len(CONTENT) + 100)
+    assert stream.read() == b""
+    stream.close()
+
+    # read a prefix, then seek to the end, then read.
+    stream = VerifyingStream(io.BytesIO(CONTENT), hashes, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(len(CONTENT))
+    assert stream.read() == b""
     stream.close()
 
 

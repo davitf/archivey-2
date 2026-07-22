@@ -348,8 +348,11 @@ chunk is delivered, then the **terminal empty `read`** raises
      stop-on-short is full-count for healthy data; it is not a RawIO
      mid-stream-short coalesce.
    - **Seek:** forfeit checksum only; length / truncation / over-run stay on and
-     key off bytes **actually read** (`_read_high_water`), so a past-EOF
-     `seek(declared_size)` cannot silence truncation.
+     key off bytes **actually read** (`_furthest_read_pos`). A seek that jumps
+     to/past the declared size without reading the gap has it read back at
+     conclusion (`_verify_reaches_declared`), so `seek(declared_size)` neither
+     silences truncation on a short member nor fabricates one on a complete member
+     (`seek(size); read(1)` returns `b""`).
 
    **Rejected:** close-raises; **Rejected:** size-declared "deliver every byte then
    raise on empty" for digest mismatch (ADR revises the earlier Decision 8 text);
