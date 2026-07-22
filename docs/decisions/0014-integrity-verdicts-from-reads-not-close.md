@@ -212,11 +212,12 @@ member before returning any of it.
 
 The load-bearing asymmetry: **`read(member.size)` raises on corruption but returns a
 short buffer on truncation** — because corruption yields wrong bytes (withheld) while
-truncation yields a correct-but-incomplete prefix (delivered). A single-call caller who
-wants to catch both must check `len(data) == member.size` (or use `read(-1)`); **"no
-exception" does not mean "complete."** Size-unknown members have no `member.size` to
-read to, so a bare `read(n)` cannot self-certify at all — use `read(-1)` /
-read-to-`b""`.
+truncation yields a correct-but-incomplete prefix (delivered). This is a **deliberate
+idiom** ("salvage the available prefix; raise only on wrong bytes"), not a trap — see
+*`read(member.size)` — read the available prefix without raising* below for why it is
+safe to expose and how a caller checks for truncation (length, or a following `read()`).
+Size-unknown members have no `member.size` to read to, so a bare `read(n)` cannot
+self-certify at all — use `read(-1)` / read-to-`b""`.
 
 ## Full-count `read`: rationale and trade-offs
 
@@ -233,20 +234,30 @@ gets its own accounting. The two candidate contracts:
 
 ### Why full-count
 
-- **It is what makes the verification story true.** Under up-to-`n`,
+- **It matches the file object users actually hold — the strongest reason.** The
+  dominant binary file object in Python is `open(path, 'rb')`, an `io.BufferedReader`,
+  and **`BufferedReader.read(n)` is full-count**: it issues multiple underlying reads to
+  return exactly `n` unless EOF. So `data = f.read(known_size)` is a *correct, everyday*
+  idiom, and an archivey stream is the thing people most often swap in for a file. The
+  real question is therefore not "full-count vs. the stream contract" but **which
+  standard we match** — `BufferedReader` (full-count) or raw `io.RawIOBase` (up-to-`n`).
+  Matching `BufferedReader` makes archivey a **drop-in for file-reading code**; matching
+  `RawIOBase` silently breaks it. Full-count is the *more* compatible choice, not less —
+  and file-reading code is the single most likely thing to be pointed at our streams.
+- **It keeps naive single-call reads safe on healthy data.** Under up-to-`n`, a stream
+  free to "decode one block and return it" can hand back a *partial* buffer on a
+  perfectly good member; a caller who reads once and trusts it **silently loses correct
+  data on an undamaged archive** — the worst outcome, and a frequent one. Full-count
+  eliminates it: a healthy `read(n)` always returns `n`. Its only silent-ish residual is
+  genuine truncation, where the bytes are correct and the shortfall is length-checkable.
+- **It makes the verification story true.** Under up-to-`n`,
   `data = f.read(member.size)` can return a prefix on healthy data; the single-call
   caller never reaches the declared size, and corruption is silently accepted — the
   exact regression this ADR closes. Only full-count guarantees `read(member.size)`
   reaches the end and therefore verifies.
 - **Simpler contract, simpler docs.** "You get what you asked for; you get less only at
-  the end (EOF or truncation)." That one sentence replaces a page of "a short read
-  might mean anything." A short return regains a single, useful meaning: a terminal
-  boundary (and, with a declared size, a length check distinguishes clean-complete from
-  truncated).
-- **Interchangeable with a buffered file.** Most Python code written against an object
-  from `open(..., 'rb')` (a `BufferedReader`) assumes full-count and breaks subtly
-  against an up-to-`n` object. Full-count makes archivey streams drop-in wherever a
-  buffered binary file is expected, which is the common case.
+  the end (EOF or truncation)." One sentence replaces "a short read might mean
+  anything," and a short return regains a single meaning: a terminal boundary.
 - **Reviewers converged on it** as the right load-bearing fix once the sized-read
   guarantee was on the table.
 
@@ -275,28 +286,46 @@ decompressor path already has, and the payoff is a simpler, `BufferedReader`-com
 contract that makes the whole read-to-end verification guarantee — and the honest
 `read(member.size)` idiom — actually true.
 
-### Does full-count *add* a footgun?
+### `read(member.size)` — read the available prefix without raising
 
-A fair worry: because `read(n)` usually returns `n`, callers will make a single call and
-trust it — and on **truncation**, `read(member.size)` returns a short buffer with *no
-exception*, so a caller who neither checks the length nor reads again never sees the
-`TruncatedError`. Two things bound this:
+The worry with full-count is that `read(member.size)` on a **truncated** member returns
+a short buffer with *no exception*, so a caller who neither checks the length nor reads
+again never learns it was short. Rather than treat that as a trap to mitigate, we make
+it a **deliberate, first-class archivey idiom** with a clear meaning:
 
-- Full-count **removes the worse footgun and leaves a milder one.** Under up-to-`n`, a
-  single-call `read(member.size)` is unverified for *both* failures — including
-  **corruption**, which hands back *wrong* bytes silently. Full-count converts that into
-  a raised `CorruptionError`. What remains is truncation returning a short buffer of
-  *correct-but-incomplete* bytes — strictly less dangerous than silently trusting wrong
-  bytes, and detectable with a one-line `len == member.size` check that up-to-`n` gives
-  you no honest basis for.
-- The residual is closed by **`read_exact(n)`** (open question 4) for a one-call check,
-  by the length test, and by the `extract()` / whole-member-helper rule that always uses
-  a completing read. Naive single-call `read(n)` is the *low-level* surface; the safe
-  high-level paths never expose the trap.
+> **`read(member.size)` = "give me the member's content; on a *truncated* member return
+> the correct-but-incomplete prefix instead of raising."**
 
-So full-count does not introduce a new class of danger — it trades a silent
-*wrong-bytes* acceptance for a silent *short-but-correct* one, and hands callers the
-length signal (plus `read_exact`) to close even that.
+It still raises `CorruptionError` on *wrong* bytes (reaching the declared size with a
+bad checksum), so it means **"return what is correct and available,"** never "return
+wrong bytes." It is not a convenience that hides damage: there is **no equivalent
+pattern for a plain file** — a file has no member with a declared size — so
+`read(member.size)` appears only in archivey-aware code, written by someone who already
+knows what a member size *is*, not ported by habit from file-reading code. That is
+exactly why the sized-read asymmetry is safe to expose: the people who write it are the
+people who understand it.
+
+A caller who needs to know whether the member was whole has two standard ways — **no
+extra method required**:
+
+- **Length check** (cheap, weaker): `len(data) == member.size` → complete;
+  `len(data) < member.size` → truncated.
+- **A following `read()`** (authoritative): on a healthy member it returns `b""` (you
+  are at verified EOF — the checksum was already checked when the sized read reached the
+  declared size); on a truncated member it raises `TruncatedError`.
+
+So the whole-member idioms line up by **intent**, all using only standard `BinaryIO`
+methods:
+
+- `read()` / `read(-1)` / iterate-to-`b""` — *read the whole member and verify*; raise
+  on **any** damage (corruption or truncation);
+- `read(member.size)` — *salvage the available prefix*; raise only on corruption, return
+  short on truncation, disambiguated by a length check or a following `read()`.
+
+Either way, **corruption is never silent.** Against up-to-`n` this is a strict
+improvement: up-to-`n` would return a short buffer even on *healthy* data (silently
+losing good bytes) and could accept corruption silently on a single call; full-count
+does neither.
 
 ## Open questions
 
@@ -379,9 +408,9 @@ length signal (plus `read_exact`) to close even that.
 - **High-level helpers read to the true end.** `extract()` and any whole-member helper
   MUST consume each member with a *completing* read (`read(-1)`, or a sized read plus a
   drain to `b""`), so the default extraction path raises `TruncatedError` on a short
-  member rather than silently writing a truncated file. The quiet-truncation short
-  return is a **low-level** `read(member.size)` affordance for callers who opt into it,
-  never the default `extract` behavior.
+  member rather than silently writing a truncated file. The non-raising short return is
+  the deliberate `read(member.size)` **prefix-salvage** idiom for callers who opt into
+  it, never the default `extract` behavior.
 - **STRICT is proposed, not shipped (sequencing).** The escape hatch for "never release
   unverified / unauthenticated bytes" is `VerificationMode.STRICT`
   (`verification-integrity-mode`, still proposed). This ADR's STREAMING default is
