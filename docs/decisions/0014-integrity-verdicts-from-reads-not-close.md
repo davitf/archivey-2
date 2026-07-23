@@ -231,23 +231,33 @@ Bytes-read alone cannot separate these after a blind seek: a complete member who
 tail the caller skipped and a genuinely short member both leave the high-water mark
 below the declared size. So a seek that jumps the logical position **to/past the
 declared size without reading the intervening bytes** is concluded by **reading that
-skipped gap** (bounded by the declared size — the checksum is already forfeited, so
-this only advances the length frontier), rather than returning `b""` blind or raising
-from the lagging high-water mark. A genuinely short member then raises
-`TruncatedError` (reporting its true recoverable length); a complete one returns
-`b""`. A member already read to its declared size is length-verified and
+skipped gap and then probing one byte past the declared size** (bounded by the declared
+size — the checksum is already forfeited, so this only advances the length frontier),
+rather than returning `b""` blind or raising from the lagging high-water mark. This
+reproduces the *same* verdict a sequential reaching read runs — length **and**
+over-run:
+
+- a genuinely **short** member raises `TruncatedError` (reporting its true recoverable
+  length);
+- an **over-long** member (one that decodes past its declared size) raises
+  `CorruptionError` — the trailing-byte over-run probe fires whether the size was
+  reached by reading or by a seek-then-gap-fill;
+- a **complete** member returns `b""`.
+
+A member already read to its declared size is length- and over-run-verified and
 short-circuits with **no** extra I/O — the common path pays nothing; only the rare
 seek-past-end-without-a-prior-full-read re-reads. This is what makes the
-`seek(member.size); read(1)` completeness idiom honest in both directions.
+`seek(member.size); read(1)` completeness idiom honest in all three directions.
 
-Over-run still requires having delivered the declared size via reads before probing
-for trailing data. A member that is not *truly* seekable — one satisfied by rewinding
-/ re-decoding from the start — preserves linear hashing, so the checksum is not lost
-there either. Honest scope: **checksum detection is best-effort, forfeited only on a
-genuine intra-stream seek of a truly-seekable member (itself an opt-in capability);
-length / truncation / over-run detection is always on, measured by bytes read —
-reading a seek-skipped gap when needed rather than guessing from the high-water
-mark.**
+Over-run therefore still requires having *delivered* the declared size before probing
+for trailing data — but "delivered" includes the seek-conclusion gap read, not only a
+sequential reaching read. A member that is not *truly* seekable — one satisfied by
+rewinding / re-decoding from the start — preserves linear hashing, so the checksum is
+not lost there either. Honest scope: **checksum detection is best-effort, forfeited
+only on a genuine intra-stream seek of a truly-seekable member (itself an opt-in
+capability); length / truncation / over-run detection is always on, measured by bytes
+read — reading a seek-skipped gap (and probing past the declared size) when needed
+rather than guessing from the high-water mark.**
 
 ### Short returns are never *known*-corrupt bytes
 
@@ -583,10 +593,12 @@ does neither.
   checksum verdict, it stays disabled for that handle. Length / over-run / truncation
   key off the **furthest position an actual read reached** (a read high-water mark),
   not seek-updated `tell` alone. When a seek jumps to/past the declared size without
-  reading the gap, concluding reads that gap (bounded by the declared size) to decide
-  completeness — so past-EOF `seek(declared_size)` neither silences truncation on a
-  short member nor fabricates it on a complete one (`seek(size); read(1)` returns
-  `b""`). A member already read to its declared size short-circuits with no extra I/O.
+  reading the gap, concluding reads that gap (bounded by the declared size) **and
+  probes one byte past the declared size** to decide completeness — so past-EOF
+  `seek(declared_size)` neither silences truncation (short → `TruncatedError`) or
+  over-run (long → `CorruptionError`) nor fabricates either on a complete one
+  (`seek(size); read(1)` returns `b""`). A member already read to its declared size
+  short-circuits with no extra I/O.
 - **Full-count coalescing.** Bounded `read(n)` on the verifier/wrapper uses
   `streamtools.read_full_count` (stop on short) so deferred decompressor truncation
   stays on the next empty `read`. Do not use `read_exact` here. Opaque accelerator
