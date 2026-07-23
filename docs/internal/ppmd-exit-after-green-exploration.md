@@ -245,3 +245,77 @@ so **1 or 8 would match the data** more tightly than 64. Keeping 64 is a
 deliberate cushion for a possible multi-byte docs-path recovery we could not
 reproduce on 1.3.1. Tightening is reasonable if we want least privilege; it is
 not required for the crash mitigation already measured at 0/100.
+
+### Double-check (2026-07-23): Ppmd7, trailing `0x00`, repetitive tails, last-byte
+
+Re-ran labs explicitly on **`pyppmd.Ppmd7Encoder` / `Ppmd7Decoder`** (1.3.1),
+matching the upstream fuzzer shape in `tests/test_fuzzer.py` / README “Extra
+input byte”.
+
+**1. Ppmd7?** Yes. All probes below use Ppmd7 only (not Ppmd8 / variant I).
+
+**2. Do packed streams end in `0x00`?** Often yes — and that byte is *load-bearing
+compressed data*, not optional padding a post-encoder can drop:
+
+| Payload family (order∈{2,6,16,32}, n=1..256) | ends with `0x00` |
+|----------------------------------------------|------------------|
+| `os.urandom` / modular “rand”                | ~100%            |
+| English-ish text                             | ~99.6%           |
+| `HDR…` + long `Z` tail                       | ~96.5%           |
+| pure `a*n` / `Z*n`                           | ~26%             |
+| mixed ~5k samples                            | ~69%             |
+
+Upstream README: *“The encoder will omit a last null when last byte is
+`b'\\0'`”* — meaning flush may already omit a synthetic EOF null; that is
+**not** the same as stripping a trailing `0x00` that *is* present in the
+bitstream. When we **strip a present trailing `0x00`** from rand streams and
+apply the fuzzer recovery:
+
+- path is almost always **`eof=True` + short output** (`eof_short`), **not**
+  `needs_input` + `decode(b"\\0", rem)`;
+- synthetic NUL does **not** restore the missing symbols (0 nul-path hits in
+  that strip-0 rand soak).
+
+So a tool that strips trailing compressed zeros would corrupt the member; it
+would not be “helping” the documented extra-null quirk.
+
+**3. Repetitive tails / one instruction → many bytes:** confirmed via
+**last-compressed-byte isolation** (feed `packed[:-1]`, then `packed[-1:]`
+alone with `max_length=remaining`):
+
+| Payload | n | last byte | `last_out` |
+|---------|---|-----------|------------|
+| `a*n` | 64 | `0x40` | **64** (entire payload) |
+| `a*n` | 1024 | `0x00` | **834** |
+| `a*n` | 16384 | `0x00` | **2594** |
+| `HDR`+`Z*` | 1024 | `0x00` | **995** |
+| `HDR`+`Z*` | 4096 | `0x00` | **1639** |
+| rand | 256 | `0x00` | **1** |
+| rand | 4096 | `0x00` | **219** |
+| rand | 16384 | `0x00` | **137** |
+
+A single final compressed byte (often `0x00`) can emit **hundreds–thousands** of
+output bytes on repetitive data. That is **not** evidence that a *synthetic*
+extra NUL must be allowed the same budget: replacing the real last byte with
+`b"\\0"` on e.g. `a*64` (real last=`0x40`) yields `needs_input` but only
+**`extra≈1`** and **`match=False`**.
+
+**4. Docs-path NUL after complete `encode+flush`:** still **unreproducible** on
+1.3.1 — **0/60768** trials across orders 2..64, mem 2^11..2^20, varied
+payloads (exact fuzzer recovery). Upstream fixtures:
+
+- one-shot `decode(encoded, 66)` → full match, no NUL;
+- chunked official sample finishes via **`decode(b"", …)`** (+5 bytes), not NUL;
+- 1.2 MiB CSV round-trip: packed **does not** end in `0x00`, still **0** NUL events.
+
+**Corrected implication for `_PPMD_EXTRA_NUL_MAX_OUTPUT = 64`:**
+
+- Earlier suspicion that strip-trailing-`0` + long `Z` tails need
+  `extra ≈ copy-1` (and that cap=64 fails those) does **not** hold under
+  Ppmd7 re-check: strip-`0` does not take the successful docs NUL path.
+- Cap 64 remains a **crash cushion** for truncated mid-stream
+  `decode(b"\\0", large_rem)`. Measured successful truncated NUL emits stay
+  tiny (1–3); large budgets abort rather than return huge garbage.
+- The large `last_out` numbers bound how much the *real* final compressed byte
+  can produce — useful threat intuition, not a measured need for the synthetic
+  NUL budget on complete streams.
