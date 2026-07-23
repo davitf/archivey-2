@@ -440,3 +440,92 @@ subprocess-isolated.
 Re-run all `scripts/pyppmd_crash_repro.py` modes (`extra-null`, `overshoot`,
 `oversized`, `warmup-overshoot`) plus the valgrind driver of Section D; all must
 report **0 memory errors** and 0 crashes, including under teardown (`del dec`).
+
+---
+
+## I. What archivey can do until pyppmd is fixed
+
+The root cause reframes the whole mitigation story around **one invariant**:
+
+> **A `PpmdDecoder` must never be left with a worker blocked in the reader —
+> not between calls, and above all not at disposal.** The worker is left blocked
+> exactly when a `decode` call requests more output symbols than the *currently
+> fed* input can produce. A worker that instead exhausts its `max_length` budget
+> returns and is `pthread_join`-ed (`finished=True`), and `Ppmd7T_Free` then
+> no-ops — no resume, no use-after-free.
+
+### 1. For valid members: already fully safe in-process (no change needed)
+
+The shipped discipline *is* this invariant, and the investigation now proves it:
+
+- **Require `unpack_size`; bound every call to `min(chunk, unpack_size - produced)`;
+  stop exactly at `unpack_size`; never `-1`; never `decode` after `eof` unless the
+  pack is known complete; single capped NUL.**
+
+Exact-sized `decode(packed, len(data))` is **0 valgrind errors** (Section D).
+Chunked reads of a valid member are clean for the same reason: each call's budget
+(e.g. 64) is reached *before* the range coder needs a byte past what was fed, so
+the worker finishes every call and `needs_input` never latches at the end. Nothing
+to add here — the existing `pack_size` gate + bounded calls cover every
+well-formed 7z/PPMd member.
+
+### 2. For truncated / corrupt members: the residual, and a concrete new fix
+
+A member that genuinely contains fewer symbols than its header claims (truncated
+pack, or a corrupt full-length pack) **will** exhaust the fed input mid-budget on
+some call, latch `needs_input=True`, and leave the worker blocked. archivey
+detects this and raises `TruncatedError` — but by then the decoder is already in
+the blocked-worker state, and `OutputBuffer_Finish` has already freed the last
+output block. When that `PpmdDecoder` is later garbage-collected, `Ppmd7T_Free`
+resumes the blocked worker into the freed block → the intermittent
+"exit-after-green" abort. Bounding `max_length` shrinks the blast radius (a small
+budget makes the free-run short) but does **not** remove the dangling pointer.
+
+**New, measured lever — quiesce the worker before disposal.** Because the UAF
+needs the blocked worker to be *resumed*, driving it to `finished` **before** the
+decoder is freed removes the resume entirely. One bounded `decode` per outstanding
+`needs_input` does it: the worker wakes via the *decode* path (which allocates a
+fresh output block **before** resuming, so the 1-symbol write lands in live
+memory), hits its 1-symbol budget, and exits `finished`. `Ppmd7T_Free` then
+no-ops.
+
+Measured (valgrind, truncated pack + sized decode that blocks the worker, 6
+cycles):
+
+| Disposal policy | Invalid writes at `ThreadDecoder.c:134` |
+|-----------------|------------------------------------------|
+| `del dec` directly (worker left blocked) | **8 154** |
+| `while dec.needs_input: dec.decode(b"\0", 1)` (≤4×), then `del` | **0** |
+
+So archivey can add a **"quiesce on close"** step to `PpmdDecoder` /
+`DecompressorStream.close()`: while `needs_input` (worker parked), issue a bounded
+`decode(b"\0", 1)` (cap the loop at a few iterations) to force the worker to
+`finished` before releasing the decoder. This is the deterministic-dispose spike
+the brief's review addendum asked for (gap #1), and if it holds under the full
+adversarial soak it would let required CI **drop `--allow-exit-after-green`** for
+the PPMd module. It needs validating against the existing subprocess-isolated
+adversarial tests (and on 3.12+/free-threaded per gap #4) before being relied on;
+the mechanism and the single-shape measurement above are promising but not yet a
+full soak.
+
+### 3. What cannot be closed in-process
+
+- A **corrupt but full-length** pack (`fed >= pack_size`, right length, wrong
+  bytes) can still desync the model and report `needs_input`/premature `eof` with
+  large remaining `unpack_size`; `pack_size` cannot tell "wrong bytes" from "right
+  bytes", so the gate would permit exactly the blocked-worker state. Quiesce-on-
+  close (2) would still neutralise its *teardown*, but any in-call overshoot must
+  remain forbidden.
+- **True containment for hostile inputs** remains process isolation (exploration
+  doc Option D) or the upstream fix (Section H). Quiesce-on-close is a strong
+  in-process *reduction* of the teardown residual, not a guarantee against a
+  worker that faults *inside* `Ppmd7_DecodeSymbol` on a maximally-corrupt model
+  before it can return.
+
+### Summary
+
+| Case | In-process safety today | Lever |
+|------|------------------------|-------|
+| Valid member (known `unpack_size`, complete pack) | **Safe** (0 valgrind errors) | Existing bound-every-call + `pack_size` gate |
+| Truncated member | Intermittent teardown abort | **Quiesce-on-close** (measured 8154→0) — validate then drop allow-exit-after-green |
+| Corrupt full-length pack | Residual | Quiesce-on-close neutralises teardown; forbid in-call overshoot; process isolation for full guarantee |
