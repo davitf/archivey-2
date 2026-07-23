@@ -91,4 +91,27 @@ PYTHONFAULTHANDLER=1 uv run --no-sync python scripts/ci_run_native_modules.py \
 
 ### Results (fill as runs complete)
 
-*(pending)*
+#### E0 — `[all]` baseline (`--repeat 20`)
+
+- **Rate: 1/20** SIGSEGV (rc `-11`) on iter 7.
+- All green sessions: `19 passed`, breadcrumb
+  `sessionfinish exit=0 …::test_archivey_ppmd7_requires_unpack_size`.
+- Fatal site (not the poison call — late tripwire):
+
+  ```
+  Fatal Python error: Segmentation fault
+  Garbage-collecting
+    _pytest/unraisableexception.py → gc_collect_harder → cleanup
+    → _ensure_unconfigure / wrap_session
+  Extension modules: backports.zstd._zstd, lz4._version, lz4.frame._frame,
+    _brotli, pyppmd.c._ppmd, rapidgzip (total: 6)
+  ```
+
+- Confirms the fingerprint is reproducible on this Cloud agent host
+  (uv CPython 3.11.15, glibc 2.39).
+
+#### E1 — pyppmd-only venv (in progress)
+
+- Dedicated `/tmp/ppmd-only-venv`: editable archivey + `pyppmd==1.3.1` +
+  pytest/pytest-timeout only. Expect `rapidgzip`/`lz4`/`brotli`/`zstd`/…
+  absent at import time.
