@@ -658,49 +658,47 @@ class RarReader(BaseArchiveReader):
             _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
         )
         solid = SolidBlockReader(owned)
-        previous: ArchiveStream | None = None
         pipe_offset = 0
-        try:
-            for member in self._members:
-                if previous is not None:
-                    previous.close()
-                    previous = None
-                raw = member._raw
-                assert isinstance(raw, RarMemberInfo)
-                if not raw.is_payload_file() or not member.is_file:
-                    yield member, None
-                    continue
-                size = _member_stream_size(member)
-                # Capture the pipe offset for this member, then advance the running
-                # cursor. ``lazy=True`` defers skip-decode until first read; verify
-                # is fused into the outer ArchiveStream so a never-opened handle
-                # skips verify on close (no solid positioning for unread members).
-                member_offset = pipe_offset
-                pipe_offset += size
-                lazy_solid = solid.open_member(member_offset, size, lazy=True)
 
-                hashes, vsize, transforms, verify_member = self._payload_verify_args(
-                    member
-                )
-                stream = self._wrap_member_stream(
-                    None,
-                    member.name,
-                    open_fn=lambda inner=lazy_solid: inner,
-                    size=member.size,
-                    track_output=False,
-                    seekable=False,
-                    expected_hashes=hashes,
-                    expected_size=vsize,
-                    digest_transforms=transforms,
-                    verify_member=verify_member,
-                )
-                previous = stream
-                yield member, stream
-        finally:
-            if previous is not None:
-                previous.close()
+        def _open(member: ArchiveMember) -> ArchiveStream | None:
+            nonlocal pipe_offset
+            raw = member._raw
+            assert isinstance(raw, RarMemberInfo)
+            if not raw.is_payload_file() or not member.is_file:
+                return None
+            size = _member_stream_size(member)
+            # Capture the pipe offset for this member, then advance the running
+            # cursor. ``lazy=True`` defers skip-decode until first read; verify
+            # is fused into the outer ArchiveStream so a never-opened handle
+            # skips verify on close (no solid positioning for unread members).
+            member_offset = pipe_offset
+            pipe_offset += size
+            lazy_solid = solid.open_member(member_offset, size, lazy=True)
+
+            hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
+            return self._wrap_member_stream(
+                None,
+                member.name,
+                open_fn=lambda inner=lazy_solid: inner,
+                size=member.size,
+                track_output=False,
+                seekable=False,
+                expected_hashes=hashes,
+                expected_size=vsize,
+                digest_transforms=transforms,
+                verify_member=verify_member,
+            )
+
+        def _cleanup() -> None:
             solid.close()
             self._live_unrar = None
+
+        yield from self._drive_pass_streams(
+            iter(self._members),
+            open_member=_open,
+            close_previous=True,
+            cleanup=_cleanup,
+        )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):

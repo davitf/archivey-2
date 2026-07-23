@@ -2,7 +2,7 @@
 
 All line references: `main` @ `7bb862b`.
 
-## S3 — the pass driver is now **four** copies, exactly as predicted (PAY — but gate the next backend, not the release)
+## S3 — the pass driver is now **four** copies, exactly as predicted (PAY before 0.2.0)
 
 The 2026-07-12 `deep-simplification.md` S3 predicted the native RAR reader
 would add a fourth copy of the "close previous / open current / yield /
@@ -10,33 +10,23 @@ cleanup tail" loop skeleton. It did. The four copies today:
 
 | Copy | Where | Skeleton specifics |
 |---|---|---|
-| Base default | `base_reader.py:450-495` | tracks `previous`, closes on advance, **leaves the last stream open** with a comment explaining why |
-| TAR streaming override | `tar_reader.py:439-461` | **no `previous` tracking at all** — relies on tarfile invalidating the prior `extractfile` handle on advance |
-| 7z override | `sevenzip_reader.py:303-343` | `previous` close + solid-folder swap (`folder_index` change → close/reopen `SolidBlockReader`) + `finally` tail closing both |
-| RAR solid override | `rar_reader.py:578-649` | `previous` close + running `pipe_offset` cursor + `finally` tail closing stream, `SolidBlockReader`, and clearing `_live_unrar` |
+| Base default | `base_reader.py` `_iter_with_data` | tracks `previous`, closes on advance; last stream closed by shared driver `finally` |
+| TAR streaming override | `tar_reader.py` `_iter_with_data` | **no previous-close** — relies on tarfile invalidating the prior `extractfile` handle on advance (`close_previous=False`) |
+| 7z override | `sevenzip_reader.py` `_iter_with_data` | `previous` close + solid-folder swap (`folder_index` change → close/reopen `SolidBlockReader`) + resource `finally` |
+| RAR solid override | `rar_reader.py` `_iter_with_data` | `previous` close + running `pipe_offset` cursor + resource `finally` (solid + clear `_live_unrar`) |
 
 This is the drift S3 warned about, live: the close-previous invariant is
 enforced three different ways and *not at all* in one copy (TAR's omission is
-defensible — tarfile owns invalidation — but that reasoning exists only in this
-review, not in the code). The `stream_members` ownership contract remains a
-"MUST override correctly" docstring instruction to backend authors
-(`base_reader.py:450-474`) rather than machinery. Every future backend — and a
-**native streaming ZIP reader is the named next backend** (`IDEAS.md`,
-`open-issues.md` P2/P4) — adds a fifth copy carrying the same invariants.
+defensible — tarfile owns invalidation — but that reasoning existed only in
+review prose until the shared driver encoded it as `close_previous=False`).
+Every future backend would otherwise add a fifth copy carrying the same
+invariants.
 
-**Verdict: KEEP through 0.2.0, PAY before the next backend.** The duplication
-is invisible at the public surface — nothing about it freezes at release — and
-a behavior-preserving refactor of exactly the loops that carry the library's
-trickiest invariants (RAR pipe-offset demux, 7z solid swap) is the wrong thing
-to rush against a release date. The explicit justification for carrying it
-past 0.2.0: (a) zero public-surface exposure; (b) all four copies are
-currently guarded by the strongest suite the project has had (three dependency
-configs, corpus sweep, solid-RAR fixture tests). The debt becomes intolerable
-the moment a fifth copy is written, so the pay-trigger is hard: **the S3
-unification is an entry gate for the native-ZIP (or any new) backend**, the
-same way fuzzing was an entry gate for Phase 6. Recommend recording that gate
-in `PLAN.md`/`IDEAS.md` now so it cannot be forgotten. (Maintainer may
-override and pay pre-release — see `QUESTIONS.md` Q3.)
+**Verdict: PAY before 0.2.0 (Q3 = b, 2026-07-20).** Maintainer overrode the
+earlier "KEEP through 0.2.0 / entry gate for the next backend" lean: clean
+structure preferred; the suite (incl. T1 solid-RAR mutation) is the regression
+net. OpenSpec change: `unify-pass-driver`. Do **not** record PLAN/IDEAS
+entry-gate language.
 
 ## S2 — member-list pipeline: **half paid**; the remaining half is the risky half (PAY together with S3)
 
@@ -69,11 +59,10 @@ reproduced the "invariant enforced twice, in parallel prose" pattern:
   laziness is genuinely different; it would survive unification as a pure
   enumeration).
 
-**Verdict: same as S3 — KEEP through 0.2.0 with the justification above, PAY
-as one OpenSpec change with S3** ("materialization is a drained forward
-pass" + a narrow per-backend open hook). Doing S2 and S3 together is cheaper
-than either alone because the unified pass driver *is* the single drive loop
-S2 wants.
+**Verdict: PAY with S3 before 0.2.0 (Q3 = b)** as one OpenSpec change
+(`unify-pass-driver`) — "one finalize path" + shared pass-stream driver.
+Doing S2 and S3 together is cheaper than either alone because the unified
+pass driver *is* the single drive loop S2 wants.
 
 ## S1 — one error boundary: **paid, and it held** (fine; one small residue)
 

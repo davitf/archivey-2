@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -65,12 +66,15 @@ import pytest
 
 from archivey import (
     AcceleratorMode,
+    ArchiveFormat,
     ArchiveyConfig,
     ArchiveyError,
     ExtractionLimits,
+    FormatSupport,
     OnError,
     OverwritePolicy,
     detect_format,
+    format_availability,
     open_archive,
 )
 from tests.sample_archives import (
@@ -80,6 +84,8 @@ from tests.sample_archives import (
     corpus_archive_path,
 )
 from tests.test_corpus_sweep import _skip_unless_runnable
+
+_RAR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rar"
 
 # Bump to change every derived mutation (a fresh sweep of the mutation space).
 HARNESS_VERSION = 1
@@ -121,6 +127,37 @@ _PARAMS = [
     for kind in MUTATION_KINDS
     if _FUZZ_KIND is None or _FUZZ_KIND in kind
 ]
+
+# Static solid RAR fixtures (declarative CORPUS builders do not emit ``-s``).
+# Wave-1: the two basic solid archives; symlink/file-version solids are optional later.
+_SOLID_RAR_SOURCES: tuple[tuple[CorpusEntry, Path], ...] = (
+    (
+        CorpusEntry("basic-solid-rar5", (), ("rar",), requires_binaries=("unrar",)),
+        _RAR_FIXTURES / "basic_solid__.rar",
+    ),
+    (
+        CorpusEntry("basic-solid-rar4", (), ("rar",), requires_binaries=("unrar",)),
+        _RAR_FIXTURES / "basic_solid__rar4.rar",
+    ),
+)
+
+_SOLID_RAR_PARAMS = [
+    pytest.param(entry, path, kind, id=f"{entry.id}-rar-{kind}")
+    for entry, path in _SOLID_RAR_SOURCES
+    for kind in MUTATION_KINDS
+    if _FUZZ_KIND is None or _FUZZ_KIND in kind
+]
+
+
+def _skip_unless_solid_rar_runnable() -> None:
+    """Skip solid-RAR mutation when the reader or ``unrar`` decompressor is absent."""
+    availability = format_availability(ArchiveFormat.RAR)
+    if availability.support is FormatSupport.NONE:
+        pytest.skip(
+            f"format 'rar' not readable here: {availability.missing or 'no backend'}"
+        )
+    if shutil.which("unrar") is None:
+        pytest.skip("unrar unavailable")
 
 
 @dataclass(frozen=True)
@@ -417,8 +454,16 @@ def _exercise(
                     continue
                 try:
                     with ar.open(member) as f:
-                        while f.read(1 << 16):
-                            if f.tell() > _READ_CAP:
+                        # Track bytes locally: solid / forward-only streams are not
+                        # seekable, so ``f.tell()`` would raise a raw OSError and
+                        # break the typed-error invariant.
+                        got = 0
+                        while True:
+                            chunk = f.read(1 << 16)
+                            if not chunk:
+                                break
+                            got += len(chunk)
+                            if got > _READ_CAP:
                                 break
                 except ArchiveyError:
                     pass  # per-member decode failure: exactly the contract
@@ -464,6 +509,36 @@ def test_mutations_fail_typed_or_succeed(
 
             # Detection must uphold the same invariant on arbitrary bytes (it may return
             # any format, or raise FormatDetectionError — never a raw codec exception).
+            try:
+                detect_format(io.BytesIO(mutated))
+            except ArchiveyError:
+                pass
+            except Exception as exc:  # noqa: BLE001 - invariant check
+                pytest.fail(
+                    f"{_failure_context(entry, key, kind, seed, desc)} "
+                    f"detect_format raw {type(exc).__name__}: {exc!r}"
+                )
+
+    _clear_active_mutation()
+
+
+@pytest.mark.timeout(_FUZZ_TIMEOUT)
+@pytest.mark.parametrize(("entry", "path", "kind"), _SOLID_RAR_PARAMS)
+def test_solid_rar_mutations_fail_typed_or_succeed(
+    entry: CorpusEntry, path: Path, kind: str, tmp_path: Path
+) -> None:
+    """Solid RAR4/RAR5 demux under the same mutation invariant as declarative CORPUS."""
+    _skip_unless_solid_rar_runnable()
+    data = path.read_bytes()
+    key = "rar"
+    seed = mutation_seed(entry, key)
+
+    for desc, mutated in _mutations_for_test(data, seed, kind):
+        _set_active_mutation(entry, key, kind, seed, desc)
+        with tempfile.TemporaryDirectory(prefix="out-", dir=tmp_path) as out_raw:
+            out_dir = Path(out_raw)
+            _exercise(mutated, entry, key, out_dir, kind, seed, desc)
+
             try:
                 detect_format(io.BytesIO(mutated))
             except ArchiveyError:

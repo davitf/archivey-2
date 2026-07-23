@@ -442,23 +442,32 @@ class TarReader(BaseArchiveReader):
             return
         # Pull from the shared instance-held progressive pass so __iter__,
         # stream_members, and scan_members share one cursor and finalization.
+        # close_previous=False: tarfile invalidates the prior extractfile handle on
+        # advance; tracking previous would be incorrect.
+        # The driver's finally closes the last stream inside this translation context
+        # (pre-unify, only stream_members's finally closed it, outside translation).
+        # Close-time faults on the final member now surface typed; the outer
+        # stream_members finally still idempotently closes afterward.
         with self._translated_errors():
-            for member in self._begin_forward_pass():
-                if member.is_file:
-                    info = cast("tarfile.TarInfo", member._raw)
-                    with self._handle_guard():
-                        raw = self._tar.extractfile(info)
-                    if raw is None:
-                        raw = BytesIO(b"")
-                    stream: BinaryIO = ensure_binaryio(raw)
-                    if self._handle_lock is not None:
-                        stream = LockedStream(stream, self._handle_lock)
-                    yield (
-                        member,
-                        self._wrap_member_stream(stream, member.name, size=member.size),
-                    )
-                else:
-                    yield member, None
+
+            def _open(member: ArchiveMember) -> ArchiveStream | None:
+                if not member.is_file:
+                    return None
+                info = cast("tarfile.TarInfo", member._raw)
+                with self._handle_guard():
+                    raw = self._tar.extractfile(info)
+                if raw is None:
+                    raw = BytesIO(b"")
+                stream: BinaryIO = ensure_binaryio(raw)
+                if self._handle_lock is not None:
+                    stream = LockedStream(stream, self._handle_lock)
+                return self._wrap_member_stream(stream, member.name, size=member.size)
+
+            yield from self._drive_pass_streams(
+                self._begin_forward_pass(),
+                open_member=_open,
+                close_previous=False,
+            )
 
     def _capture_eof_probe(self, members: list[tarfile.TarInfo]) -> None:
         """Snapshot whether tarfile stopped the header scan on a *rejected* (non-null)
