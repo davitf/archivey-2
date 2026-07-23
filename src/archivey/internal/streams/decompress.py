@@ -377,9 +377,10 @@ _PPMD_UNSIZED_DECODE_CHUNK = 65536
 # input that remaining can be kilobytes; ``decode(b"\0", large)`` is the same
 # overshoot class as unbounded decode and intermittently SIGSEGV/SIGABRT (or
 # silently poisons the heap until GC/exit — the ``test_ppmd_raw_streams``
-# exit-after-green fingerprint). A true missing-NUL completion only yields a tiny
-# tail; anything still short after one capped NUL is truncation.
-# See docs/internal/ppmd-exit-after-green-exploration.md.
+# exit-after-green fingerprint). Measured: successful truncated NUL emits are
+# typically 1–3 bytes (or the large budget aborts); a true missing-NUL completion
+# was not reproducible on pyppmd 1.3.1 with encoder flush, so 64 is a crash-threshold
+# cushion rather than a measured need — see exploration doc.
 _PPMD_EXTRA_NUL_MAX_OUTPUT = 64
 
 
