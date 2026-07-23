@@ -421,6 +421,15 @@ Two stacked issues on pyppmd 1.3.x:
 - Keep unfinished-decoder adversarial coverage, but execute those bodies in a
   fresh subprocess (`tests/test_ppmd_raw_streams.py`).
 
+**Residual tradeoff:** 64 is a crash cushion, not a proven bound for every
+legitimate “encoder omitted trailing null” completion. A single final compressed
+byte can emit thousands of output symbols (last-byte isolation); if a correct
+stream ever needs that much from the synthetic NUL, the cap fail-closes as
+`TruncatedError`. Using full remaining unpack (py7zr) reintroduces aborts on
+truncated packs. Preferred follow-up: **pack-size–gated** NUL budget (full rem only
+when the container’s compressed size was fully delivered) — see exploration doc
+“What we can do”.
+
 ### Verification (this investigation)
 
 | Soak | Before | After |

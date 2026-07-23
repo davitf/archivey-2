@@ -319,3 +319,189 @@ payloads (exact fuzzer recovery). Upstream fixtures:
 - The large `last_out` numbers bound how much the *real* final compressed byte
   can produce — useful threat intuition, not a measured need for the synthetic
   NUL budget on complete streams.
+
+---
+
+## Consolidated findings (all probes)
+
+### What crashes (pyppmd 1.3.1 / Ppmd7)
+
+| Pattern | Result |
+|---------|--------|
+| Full `encode` + `flush`, sized `decode(packed, n)` | Clean (0 crashes in large soaks) |
+| Half packed then `del` decoder (no NUL) | Clean |
+| Half packed then `decode(b"\\0", remaining≈thousands)` | **~85/100** SIGSEGV/SIGABRT |
+| Same with NUL `max_length` ≤ 64 (or 1) | **0/100** |
+| Mid-truncation NUL that *returns* (small budget) | Usually **1–3** output bytes, never completes member |
+| Unfinished decoder + `Ppmd7T_Free` in-process | Low-rate exit-after-green / teardown abort |
+
+### What the “extra NUL” docs path does on this wheel
+
+| Probe | Result |
+|-------|--------|
+| Exact upstream fuzzer recovery after `encode+flush` | **0/60 768** `needs_input`+NUL hits |
+| py7zr compressor round-trips / official 66-byte fixture one-shot | Full match, no NUL |
+| Official fixture chunked | Finishes via `decode(b"", …)` (+5), not NUL |
+| 1.2 MiB CSV fixture round-trip (`ends0=False`) | Full match, **0** NUL events |
+| Strip a *present* trailing compressed `0x00` | Almost always **`eof_short`**, not docs NUL; synthetic NUL does not restore |
+
+Upstream README still documents: encoder may omit a last null when the last byte
+would be `b"\\0"`; caller may need `decode(b"\\0", length - len(result))`.
+py7zr’s `PpmdDecompressor` still passes **full** `max_length` (often remaining
+unpack) on empty+`needs_input`. We have not produced a complete flushed stream
+on 1.3.1 that needs that call.
+
+### Trailing `0x00` in flushed bitstreams (load-bearing)
+
+| Payload family | ≈ fraction ending in `0x00` |
+|----------------|----------------------------|
+| Random / modular rand | ~100% |
+| English-ish text | ~99.6% |
+| Prefix + long `Z` tail | ~96.5% |
+| Pure `a*n` / `Z*n` | ~26% |
+| Mixed ~5k–60k samples | ~68–70% |
+
+That trailing byte is **compressed data**. Last-byte isolation (feed all-but-last,
+then the last byte alone):
+
+| Payload | n | last | bytes emitted by last byte alone |
+|---------|---|------|----------------------------------|
+| `a*n` | 64 | `0x40` | 64 (entire payload) |
+| `a*n` | 1024 | `0x00` | 834 |
+| `a*n` | 16384 | `0x00` | **2594** |
+| `HDR`+`Z*` | 1024 | `0x00` | 995 |
+| `HDR`+`Z*` | 4096 | `0x00` | **1639** |
+| rand | 256 | `0x00` | 1 |
+| rand | 4096 | `0x00` | 219 |
+| rand | 16384 | `0x00` | 137 |
+
+Replacing a real non-zero last byte with synthetic `b"\\0"` (e.g. `a*64`, last
+`0x40`) → `needs_input`, but **`extra≈1` and mismatch**. Synthetic NUL ≠ “replay
+whatever the last byte would have done.”
+
+### Theoretical bridge (why “maybe >>64” is still fair)
+
+If the README omit-rule means “flush dropped a final compressed `0x00` that
+*would* have been the last bitstream byte,” then a correct recovery NUL is
+acting as that omitted byte — and last-byte isolation says that byte can emit
+**hundreds to thousands** of symbols on repetitive data. We never observed
+omit+`needs_input` after `flush()` on 1.3.1, so this stays **theoretical**, but
+it is the reason a hard cap of 64 cannot be claimed “always enough for every
+correct stream.”
+
+### Archivey mitigations already landed
+
+1. `_PPMD_EXTRA_NUL_MAX_OUTPUT = 64` on flush / empty-feed NUL injection.
+2. Subprocess isolation for unfinished-decoder adversarial tests.
+3. Required CI no longer soft-passes exit-after-green for this module.
+4. Hard soaks after both mitigations: **0/100** (`[all]` and pyppmd-only).
+
+---
+
+## The tension: crash-safety vs complete decompress
+
+**User question (paraphrased):** if a legitimate omitted-NUL completion might need
+much more than 64 output bytes, doesn’t a small cap mean we can’t both avoid the
+native abort *and* guarantee we finish every correct stream?
+
+**Short answer: with a single constant budget, yes — that tension is real.**
+
+| Policy | Correct complete stream that needs large NUL | Truncated mid-stream + NUL |
+|--------|-----------------------------------------------|----------------------------|
+| Cap 64 (current) | May stop early → `TruncatedError` (fail closed, no crash) | Crash avoided (measured) |
+| Full remaining (py7zr) | Completes if docs path needs large rem | **High-rate native abort** (~85/100 on half-feed) |
+| Cap 1–8 | Even more fail-closed on unknown large docs path | Also crash-safe |
+
+Empirically on 1.3.1 + `encode+flush`, the large-NUL docs path did not appear, so
+cap 64 has not bitten a known fixture. Empirically, last-byte sizes say the
+*ceiling* for “one final `0x00` of compressed input” is **>>64**. We cannot
+honestly promise both “never abort on garbage/truncation” and “always finish
+every correct omitted-NUL member” while always using one fixed `max_length`.
+
+---
+
+## What we can do (options)
+
+Ranked for archivey. None require waiting on an upstream pyppmd fix (still worth
+filing / tracking — overshoot + `Ppmd7T_Free` are native defects).
+
+### A. Pack-size–gated NUL budget (recommended)
+
+7z folders expose **pack size** (compressed length) as well as unpack size.
+ZIP local headers similarly know compressed size for PPMd members.
+
+- Track compressed bytes actually fed into `PpmdDecoder`.
+- On flush / empty+`needs_input` NUL injection:
+  - If `fed_compressed >= pack_size` (stream fully delivered per container) →
+    allow **`max_length = remaining unpack`** (py7zr-compatible docs path).
+  - If `fed_compressed < pack_size` (truncated / early EOF on the pack stream) →
+    **do not** issue a large-budget NUL; surface `TruncatedError` (optional:
+    tiny diagnostic NUL with cap 1–3, or skip NUL entirely).
+
+Why this breaks the false dichotomy: the crash repro is “NUL with huge rem while
+**compressed input was incomplete**.” The docs recovery is “NUL after
+**all packed bytes were delivered** but encoder omitted a final null.” Pack size
+is exactly the signal that distinguishes those two states at the container
+boundary. `PpmdDecoder` today only receives `unpack_size`; wiring `pack_size`
+(or `compressed_eof_known`) from `sevenzip_pipeline` / ZIP is the missing knob.
+
+Risks / open design points:
+
+- Solid blocks / multi-coder folders: pack size is per pack stream; confirm the
+  PPMd coder sees the right slice length.
+- Streaming where pack size is unknown until the end: fall back to cap or to
+  “inner EOF” only when the underlying view hits its sized end.
+- PPMd8 / unsized paths: end mark changes the story; keep current bounds.
+
+### B. Keep cap 64 and document fail-closed (status quo)
+
+Ship crash-safe behaviour; document that a pathological correct stream needing
+`>64` bytes from the synthetic NUL may raise `TruncatedError` on 1.3.x.
+Acceptable while docs path remains unreproduced; weak if we later find a real
+7z that needs large NUL after full pack delivery.
+
+### C. Always use full remaining (py7zr parity)
+
+Maximises chance of finishing correct omitted-NUL members; re-introduces
+process-abort on truncated PPMd. Only viable if PPMd decode is **subprocess-
+isolated** in production (CLI / service worker), not for in-process library use.
+
+### D. Subprocess-isolate all PPMd (library or CLI)
+
+Contain native aborts regardless of budget. Heavy for a library default
+(latency, pickling, API shape); reasonable for a CLI extract worker or optional
+“safe mode.” Does not fix in-process `open_archive` callers.
+
+### E. Upstream pyppmd
+
+Proper fix: decoder must not corrupt the heap when `max_length` exceeds true
+remaining symbols / when freed while the worker waits on input. Until then,
+archivey must treat large post-EOF NUL budgets as unsafe unless pack delivery
+is known complete (option A) or the process is disposable (D).
+
+### F. What not to rely on
+
+- **Stripping trailing compressed zeros** as a normalization step — corrupts
+  members; that `0x00` is often the last load-bearing byte.
+- **Inferring budget from “successful truncated NUL emits ≤3”** alone — that
+  measures the *crashy* path’s survivors, not the docs path’s need.
+- **Equating last-byte `last_out` with synthetic-NUL `extra`** — measured
+  counterexample (`a*64`: real last → 64 bytes; synthetic NUL → 1, mismatch).
+
+---
+
+## Recommended next step
+
+1. Keep the current cap + test isolation as the **crash floor** (already landed).
+2. Implement **option A** when wiring 7z/ZIP PPMd for real: pass pack size (or a
+   boolean “compressed stream exhausted per container size”) into `PpmdDecoder`
+   and only then allow `nul_budget = remaining unpack`.
+3. Add a regression once we have either a fixture that needs docs-path NUL after
+   full pack delivery, or a synthetic encoder that omits the trailing null on
+   purpose with `extra > 64`.
+4. Leave known-issues language: residual risk on truncated PPMd if anything
+   bypasses the gate; upstream still buggy.
+
+Until A lands, the honest library contract is: **prefer process survival over
+speculative large NUL recovery**; complete `encode+flush` streams we can
+construct do not need the large budget on 1.3.1.
