@@ -268,6 +268,27 @@ Re-center deliverables on **clean teardown**, not only overshoot:
    CI exists — does race rate track GC/GIL mode?
 5. **Deterministic seed:** Find order/mem/content that triggers teardown abort
    reliably so archivey can write a red–green test instead of a probabilistic soak.
+6. **Multi-NUL / old-encoder omission (does the single capped NUL ever under-recover?):**
+   On pyppmd 1.3.1 a *complete* pack decodes to `unpack_size` needing **zero** synthetic
+   NULs (measured across text / zeros / random / null-terminated payloads); trimming real
+   trailing bytes desyncs into premature-`eof`-with-garbage, not a clean multi-NUL state.
+   So the single capped NUL is sufficient *for pyppmd's own encoder*. Open question: do
+   **older 7-Zip / p7zip PPMd7 encoders** (or WinRAR's PPMd) omit trailing null(s)
+   differently, such that a valid member needs >1 synthetic NUL? Walk 7-Zip's
+   `Ppmd7z_RangeEnc_FlushData` and pyppmd's vendored-C history across tagged releases
+   (the 1.3.0 ThreadDecoder rewrite is already suspect), and decode a corpus produced by
+   **old 7-Zip / WinRAR builds**, not just pyppmd round-trips. If >1 is ever real, the
+   single-NUL cap needs a small bounded multi-NUL loop.
+7. **Premature-`eof` determinism:** pyppmd flips native `eof` after ~64 output bytes when
+   `max_length` is small over highly compressible data (why PPMd7 needs `pack_size` to
+   finish the tail). Is this deterministic by `order` / `mem` / compressibility /
+   `max_length`? A deterministic trigger lets archivey pin the chunked-read completion
+   test instead of relying on a compressible-payload heuristic.
+8. **Unsized PPMd8 end-mark sufficiency:** archivey now performs **no** post-eof drain
+   for unsized PPMd8 (the end mark terminates valid decodes; a drain fabricated +N bytes
+   on compressible payloads — measured). Confirm upstream that the PPMd8 end mark always
+   flushes the final symbols with no residual buffered output, i.e. that skipping the
+   drain can never truncate a valid unsized member.
 
 ### py7zr note (do not copy a myth)
 

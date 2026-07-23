@@ -198,26 +198,65 @@ def test_ppmd_decoder_complete_pack_drains_past_premature_eof() -> None:
     assert dec._pack_complete() is True
 
 
-def test_ppmd_decoder_unknown_pack_size_refuses_post_eof_drain() -> None:
-    """Without ``pack_size``, do not chase unpack_size past premature native eof."""
-    payload = b"a" * 1024
+def test_ppmd7_decoder_requires_pack_size() -> None:
+    """PPMd7 without ``pack_size`` is rejected at construction.
+
+    Without the declared compressed length a premature native ``eof`` (pyppmd flips it
+    early on a small ``max_length`` over compressible data) cannot be told from
+    truncation: the only safe move is to refuse the drain, which silently truncates a
+    valid member on chunked reads. 7z always knows the pack length, so PPMd7 requires
+    it rather than choosing between truncation and the near-EOF ``MemoryError``.
+    """
+    with pytest.raises(ValueError, match="pack_size"):
+        PpmdDecoder(order=_ORDER, mem_size=_MEM, variant=7, unpack_size=1024)
+
+
+def test_archivey_ppmd7_chunked_reads_compressible_are_complete() -> None:
+    """Small ``read(n)`` on a highly compressible PPMd7 member returns the whole payload.
+
+    Regression: pyppmd flips native ``eof`` after ~64 output bytes when ``max_length``
+    is small over compressible data. With ``pack_size`` supplied, the decoder finishes
+    the tail past that premature eof; a prior conservative gate truncated these reads.
+    """
+    payload = b"A" * 5000  # compresses to a handful of bytes -> premature eof pressure
     packed = _encode_ppmd7(payload)
-    dec = PpmdDecoder(
-        order=_ORDER,
-        mem_size=_MEM,
-        variant=7,
-        unpack_size=len(payload),
-    )
-    out = bytearray(dec.feed(packed, max_length=64).data)
-    while len(out) < len(payload) and not dec.needs_input:
-        chunk = dec.feed(b"", max_length=64).data
-        if not chunk:
-            break
-        out.extend(chunk)
-    out.extend(dec.flush().data)
-    assert len(out) < len(payload)
-    assert not dec.finished
-    assert dec._pack_complete() is None
+    for read_size in (1, 64, 4096):
+        with PpmdDecompressorStream(
+            io.BytesIO(packed),
+            order=_ORDER,
+            mem_size=_MEM,
+            variant=7,
+            unpack_size=len(payload),
+            pack_size=len(packed),
+        ) as stream:
+            chunks: list[bytes] = []
+            while True:
+                piece = stream.read(read_size)
+                if not piece:
+                    break
+                chunks.append(piece)
+            assert b"".join(chunks) == payload, f"read_size={read_size}"
+
+
+def test_ppmd8_unsized_flush_does_not_overshoot() -> None:
+    """Unsized PPMd8 must stop at its end mark — flush must not fabricate a tail.
+
+    Regression: with a known ``pack_size`` but no ``unpack_size``, the post-eof empty
+    drain chased a nonexistent bound and appended garbage bytes past the true end
+    (measured on all-zero payloads). Unsized decodes rely on the end mark; no drain.
+    """
+    for payload in (b"\x00" * 9000, b"A" * 9000, b"ab\n" * 3000):
+        packed = _encode_ppmd8(payload)
+        dec = PpmdDecoder(
+            order=_ORDER,
+            mem_size=_MEM,
+            variant=8,
+            unpack_size=None,
+            pack_size=len(packed),
+        )
+        out = dec.feed(packed).data
+        out += dec.flush().data
+        assert out == payload, f"len={len(payload)} got={len(out)}"
 
 
 def test_ppmd_decoder_fed_compressed_matches_pack_size_on_complete_member() -> None:

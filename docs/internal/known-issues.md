@@ -425,16 +425,34 @@ Two stacked issues on pyppmd 1.3.x:
   chunked empty drains when finishing a complete pack
   (`src/archivey/internal/streams/decompress.py`).
 - Gate post-eof empty drains on ``pack_size``: drains run only when
-  ``fed_compressed >= pack_size`` (**known-complete**). Unknown ``pack_size`` is
-  treated conservatively (single capped NUL only — no chunked empty drains).
+  ``fed_compressed >= pack_size`` (**known-complete**) **and** a container
+  ``unpack_size`` bounds them. Unknown/short ``pack_size`` and unsized decodes get a
+  single capped NUL only — no chunked empty drains.
+- **Require ``pack_size`` for PPMd7.** Without it a premature native ``eof`` (pyppmd
+  flips it early on a small ``max_length`` over compressible data) is
+  indistinguishable from truncation: draining to finish the tail can ``MemoryError``
+  on 1.3.x (measured **36/36** on ~50–99 % pack cuts), so the decoder must refuse the
+  drain — which silently truncates a *valid* member on chunked reads. 7z always knows
+  the pack length, so PPMd7 requires it (`PpmdDecoder.__init__`) rather than choosing
+  between truncation and a crash.
+- **Plumb ``pack_size`` through the 7z pipeline.** A standalone PPMd folder reads it
+  from the sized pack slice (`compressed_input_size`); an **encrypted** PPMd folder
+  feeds PPMd from an AES decrypt stream with *no* knowable length, so the pipeline sets
+  `_CodecStage.pack_size` from the preceding coder's output size
+  (`sevenzip_pipeline.plan_folder`). Without this, encrypted-PPMd chunked/streamed
+  reads truncated (now covered by `test_encrypted_ppmd_chunked_reads_roundtrip`).
+- **Unsized PPMd8 gets no post-eof drain.** Its end mark terminates valid decodes; a
+  drain without an ``unpack_size`` clamp only fabricates trailing bytes (measured: +3
+  on an all-zero payload). Sized PPMd8 keeps the drain.
 - Keep unfinished-decoder adversarial coverage in fresh subprocesses; tolerate
   child teardown abort after a successful body (`tests/test_ppmd_raw_streams.py`).
 
 **Residual:** (1) `Ppmd7T_Free` teardown race — required CI still uses
 `--allow-exit-after-green` for this module. (2) Declared-complete but internally
-corrupt packs can still fill toward `unpack_size` via empty drains (container CRC
-is the backstop). (3) `pack_size` must measure the same bytes `feed()` counts —
-see `PpmdDecoder` docstring invariant.
+corrupt sized packs can still fill toward `unpack_size` via empty drains (container
+CRC is the backstop). (3) `pack_size` must measure the same bytes `feed()` counts —
+see `PpmdDecoder` docstring invariant; the 7z plumbing satisfies it by construction
+(pack slice length / preceding coder output).
 
 ### Verification (this investigation)
 

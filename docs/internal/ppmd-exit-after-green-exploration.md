@@ -593,3 +593,28 @@ exhausted”) that both:
   delivered**; always cap per-call `max_length` (e.g. 64) for NUL and drains;
   at most one NUL; on incomplete pack delivery stop at `needs_input` /
   early eof without chasing unpack_size through post-eof empties.
+
+---
+
+## Follow-up (2026-07-23, PR #188 review round 2)
+
+The pack-size gate above was tightened after measuring two gaps:
+
+- **Unknown `pack_size` is not actually recoverable, so PPMd7 now requires it.**
+  Chunked-64 empty drains toward `unpack_size` on truncated input `MemoryError`
+  **36/36** (pack cut 50–99 %), so "just chunk small for unknown packs" is unsafe.
+  Since 7z always knows the pack length, `PpmdDecoder.__init__` now rejects PPMd7
+  without `pack_size` rather than silently truncating chunked reads (a valid
+  compressible member flips native `eof` after ~64 bytes and the conservative gate
+  then refused the tail).
+- **Encrypted PPMd feeds an unsized AES decrypt stream**, so `compressed_input_size`
+  was `None` and the gate mis-fired. The pipeline now plumbs `pack_size` from the
+  preceding coder's output size (`plan_folder`), so encrypted folders carry it too.
+- **Unsized PPMd8 must not drain past its end mark** — without an `unpack_size` clamp
+  the drain fabricated trailing bytes (+3 on all-zeros). Sized PPMd8 keeps the drain.
+
+Regression tests: `test_archivey_ppmd7_chunked_reads_compressible_are_complete`,
+`test_ppmd8_unsized_flush_does_not_overshoot`, `test_ppmd7_decoder_requires_pack_size`
+(`tests/test_ppmd_raw_streams.py`), `test_encrypted_ppmd_chunked_reads_roundtrip`
+(`tests/test_sevenzip_reader.py`). The `Ppmd7T_Free` teardown race is unchanged and
+still soft-passed in required CI (see `known-issues.md`).
