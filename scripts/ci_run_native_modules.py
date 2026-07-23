@@ -42,9 +42,8 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Accelerators only in the default batch. ``test_ppmd_raw_streams`` has a separate
-# intermittent exit-after-green abort (see known-issues); required CI runs it with
-# ``--allow-exit-after-green``, and the non-required PPMd stress workflow soaks it.
+# Accelerators only in the default batch. ``test_ppmd_raw_streams`` is run as its
+# own required-CI step (and soaked by the non-required PPMd stress workflow).
 _DEFAULT_MODULES: tuple[str, ...] = (
     "tests/test_rapidgzip_deflate_zlib.py",
     "tests/test_accelerator_shutdown.py",
@@ -214,8 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Treat signal/abort after sessionfinish exit=0 as soft (do not fail the "
-            "batch). Real pytest failures still fail. Used by required CI for "
-            "test_ppmd_raw_streams until the exit-time pyppmd abort is fixed."
+            "batch). Real pytest failures still fail. Retained for bisects; required "
+            "CI no longer needs this for test_ppmd_raw_streams (see known-issues.md)."
         ),
     )
     parser.add_argument(

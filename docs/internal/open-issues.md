@@ -145,9 +145,8 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 - **BCJ2 unsupported** — rejected, not garbage.
 - **Native optional wheels / accelerators** may crash or hang on hostile input; we
   mitigate, cannot promise 100%. Includes residual `pyppmd` native-abort risk despite
-  #124/#130 bounds (see `known-issues.md`), plus the separate open
-  **exit-after-green** abort of `tests/test_ppmd_raw_streams.py` (soft-passed in
-  required CI; soaked in non-required PPMd stress).
+  bounds + capped extra-NUL flush (see `known-issues.md`); the former
+  **exit-after-green** abort of `tests/test_ppmd_raw_streams.py` is mitigated there.
 - **ISO import patches pycdlib’s collections** (cycle guard) — visible if the process
   also uses pycdlib directly.
 - **`.Z` truncation:** only nonzero leftover bits are loud.
@@ -162,7 +161,7 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 | --- | --- |
 | Native streaming ZIP | Pipes, truncated/no-EOCD, multi-volume (P2), UTF-8 flag lie (P4) |
 | Salvage / best-effort read mode | Founding use case; all-or-error today |
-| `pyppmd` exit-after-green abort | `test_ppmd_raw_streams` green then teardown SIGSEGV/SIGABRT; see `known-issues.md` + `IDEAS.md` |
+| `pyppmd` exit-after-green abort | Mitigated (capped NUL flush + subprocess unfinished-decoder tests); see `known-issues.md` + exploration doc |
 | Accelerator hang sandbox | Threat-model O5; fuzz with accelerators off until then |
 | OSS-Fuzz + `SECURITY.md` | Before public “safe” marketing |
 | Nested-archive helper / bounded recursion | O6 recipe → maybe a small helper later |

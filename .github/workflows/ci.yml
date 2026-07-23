@@ -191,15 +191,13 @@ jobs:
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         env:
           PYTHONFAULTHANDLER: "1"
-        # Still runs the assertions in required CI, but soft-passes the known
-        # intermittent exit-after-green pyppmd abort (sessionfinish exit=0 then
-        # SIGSEGV/SIGABRT). Hard-fails on real pytest failures. Soak / root-cause
-        # lives in the non-required PPMd native stress workflow.
+        # Hard-fail on any child abort. The former exit-after-green soft-pass was
+        # removed after capping PPMd extra-NUL flush + subprocess-isolating
+        # unfinished-decoder adversarial tests (see known-issues.md).
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
           python scripts/ci_run_native_modules.py
           --modules tests/test_ppmd_raw_streams.py
-          --allow-exit-after-green
 
       - name: Run property-safety tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'

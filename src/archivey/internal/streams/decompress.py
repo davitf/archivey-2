@@ -372,6 +372,16 @@ class BrotliDecoder(BaseDecoder):
 # PpmdDecoder refuses to decode it without ``unpack_size`` at all.
 _PPMD_UNSIZED_DECODE_CHUNK = 65536
 
+# Extra-NUL recovery (encoder may omit a trailing null — pyppmd / py7zr) must NOT
+# reuse the full remaining ``unpack_size`` as ``max_length``. On truncated mid-stream
+# input that remaining can be kilobytes; ``decode(b"\0", large)`` is the same
+# overshoot class as unbounded decode and intermittently SIGSEGV/SIGABRT (or
+# silently poisons the heap until GC/exit — the ``test_ppmd_raw_streams``
+# exit-after-green fingerprint). A true missing-NUL completion only yields a tiny
+# tail; anything still short after one capped NUL is truncation.
+# See docs/internal/ppmd-exit-after-green-exploration.md.
+_PPMD_EXTRA_NUL_MAX_OUTPUT = 64
+
 
 class PpmdDecoder(BaseDecoder):
     """Decode a PPMd stream via ``pyppmd``.
@@ -397,8 +407,10 @@ class PpmdDecoder(BaseDecoder):
 
     At compressed EOF, PPMd may still need an extra NUL input byte when the encoder
     omitted a trailing null (documented by pyppmd). ``flush`` feeds exactly one NUL
-    with the remaining ``max_length``, same as py7zr / the pyppmd PyPI sample; if
-    output is still short of ``unpack_size`` after that, the stream is truncated.
+    with an output budget capped by :data:`_PPMD_EXTRA_NUL_MAX_OUTPUT` (not the full
+    remaining ``unpack_size`` — that overshoot on truncated mid-stream input is the
+    exit-after-green abort; see ``docs/internal/ppmd-exit-after-green-exploration.md``).
+    If output is still short of ``unpack_size`` after that, the stream is truncated.
     """
 
     def __init__(
@@ -469,12 +481,15 @@ class PpmdDecoder(BaseDecoder):
         if self._decomp.eof and max_length < 0:
             return b""
         # Empty input + needs_input (pre-EOF): documented extra NUL (pyppmd / py7zr).
+        # Cap the output budget — see ``_PPMD_EXTRA_NUL_MAX_OUTPUT``.
         if (
             not data
             and getattr(self._decomp, "needs_input", False)
             and not self._decomp.eof
         ):
             data = b"\0"
+            if max_length < 0 or max_length > _PPMD_EXTRA_NUL_MAX_OUTPUT:
+                max_length = _PPMD_EXTRA_NUL_MAX_OUTPUT
         if max_length < 0:
             return self._decode_unsized(data)
         return self._decomp.decode(data, max_length)
@@ -495,17 +510,21 @@ class PpmdDecoder(BaseDecoder):
     def flush(self) -> DecodeOut:
         # A stream whose encoder omitted the trailing byte still reports needs_input
         # at compressed EOF; the documented recovery (pyppmd docs / py7zr) is exactly
-        # one extra NUL, bounded by the remaining size. Never inject fabricated input
-        # in a loop — on truncated data that decodes garbage through the native model,
-        # which can silently complete a member and (on pyppmd 1.3.x, if unbounded)
-        # corrupt the heap. Anything still missing after the single NUL is truncation,
-        # surfaced via pending_error.
+        # one extra NUL. Cap the output request to ``_PPMD_EXTRA_NUL_MAX_OUTPUT`` —
+        # using the full remaining ``unpack_size`` on truncated mid-stream input is
+        # an overshoot (heap corruption on pyppmd 1.3.x; see exploration doc). Never
+        # inject fabricated input in a loop. Anything still missing after the single
+        # capped NUL is truncation, surfaced via pending_error.
         max_length = self._max_length()
         if max_length == 0:
             return DecodeOut(b"")
         out = b""
         if not self._decomp.eof and getattr(self._decomp, "needs_input", False):
-            out = self._decode(b"\0", max_length)
+            # ``min(-1, cap)`` is -1 — treat unsized remaining as "cap only".
+            nul_budget = _PPMD_EXTRA_NUL_MAX_OUTPUT
+            if max_length >= 0:
+                nul_budget = min(max_length, nul_budget)
+            out = self._decode(b"\0", nul_budget)
             self._produced += len(out)
         if not self.finished:
             self._pending_error = TruncatedError("File is truncated")

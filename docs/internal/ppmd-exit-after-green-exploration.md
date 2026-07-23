@@ -2,8 +2,9 @@
 
 **PR:** #188 (this branch)  
 **Issue:** `docs/internal/known-issues.md` → “`pyppmd` exit-after-green abort”  
-**Status:** investigation in progress  
+**Status:** mitigated (see “Fix applied” below)  
 **Date started:** 2026-07-23  
+**Date closed:** 2026-07-23
 
 This doc is a live lab notebook. Findings are appended as experiments finish so
 reviewers can read updated versions mid-investigation.
@@ -110,8 +111,90 @@ PYTHONFAULTHANDLER=1 uv run --no-sync python scripts/ci_run_native_modules.py \
 - Confirms the fingerprint is reproducible on this Cloud agent host
   (uv CPython 3.11.15, glibc 2.39).
 
-#### E1 — pyppmd-only venv (in progress)
+#### E1 — pyppmd-only venv (`--repeat 40`)
 
 - Dedicated `/tmp/ppmd-only-venv`: editable archivey + `pyppmd==1.3.1` +
-  pytest/pytest-timeout only. Expect `rapidgzip`/`lz4`/`brotli`/`zstd`/…
-  absent at import time.
+  pytest/pytest-timeout only. Confirmed absent: rapidgzip, lz4, brotli,
+  backports.zstd, inflate64, bcj, py7zr. Only extension at crash:
+  `pyppmd.c._ppmd`.
+- **Rate: 31/40 FAIL** (SIGSEGV/SIGABRT) — *higher* than `[all]`, not lower.
+- Breadcrumb almost always:
+  `start …::test_ppmd_decoder_truncated_flush_reports_unfinished`
+  (12 tests passed → crash entering / during the truncated-flush test).
+- **Conclusion:** not an interaction with rapidgzip/lz4/brotli/zstd. Those
+  modules in the fatal list were red herrings (import-time loads). Pure
+  `pyppmd` (+ archivey’s truncated flush pattern).
+
+#### E5a — happy-path only (`-k 'not truncated and not hostile and not early_close'`)
+
+- pyppmd-only venv, 40 repeats: **0/40 failures**.
+
+#### E5b — adversarial only (`-k 'truncated or hostile or early_close'`)
+
+- pyppmd-only venv, 40 repeats: **31/40 failures** (matches E1).
+
+#### E4 — bare `pyppmd` (no archivey)
+
+| Mode | Rate |
+|------|------|
+| Sized full decode (control) | **0/40** |
+| Underfed half-input then `del` (no NUL flush) | **0/40** |
+| Early partial decode then `del` ×5 | **0/40** |
+| Half-input then `decode(b"\0", remaining)` ← archivey flush shape | **35/40**, later **85/100** |
+
+Fatal frame is inside the `decode(b"\0", remaining)` call (not only teardown).
+`remaining` after half-feed of the raw-streams fixture is ~1736.
+
+Cap A/B on that bare shape (100 children):
+
+| NUL `max_length` cap | fail/100 |
+|----------------------|----------|
+| full remaining (~1736) | 85 |
+| 64 | 0 |
+| 1 | 0 |
+
+### Root cause (confirmed)
+
+**Dangerous archivey pattern (same family as the prior unbounded/`-1` bug):**
+
+`PpmdDecoder.flush()` injects one documented extra NUL with
+`max_length = remaining unpack_size`. That is correct for a *true* compressed
+EOF where the encoder omitted a trailing null (remaining tail is tiny). On a
+**truncated mid-stream** member, `remaining` is still large, and
+`decode(b"\0", large)` asks the 1.3.x worker to emit thousands of symbols past
+the real end of stream → heap corruption (sometimes mid-call, sometimes silent
+until GC / exit — the “exit-after-green” fingerprint under `[all]`).
+
+Happy-path and underfed-without-NUL-flush do not crash. Other extension modules
+are not required.
+
+### Fix applied
+
+1. **Cap extra-NUL recovery** (`_PPMD_EXTRA_NUL_MAX_OUTPUT = 64`) in
+   `PpmdDecoder.flush` and empty-`feed` NUL injection
+   (`src/archivey/internal/streams/decompress.py`).
+2. **Subprocess-isolate** unfinished-decoder adversarial tests in
+   `tests/test_ppmd_raw_streams.py` (avoids in-process `Ppmd7T_Free` race
+   poisoning the parent session).
+3. Remove `--allow-exit-after-green` from required CI for this module.
+
+### Post-fix soaks
+
+| Env | Rate |
+|-----|------|
+| `[all]` `--repeat 100` | **0/100** |
+| pyppmd-only `--repeat 100` | **0/100** |
+
+(NUL-cap alone: `[all]` ~0–1/40, pyppmd-only still ~6/100 exit-after-green from
+Free race until subprocess isolation.)
+
+### Answers to the original questions
+
+- **rapidgzip / lz4 / brotli interaction?** No — pyppmd-only crashed *more*.
+- **Dangerous archivey pattern?** Yes — large-budget NUL flush on truncated
+  streams (same family as the prior unbounded/`-1` mitigation).
+- **Only corrupted/truncated?** Happy-path alone was clean; truncated flush was
+  the high-rate trigger. Unfinished-decoder Free is a secondary residual on
+  truncated/early-close teardown.
+- **Upstream?** Overshoot + `Ppmd7T_Free` remain pyppmd 1.3.x defects; archivey
+  avoids the patterns that trip them in-process.
