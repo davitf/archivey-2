@@ -158,23 +158,45 @@ jobs:
           "import sys; exp=tuple(map(int, '${{ matrix.python-version }}'.split('.')));
           got=sys.version_info[:2]; assert got==exp, (got, exp); print(sys.version)"
 
+      # Process isolation for intermittent Linux [all] heap corruption (rapidgzip /
+      # pyppmd natives). Separate steps — not a multiline script with shell
+      # continuations — keep this Windows/PowerShell-safe. Full write-up + soak/A/B:
+      # docs/internal/known-issues.md ("Intermittent Linux full-suite heap corruption").
+      # --no-sync so the all-lowest leg keeps its minimum-version resolution.
       - name: Run tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
-        # --no-sync so the all-lowest leg keeps its minimum-version resolution instead of
-        # re-syncing back to the locked (current) versions.
-        #
-        # Isolate Hypothesis property-safety in a fresh process. On Linux [all] CI the
-        # suite intermittently leaves the heap corrupted (rapidgzip / pyppmd natives);
-        # when property tests then validate strategies (charmap), the process SIGSEGV /
-        # SIGABRTs. Two separate steps (not a multiline script with shell continuations)
-        # keep this Windows/PowerShell-safe. Full write-up + soak/A/B recipe:
-        # docs/internal/known-issues.md ("Intermittent Linux full-suite heap corruption").
+        env:
+          PYTHONFAULTHANDLER: "1"
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          pytest tests/ --ignore=tests/test_property_safety.py -q
+          pytest tests/
+          --ignore=tests/test_property_safety.py
+          --ignore=tests/test_rapidgzip_deflate_zlib.py
+          --ignore=tests/test_accelerator_shutdown.py
+          --ignore=tests/test_accelerator_corruption.py
+          --ignore=tests/test_ppmd_raw_streams.py
+          -q
+
+      - name: Run accelerator and PPMd stream tests
+        if: matrix.install == 'all' || matrix.install == 'all-lowest'
+        env:
+          PYTHONFAULTHANDLER: "1"
+        # Fresh process: dedicated rapidgzip ON / truncated-corrupt accelerator paths
+        # and raw PPMd stream tests. Running these in-process with the long suite
+        # has left the heap corrupted so a later RAR/GC tripwire SIGSEGVs (~63%).
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          pytest
+          tests/test_rapidgzip_deflate_zlib.py
+          tests/test_accelerator_shutdown.py
+          tests/test_accelerator_corruption.py
+          tests/test_ppmd_raw_streams.py
+          -q
 
       - name: Run property-safety tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
+        env:
+          PYTHONFAULTHANDLER: "1"
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
           pytest tests/test_property_safety.py -q

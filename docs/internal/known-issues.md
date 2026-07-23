@@ -440,17 +440,37 @@ So a green PPMd stress check means “the known pyppmd runaway probe is quiet,�
 
 ### CI bandage (not a root-cause fix)
 
-Required `[all]` / `[all-lowest]` jobs split property-safety into a **second pytest
-invocation** (`.github/workflows/ci.yml`):
+Required `[all]` / `[all-lowest]` jobs split the suite into **three pytest
+invocations** (`.github/workflows/ci.yml`), each a fresh process:
 
 ```text
-pytest tests/ --ignore=tests/test_property_safety.py -q
+# 1) Main suite — skip Hypothesis + dedicated accelerator/PPMd stream modules
+pytest tests/ \
+  --ignore=tests/test_property_safety.py \
+  --ignore=tests/test_rapidgzip_deflate_zlib.py \
+  --ignore=tests/test_accelerator_shutdown.py \
+  --ignore=tests/test_accelerator_corruption.py \
+  --ignore=tests/test_ppmd_raw_streams.py -q
+
+# 2) Dedicated rapidgzip / accelerator / raw-PPMd stream tests
+pytest tests/test_rapidgzip_deflate_zlib.py \
+  tests/test_accelerator_shutdown.py \
+  tests/test_accelerator_corruption.py \
+  tests/test_ppmd_raw_streams.py -q
+
+# 3) Hypothesis property-safety
 pytest tests/test_property_safety.py -q
 ```
 
-That stops a corrupted main-suite heap from taking down Hypothesis in-process (and
-vice versa). It does **not** stop a SIGSEGV that fires *inside* the main suite (e.g.
-during a later RAR/`subprocess` GC).
+(1)↔(3) stops a corrupted main-suite heap from taking down Hypothesis in-process
+(and vice versa). (2) keeps the heaviest in-process rapidgzip ON / truncated-corrupt
+accelerator paths and raw PPMd stream stress out of the long suite — those modules
+finish around ~63% collected order, after which a later RAR/GC tripwire has been the
+repeated SIGSEGV site. `PYTHONFAULTHANDLER=1` is set on these steps so fatal traces
+always dump.
+
+This still does **not** claim the main suite is free of every native (AUTO/SEEKABLE
+paths and py7zr/PPMd corpus remain). It is CI hygiene, not a product fix.
 
 ### How to reproduce / bisect (investigation recipe)
 
@@ -495,7 +515,7 @@ Useful while hunting:
 - Compare against CI artifacts for a red job: look for `Fatal Python error` +
   `Extension modules:` and the test named in the stack (Hypothesis vs RAR vs other).
 
-**Known red CI fingerprints** (gzip-zlib truncation-recovery work, 2026-07-21; illustrative,
+**Known red CI fingerprints** (gzip-zlib truncation-recovery work, 2026-07; illustrative,
 not a pinned commit contract):
 
 - Run `29829920415` — Ubuntu py3.11/3.12 `[all]` SIGSEGV in Hypothesis charmap GC;
@@ -503,7 +523,12 @@ not a pinned commit contract):
 - Run `29836095815` — after RAR4 fix: Ubuntu py3.11 SIGSEGV / py3.13 SIGABRT still in
   Hypothesis; other legs green.
 - Run `29836326565` — with property-safety split: Ubuntu py3.11 SIGSEGV during RAR
-  multi-volume `open_unrar_p` GC (main suite), proving isolation alone is incomplete.
+  multi-volume `open_unrar_p` GC (main suite), proving Hypothesis isolation alone is
+  incomplete.
+- Run `29969446114` — after review follow-ups: Ubuntu py3.11/3.14 `[all]` SIGSEGV at
+  ~63% (GC during fixture setup / `test_rar_oracle` ← `rarfile`/`cryptography` import),
+  immediately after `test_ppmd_raw_streams` → `test_rapidgzip_deflate_zlib` in collection
+  order. Other matrix legs green. Motivated the accelerator/PPMd-stream process split.
 
 ### Next steps
 
