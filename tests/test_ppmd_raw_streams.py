@@ -165,11 +165,44 @@ def test_archivey_ppmd7_unpack_size_prevents_overshoot() -> None:
         assert stream.read(1) == b""
 
 
+def test_ppmd_decoder_complete_pack_drains_past_premature_eof() -> None:
+    """Fully delivered pack may finish via chunked empty drains after premature eof.
+
+    Highly compressible PPMd7 often sets native ``eof`` after the first capped
+    output request; with ``pack_size`` satisfied, empty drains / flush must still
+    reach ``unpack_size``.
+    """
+    payload = b"a" * 1024
+    packed = _encode_ppmd7(payload)
+    dec = PpmdDecoder(
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=7,
+        unpack_size=len(payload),
+        pack_size=len(packed),
+    )
+    out = bytearray(dec.feed(packed, max_length=64).data)
+    while len(out) < len(payload) and not dec.needs_input:
+        chunk = dec.feed(b"", max_length=64).data
+        if not chunk:
+            break
+        out.extend(chunk)
+    out.extend(dec.flush().data)
+    assert bytes(out) == payload
+    assert dec.finished
+
+
 def test_ppmd_decoder_extra_null_flush_respects_remaining() -> None:
     """Flush feeds at most remaining unpack_size bytes when needs_input (PyPI sample)."""
     payload = b"x" * 50 + b"\0"
     packed = _encode_ppmd7(payload)
-    dec = PpmdDecoder(order=_ORDER, mem_size=_MEM, variant=7, unpack_size=len(payload))
+    dec = PpmdDecoder(
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=7,
+        unpack_size=len(payload),
+        pack_size=len(packed),
+    )
     out = dec.feed(packed).data
     out += dec.flush().data
     assert out == payload
@@ -284,6 +317,7 @@ def test_archivey_ppmd7_truncated_input_raises_truncated_error() -> None:
     ``PpmdDecoder.flush`` injects at most one documented extra NUL with a *capped*
     output budget; a stream cut mid-payload must surface as ``TruncatedError``,
     not silently complete (and must not native-abort on pyppmd 1.3.x).
+    Pass the true ``pack_size`` so post-eof empty drains stay gated off.
     """
     _run_ppmd_child(
         textwrap.dedent(
@@ -300,6 +334,43 @@ def test_archivey_ppmd7_truncated_input_raises_truncated_error() -> None:
                 mem_size=_MEM,
                 variant=7,
                 unpack_size=len(_CONTENT),
+                pack_size=len(packed),
+            ) as stream:
+                try:
+                    stream.read()
+                except TruncatedError:
+                    print("ok")
+                else:
+                    raise SystemExit("expected TruncatedError")
+            """
+        )
+    )
+
+
+def test_archivey_ppmd7_near_truncated_pack_raises_truncated_error() -> None:
+    """Near-complete pack cut (~95%) must TruncatedError, not MemoryError.
+
+    Without ``pack_size``, empty drains past premature native eof chase
+    ``unpack_size`` and can ``MemoryError`` on pyppmd 1.3.x. Declaring the true
+    pack length keeps those drains gated off when delivery is short.
+    """
+    _run_ppmd_child(
+        textwrap.dedent(
+            """\
+            import io
+            from archivey.exceptions import TruncatedError
+            from archivey.internal.streams.decompress import PpmdDecompressorStream
+            from tests.test_ppmd_raw_streams import _CONTENT, _ORDER, _MEM, _encode_ppmd7
+
+            packed = _encode_ppmd7(_CONTENT)
+            cut = max(1, int(len(packed) * 0.95))
+            with PpmdDecompressorStream(
+                io.BytesIO(packed[:cut]),
+                order=_ORDER,
+                mem_size=_MEM,
+                variant=7,
+                unpack_size=len(_CONTENT),
+                pack_size=len(packed),
             ) as stream:
                 try:
                     stream.read()
@@ -322,7 +393,11 @@ def test_ppmd_decoder_truncated_flush_reports_unfinished() -> None:
 
             packed = _encode_ppmd7(_CONTENT)
             dec = PpmdDecoder(
-                order=_ORDER, mem_size=_MEM, variant=7, unpack_size=len(_CONTENT)
+                order=_ORDER,
+                mem_size=_MEM,
+                variant=7,
+                unpack_size=len(_CONTENT),
+                pack_size=len(packed),
             )
             out = dec.feed(packed[: len(packed) // 2]).data
             out += dec.flush().data
@@ -422,7 +497,11 @@ def test_ppmd_decoder_truncated_flush_caps_nul_max_length() -> None:
 
             packed = _encode_ppmd7(_CONTENT)
             dec = PpmdDecoder(
-                order=_ORDER, mem_size=_MEM, variant=7, unpack_size=len(_CONTENT)
+                order=_ORDER,
+                mem_size=_MEM,
+                variant=7,
+                unpack_size=len(_CONTENT),
+                pack_size=len(packed),
             )
             spy = _MaxLengthSpy(dec._decomp)
             dec._decomp = spy

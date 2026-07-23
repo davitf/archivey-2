@@ -492,19 +492,18 @@ is known complete (option A) or the process is disposable (D).
 
 ## Recommended next step
 
-1. Keep the current cap + test isolation as the **crash floor** (already landed).
-2. Implement **option A** when wiring 7z/ZIP PPMd for real: pass pack size (or a
-   boolean “compressed stream exhausted per container size”) into `PpmdDecoder`
-   and only then allow `nul_budget = remaining unpack`.
-3. Add a regression once we have either a fixture that needs docs-path NUL after
-   full pack delivery, or a synthetic encoder that omits the trailing null on
-   purpose with `extra > 64`.
-4. Leave known-issues language: residual risk on truncated PPMd if anything
-   bypasses the gate; upstream still buggy.
+1. ~~Keep the current cap + test isolation as the **crash floor**.~~ Done.
+2. ~~Implement **option A** (pack-size gate) + chunked NUL/empty drains.~~ Done in
+   `PpmdDecoder` (`pack_size`, `_fed_compressed`, at most one NUL@64, refuse
+   post-eof empty drains when pack known-short). `CodecParams.pack_size` /
+   `PpmdCodec` fall back to `compressed_input_size` (sized views / 7z
+   `SlicingStream`).
+3. Residual: full-length corrupt packs that satisfy `pack_size` can still trip
+   post-eof drains — upstream fix or subprocess isolation for hostile inputs.
+4. Add fixtures if we find a real member that needs docs-path NUL after full pack
+   delivery with `extra > 64` (chunked drains should already cover it when pack
+   is complete).
 
-Until A lands, the honest library contract is: **prefer process survival over
-speculative large NUL recovery**; complete `encode+flush` streams we can
-construct do not need the large budget on 1.3.1.
 
 ---
 

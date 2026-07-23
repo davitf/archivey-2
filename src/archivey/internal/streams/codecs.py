@@ -228,6 +228,9 @@ class CodecParams:
       parameters (mutually exclusive with 7z ``properties`` for :class:`PpmdCodec`).
     - ``unpack_size`` — known uncompressed output length (7z folder unpack size). Passed
       to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark.
+    - ``pack_size`` — known compressed length for the PPMd coder input (7z pack stream /
+      ZIP compressed size / sized view). Gates post-eof empty drains and large NUL
+      recovery so truncated pack delivery cannot chase ``unpack_size``.
     """
 
     filters: list[dict] | None = None
@@ -236,6 +239,7 @@ class CodecParams:
     ppmd_mem_size: int | None = None
     ppmd_restore_method: int = 0
     unpack_size: int | None = None
+    pack_size: int | None = None
 
 
 _DEFAULT_PARAMS = CodecParams()
@@ -1267,7 +1271,12 @@ class PpmdCodec(StreamCodec):
                 "The 'pyppmd' package is required for PPMd streams (install the '7z' extra)."
             )
         # ZIP method 98 supplies order/mem/restore directly (PPMd8). 7z supplies a
-        # var.H properties blob (PPMd7).
+        # var.H properties blob (PPMd7). Prefer an explicit ``pack_size``; fall back to
+        # the sized source length (``SlicingStream`` / path size) filled into
+        # ``compressed_input_size`` by ``open_codec_stream``.
+        pack_size = params.pack_size
+        if pack_size is None:
+            pack_size = config.compressed_input_size
         if params.ppmd_order is not None:
             if params.ppmd_mem_size is None:
                 raise ValueError("ZIP PPMd requires ppmd_order and ppmd_mem_size")
@@ -1278,6 +1287,7 @@ class PpmdCodec(StreamCodec):
                 variant=8,
                 restore_method=params.ppmd_restore_method,
                 unpack_size=params.unpack_size,
+                pack_size=pack_size,
             )
         order, mem_size = _parse_ppmd_var_h_properties(params.properties)
         return PpmdDecompressorStream(
@@ -1285,6 +1295,7 @@ class PpmdCodec(StreamCodec):
             order=order,
             mem_size=mem_size,
             unpack_size=params.unpack_size,
+            pack_size=pack_size,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

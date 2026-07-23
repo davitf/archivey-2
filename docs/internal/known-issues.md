@@ -416,26 +416,23 @@ Two stacked issues on pyppmd 1.3.x:
 ### Mitigation in archivey
 
 - Cap extra-NUL recovery output to `_PPMD_EXTRA_NUL_MAX_OUTPUT` (64) in
-  `PpmdDecoder.flush` / empty-`feed` NUL injection
+  `PpmdDecoder.flush` / empty-`feed` NUL injection; at most one synthetic NUL;
+  chunked empty drains when finishing a complete pack
   (`src/archivey/internal/streams/decompress.py`).
+- Gate post-eof empty drains on ``pack_size`` (fed compressed ≥ declared pack);
+  known-short packs raise ``TruncatedError`` instead of chasing unpack_size.
 - Keep unfinished-decoder adversarial coverage, but execute those bodies in a
   fresh subprocess (`tests/test_ppmd_raw_streams.py`).
 
-**Residual tradeoff:** 64 is a crash cushion, not a proven bound for every
-legitimate “encoder omitted trailing null” completion. A single final compressed
-byte can emit thousands of output symbols (last-byte isolation); if a correct
-stream ever needs that much from the synthetic NUL, the cap fail-closes as
-`TruncatedError`. Using full remaining unpack (py7zr) reintroduces aborts on
-truncated packs. Preferred follow-up: **pack-size–gated** NUL budget (full rem only
-when the container’s compressed size was fully delivered) — see exploration doc
-“What we can do”.
-
-**Chunked NUL@64 + empty `decode(b"", 64)` drains** (at most one NUL): prevents
-the mid-truncation large-NUL SIGSEGV and can finish large tails past premature
-`eof`, but blind ignore-eof draining to unpack_size **MemoryErrors** on
-near-complete truncation (and archivey’s stream already does at ~95% pack cuts).
-Still needs a pack/view-EOF gate; does not fix full-length corruption. Details in
-the exploration doc section “Chunked max_length=64…”.
+**Residual tradeoff:** 64 is a crash cushion for the NUL call itself. A single
+final compressed byte can emit thousands of output symbols; finishing those
+tails after premature native ``eof`` needs empty drains toward ``unpack_size``.
+``PpmdDecoder`` now takes optional ``pack_size`` (also filled from
+``StreamConfig.compressed_input_size`` / sized views): post-eof empty drains are
+allowed only when the declared pack was fully delivered; known-short packs stop
+with ``TruncatedError`` instead of chasing unpack (avoids near-EOF
+``MemoryError``). Full-length corruption can still look “complete” and remains an
+upstream/process-isolation residual — see exploration doc.
 
 ### Verification (this investigation)
 
