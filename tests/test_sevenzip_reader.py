@@ -389,6 +389,54 @@ def test_aes_encrypted_archive_roundtrip(tmp_path: Path) -> None:
             reader.read(encrypted)
 
 
+@requires("pyppmd")
+@requires("cryptography")
+def test_encrypted_ppmd_chunked_reads_roundtrip(tmp_path: Path) -> None:
+    """Encrypted PPMd folder: PPMd's compressed input is the AES decrypt stream, which
+    has no knowable length, so ``pack_size`` must be plumbed from the folder header
+    (the AES coder's output size). Highly compressible members read in small chunks hit
+    a premature native ``eof``; without the plumbed ``pack_size`` the decoder would
+    truncate them (or refuse to construct). Read via ``open(...).read(64)`` — ``read()``
+    alone passes a large ``max_length`` and would hide the regression.
+    """
+    if _py7zr_version() < (1, 1):
+        pytest.skip("py7zr < 1.1 cannot build reliable PPMd 7z fixtures")
+    if sys.platform == "win32":
+        # Valid decodes are bounded/safe, but win32 PPMd runs are isolated in the
+        # non-required stress workflow; keep required CI off the native-abort surface.
+        pytest.skip("win32 PPMd runs are covered by the isolated stress workflow")
+    files = {
+        "big.txt": b"alpha\n" * 4000,  # compressible -> tiny pack -> premature eof
+        "nested/z.bin": b"\x00" * 20000,
+    }
+    archive = tmp_path / "enc-ppmd.7z"
+    # The crypto filter must be present for py7zr to actually AES-encrypt the content
+    # (a bare password without it is a no-op). AES wraps PPMd, so PPMd's compressed
+    # input is the unsized decrypt stream — the case the pipeline plumbing exists for.
+    _write_py7zr_archive(
+        archive,
+        files,
+        filters=_filters("PPMD", "CRYPTO_AES256_SHA256"),
+        password="secret",
+    )
+    # Guard the fixture: a non-encrypted archive would make this test vacuous.
+    with pytest.raises(EncryptionError):
+        with open_archive(archive) as unauth:
+            unauth.read(next(m for m in unauth.members() if m.is_file))
+    with open_archive(archive, password="secret") as reader:
+        members = {m.name: m for m in reader.members() if m.is_file}
+        assert set(members) == set(files)
+        for name, expected in files.items():
+            with reader.open(members[name]) as stream:
+                chunks: list[bytes] = []
+                while True:
+                    piece = stream.read(64)
+                    if not piece:
+                        break
+                    chunks.append(piece)
+                assert b"".join(chunks) == expected, name
+
+
 def test_header_encrypted_archive_requires_password(tmp_path: Path) -> None:
     archive = tmp_path / "header-encrypted.7z"
     _write_py7zr_archive(archive, _FILES, password="secret", header_encryption=True)

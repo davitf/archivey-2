@@ -148,14 +148,13 @@
 
 ## Performance & robustness
 
-- **`pyppmd` exit-after-green abort (open investigation)** — required CI’s
-  `tests/test_ppmd_raw_streams.py` child often finishes `19 passed` /
-  `sessionfinish exit=0`, then SIGSEGV / `corrupted size vs. prev_size` on
-  interpreter teardown. Distinct from the mid-decode `warmup_codecs` fingerprint.
-  Required CI soft-passes that signal (`--allow-exit-after-green`); the
-  non-required PPMd native stress workflow soaks the pytest module hard. Root
-  cause (pyppmd vs archivey wrapper vs import-time natives like rapidgzip) still
-  TBD — see `docs/internal/known-issues.md`.
+- **`pyppmd` exit-after-green abort (mitigated)** — was: required CI’s
+  `tests/test_ppmd_raw_streams.py` child finished green then SIGSEGV on teardown.
+  Cause: truncated-stream `flush()` passed a large remaining `unpack_size` with the
+  extra NUL (same overshoot family as unbounded decode), plus upstream
+  `Ppmd7T_Free` on unfinished workers. Fixed by capping NUL recovery output and
+  subprocess-isolating unfinished-decoder adversarial tests. Notes:
+  `docs/internal/known-issues.md`, `docs/internal/ppmd-exit-after-green-exploration.md`.
 
 - **rapidgzip for zlib / raw-deflate streams** — give zlib- and deflate-compressed streams
   the same fast random access rapidgzip already gives gzip. This is especially valuable for the

@@ -372,6 +372,15 @@ class BrotliDecoder(BaseDecoder):
 # PpmdDecoder refuses to decode it without ``unpack_size`` at all.
 _PPMD_UNSIZED_DECODE_CHUNK = 65536
 
+# Per-call ceiling for extra-NUL recovery and post-NUL empty drains. A single
+# ``decode(b"\0", large_remaining)`` on truncated mid-stream input is the
+# exit-after-green / mid-suite abort on pyppmd 1.3.x; chunking at 64 avoids that
+# call shape. When the container pack is known-complete, empty ``decode(b"", 64)``
+# drains may still finish a large tail (including past premature ``eof``); when the
+# pack is known-incomplete, we refuse those post-eof drains (near-EOF MemoryError
+# otherwise). See ``docs/internal/ppmd-exit-after-green-exploration.md``.
+_PPMD_EXTRA_NUL_MAX_OUTPUT = 64
+
 
 class PpmdDecoder(BaseDecoder):
     """Decode a PPMd stream via ``pyppmd``.
@@ -395,10 +404,27 @@ class PpmdDecoder(BaseDecoder):
     valid data, so variant 8 may be unsized; it is then decoded via bounded
     :data:`_PPMD_UNSIZED_DECODE_CHUNK` requests in a drain loop, never ``-1``.
 
-    At compressed EOF, PPMd may still need an extra NUL input byte when the encoder
-    omitted a trailing null (documented by pyppmd). ``flush`` feeds exactly one NUL
-    with the remaining ``max_length``, same as py7zr / the pyppmd PyPI sample; if
-    output is still short of ``unpack_size`` after that, the stream is truncated.
+    ``pack_size`` is the container-declared compressed length (7z pack stream / ZIP
+    compressed size, or the sized view length). When set, empty post-``eof`` drains
+    that chase ``unpack_size`` are allowed only after ``fed_compressed >= pack_size``;
+    a short pack delivery stops instead (avoids near-EOF ``MemoryError`` on
+    truncated members). It is **required for PPMd7** (see ``__init__``): without it a
+    premature native ``eof`` cannot be told from truncation, and the only safe choice
+    left is to refuse the drain, which silently truncates valid members on chunked
+    reads. ``PpmdCodec`` fills it from the sized source (``compressed_input_size``) or,
+    for chained 7z folders whose PPMd input is unsized (AES), from the plumbed coder
+    input size. PPMd8 may leave it unknown; recovery is then conservative — at most one
+    capped NUL and **no** chunked empty drains. At compressed EOF, at most one
+    documented extra NUL is injected with a per-call budget of
+    :data:`_PPMD_EXTRA_NUL_MAX_OUTPUT`; unsized PPMd8 gets **no** post-eof drain at all
+    (its end mark terminates valid decodes; a drain would only fabricate trailing bytes).
+
+    **Invariant:** ``pack_size`` must measure the same byte stream that
+    ``feed()`` accumulates into ``_fed_compressed`` (the PPMd coder's compressed
+    input — after ZIP method-98 header stripping / as the 7z pack ``SlicingStream``
+    length). If a wrapper sets ``compressed_input_size`` to a larger enclosing
+    member while feeding only a subset, the gate would wrongly treat a complete
+    pack as short and suppress legitimate post-eof drains.
     """
 
     def __init__(
@@ -409,6 +435,7 @@ class PpmdDecoder(BaseDecoder):
         variant: int = 7,
         restore_method: int = 0,
         unpack_size: int | None = None,
+        pack_size: int | None = None,
     ) -> None:
         import pyppmd
 
@@ -419,12 +446,30 @@ class PpmdDecoder(BaseDecoder):
                 "end of stream (native heap corruption on 1.3.x — see "
                 "docs/internal/known-issues.md)"
             )
+        if variant != 8 and pack_size is None:
+            # Without pack_size, a premature native ``eof`` (pyppmd flips it early on a
+            # small ``max_length`` over compressible data) is indistinguishable from
+            # truncation: draining toward unpack_size to finish the tail can MemoryError
+            # on 1.3.x, so the decoder must refuse it — which silently truncates a valid
+            # member on chunked reads. PPMd7 is 7z-only and 7z always knows the pack
+            # length (sized pack slice, or the preceding coder's output for AES folders),
+            # so require it rather than choose between truncation and a crash.
+            raise ValueError(
+                "PPMd7 (7z var.H) requires pack_size: it has no end mark, so completing "
+                "a member past a premature native eof needs the declared compressed "
+                "length to tell full delivery from truncation (see "
+                "docs/internal/known-issues.md)"
+            )
         self._order = order
         self._mem_size = mem_size
         self._variant = variant
         self._restore_method = restore_method
         self._unpack_size = unpack_size
+        self._pack_size = pack_size
         self._produced = 0
+        self._fed_compressed = 0
+        self._nul_injected = False
+        self._compressed_eof = False
         if variant == 8:
             self._decomp: Any = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
         else:
@@ -438,12 +483,19 @@ class PpmdDecoder(BaseDecoder):
             variant=self._variant,
             restore_method=self._restore_method,
             unpack_size=self._unpack_size,
+            pack_size=self._pack_size,
         )
 
     def _max_length(self) -> int:
         if self._unpack_size is None:
             return -1
         return max(0, self._unpack_size - self._produced)
+
+    def _pack_complete(self) -> bool | None:
+        """True if declared pack fully fed, False if known short, None if unknown."""
+        if self._pack_size is None:
+            return None
+        return self._fed_compressed >= self._pack_size
 
     def _decode_unsized(self, data: bytes) -> bytes:
         # Unsized PPMd8 only (PPMd7 without a size is rejected in __init__). Never
@@ -461,6 +513,57 @@ class PpmdDecoder(BaseDecoder):
             chunk = self._decomp.decode(b"", _PPMD_UNSIZED_DECODE_CHUNK)
         return b"".join(parts)
 
+    def _nul_budget(self, max_length: int) -> int:
+        budget = _PPMD_EXTRA_NUL_MAX_OUTPUT
+        if max_length >= 0:
+            budget = min(max_length, budget)
+        return budget
+
+    def _inject_nul_once(self, max_length: int) -> bytes:
+        """Documented single extra NUL (pyppmd / py7zr); never loop fabricated input."""
+        if self._nul_injected or self._decomp.eof:
+            return b""
+        if not getattr(self._decomp, "needs_input", False):
+            return b""
+        self._nul_injected = True
+        return self._decomp.decode(b"\0", self._nul_budget(max_length))
+
+    def _drain_empty_chunked(self, max_length: int) -> bytes:
+        """Pull remaining output in ``_PPMD_EXTRA_NUL_MAX_OUTPUT`` empty decodes.
+
+        Only for a **known-complete** pack (see :meth:`flush`): premature native
+        ``eof`` after a small ``max_length`` can still leave legitimate symbols
+        reachable via ``decode(b"", …)`` — so this intentionally continues past
+        native ``eof`` (breaking on eof would defeat premature-eof recovery).
+        Stops on ``needs_input``, quiet empty, or budget exhaustion. Does **not**
+        run when ``pack_size`` is unknown or short. Corrupt-but-declared-complete
+        packs can still fill toward ``unpack_size`` here; container CRC is the
+        backstop. Worst-case iteration count is ``remaining + 2`` at 64 bytes
+        per call (perf cliff on huge members if this path is hit).
+        """
+        if max_length == 0:
+            return b""
+        parts: list[bytes] = []
+        remaining = max_length
+        quiet = 0
+        # Bound iterations: worst case one byte per call up to remaining.
+        for _ in range(remaining + 2):
+            if remaining <= 0:
+                break
+            if getattr(self._decomp, "needs_input", False):
+                break
+            budget = min(_PPMD_EXTRA_NUL_MAX_OUTPUT, remaining)
+            chunk = self._decomp.decode(b"", budget)
+            if not chunk:
+                quiet += 1
+                if quiet >= 2:
+                    break
+                continue
+            quiet = 0
+            parts.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(parts)
+
     def _decode(self, data: bytes, max_length: int) -> bytes:
         if max_length == 0:
             return b""
@@ -468,18 +571,24 @@ class PpmdDecoder(BaseDecoder):
         # runaway path on pyppmd 1.3.x when unbounded) — drop the input instead.
         if self._decomp.eof and max_length < 0:
             return b""
-        # Empty input + needs_input (pre-EOF): documented extra NUL (pyppmd / py7zr).
+        # Empty + needs_input after compressed EOF: at most one documented NUL.
+        # Before compressed EOF, empty+needs_input means "read more pack bytes" —
+        # do not fabricate input.
         if (
             not data
             and getattr(self._decomp, "needs_input", False)
             and not self._decomp.eof
         ):
-            data = b"\0"
+            if not self._compressed_eof:
+                return b""
+            return self._inject_nul_once(max_length)
         if max_length < 0:
             return self._decode_unsized(data)
         return self._decomp.decode(data, max_length)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if chunk:
+            self._fed_compressed += len(chunk)
         # Honour both the container unpack_size cap and the stream-layer read budget.
         unpack_cap = self._max_length()
         if max_length >= 0 and unpack_cap >= 0:
@@ -488,25 +597,42 @@ class PpmdDecoder(BaseDecoder):
             limit = max_length
         else:
             limit = unpack_cap
+        # Empty drains past native eof are only safe when the declared pack was
+        # fully delivered. Unknown or short pack: refuse (near-EOF MemoryError /
+        # garbage fill). Callers must pass pack_size (or sized-view
+        # compressed_input_size) for correct premature-eof completion.
+        if not chunk and self._pack_complete() is not True and self._decomp.eof:
+            return DecodeOut(b"")
         out = self._decode(chunk, limit)
         self._produced += len(out)
         return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        # A stream whose encoder omitted the trailing byte still reports needs_input
-        # at compressed EOF; the documented recovery (pyppmd docs / py7zr) is exactly
-        # one extra NUL, bounded by the remaining size. Never inject fabricated input
-        # in a loop — on truncated data that decodes garbage through the native model,
-        # which can silently complete a member and (on pyppmd 1.3.x, if unbounded)
-        # corrupt the heap. Anything still missing after the single NUL is truncation,
-        # surfaced via pending_error.
+        # Compressed EOF: optionally one documented extra NUL, then (only when the
+        # pack is known-complete) chunked empty drains. Never inject fabricated
+        # NULs in a loop. Unknown pack_size is treated like incomplete for drains:
+        # single capped NUL only — do not chase unpack_size.
+        self._compressed_eof = True
         max_length = self._max_length()
         if max_length == 0:
             return DecodeOut(b"")
         out = b""
         if not self._decomp.eof and getattr(self._decomp, "needs_input", False):
-            out = self._decode(b"\0", max_length)
-            self._produced += len(out)
+            more = self._inject_nul_once(max_length)
+            out += more
+            self._produced += len(more)
+            max_length = self._max_length()
+        # Empty drains past a premature native ``eof`` only run when the pack is
+        # known-complete AND a container ``unpack_size`` bounds them (``max_length >= 0``).
+        # Without that bound the drain is pure fabrication: an unsized PPMd8 stream ends
+        # at its end mark, so any post-eof pull is trailing garbage (measured: +N bytes
+        # on compressible payloads). Corrupt-but-declared-complete sized packs can still
+        # fill toward ``unpack_size`` here — container CRC is the backstop.
+        if max_length > 0 and self._pack_complete() is True:
+            if not getattr(self._decomp, "needs_input", False):
+                drained = self._drain_empty_chunked(max_length)
+                out += drained
+                self._produced += len(drained)
         if not self.finished:
             self._pending_error = TruncatedError("File is truncated")
         return DecodeOut(out)
@@ -698,12 +824,16 @@ def PpmdDecompressorStream(
     variant: int = 7,
     restore_method: int = 0,
     unpack_size: int | None = None,
+    pack_size: int | None = None,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
 
     ``variant=7`` is 7z PPMd var.H; ``variant=8`` is ZIP method 98 (PPMd8).
-    ``unpack_size`` is required for PPMd7 (no end mark — see :class:`PpmdDecoder`)
-    and recommended for PPMd8 whenever the container declares the member size.
+    ``unpack_size`` and ``pack_size`` are required for PPMd7 (no end mark — see
+    :class:`PpmdDecoder`). ``pack_size`` is the container-declared compressed length
+    (or sized view); post-eof empty drains are gated on full pack delivery.
+    For PPMd8, ``unpack_size`` / ``pack_size`` are recommended when the container
+    declares them; unsized PPMd8 relies on the end mark (no post-eof drain).
     """
     return DecompressorStream(
         path,
@@ -713,6 +843,7 @@ def PpmdDecompressorStream(
             variant=variant,
             restore_method=restore_method,
             unpack_size=unpack_size,
+            pack_size=pack_size,
         ),
         codec_name="ppmd",
     )

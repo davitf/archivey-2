@@ -95,11 +95,19 @@ class _CodecStage:
 
     ``unpack_size`` is the coder's output length from the folder header. It is passed
     through for codecs that need a bound (PPMd7 has no end mark); other codecs ignore it.
+
+    ``pack_size`` is the coder's *input* length — the output of the preceding coder in
+    the linear chain (or ``None`` when this coder consumes the packed slice directly,
+    whose length ``open_codec_stream`` recovers from the sized source). Only PPMd reads
+    it, to gate post-eof recovery on full pack delivery; it is load-bearing when the
+    upstream stage is unsized (e.g. an AES decrypt stream over an encrypted PPMd folder),
+    where the source length is otherwise unknowable.
     """
 
     codec: Codec
     properties: bytes | None
     unpack_size: int | None = None
+    pack_size: int | None = None
 
 
 @dataclass
@@ -160,11 +168,16 @@ def plan_folder(folder: SevenZipFolder) -> list[_Stage]:
             continue
         if method.kind is MethodKind.SINGLE:
             assert method.codec is not None
+            # The coder's compressed input length is the preceding coder's output
+            # (linear chain); for the first coder it consumes the packed slice, whose
+            # length the sized source already carries, so leave it None there.
+            input_size = folder.unpack_sizes[index - 1] if index > 0 else None
             stages.append(
                 _CodecStage(
                     method.codec,
                     coders[index].properties,
                     unpack_size=folder.unpack_sizes[index],
+                    pack_size=input_size,
                 )
             )
             index += 1
@@ -334,7 +347,9 @@ def _execute_stage(
             stream,
             config=stream_config,
             params=CodecParams(
-                properties=stage.properties, unpack_size=stage.unpack_size
+                properties=stage.properties,
+                unpack_size=stage.unpack_size,
+                pack_size=stage.pack_size,
             ),
             collector=collector,
             seekable=seekable,

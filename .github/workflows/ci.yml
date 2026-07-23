@@ -191,10 +191,11 @@ jobs:
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         env:
           PYTHONFAULTHANDLER: "1"
-        # Still runs the assertions in required CI, but soft-passes the known
-        # intermittent exit-after-green pyppmd abort (sessionfinish exit=0 then
-        # SIGSEGV/SIGABRT). Hard-fails on real pytest failures. Soak / root-cause
-        # lives in the non-required PPMd native stress workflow.
+        # Soft-pass parent-process exit-after-green: the Ppmd7T_Free teardown race
+        # is contained in subprocess children for adversarial tests, but in-process
+        # happy-path / residual GC aborts can still trip the parent. Decode-time
+        # overshoot is mitigated (NUL cap + pack_size gate); do not re-label the
+        # Free race "gone" (see known-issues.md).
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
           python scripts/ci_run_native_modules.py
