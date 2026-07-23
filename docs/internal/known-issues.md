@@ -430,6 +430,13 @@ truncated packs. Preferred follow-up: **pack-size–gated** NUL budget (full rem
 when the container’s compressed size was fully delivered) — see exploration doc
 “What we can do”.
 
+**Chunked NUL@64 + empty `decode(b"", 64)` drains** (at most one NUL): prevents
+the mid-truncation large-NUL SIGSEGV and can finish large tails past premature
+`eof`, but blind ignore-eof draining to unpack_size **MemoryErrors** on
+near-complete truncation (and archivey’s stream already does at ~95% pack cuts).
+Still needs a pack/view-EOF gate; does not fix full-length corruption. Details in
+the exploration doc section “Chunked max_length=64…”.
+
 ### Verification (this investigation)
 
 | Soak | Before | After |

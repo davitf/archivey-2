@@ -505,3 +505,87 @@ is known complete (option A) or the process is disposable (D).
 Until A lands, the honest library contract is: **prefer process survival over
 speculative large NUL recovery**; complete `encode+flush` streams we can
 construct do not need the large budget on 1.3.1.
+
+---
+
+## Pack-size gate vs corruption (follow-up)
+
+Option A does **not** fully close the issue under **corruption**:
+
+- Truncation with short pack delivery (`fed < pack_size`) → withhold large NUL /
+  stop early → safe `TruncatedError`. Good.
+- Corruption that preserves pack length (wrong bytes, full size) → decoder may
+  still report `needs_input` / premature `eof` with large remaining unpack → a
+  pack-size gate would **allow** full-rem NUL or ignore-eof drains → same native
+  failure mode as today. Pack size only distinguishes “bytes missing at the
+  container boundary,” not “bytes wrong.”
+
+So A is necessary but not sufficient for hostile/corrupt full-length packs.
+
+---
+
+## Chunked `max_length=64` + empty drains (no extra NULs) — lab results
+
+**Proposal:** never ask pyppmd for more than 64 output bytes per call; after at
+most one synthetic NUL, continue with `decode(b"", 64)` while the stream is
+incomplete; stop with anti-loop rules (`needs_input` again, quiet empty, or
+`produced >= unpack_size`).
+
+### What works
+
+| Scenario | Behaviour |
+|----------|-----------|
+| Mid-truncation (`~25–90%` of pack) + **one** NUL@64, stop if `needs_input` again | **0/40–0/50** aborts; uncapped NUL(rem) still aborts (~2–19/50). NUL usually emits **1** byte then `needs_input` again. |
+| Multiple fabricated NULs@64 (anti-pattern) on half-pack | Also **0/20** aborts even for 100 NULs — but only ~1 byte/NUL of garbage; must not do this. |
+| Complete highly compressible (`a*n`, `Ztail`) with decode(packed, 64) then empty@64 **ignoring premature `eof`** | **match=True** (eof flips true after the first 64, yet empty drains recover the rest up to unpack_size). |
+| Real last byte @64 then empty@64 ignoring eof | **match=True** for `a*1024` (834-byte last-byte tail recovered across chunked empties). |
+| archivey `PpmdDecompressorStream.read(64)` on complete `a*1024` | **match=True** (already effectively chunked on the read budget). |
+
+So: **chunking the NUL (and other) output requests does prevent the classic
+large-`max_length` mid-truncation SIGSEGV**, and **empty drains (not more NULs)
+can finish large tails** when the decoder still has buffered state —
+including past a **premature `eof=True`** quirk on pyppmd 1.3.1.
+
+### What does *not* work / new failure mode
+
+| Scenario | Behaviour |
+|----------|-----------|
+| Strip present trailing compressed `0x00` then NUL@64+empty | Still usually **`eof` + short** / mismatch — synthetic NUL ≠ that byte. |
+| Blind ignore-`eof` empty drains on **near-complete** truncation (`~95–99%` of pack) toward full unpack_size | **MemoryError / malloc abort** (capped path **30/30** fail at 0.95; uncapped first decode sometimes survives). Post-eof empties keep returning **64-byte garbage** (not quiet) until the heap dies. |
+| Heuristic “ignore eof only if eof was set on the *first* capped feed” | Safe on truncations (**0/30**), completes `a*`/`Ztail`, but **fails mid-entropy complete** streams (`corpus`/`rand`): eof appears mid-drain even when the pack is complete → stops short (~320 of 1760). |
+| archivey stream today on frac 0.95/0.99 | Already **`MemoryError`** while reading to unpack_size (read@64 or large); mid-truncation correctly `TruncatedError`. So ignore-eof draining to unpack_size is a **pre-existing** near-EOF hazard, not introduced only by a new NUL policy. |
+
+### Infinite-loop / stop rules (validated)
+
+Safe stop conditions that did not spin in labs:
+
+1. `produced >= unpack_size`
+2. `needs_input` after the **single** allowed NUL (do not inject a second)
+3. `decode(b"", 64)` returns empty **and** not in the “premature eof but still
+   producing” regime — quiet streak ≥ 1–3
+4. **Do not** use “eof alone” as stop: premature eof on complete compressible
+   streams would under-read; **do not** ignore eof unconditionally toward
+   unpack_size: near-truncation then MemoryErrors
+
+There is **no pure local heuristic** (without pack_size / “compressed view
+exhausted”) that both:
+
+- continues empty drains past premature eof for complete mid-entropy members, and
+- refuses those drains on near-truncated members that also flip eof early.
+
+### Answer to “can chunked 64 + empty drains avoid corruption and still finish?”
+
+- **Avoid the mid-truncation large-NUL abort?** Yes — NUL@64 (+ stop on second
+  `needs_input`) is crash-safe in soaks; multiple empties without extra NULs are
+  fine while `needs_input` is false.
+- **Finish every correct stream that needs a large synthetic-NUL tail?** Empty
+  drains can finish large tails **when one input byte (real or NUL) unlocked
+  them**, but only if we keep reading past premature eof up to unpack_size.
+  That same pattern **MemoryErrors on near-truncated / some corrupt streams**.
+- **Fully prevent corruption issues?** No. Full-length corrupt packs and
+  near-EOF truncation remain hazardous if we drain to unpack_size after eof.
+- **Best combined policy:** pack-size (or sized-view EOF) gate to allow
+  ignore-eof / full-rem recovery **only when compressed input was fully
+  delivered**; always cap per-call `max_length` (e.g. 64) for NUL and drains;
+  at most one NUL; on incomplete pack delivery stop at `needs_input` /
+  early eof without chasing unpack_size through post-eof empties.
