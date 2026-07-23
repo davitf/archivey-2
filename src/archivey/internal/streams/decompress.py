@@ -829,10 +829,11 @@ def PpmdDecompressorStream(
     """Decode a PPMd stream (forward-only).
 
     ``variant=7`` is 7z PPMd var.H; ``variant=8`` is ZIP method 98 (PPMd8).
-    ``unpack_size`` is required for PPMd7 (no end mark — see :class:`PpmdDecoder`)
-    and recommended for PPMd8 whenever the container declares the member size.
-    ``pack_size`` is the container-declared compressed length (or sized view);
-    when set, post-eof empty drains are gated on full pack delivery.
+    ``unpack_size`` and ``pack_size`` are required for PPMd7 (no end mark — see
+    :class:`PpmdDecoder`). ``pack_size`` is the container-declared compressed length
+    (or sized view); post-eof empty drains are gated on full pack delivery.
+    For PPMd8, ``unpack_size`` / ``pack_size`` are recommended when the container
+    declares them; unsized PPMd8 relies on the end mark (no post-eof drain).
     """
     return DecompressorStream(
         path,
