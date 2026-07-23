@@ -814,14 +814,17 @@ def _close_unrar_owned(
     rc: int,
     named_member: bool = False,
     has_verifiable_hash: bool = False,
+    encrypted: bool = False,
+    stdout: bytes = b"",
 ) -> None:
     from archivey.internal.backends.rar_reader import _UnrarOwnedStream
 
     stream = _UnrarOwnedStream(
-        io.BytesIO(b""),
+        io.BytesIO(stdout),
         _FakeUnrarProc(rc),  # type: ignore[arg-type]
         named_member=named_member,
         has_verifiable_hash=has_verifiable_hash,
+        encrypted=encrypted,
     )
     stream.close()
 
@@ -844,6 +847,40 @@ def test_unrar_owned_stream_suppresses_fatal_crc_when_hash_present(rc: int) -> N
     """F4: with a verifiable hash, archivey's digest check is authoritative — ignore
     unrar's sometimes-spurious CRC/fatal codes (legacy RAR 1.5 false positives)."""
     _close_unrar_owned(rc=rc, named_member=True, has_verifiable_hash=True)
+
+
+@pytest.mark.parametrize("rc", [2, 3])
+def test_unrar_owned_stream_encrypted_empty_maps_to_encryption_error_on_read(
+    rc: int,
+) -> None:
+    """RAR4 wrong password: exit 2/3 + empty stdout → EncryptionError on the
+    completing/empty read (eager finalize), including when a hash would suppress CRC."""
+    from archivey.internal.backends.rar_reader import _UnrarOwnedStream
+
+    stream = _UnrarOwnedStream(
+        io.BytesIO(b""),
+        _FakeUnrarProc(rc),  # type: ignore[arg-type]
+        named_member=True,
+        has_verifiable_hash=True,
+        encrypted=True,
+    )
+    with pytest.raises(EncryptionError):
+        stream.read()
+    stream.close()  # already mapped on read — must not raise again
+
+
+@pytest.mark.parametrize("rc", [2, 3])
+def test_unrar_owned_stream_encrypted_empty_maps_to_encryption_error_on_close(
+    rc: int,
+) -> None:
+    """Early-stop close still maps encrypted empty exit 2/3 when no completing read."""
+    with pytest.raises(EncryptionError):
+        _close_unrar_owned(
+            rc=rc,
+            named_member=True,
+            has_verifiable_hash=True,
+            encrypted=True,
+        )
 
 
 def test_unrar_owned_stream_maps_exit_10_for_named_open() -> None:

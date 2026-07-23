@@ -11,14 +11,30 @@ Two delivery shapes (same rules, different wrappers):
 - :class:`VerifyingStream` — standalone ``BinaryIO`` wrapper around an inner +
   verifier. Kept for codec length backstops and tests; prefer fusion for members.
 
-Per the ``compressed-streams`` spec:
+Per ADR 0014 / ``compressed-streams``:
 
-- Verification runs **only on a full sequential read to clean EOF**. A partial
-  read is never verified. ``read(0)`` is a no-op (not EOF).
-- A seek off the sequential frontier disables verification for the rest of the
-  handle's life.
-- The mismatch is raised from the terminal empty read *after* every data chunk
-  has been delivered; ``close()`` also verifies when already at clean EOF.
+- Public ``read(n)`` (``n ≥ 1``) is **full-count**: coalesce to ``n`` or a terminal
+  boundary (stop on empty or short — see ``read_full_count``).
+- Verification runs on a read that **reaches the end** (declared size, or decoder
+  EOS). A partial read is never verified. ``read(0)`` is a no-op (not EOF).
+- A seek off the sequential frontier forfeits the **checksum** only (incremental
+  hashing needs linear consumption). Length / truncation / over-run stay on and key
+  off bytes **actually read** (``_furthest_read_pos``). If a seek jumps to/past the
+  declared size without reading the intervening bytes, concluding reads the skipped
+  gap and probes one byte past the declared size (``_verify_reaches_declared``)
+  rather than returning ``b""`` blind, so a past-EOF ``seek(declared_size)`` still
+  catches truncation (short) *and* over-run (long) — a completed member
+  (``furthest >= expected``) short-circuits with no extra I/O.
+- **Size-declared corruption** (digest mismatch / over-run at the declared size):
+  the reaching read raises and **withholds** that chunk.
+- **Size-unknown corruption**: deliver data bytes; raise on the EOS-observing
+  (typically empty) read — no mandatory lookahead withhold.
+- **Truncation-shaped**: first read past available returns a short prefix; the
+  next empty read raises ``TruncatedError``.
+- On ``read(-1)`` / ``readall``, the complete-stream call includes the EOF verdict
+  and raises (so ``read(); close()`` cannot silently accept bad content).
+- ``close()`` / ``finish_on_close`` MUST NOT introduce a first content
+  ``TruncatedError`` / ``CorruptionError`` (teardown errors may still propagate).
 - Missing/unknown digest algorithms emit ``DIGEST_UNVERIFIABLE`` and are skipped.
 """
 
@@ -39,6 +55,7 @@ from archivey.internal.logs import integrity as logger
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
+    read_full_count,
 )
 from archivey.types import HashAlgorithm
 
@@ -49,6 +66,10 @@ if TYPE_CHECKING:
 # digest ``bytes`` (CRC-32 as four big-endian bytes).
 _ExpectedHashes = Mapping[Any, bytes]
 _DigestTransforms = Mapping[Any, Callable[[bytes], bytes]]
+
+# Bounded drain step for sized ``read(-1)``. Must not use ``inner.read(-1)`` on the
+# sized branch: ``expected_size`` is a decompression-bomb cap.
+_SIZED_DRAIN_CHUNK = 65536
 
 
 def _algo_key(algorithm: Any) -> str:
@@ -136,7 +157,6 @@ class MemberVerifier:
         digest_transforms: _DigestTransforms | None = None,
     ) -> None:
         self._expected_size = expected_size
-        self._short = False
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
         self._digest_transforms: dict[str, Callable[[bytes], bytes]] = {}
@@ -170,12 +190,25 @@ class MemberVerifier:
             self._hashers[key] = hasher
             self._expected[key] = value
         self._verified = False
-        self._pos = 0  # bytes read so far — the sequential verification frontier
-        self._verify_enabled = True  # cleared by a seek off the frontier
+        self._pos = 0  # logical position (updated by read and seek)
+        # Furthest position an actual read has reached — length / truncation / over-run
+        # key off this, not seek-updated ``_pos``, so ``seek(declared_size)`` on a short
+        # body cannot fabricate a clean end (ADR 0014). Reaching the declared size here
+        # also marks the member length-verified, so a later seek past the end is cheap.
+        self._furthest_read_pos = 0
+        # Decode-error abandon: skip all end-of-stream checks on later reads.
+        self._abandoned = False
+        # Seek off the frontier forfeits checksum only (ADR 0014); length stays on.
+        self._digests_enabled = True
 
     @property
     def enabled(self) -> bool:
-        return self._verify_enabled
+        """True when end-of-stream checks may still run (not abandoned by a decode error)."""
+        return not self._abandoned
+
+    @property
+    def digests_enabled(self) -> bool:
+        return self._digests_enabled and not self._abandoned
 
     @property
     def pos(self) -> int:
@@ -194,12 +227,31 @@ class MemberVerifier:
                     f"decompressed content."
                 )
 
+    def _record_read(self, data: bytes) -> None:
+        """Advance logical position and furthest-read position after a returning read."""
+        if not data:
+            return
+        self._pos += len(data)
+        if self._pos > self._furthest_read_pos:
+            self._furthest_read_pos = self._pos
+        self._update_digests(data)
+
     def _finish(self, inner: BinaryIO) -> None:
-        """Run end-of-stream checks once: over-length, then digests, then note short."""
+        """Run end-of-stream checks once (read path only — never called from close).
+
+        Short bodies raise :class:`~archivey.exceptions.TruncatedError` and digest
+        mismatches raise :class:`~archivey.exceptions.CorruptionError`. A short body
+        that also carries a hash raises ``TruncatedError`` (best-effort: shortfall vs
+        digest mismatch are not always separable). Length / over-run use
+        :attr:`_furthest_read_pos` (bytes actually read), not seek-updated ``_pos``.
+        Digests run only while :attr:`digests_enabled`.
+        """
         self._verified = True
-        if self._expected_size is not None and self._pos >= self._expected_size:
-            # Delivered the declared size; the underlying must have nothing more.
-            # This probe also drains post-payload authenticators (e.g. WinZip AES HMAC).
+        delivered = self._furthest_read_pos
+        if self._expected_size is not None and delivered >= self._expected_size:
+            # Delivered the declared size via reads; the underlying must have nothing
+            # more. This probe also drains post-payload authenticators (e.g. WinZip AES
+            # HMAC).
             try:
                 trailing = inner.read(1)
             except ArchiveyError:
@@ -211,118 +263,251 @@ class MemberVerifier:
                     "Decompressed content exceeds its declared size of "
                     f"{self._expected_size} bytes."
                 )
-        self._verify_digests()
-        if self._expected_size is not None and self._pos < self._expected_size:
-            # Short read. Defer raising to close so a more specific inner error (e.g. a
-            # subprocess exit code) takes precedence; a hashed short read already raised
-            # a digest mismatch above.
-            self._short = True
+        elif self._expected_size is not None and delivered < self._expected_size:
+            # Short of declared size by actual reads — TruncatedError even when a hash
+            # is present (best-effort verdict). Seek alone cannot satisfy this check.
+            raise TruncatedError(
+                f"Decompressed content ended after {delivered} of "
+                f"{self._expected_size} expected bytes."
+            )
+        if self._digests_enabled:
+            self._verify_digests()
+
+    def _verify_reaches_declared(self, inner: BinaryIO) -> None:
+        """Verify a member decodes to *exactly* its declared size after a forward seek.
+
+        When a seek jumps the logical position to/past the declared size without
+        reading the intervening bytes, ``_furthest_read_pos`` lags the declared size
+        and a complete member is indistinguishable from a short (truncated) or long
+        (over-run) one. Rather than return ``b""`` and hide the fault (the "seek past
+        the end" shortcut), read the ``[_furthest_read_pos, expected_size)`` gap now —
+        the checksum is already forfeited by the seek, so this only advances the length
+        frontier — then probe one byte past the declared size, exactly as
+        :meth:`_finish` does on a sequential reaching read. A short member raises
+        ``TruncatedError``; an over-long one raises ``CorruptionError``; a complete one
+        restores the inner to the caller's position and returns. Bounded by the
+        declared size (a decompression-bomb cap); a member already read to its declared
+        size was verified on that reaching read and returns immediately with no I/O.
+        """
+        assert self._expected_size is not None
+        if self._furthest_read_pos >= self._expected_size:
+            return
+        resume = inner.tell()
+        inner.seek(self._furthest_read_pos)
+        try:
+            while self._furthest_read_pos < self._expected_size:
+                want = min(
+                    _SIZED_DRAIN_CHUNK, self._expected_size - self._furthest_read_pos
+                )
+                piece = read_full_count(inner, want)
+                if not piece:
+                    break
+                self._furthest_read_pos += len(piece)
+        except BaseException:
+            # A decoder truncation/corruption error propagating from the gap read is
+            # the member's own honest verdict; the stream is faulted — abandon and let
+            # it surface (skip the pointless best-effort position restore).
+            self._abandon()
+            raise
+        if self._furthest_read_pos < self._expected_size:
+            # Genuine EOF before the declared size; the inner sits at that EOF (no
+            # restore — we are raising).
+            raise TruncatedError(
+                f"Decompressed content ended after {self._furthest_read_pos} of "
+                f"{self._expected_size} expected bytes."
+            )
+        # Reached the declared size via the gap read; the inner sits at the declared
+        # boundary. Over-run probe (same as _finish): any trailing byte means the
+        # member decodes past its declared size — corruption independent of the
+        # checksum, and it must not be silenced just because a seek reached the size.
+        try:
+            trailing = inner.read(1)
+        except ArchiveyError:
+            raise
+        except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
+            trailing = b""
+        if trailing:
+            raise CorruptionError(
+                "Decompressed content exceeds its declared size of "
+                f"{self._expected_size} bytes."
+            )
+        inner.seek(resume)
+
+    def _finish_after_seek(self, inner: BinaryIO) -> None:
+        """Conclude at/past the declared size that a seek — not reads — reached.
+
+        A sequential read reaching the declared size verifies inline (length **and**
+        over-run, plus digests while enabled); getting here un-verified means a seek
+        jumped ahead. Reproduce the same length + over-run verdict via
+        :meth:`_verify_reaches_declared` — the checksum is forfeited by the seek, so
+        there is no digest verdict here. A short member raises ``TruncatedError``, an
+        over-long one ``CorruptionError``; a complete one concludes quietly (the caller
+        is past the end, so it gets ``b""``).
+        """
+        assert self._expected_size is not None
+        self._verified = True
+        self._verify_reaches_declared(inner)
+
+    def _update_digests(self, data: bytes) -> None:
+        if self._digests_enabled and data:
+            for hasher in self._hashers.values():
+                hasher.update(data)
+
+    def _abandon(self) -> None:
+        self._abandoned = True
+        self._digests_enabled = False
+
+    def _read_sized_all(self, inner: BinaryIO) -> bytes:
+        """Drain to genuine EOF in bounded steps, capped by the declared size.
+
+        ``expected_size`` is a decompression-bomb bound: do **not** delegate to
+        ``inner.read(-1)``, which would pull an over-long adversarial payload into
+        RAM. A single ``inner.read(remaining)`` is also insufficient — ``BinaryIO``
+        may short-read without EOF.
+
+        On digest / over-run fault the verdict raises here and returns no bytes
+        (withhold), matching ADR 0014's size-declared reaching-read rule.
+        """
+        assert self._expected_size is not None
+        chunks: list[bytes] = []
+        while self._pos < self._expected_size:
+            remaining = self._expected_size - self._pos
+            want = min(_SIZED_DRAIN_CHUNK, remaining)
+            try:
+                piece = read_full_count(inner, want)
+            except ArchiveyError:
+                self._abandon()
+                raise
+            except (OSError, MemoryError):
+                # Real resource failures must propagate (CONTRIBUTING); do not relabel
+                # them as TruncatedError.
+                self._abandon()
+                raise
+            except Exception as exc:
+                # Opaque accelerator EOF while still short of the declared size
+                # (macOS rapidgzip often raises instead of returning b""). Surface
+                # TruncatedError on this read path so close need not raise it.
+                raise TruncatedError(
+                    f"Decompressed content ended after {self._pos} of "
+                    f"{self._expected_size} expected bytes."
+                ) from exc
+            if not piece:
+                break
+            self._record_read(piece)
+            chunks.append(piece)
+        # EOF verdict in this complete-stream call — raise withholds the body.
+        if not self._abandoned and not self._verified:
+            if (
+                self._pos >= self._expected_size
+                and self._furthest_read_pos < self._expected_size
+            ):
+                # The drain loop never ran: a seek put ``_pos`` at/past the declared
+                # size without reading there. Verify completeness (reading the skipped
+                # gap) rather than trusting the seek.
+                self._finish_after_seek(inner)
+            else:
+                self._finish(inner)
+        return b"".join(chunks)
 
     def read(self, inner: BinaryIO, n: int = -1) -> bytes:
-        """Read from ``inner``, update digests/bounds, and verify on clean EOF."""
+        """Read from ``inner``, update digests/bounds, and verify on clean EOF.
+
+        Bounded ``read(n)`` is full-count (coalesces via ``read_full_count``). A
+        size-declared reaching read that fails digest / over-run raises and
+        returns no bytes for that call.
+        """
         # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
         if n == 0:
             return b""
-        if (
-            self._verify_enabled
-            and self._expected_size is not None
-            and not self._verified
-        ):
+        if n < 0:
+            # Complete-stream read: include the EOF verdict in this call.
+            if (
+                not self._abandoned
+                and self._expected_size is not None
+                and not self._verified
+            ):
+                return self._read_sized_all(inner)
+            try:
+                data = inner.read(-1)
+            except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+                self._abandon()
+                raise
+            if data:
+                self._record_read(data)
+            if not self._abandoned and not self._verified:
+                self._finish(inner)
+            return data
+
+        # Bounded full-count read.
+        if self._abandoned or self._verified:
+            try:
+                return read_full_count(inner, n)
+            except Exception:  # noqa: BLE001
+                self._abandon()
+                raise
+
+        want = n
+        reaches_declared = False
+        if self._expected_size is not None:
             remaining = self._expected_size - self._pos
             if remaining <= 0:
-                data = (
-                    b""  # at the declared size — fall through to end-of-stream checks
-                )
-            else:
-                want = remaining if n < 0 else min(n, remaining)
-                try:
-                    data = inner.read(want)
-                except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
-                    # Abandon length/digest checks: close must not raise a second fault
-                    # after the caller already saw this decode error (macOS rapidgzip
-                    # mid-cut often raises here, then again on finish_on_close).
-                    self._verify_enabled = False
-                    raise
-        else:
-            try:
-                data = inner.read(n)
-            except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
-                self._verify_enabled = False
-                raise
+                # Logical position already at/past the declared size — only a seek
+                # gets here (a sequential read reaching the size verifies inline).
+                # Verify completeness (reading any seek-skipped gap) instead of
+                # trusting the seek, so seek-past-end cannot hide a truncation.
+                self._finish_after_seek(inner)
+                return b""
+            want = min(n, remaining)
+            reaches_declared = want == remaining
+
+        try:
+            data = read_full_count(inner, want)
+        except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+            self._abandon()
+            raise
+
         if data:
-            self._pos += len(data)
-            if self._verify_enabled:
-                for hasher in self._hashers.values():
-                    hasher.update(data)
+            self._record_read(data)
+            if (
+                reaches_declared
+                and self._expected_size is not None
+                and self._furthest_read_pos >= self._expected_size
+            ):
+                # Size-declared verifying event: withhold this chunk on fault.
+                self._finish(inner)
             return data
-        if self._verify_enabled and not self._verified:
+
+        # Empty: size-unknown digest / truncation-shaped terminal read.
+        if not self._verified:
             self._finish(inner)
         return data
 
     def note_seek(self, result: int) -> None:
-        """Update the frontier after a successful inner seek; disable if off-frontier."""
+        """Update the frontier after a successful inner seek.
+
+        A seek off the sequential frontier forfeits the **checksum** (incremental
+        hashing assumes linear consumption). Length / truncation / over-run checks
+        stay enabled and key off bytes actually read (``_furthest_read_pos``); a seek
+        that jumps to/past the declared size has the skipped gap read back and a byte
+        probed past the size at conclusion (``_verify_reaches_declared``), so
+        ``seek(declared_size)`` cannot silence truncation (short) or over-run (long)
+        (ADR 0014).
+        """
         if result != self._pos:
-            self._verify_enabled = False
+            self._digests_enabled = False
         self._pos = result
 
     def finish_on_close(self, inner: BinaryIO) -> None:
-        """Run deferred EOF verification around an inner that is still open.
+        """Close ``inner`` — teardown only, never a content-fault surface.
 
-        Always closes ``inner`` (and surfaces probe/finish errors after that close).
-        Callers that have not opened an inner yet should not call this.
+        Every content verdict (digest mismatch, hash-less short, over-length) fires
+        from a completing read. ``close`` therefore does **not** read, probe, or
+        drain the inner to force a late verdict — a partial read before clean EOF is
+        a deliberate abandon with no verdict. A teardown error raised by
+        ``inner.close()`` itself — a subprocess exit code, or an inner stream that
+        authenticates in its own ``close`` (e.g. WinZip AES HMAC) — still propagates.
         """
-        finish_exc: ArchiveyError | None = None
-        if self._verify_enabled and not self._verified:
-            reached_declared = (
-                self._expected_size is not None and self._pos >= self._expected_size
-            )
-            # Probe whether the stream ended cleanly. Accelerators (esp. rapidgzip on
-            # macOS) may raise on truncated input instead of returning b""; treat that
-            # as EOF when we are still short of the declared size so silent short-reads
-            # still become TruncatedError, without double-faulting after read() raised.
-            # Typed library errors (HMAC mismatch, etc.) must still propagate — but the
-            # inner must still be closed (F2).
-            more = False
-            probe_raised = False
-            if not reached_declared:
-                try:
-                    more = bool(inner.read(1))
-                except ArchiveyError as exc:
-                    # Close the inner first, then re-raise (F2: never leave the
-                    # wrapper/inner unclosed on a typed probe error).
-                    finish_exc = exc
-                    more = True  # skip _finish; surface finish_exc after close
-                except Exception:  # noqa: BLE001 - accel truncate may raise any error
-                    probe_raised = True
-                    more = False
-            if finish_exc is None and (reached_declared or not more):
-                if probe_raised and (
-                    self._expected_size is not None and self._pos < self._expected_size
-                ):
-                    finish_exc = TruncatedError(
-                        f"Decompressed content ended after {self._pos} of "
-                        f"{self._expected_size} expected bytes."
-                    )
-                else:
-                    try:
-                        self._finish(inner)
-                    except CorruptionError as exc:
-                        finish_exc = (
-                            exc  # still close the inner below before re-raising
-                        )
-        short = self._short
-        # Close first. An inner teardown error (e.g. unrar wrong-password exit)
-        # must win over a deferred short/truncation verdict — same precedence as
-        # the pre-fusion VerifyingStream.close, so let a close error propagate over
-        # ``finish_exc`` / ``short`` below rather than swallowing it.
         inner.close()
-        if finish_exc is not None:
-            raise finish_exc
-        if short:
-            raise TruncatedError(
-                f"Decompressed content ended after {self._pos} of "
-                f"{self._expected_size} expected bytes."
-            )
 
 
 def build_member_verifier(
@@ -414,6 +599,6 @@ class VerifyingStream(ReadOnlyIOStream):
             self._verifier.finish_on_close(self._inner)
         finally:
             # finish_on_close closes the inner; always mark the wrapper closed even
-            # when a typed probe error propagates (F2).
+            # when a teardown error from inner.close() propagates.
             if not self.closed:
                 super().close()

@@ -204,6 +204,17 @@ class _UnrarOwnedStream(DelegatingStream):
     is authoritative, and some legacy archives (e.g. RAR 1.5) make ``unrar`` report a
     spurious CRC error (exit 3) while emitting correct, verified data. A wrong-password
     exit (11) always maps — it means no usable data regardless of any stored hash.
+
+    RAR4 often reports exit 3 (CRC) instead of 11 for a missing/wrong password, with
+    empty stdout. After verify's short-before-digest preference that would otherwise
+    surface only as ``TruncatedError`` (0 of N) while ``has_verifiable_hash`` suppresses
+    the CRC exit. When the member is encrypted and we read zero plaintext bytes, map
+    exit 2/3 to ``EncryptionError``.
+
+    Exit mapping runs on the **empty/completing read** when the process has already
+    exited (ADR 0014 eager-finalize parity), so ``archive.read()`` / a completing
+    ``read()`` see ``EncryptionError`` on the read path rather than only from
+    ``close()``. ``close()`` still maps if the empty-read path never ran (early stop).
     """
 
     def __init__(
@@ -213,11 +224,69 @@ class _UnrarOwnedStream(DelegatingStream):
         *,
         named_member: bool = False,
         has_verifiable_hash: bool = False,
+        encrypted: bool = False,
     ) -> None:
-        super().__init__(stdout)
+        # Track bytes via read(); disable readinto passthrough so counting is not skipped.
+        super().__init__(stdout, readinto_passthrough=False)
         self._proc = proc
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash
+        self._encrypted = encrypted
+        self._bytes_read = 0
+        self._exit_mapped = False
+
+    def read(self, n: int = -1, /) -> bytes:
+        data = super().read(n)
+        self._bytes_read += len(data)
+        if not data:
+            # Completing / EOF read: reap and map exit here so content faults raise on
+            # read (not only on close).
+            self._map_exit_if_reaped(wait_timeout=1.0)
+        return data
+
+    def _raise_for_returncode(self, rc: int) -> None:
+        """Map an unrar exit code to an archivey error, or return quietly."""
+        # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
+        # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass; a
+        # negative code means we terminated it (early close) — not an error.
+        if rc == 11:
+            raise EncryptionError("Incorrect RAR password or encrypted member")
+        # RAR4 wrong/missing password: often exit 3 + empty stdout, not exit 11.
+        # Ambiguity: a genuinely corrupt (not password-related) encrypted member that
+        # also yields empty stdout + exit 2/3 is mislabeled EncryptionError here. We
+        # accept that bias — for an encrypted member producing zero plaintext, "wrong
+        # password" is the far more common cause and the actionable one (a caller
+        # cannot distinguish, or make progress, without the correct password anyway).
+        # unrar exposes no reliable signal to separate the two; narrow this if one
+        # appears.
+        if self._encrypted and self._bytes_read == 0 and rc in (2, 3):
+            raise EncryptionError("Incorrect RAR password or encrypted member")
+        if self._has_verifiable_hash:
+            # archivey verifies this member's CRC32/BLAKE2sp itself; that check is
+            # authoritative, so ignore unrar's (sometimes spurious) corruption codes.
+            return
+        if rc in (2, 3):
+            raise CorruptionError(
+                f"unrar reported a fatal or CRC error (exit {rc}) reading member data"
+            )
+        if rc == 10 and self._named_member:
+            raise CorruptionError(
+                "unrar found no matching member (exit 10); the member could not be read"
+            )
+
+    def _map_exit_if_reaped(self, *, wait_timeout: float | None) -> None:
+        """If unrar has exited (or exits within ``wait_timeout``), map its status once."""
+        if self._exit_mapped:
+            return
+        if self._proc.poll() is None:
+            if wait_timeout is None:
+                return
+            try:
+                self._proc.wait(timeout=wait_timeout)
+            except subprocess.TimeoutExpired:
+                return
+        self._exit_mapped = True
+        self._raise_for_returncode(self._proc.returncode)
 
     def close(self) -> None:
         if self.closed:
@@ -233,26 +302,11 @@ class _UnrarOwnedStream(DelegatingStream):
                     self._proc.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     terminate_unrar(self._proc)
-            rc = self._proc.returncode
             # Mark closed without relying on DelegatingStream (already closed inner).
             super(DelegatingStream, self).close()
-            # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
-            # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass; a
-            # negative code means we terminated it (early close) — not an error.
-            if rc == 11:
-                raise EncryptionError("Incorrect RAR password or encrypted member")
-            if self._has_verifiable_hash:
-                # archivey verifies this member's CRC32/BLAKE2sp itself; that check is
-                # authoritative, so ignore unrar's (sometimes spurious) corruption codes.
-                return
-            if rc in (2, 3):
-                raise CorruptionError(
-                    f"unrar reported a fatal or CRC error (exit {rc}) reading member data"
-                )
-            if rc == 10 and self._named_member:
-                raise CorruptionError(
-                    "unrar found no matching member (exit 10); the member could not be read"
-                )
+            # Early-stop close: map now if the completing-read path never did.
+            # (If read already mapped, ``_exit_mapped`` skips a second raise.)
+            self._map_exit_if_reaped(wait_timeout=None)
 
 
 class RarReader(BaseArchiveReader):
@@ -809,6 +863,7 @@ class RarReader(BaseArchiveReader):
                 proc,
                 named_member=True,
                 has_verifiable_hash=has_hash,
+                encrypted=raw.is_encrypted,
             )
         )
         try:

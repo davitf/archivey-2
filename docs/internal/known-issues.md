@@ -377,3 +377,204 @@ ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress
 - The earlier open questions (is it archivey's wrapper? the 7z path? warmup-only?) are
   resolved: it is pure `pyppmd` (crash reproduces with no archivey imports), warmup only
   shifts allocator layout, and sized decodes are structurally safe.
+
+## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)
+
+**Status: open / intermittent.** Observed on GitHub Actions `ubuntu-latest` required CI
+legs with `--extra all` (and `all-lowest`). **Not** the same bug as the pyppmd section
+above: a green **PPMd native stress** workflow does not clear this, and the fatal stacks
+are not inside a PPMd decode.
+
+### Symptom
+
+The required suite process dies with `Fatal Python error: Segmentation fault` (exit
+139) or `Fatal Python error: Aborted` (exit 134). The Python stack at death is usually a
+**late symptom** (heap already corrupt), not the corrupting call:
+
+| Crash site (examples) | What it means |
+|-----------------------|---------------|
+| `Garbage-collecting` → `hypothesis/internal/charmap.py` during `test_property_safety.py::test_normalize_total_and_idempotent` (strategy validate / `characters`) | Hypothesis touches the allocator; prior native work already poisoned the heap |
+| `Garbage-collecting` → `subprocess._close_pipe_fds` / `Popen` in `rar_unrar.open_unrar_p` (e.g. during `test_multi_volume_stream_materialization`) | Same: GC + new subprocess while the heap is bad |
+
+Fatal logs list extension modules along the lines of:
+
+`backports.zstd`, `lz4`, `_brotli`, `pyppmd.c._ppmd`, **`rapidgzip`**, `bcj._bcj`, `_cffi_backend`
+
+### Where it does / does not show up
+
+| Environment | Observation |
+|-------------|-------------|
+| `ubuntu-latest` × `[all]` / `[all-lowest]` × py3.11–3.13 (sometimes 3.14) | Intermittent process death mid-suite |
+| Same matrix `[core-only]` | Clean (no `rapidgzip` / optional natives from `[all]`) |
+| `macos-latest` / `windows-latest` `[all]` | Typically clean on the same commits (Windows also skips `unrar` data tests) |
+| Local `uv run --no-sync pytest tests/ -q` after `uv sync --group dev --extra all` | Often green; **not a reliable one-shot repro** |
+| PPMd stress job (isolated children; see section above) | Consistently green on recent PRs — different surface |
+
+CI runners use **uv’s standalone CPython** (Linux builds report Clang in `sys.version`),
+with pytest-cov enabled via `addopts` (`--cov=archivey …`).
+
+### Why PPMd stress historically did not cover the exit-after-green abort
+
+`.github/workflows/ppmd-native-stress.yml` / `scripts/ppmd_native_stress.py`
+default scenarios:
+
+- Run each scenario in a **fresh child** (no multi-thousand-test address space).
+- Warmup is LZMA2 / Deflate / Bzip2 **then** PPMd — **no `rapidgzip`**, no Hypothesis,
+  no coverage tracer, no `unrar`.
+- Target mid-decode / warmup_codecs aborts; children exit right after the scenario.
+
+That stayed green while required CI’s `test_ppmd_raw_streams` child died on
+**interpreter teardown after a green session**. The stress workflow now also
+**soaks that pytest module** (`scripts/ci_run_native_modules.py --repeat N`) as a
+hard-failing, non-required step so the fingerprint has a home without blocking
+merges. Bounded PPMd decode mitigation made the historical `warmup_codecs` soak
+quieter; the exit-after-green flake is a separate open item.
+
+### Leading suspects (unconfirmed)
+
+1. **`rapidgzip`** in a long-lived pytest process (AUTO on under `[seekable]` / `[all]`),
+   possibly after truncated/corrupt gzip/bzip2 paths exercised elsewhere in the suite
+   (`tests/test_accelerator_shutdown.py` already documents raw rapidgzip abort-on-
+   finalize in **subprocesses**; in-process corruption is a separate question).
+2. **Interaction / allocator layout**: many natives loaded together + coverage + GC,
+   with Hypothesis or `subprocess` merely the tripwire.
+3. **Not** the gzip/zlib truncation-recovery *logic* itself — crashes predate a stable
+   local repro of that change and do not stack in `DecompressorStream` / `verify.py`.
+
+### CI bandage (not a root-cause fix)
+
+Required `[all]` / `[all-lowest]` jobs split the suite (`.github/workflows/ci.yml`):
+
+```text
+# 1) Main suite — skip Hypothesis + dedicated accelerator/PPMd stream modules
+pytest tests/ \
+  --ignore=tests/test_property_safety.py \
+  --ignore=tests/test_rapidgzip_deflate_zlib.py \
+  --ignore=tests/test_accelerator_shutdown.py \
+  --ignore=tests/test_accelerator_corruption.py \
+  --ignore=tests/test_ppmd_raw_streams.py -q
+
+# 2) Accelerator stream tests — one subprocess each (coverage off; breadcrumbs)
+python scripts/ci_run_native_modules.py
+
+# 3) PPMd raw streams — same runner, but --allow-exit-after-green so the known
+#    intermittent exit-after-green abort does not fail required CI. Real pytest
+#    assertion failures still fail the job.
+python scripts/ci_run_native_modules.py \
+  --modules tests/test_ppmd_raw_streams.py \
+  --allow-exit-after-green
+
+# 4) Hypothesis property-safety
+pytest tests/test_property_safety.py -q
+```
+
+(1)↔(4) stops a corrupted main-suite heap from taking down Hypothesis in-process
+(and vice versa). (2) keeps the heaviest in-process rapidgzip ON / truncated-corrupt
+accelerator paths out of the long suite.
+
+**PPMd exit-after-green (separate fingerprint, open investigation):** running
+`tests/test_ppmd_raw_streams.py` alone often finishes `19 passed` /
+`sessionfinish exit=0`, then the child dies with SIGSEGV or
+`corrupted size vs. prev_size` / SIGABRT during interpreter teardown. A/B/C order
+experiments showed this is intermittent and not a deterministic
+“accelerators-before-PPMd” interaction. The dedicated mid-decode
+`ppmd-native-stress` scenarios stayed green on the same SHAs — different surface.
+
+Required CI therefore **soft-passes** that exit-after-green signal (assertions
+still gate). The non-required PPMd native stress workflow **soaks** the same
+pytest module (`--repeat N`, hard-fail on crash) so the flake stays visible
+without blocking merges. Root-cause fix is a follow-up, not this PR.
+
+**Why accelerator modules are not one combined pytest:** a single multi-module
+process aborted on Ubuntu with every test green during `coverage.collector.flush_data`
+/ GC (`corrupted size vs. prev_size`, exit 134). Per-module children + disabling
+cov on that leg both harden the job and name the offender.
+
+`PYTHONFAULTHANDLER=1` is set on these steps so fatal traces always dump.
+
+This still does **not** claim the main suite is free of every native (AUTO/SEEKABLE
+paths and py7zr/PPMd corpus remain). It is CI hygiene, not a product fix.
+
+### How to reproduce / bisect (investigation recipe)
+
+There is **no single-command reliable repro** yet. Use rate + A/B:
+
+```bash
+# Match CI-ish env (Linux preferred; uv CPython)
+uv python install 3.11
+uv sync --group dev --extra all
+uv run --python 3.11 --no-sync python -c "import sys; print(sys.version)"
+
+# 1) Baseline soak — expect rare exit 139/134, not every run
+for i in $(seq 1 20); do
+  echo "=== pass $i ==="
+  uv run --python 3.11 --no-sync pytest tests/ -q \
+    || { echo "FAILED pass $i rc=$?"; break; }
+done
+
+# 2) Same soak but keep Hypothesis out of the long process (CI bandage shape)
+for i in $(seq 1 20); do
+  uv run --python 3.11 --no-sync pytest tests/ \
+    --ignore=tests/test_property_safety.py \
+    --ignore=tests/test_rapidgzip_deflate_zlib.py \
+    --ignore=tests/test_accelerator_shutdown.py \
+    --ignore=tests/test_accelerator_corruption.py \
+    --ignore=tests/test_ppmd_raw_streams.py -q \
+    || { echo "main FAILED pass $i rc=$?"; break; }
+  uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+    || { echo "accelerators FAILED pass $i rc=$?"; break; }
+  # Soft-pass exit-after-green locally the same way required CI does:
+  uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+    --modules tests/test_ppmd_raw_streams.py --allow-exit-after-green \
+    || { echo "ppmd-raw FAILED pass $i rc=$?"; break; }
+  uv run --python 3.11 --no-sync pytest tests/test_property_safety.py -q \
+    || { echo "property FAILED pass $i rc=$?"; break; }
+done
+
+# 2b) Hard soak of the PPMd raw-streams exit abort (matches non-required stress step)
+uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+  --modules tests/test_ppmd_raw_streams.py --repeat 20
+
+# 3) A/B: no rapidgzip in the environment (uninstall after sync)
+uv run --python 3.11 --no-sync pip uninstall -y rapidgzip
+# re-run soak (1); if crashes vanish, rapidgzip (or its use under AUTO) is implicated
+# restore with: uv sync --group dev --extra all
+
+# 4) A/B: no pyppmd (controls the other known native)
+uv run --python 3.11 --no-sync pip uninstall -y pyppmd
+# re-run soak (1); green PPMd stress already suggests this alone is insufficient
+```
+
+Useful while hunting:
+
+- `PYTHONFAULTHANDLER=1` so fatal traces always dump.
+- A pytest plugin or wrapper that logs the **last N nodeids** before death (crash stacks
+  are late).
+- Compare against CI artifacts for a red job: look for `Fatal Python error` +
+  `Extension modules:` and the test named in the stack (Hypothesis vs RAR vs other).
+
+**Known red CI fingerprints** (gzip-zlib truncation-recovery work, 2026-07; illustrative,
+not a pinned commit contract):
+
+- Run `29829920415` — Ubuntu py3.11/3.12 `[all]` SIGSEGV in Hypothesis charmap GC;
+  py3.13/3.14 completed far enough to fail a separate RAR4 assertion.
+- Run `29836095815` — after RAR4 fix: Ubuntu py3.11 SIGSEGV / py3.13 SIGABRT still in
+  Hypothesis; other legs green.
+- Run `29836326565` — with property-safety split: Ubuntu py3.11 SIGSEGV during RAR
+  multi-volume `open_unrar_p` GC (main suite), proving Hypothesis isolation alone is
+  incomplete.
+- Run `29969446114` — after review follow-ups: Ubuntu py3.11/3.14 `[all]` SIGSEGV at
+  ~63% (GC during fixture setup / `test_rar_oracle` ← `rarfile`/`cryptography` import),
+  immediately after `test_ppmd_raw_streams` → `test_rapidgzip_deflate_zlib` in collection
+  order. Other matrix legs green. Motivated the accelerator/PPMd-stream process split.
+
+### Next steps
+
+- Get a soak rate (even 1/20) under recipe (1), then A/B rapidgzip off (3).
+- If rapidgzip-linked: try to shrink to a subprocess loop that only imports/uses
+  rapidgzip the way the suite does (path vs `BytesIO`, truncated members, close vs GC),
+  reusing ideas from `scripts/dual_accelerator_repro.py` / `tests/test_accelerator_shutdown.py`.
+- If only the long mixed suite flakes: treat as CI hygiene (more process isolation, or
+  coverage/accelerator policy on Linux) rather than a product API defect.
+- Do **not** fold this into PPMd stress without adding a rapidgzip + long-suite axis;
+  the existing PPMd job would stay green while this remains open.

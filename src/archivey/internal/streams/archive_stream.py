@@ -28,7 +28,11 @@ from archivey.diagnostics import (
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    is_seekable,
+    read_full_count,
+)
 from archivey.internal.streams.verify import MemberVerifier, build_member_verifier
 from archivey.types import HashAlgorithm
 
@@ -370,34 +374,28 @@ class ArchiveStream(ReadOnlyIOStream):
         # _ensure_open is outside the try: its read-after-close ValueError is the
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
         # is already routed through _fail inside it.
+        # Full-count ``read(n)`` (ADR 0014): coalesce over short-reading inners so
+        # ``read(member.size)`` is a real verifying event when a verifier is fused.
         inner = self._ensure_open()
         verifier = self._verifier
         try:
             if verifier is not None:
                 return verifier.read(inner, n)
-            return inner.read(n)
+            if n == 0:
+                return b""
+            if n < 0:
+                return inner.read(n)
+            return read_full_count(inner, n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail(e)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        # When verifying, route through read() so digest/bounds stay consistent
-        # (same contract as VerifyingStream / ReadOnlyIOStream.readinto).
-        if self._verifier is not None:
-            mv = memoryview(b).cast("B")
-            data = self.read(len(mv))
-            mv[: len(data)] = data
-            return len(data)
-        inner = self._ensure_open()
-        readinto = getattr(inner, "readinto", None)
-        if readinto is None:
-            mv = memoryview(b).cast("B")
-            data = self.read(len(mv))
-            mv[: len(data)] = data
-            return len(data)
-        try:
-            return readinto(b)
-        except Exception as e:  # noqa: BLE001 - re-raised via the translator
-            self._fail(e)
+        # Always route through read() so full-count coalesce (and fused verify)
+        # stay consistent — inner.readinto may be up-to-n.
+        mv = memoryview(b).cast("B")
+        data = self.read(len(mv))
+        mv[: len(data)] = data
+        return len(data)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable_hint:
@@ -485,7 +483,10 @@ class ArchiveStream(ReadOnlyIOStream):
             if inner is not None:
                 try:
                     if verifier is not None:
-                        # finish_on_close closes the inner (and runs deferred verify).
+                        # Teardown only: finish_on_close just closes the inner — every
+                        # content verdict fires from a read (ADR 0014). A teardown error
+                        # from inner.close() (e.g. a subprocess exit code) still
+                        # propagates via the translator below.
                         verifier.finish_on_close(inner)
                     else:
                         inner.close()

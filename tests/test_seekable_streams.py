@@ -186,6 +186,40 @@ def test_xz_truncated_raises() -> None:
             stream.read()
 
 
+def test_xz_truncated_large_read_recovers_prefix() -> None:
+    compressed = lzma.compress(CONTENT, format=lzma.FORMAT_XZ)
+    truncated = compressed[: len(compressed) // 2]
+    with XzDecompressorStream(io.BytesIO(truncated)) as stream:
+        prefix = stream.read(65536)
+        assert prefix  # recoverable bytes delivered
+        with pytest.raises(TruncatedError):
+            stream.read(1)
+        stream.close()  # quiet after observed truncation
+    with XzDecompressorStream(io.BytesIO(truncated)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+        assert stream.try_get_size() is None
+        with pytest.raises(TruncatedError):
+            stream.seek(0, io.SEEK_END)
+
+
+def test_lzip_truncated_large_read_recovers_prefix() -> None:
+    compressed = make_lzip_member(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with LzipDecompressorStream(io.BytesIO(truncated)) as stream:
+        prefix = stream.read(65536)
+        assert prefix
+        with pytest.raises(TruncatedError):
+            stream.read(1)
+        stream.close()
+    with LzipDecompressorStream(io.BytesIO(truncated)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+        assert stream.try_get_size() is None
+        with pytest.raises(TruncatedError):
+            stream.seek(0, io.SEEK_END)
+
+
 @pytest.mark.skipif(
     not xz_cli_available(),
     reason="the xz CLI is needed for a multi-block first stream before a later stream",

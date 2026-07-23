@@ -150,6 +150,7 @@ class _LzipState:
         self._member_size = 0
         self._finished = False
         self._members_seen = 0
+        self.truncated = False
 
     def feed(
         self, data: bytes, max_length: int = -1
@@ -162,10 +163,22 @@ class _LzipState:
             if self._members_seen == 0 and not self._buf:
                 raise CorruptionError("Not a valid lzip file: no members found")
             if len(self._buf) >= 4 and self._buf[:4] == _MAGIC:
-                raise TruncatedError("Lzip file truncated mid-header")
+                self.truncated = True
+                return b"", []
             self._finished = True
             return b"", []
-        raise TruncatedError("Lzip file is truncated")
+        out, units = self._process(max_length=-1)
+        if self._finished:
+            return out, units
+        if self._dec is not None and not self._dec.needs_input:
+            try:
+                more = self._dec.decompress(b"")
+                out = out + more
+                self._crc = zlib.crc32(more, self._crc) & 0xFFFFFFFF
+            except lzma.LZMAError:
+                pass
+        self.truncated = True
+        return out, units
 
     def is_finished(self) -> bool:
         return self._finished
@@ -304,11 +317,13 @@ class LzipDecoder(BaseDecoder):
 
     def flush(self) -> DecodeOut:
         data, units = self._state.flush()
+        if self._state.truncated:
+            self._pending_error = TruncatedError("Lzip file is truncated")
         return DecodeOut(data, self._points_for_units(units))
 
     @property
     def finished(self) -> bool:
-        return self._state.is_finished()
+        return self._state.is_finished() and not self._state.truncated
 
     @property
     def needs_input(self) -> bool:

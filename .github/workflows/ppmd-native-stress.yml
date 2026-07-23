@@ -2,12 +2,14 @@ name: PPMd native stress
 
 # Investigation vehicle for intermittent ``pyppmd`` native aborts on *valid* PPMd
 # streams (Windows STATUS_HEAP_CORRUPTION; Linux SIGSEGV / malloc abort after
-# other-codec warmup). See docs/internal/known-issues.md.
+# other-codec warmup; Linux/Windows exit-after-green abort of
+# tests/test_ppmd_raw_streams.py). See docs/internal/known-issues.md.
 #
 # Runs on every PR and on pushes to main so we keep signal, but lives in its *own*
 # workflow on purpose: do **not** add this check as a required status check — a red
 # run here must not block merge. The main CI Windows matrix skips the 7z PPMd codec
-# param; default pytest excludes ``ppmd_native_stress`` tests.
+# param; default pytest excludes ``ppmd_native_stress`` tests. Required CI soft-passes
+# the raw-streams exit-after-green abort; this workflow soaks that module hard.
 on:
   push:
     branches: [main]
@@ -75,6 +77,21 @@ jobs:
           python scripts/ppmd_native_stress.py
           --summary ppmd-stress-summary-${{ matrix.os }}-py${{ matrix.python-version }}.md
 
+      - name: Soak test_ppmd_raw_streams (pytest module exit abort)
+        # Distinct fingerprint from warmup_codecs: full pytest module goes green
+        # (sessionfinish exit=0) then SIGSEGV/SIGABRT on process exit. Required CI
+        # soft-passes that abort; this non-required soak keeps the signal visible.
+        # Hard-fails the step on any child crash (no --allow-exit-after-green).
+        if: steps.sync.outcome == 'success'
+        env:
+          ARCHIVEY_PPMD_RAW_STREAMS_ITERS: ${{ github.event.inputs.iterations || '20' }}
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          python scripts/ci_run_native_modules.py
+          --modules tests/test_ppmd_raw_streams.py
+          --repeat ${{ env.ARCHIVEY_PPMD_RAW_STREAMS_ITERS }}
+          --summary ppmd-raw-streams-soak-${{ matrix.os }}-py${{ matrix.python-version }}.md
+
       - name: Stress PPMd (pytest marker entry points)
         # Run even when the script step failed (crash signal), but not when setup/sync
         # never installed `uv` (avoids a misleading "uv: command not found").
@@ -88,5 +105,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ppmd-stress-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: ppmd-stress-summary-${{ matrix.os }}-py${{ matrix.python-version }}.md
+          path: |
+            ppmd-stress-summary-${{ matrix.os }}-py${{ matrix.python-version }}.md
+            ppmd-raw-streams-soak-${{ matrix.os }}-py${{ matrix.python-version }}.md
           if-no-files-found: ignore

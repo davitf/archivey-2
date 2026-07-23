@@ -269,7 +269,7 @@ def test_verifying_stream_close_after_inner_read_error_is_quiet() -> None:
 
 
 def test_verifying_stream_close_maps_probe_error_to_truncated() -> None:
-    """Silent short-read + probe exception on close → TruncatedError (macOS accel)."""
+    """Silent short-read + opaque probe exception → TruncatedError on read (not close)."""
     from archivey.internal.streams.verify import VerifyingStream
 
     class _ShortThenBoom(io.BytesIO):
@@ -284,9 +284,9 @@ def test_verifying_stream_close_maps_probe_error_to_truncated() -> None:
             return super().read(n)
 
     stream = VerifyingStream(_ShortThenBoom(), {}, expected_size=100)
-    assert stream.read() == b"partial"
     with pytest.raises(TruncatedError, match="ended after 7 of 100"):
-        stream.close()
+        stream.read()
+    stream.close()  # content faults raise from read, never from close
 
 
 def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size() -> (
