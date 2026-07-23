@@ -165,10 +165,17 @@ class GzipDecoder(BaseDecoder):
             limit = max_length - len(output) if max_length >= 0 else -1
             if limit == 0:
                 break
-            if limit < 0:
-                produced = self._decomp.decompress(data)
-            else:
-                produced = self._decomp.decompress(data, limit)
+            try:
+                if limit < 0:
+                    produced = self._decomp.decompress(data)
+                else:
+                    produced = self._decomp.decompress(data, limit)
+            except zlib.error as e:
+                # Corrupt deflate body (bad CRC/data check inside a member). Raise
+                # CorruptionError here so a raw GzipDecompressorStream is consistent
+                # with flush() and does not leak zlib.error (GzipCodec.translate maps
+                # it too, but the decoder must stand on its own).
+                raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
             output.extend(produced)
 
             if self._decomp.eof:

@@ -483,7 +483,10 @@ class ArchiveStream(ReadOnlyIOStream):
             if inner is not None:
                 try:
                     if verifier is not None:
-                        # finish_on_close closes the inner (and runs deferred verify).
+                        # Teardown only: finish_on_close just closes the inner — every
+                        # content verdict fires from a read (ADR 0014). A teardown error
+                        # from inner.close() (e.g. a subprocess exit code) still
+                        # propagates via the translator below.
                         verifier.finish_on_close(inner)
                     else:
                         inner.close()

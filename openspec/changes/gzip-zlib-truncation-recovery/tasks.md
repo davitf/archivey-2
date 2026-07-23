@@ -112,9 +112,13 @@
 - [x] 4.1c **Seek:** forfeit checksum only; length / truncation / over-run
       checks remain active after a seek off the sequential frontier and key off
       bytes actually read (`_furthest_read_pos`). A seek to/past the declared size
-      reads the skipped gap at conclusion (`_verify_reaches_declared`), so
-      `seek(declared_size)` neither silences truncation on a short member nor
-      fabricates one on a complete member (`seek(size); read(1)` returns `b""`).
+      reads the skipped gap **and probes one byte past the declared size** at
+      conclusion (`_verify_reaches_declared`), so `seek(declared_size)` neither
+      silences truncation (short → `TruncatedError`) or over-run (long →
+      `CorruptionError`) nor fabricates either on a complete member
+      (`seek(size); read(1)` returns `b""`). Covered by
+      `test_verify_seek_to_declared_size_cannot_silence_truncation`,
+      `…_cannot_silence_overrun`, and `…_seek_past_end_of_complete_member_returns_empty`.
 - [x] 4.1d Sized `read(-1)` drain: `OSError` / `MemoryError` propagate; only
       opaque accelerator EOF may become `TruncatedError`.
 - [x] 4.2 `readall` / `read(-1)` with digest mismatch or hash-less short: raise

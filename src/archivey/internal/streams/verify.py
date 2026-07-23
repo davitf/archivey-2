@@ -21,9 +21,10 @@ Per ADR 0014 / ``compressed-streams``:
   hashing needs linear consumption). Length / truncation / over-run stay on and key
   off bytes **actually read** (``_furthest_read_pos``). If a seek jumps to/past the
   declared size without reading the intervening bytes, concluding reads the skipped
-  gap to verify it (``_verify_reaches_declared``) rather than returning ``b""``
-  blind, so a past-EOF ``seek(declared_size)`` still catches truncation — a completed
-  member (``furthest >= expected``) short-circuits with no extra I/O.
+  gap and probes one byte past the declared size (``_verify_reaches_declared``)
+  rather than returning ``b""`` blind, so a past-EOF ``seek(declared_size)`` still
+  catches truncation (short) *and* over-run (long) — a completed member
+  (``furthest >= expected``) short-circuits with no extra I/O.
 - **Size-declared corruption** (digest mismatch / over-run at the declared size):
   the reaching read raises and **withholds** that chunk.
 - **Size-unknown corruption**: deliver data bytes; raise on the EOS-observing
@@ -273,24 +274,26 @@ class MemberVerifier:
             self._verify_digests()
 
     def _verify_reaches_declared(self, inner: BinaryIO) -> None:
-        """Read any gap a forward seek skipped, so a truncated member is still caught.
+        """Verify a member decodes to *exactly* its declared size after a forward seek.
 
         When a seek jumps the logical position to/past the declared size without
         reading the intervening bytes, ``_furthest_read_pos`` lags the declared size
-        and a complete member is indistinguishable from a short one. Rather than
-        return ``b""`` and hide a truncation (the "seek past the end" shortcut), read
-        the ``[_furthest_read_pos, expected_size)`` gap now — the checksum is already
-        forfeited by the seek, so this only advances the length frontier — then
-        restore the inner to where the caller left it. Bounded by the declared size (a
-        decompression-bomb cap); a member already read to its end
-        (``furthest >= expected``) returns immediately with no extra I/O.
+        and a complete member is indistinguishable from a short (truncated) or long
+        (over-run) one. Rather than return ``b""`` and hide the fault (the "seek past
+        the end" shortcut), read the ``[_furthest_read_pos, expected_size)`` gap now —
+        the checksum is already forfeited by the seek, so this only advances the length
+        frontier — then probe one byte past the declared size, exactly as
+        :meth:`_finish` does on a sequential reaching read. A short member raises
+        ``TruncatedError``; an over-long one raises ``CorruptionError``; a complete one
+        restores the inner to the caller's position and returns. Bounded by the
+        declared size (a decompression-bomb cap); a member already read to its declared
+        size was verified on that reaching read and returns immediately with no I/O.
         """
         assert self._expected_size is not None
         if self._furthest_read_pos >= self._expected_size:
             return
         resume = inner.tell()
         inner.seek(self._furthest_read_pos)
-        restored = False
         try:
             while self._furthest_read_pos < self._expected_size:
                 want = min(
@@ -300,33 +303,50 @@ class MemberVerifier:
                 if not piece:
                     break
                 self._furthest_read_pos += len(piece)
-            inner.seek(resume)
-            restored = True
-        finally:
-            if not restored:
-                # A decoder truncation/corruption error is propagating from the gap
-                # read (its own honest verdict); the stream is faulted, so skip the
-                # pointless best-effort position restore and stop further checks.
-                self._abandon()
-
-    def _finish_after_seek(self, inner: BinaryIO) -> None:
-        """Conclude at/past the declared size that a seek — not reads — reached.
-
-        A sequential read reaching the declared size verifies inline; getting here
-        un-verified means a seek jumped ahead. Verify the member is not truncated
-        (reading any un-read gap via :meth:`_verify_reaches_declared`); the checksum
-        is forfeited by the seek, so there is no digest verdict here. A genuinely
-        short member still raises ``TruncatedError``; a complete one concludes quietly
-        (the caller is past the end, so it gets ``b""``).
-        """
-        assert self._expected_size is not None
-        self._verified = True
-        self._verify_reaches_declared(inner)
+        except BaseException:
+            # A decoder truncation/corruption error propagating from the gap read is
+            # the member's own honest verdict; the stream is faulted — abandon and let
+            # it surface (skip the pointless best-effort position restore).
+            self._abandon()
+            raise
         if self._furthest_read_pos < self._expected_size:
+            # Genuine EOF before the declared size; the inner sits at that EOF (no
+            # restore — we are raising).
             raise TruncatedError(
                 f"Decompressed content ended after {self._furthest_read_pos} of "
                 f"{self._expected_size} expected bytes."
             )
+        # Reached the declared size via the gap read; the inner sits at the declared
+        # boundary. Over-run probe (same as _finish): any trailing byte means the
+        # member decodes past its declared size — corruption independent of the
+        # checksum, and it must not be silenced just because a seek reached the size.
+        try:
+            trailing = inner.read(1)
+        except ArchiveyError:
+            raise
+        except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
+            trailing = b""
+        if trailing:
+            raise CorruptionError(
+                "Decompressed content exceeds its declared size of "
+                f"{self._expected_size} bytes."
+            )
+        inner.seek(resume)
+
+    def _finish_after_seek(self, inner: BinaryIO) -> None:
+        """Conclude at/past the declared size that a seek — not reads — reached.
+
+        A sequential read reaching the declared size verifies inline (length **and**
+        over-run, plus digests while enabled); getting here un-verified means a seek
+        jumped ahead. Reproduce the same length + over-run verdict via
+        :meth:`_verify_reaches_declared` — the checksum is forfeited by the seek, so
+        there is no digest verdict here. A short member raises ``TruncatedError``, an
+        over-long one ``CorruptionError``; a complete one concludes quietly (the caller
+        is past the end, so it gets ``b""``).
+        """
+        assert self._expected_size is not None
+        self._verified = True
+        self._verify_reaches_declared(inner)
 
     def _update_digests(self, data: bytes) -> None:
         if self._digests_enabled and data:
@@ -468,9 +488,10 @@ class MemberVerifier:
         A seek off the sequential frontier forfeits the **checksum** (incremental
         hashing assumes linear consumption). Length / truncation / over-run checks
         stay enabled and key off bytes actually read (``_furthest_read_pos``); a seek
-        that jumps to/past the declared size has the skipped gap read back at
-        conclusion (``_verify_reaches_declared``), so ``seek(declared_size)`` cannot
-        silence truncation (ADR 0014).
+        that jumps to/past the declared size has the skipped gap read back and a byte
+        probed past the size at conclusion (``_verify_reaches_declared``), so
+        ``seek(declared_size)`` cannot silence truncation (short) or over-run (long)
+        (ADR 0014).
         """
         if result != self._pos:
             self._digests_enabled = False

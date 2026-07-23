@@ -252,6 +252,13 @@ class _UnrarOwnedStream(DelegatingStream):
         if rc == 11:
             raise EncryptionError("Incorrect RAR password or encrypted member")
         # RAR4 wrong/missing password: often exit 3 + empty stdout, not exit 11.
+        # Ambiguity: a genuinely corrupt (not password-related) encrypted member that
+        # also yields empty stdout + exit 2/3 is mislabeled EncryptionError here. We
+        # accept that bias — for an encrypted member producing zero plaintext, "wrong
+        # password" is the far more common cause and the actionable one (a caller
+        # cannot distinguish, or make progress, without the correct password anyway).
+        # unrar exposes no reliable signal to separate the two; narrow this if one
+        # appears.
         if self._encrypted and self._bytes_read == 0 and rc in (2, 3):
             raise EncryptionError("Incorrect RAR password or encrypted member")
         if self._has_verifiable_hash:

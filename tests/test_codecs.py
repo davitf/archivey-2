@@ -900,6 +900,33 @@ def test_verify_seek_past_end_of_complete_member_returns_empty() -> None:
     stream.close()
 
 
+def test_verify_seek_to_declared_size_cannot_silence_overrun() -> None:
+    """Seek to/past the declared size must not hide an over-long body (ADR 0014).
+
+    Symmetric to the truncation case: reaching the declared size — even via a seek —
+    is a verifying event for **over-run**. Concluding reads the seek-skipped gap and
+    probes one byte past the declared size, so a member that decodes past its declared
+    size raises `CorruptionError` instead of returning a clean `b""`. (Sequential
+    reads already caught this; this closes the seek-idiom gap.)
+    """
+    overlong = CONTENT * 2  # decodes to more than the declared size below
+    declared = len(CONTENT)
+
+    # seek exactly to the declared size (the completeness-test boundary).
+    stream = VerifyingStream(io.BytesIO(overlong), {}, expected_size=declared)
+    stream.seek(declared)
+    with pytest.raises(CorruptionError, match="exceeds its declared size"):
+        stream.read(1)
+    stream.close()
+
+    # seek well past the declared size.
+    stream = VerifyingStream(io.BytesIO(overlong), {}, expected_size=declared)
+    stream.seek(declared + 100)
+    with pytest.raises(CorruptionError, match="exceeds its declared size"):
+        stream.read(-1)
+    stream.close()
+
+
 def test_verify_sized_readall_propagates_oserror_not_truncation() -> None:
     """Resource errors on the sized drain must not be relabeled TruncatedError."""
 

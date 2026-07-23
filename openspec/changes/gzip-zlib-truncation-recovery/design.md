@@ -349,9 +349,10 @@ chunk is delivered, then the **terminal empty `read`** raises
      mid-stream-short coalesce.
    - **Seek:** forfeit checksum only; length / truncation / over-run stay on and
      key off bytes **actually read** (`_furthest_read_pos`). A seek that jumps
-     to/past the declared size without reading the gap has it read back at
-     conclusion (`_verify_reaches_declared`), so `seek(declared_size)` neither
-     silences truncation on a short member nor fabricates one on a complete member
+     to/past the declared size without reading the gap has it read back **and a byte
+     probed past the declared size** at conclusion (`_verify_reaches_declared`), so
+     `seek(declared_size)` neither silences truncation (short → `TruncatedError`) or
+     over-run (long → `CorruptionError`) nor fabricates either on a complete member
      (`seek(size); read(1)` returns `b""`).
 
    **Rejected:** close-raises; **Rejected:** size-declared "deliver every byte then
