@@ -198,3 +198,50 @@ Free race until subprocess isolation.)
   truncated/early-close teardown.
 - **Upstream?** Overshoot + `Ppmd7T_Free` remain pyppmd 1.3.x defects; archivey
   avoids the patterns that trip them in-process.
+
+### Follow-up measurements (2026-07-23): why 64, and how much does NUL emit?
+
+**How 64 was chosen originally:** not from measuring legitimate recovery size.
+It was the first round-number that stayed green in a half-truncated
+`decode(b"\0", min(rem, cap))` soak (cap≤512 → 0/30–0/100; cap≥1024 often
+native-aborted). So it is a **crash-threshold cushion**, not a derived bound
+from “bytes needed at true EOF”.
+
+**Complete / well-formed streams (pyppmd 1.3.1 + encoder `flush()`):**
+
+| Probe | Result |
+|-------|--------|
+| ~10k samples (varied payloads, chunk sizes, trailing `\\0`) | **0** cases where `needs_input` after full packed feed |
+| Docs-style sample (`decode(packed, n)` then maybe `decode(b"\\0", rem)`) | **0** NUL recoveries in 1625 tries |
+| py7zr `PpmdCompressor`/`PpmdDecompressor` same shapes | **0** shortfalls |
+| Trailing-NUL payloads only (`b"a"*n + b"\\0"`, n=1..200) | **0** hits |
+
+So on this wheel/version with a proper encoder flush, the documented “encoder
+omits a last null” path **does not fire**. We therefore **cannot empirically
+prove** that 64 is always enough for a true missing-NUL completion — we never
+observe one. If that path ever yields more than 64 remaining output bytes from
+a single extra NUL, a capped flush would under-read and surface
+`TruncatedError` (safe failure, not a crash). The pyppmd METADATA sample still
+documents the quirk and passes full `length - len(result)` as the budget.
+
+**Truncated streams (fixture `CONTENT` 1760 B → 57 B packed; subprocess-isolated):**
+
+When a mid-cut still has `needs_input` and we feed one NUL:
+
+- Successful calls almost always return **1–3 output bytes** (p50=1, p90=2,
+  p99=3, max=3 across non-crash truncated soaks), **not** kilobytes of garbage.
+- Uncapped `max_length=remaining` (~1700) often **SIGSEGV/SIGABRT instead of
+  filling the buffer** — the large budget is the crash, not a large garbled
+  return. Example earlier: half-cut uncapped **85/100** children aborted.
+- Those 1–3 bytes sometimes bitwise-match the true payload prefix at that
+  offset (coincidence / local model state); they never complete the member
+  (`rem` stays huge; **0** full recoveries).
+- Near-complete cuts (`eof=True`, short output) skip the NUL path entirely;
+  damage there is the earlier oversize `decode(truncated, unpack_size)` /
+  `Ppmd7T_Free` story, not NUL emit size.
+
+**Implication for the constant:** observed successful NUL emits are ≤3 bytes,
+so **1 or 8 would match the data** more tightly than 64. Keeping 64 is a
+deliberate cushion for a possible multi-byte docs-path recovery we could not
+reproduce on 1.3.1. Tightening is reasonable if we want least privilege; it is
+not required for the crash mitigation already measured at 0/100.
