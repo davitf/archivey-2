@@ -498,15 +498,61 @@ cycles):
 | `while dec.needs_input: dec.decode(b"\0", 1)` (≤4×), then `del` | **0** |
 
 So archivey can add a **"quiesce on close"** step to `PpmdDecoder` /
-`DecompressorStream.close()`: while `needs_input` (worker parked), issue a bounded
-`decode(b"\0", 1)` (cap the loop at a few iterations) to force the worker to
-`finished` before releasing the decoder. This is the deterministic-dispose spike
-the brief's review addendum asked for (gap #1), and if it holds under the full
-adversarial soak it would let required CI **drop `--allow-exit-after-green`** for
-the PPMd module. It needs validating against the existing subprocess-isolated
-adversarial tests (and on 3.12+/free-threaded per gap #4) before being relied on;
-the mechanism and the single-shape measurement above are promising but not yet a
-full soak.
+`DecompressorStream.close()`: while a worker is parked, issue a bounded
+`decode(b"\0", 1)` (cap the loop at a few iterations) to force it to `finished`
+before releasing the decoder. This is the deterministic-dispose spike the brief's
+review addendum asked for (gap #1).
+
+#### Prototype implemented (2026-07-23)
+
+Landed on this branch as `PpmdDecoder._quiesce_worker()`, wired through both an
+explicit `close()` (new no-op `Decoder.close()` on the protocol / `BaseDecoder`,
+called from `DecompressorStream.close()`) and a `__del__` GC safety net, and
+gated on `not self.finished` so a fully-decoded member's close costs nothing.
+All 26 `tests/test_ppmd_raw_streams.py` + 7z reader tests pass; both type-checkers
+clean.
+
+**What is proven, and what is not:**
+
+- **The quiesce mechanism works** — valgrind on the raw shape that reproduces the
+  UAF (bare `pyppmd`, a large-budget `decode` over truncated input, 6 cycles):
+
+  | Disposal policy | Invalid writes at `ThreadDecoder.c:134` |
+  |-----------------|------------------------------------------|
+  | `del dec` directly (worker left blocked) | **8 154** |
+  | `while parked: dec.decode(b"\0", 1)` (≤4×), then `del` | **0** |
+
+  Through the archivey `PpmdDecoder` (truncated PPMd7 via the stream `close()`
+  path and via `__del__`): **0** valgrind errors with the fix.
+
+- **On archivey's own shapes in this env, the baseline was already ~0**, so the
+  fix could not be shown to move a nonzero crash count *here*:
+  - Child-level soak (archivey truncated PPMd7 flush + dispose, fracs
+    0.25/0.5/0.7/0.9, 100 fresh processes each): **0 teardown aborts** *without*
+    the fix. archivey's capped single NUL (`_PPMD_EXTRA_NUL_MAX_OUTPUT = 64`)
+    already limits any teardown free-run to ≤64 writes, which rarely aborts — the
+    doc's historical ~15% was the *uncapped* bare-`pyppmd` shape, not archivey's.
+  - Module soak (`ci_run_native_modules.py --repeat 30/40`, no
+    `--allow-exit-after-green`): **all iterations PASSED** both with and without
+    the fix — the in-process adversarial shapes are already subprocess-isolated,
+    so the parent session does not abort here.
+  - Under valgrind's deterministic thread scheduling, the small-budget teardown
+    *race* does not reproduce at all (baseline and fixed both 0) — `pthread_cancel`
+    wins at the reader's `cond_wait` cancellation point before the OOB
+    read/write. The 8 154→0 result reproduces only with a **large** budget
+    (long free-run), which archivey mostly avoids (the one large-budget archivey
+    path is unsized PPMd8's 64 KiB chunk; it too was 0/0 here because its end mark
+    exits the worker on valid data).
+
+**Verdict on the prototype:** sound, zero-overhead on the happy path,
+valgrind-proven to remove the UAF on the shape that exhibits it, and the right
+structural fix for gap #1 — but in the current archivey code + this Linux/CPython
+3.11 host the teardown residual is already ~0, so it is **defense-in-depth**, not
+a fix for a locally-reproducible archivey crash. Dropping required CI's
+`--allow-exit-after-green` should be gated on a **deterministic** check (a
+valgrind driver like Section D's, run in the PPMd-native-stress workflow) and on
+the hot-race platforms (3.12+/free-threaded/Windows, gap #4), not on this host's
+already-green soak.
 
 ### 3. What cannot be closed in-process
 
@@ -527,5 +573,5 @@ full soak.
 | Case | In-process safety today | Lever |
 |------|------------------------|-------|
 | Valid member (known `unpack_size`, complete pack) | **Safe** (0 valgrind errors) | Existing bound-every-call + `pack_size` gate |
-| Truncated member | Intermittent teardown abort | **Quiesce-on-close** (measured 8154→0) — validate then drop allow-exit-after-green |
+| Truncated member | Teardown abort already ~0 here (capped NUL); a large-budget worker would UAF | **Quiesce-on-close** prototype (bare-shape 8154→0; defense-in-depth) — gate CI allowance-drop on a valgrind check + hot-race platforms |
 | Corrupt full-length pack | Residual | Quiesce-on-close neutralises teardown; forbid in-call overshoot; process isolation for full guarantee |

@@ -104,6 +104,16 @@ class Decoder(Protocol):
         """Clear :attr:`pending_error` after the stream has raised it (or on seek reset)."""
         ...
 
+    def close(self) -> None:
+        """Release decoder-owned native resources deterministically.
+
+        Optional teardown hook: most decoders need nothing here (GC frees the
+        underlying object), but a decoder holding a native worker whose lifetime
+        is unsafe under GC (PPMd) uses this to reach a clean state before it is
+        dropped. Idempotent; never raises.
+        """
+        ...
+
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]: ...
@@ -131,6 +141,9 @@ class BaseDecoder:
     @property
     def needs_input(self) -> bool:
         return True
+
+    def close(self) -> None:
+        """No-op teardown hook (see :meth:`Decoder.close`); overridden by PPMd."""
 
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
@@ -443,6 +456,9 @@ class DecompressorStream(ReadOnlyIOStream):
         return data
 
     def close(self) -> None:
+        # Quiesce any decoder-owned native worker before dropping references, so a
+        # blocked PPMd worker cannot be resumed into freed memory at GC.
+        self._decoder.close()
         if self._should_close:
             self._inner.close()
         super().close()
