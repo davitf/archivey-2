@@ -104,6 +104,16 @@ class Decoder(Protocol):
         """Clear :attr:`pending_error` after the stream has raised it (or on seek reset)."""
         ...
 
+    def close(self) -> None:
+        """Release decoder-owned native resources deterministically.
+
+        Optional teardown hook: most decoders need nothing here (GC frees the
+        underlying object), but a decoder holding a native worker whose lifetime
+        is unsafe under GC (PPMd) uses this to reach a clean state before it is
+        dropped. Idempotent; never raises.
+        """
+        ...
+
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]: ...
@@ -131,6 +141,9 @@ class BaseDecoder:
     @property
     def needs_input(self) -> bool:
         return True
+
+    def close(self) -> None:
+        """No-op teardown hook (see :meth:`Decoder.close`); overridden by PPMd."""
 
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
@@ -362,7 +375,14 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
         self._inner.seek(point.compressed_offset)
-        self._decoder = self._decoder.recreate(point, self._inner)
+        # Dispose the outgoing decoder deterministically before dropping it:
+        # mid-member a PPMd decode can leave its native worker parked, and relying
+        # on __del__/GC timing to quiesce it is exactly what close() exists to avoid
+        # (no-op for every other codec). recreate() builds a fresh decoder from the
+        # config, not from the old native state, so closing first is safe.
+        old_decoder = self._decoder
+        old_decoder.close()
+        self._decoder = old_decoder.recreate(point, self._inner)
         self._decoder.clear_pending_error()
         self._buffer.clear()
         self._eof = False
@@ -443,6 +463,9 @@ class DecompressorStream(ReadOnlyIOStream):
         return data
 
     def close(self) -> None:
+        # Quiesce any decoder-owned native worker before dropping references, so a
+        # blocked PPMd worker cannot be resumed into freed memory at GC.
+        self._decoder.close()
         if self._should_close:
             self._inner.close()
         super().close()

@@ -381,6 +381,12 @@ _PPMD_UNSIZED_DECODE_CHUNK = 65536
 # otherwise). See ``docs/internal/ppmd-exit-after-green-exploration.md``.
 _PPMD_EXTRA_NUL_MAX_OUTPUT = 64
 
+# Bounded number of single-symbol NUL decodes used to quiesce a parked native
+# worker before the decoder is freed (see ``PpmdDecoder._quiesce_worker``). A
+# parked worker only needs the range coder's few-byte tail lookahead satisfied to
+# reach its 1-symbol budget and exit; 8 is a safe cushion over the observed need.
+_PPMD_QUIESCE_MAX_CALLS = 8
+
 
 class PpmdDecoder(BaseDecoder):
     """Decode a PPMd stream via ``pyppmd``.
@@ -649,6 +655,60 @@ class PpmdDecoder(BaseDecoder):
     @property
     def needs_input(self) -> bool:
         return bool(getattr(self._decomp, "needs_input", True))
+
+    def _quiesce_worker(self) -> None:
+        """Drive a parked native decode worker to exit before the decoder is freed.
+
+        On pyppmd 1.3.x the decode worker thread is left blocked in the reader
+        whenever a ``decode`` requested more output than the fed input could
+        produce (a truncated or abandoned member). ``Ppmd7T_Free`` — run from the
+        pyppmd decoder's ``dealloc`` — then wakes that worker with no new input,
+        and it free-runs into the output block already released by the previous
+        ``decode`` call: a use-after-free that intermittently aborts the process
+        at GC (the "exit-after-green" residual in ``known-issues.md``).
+
+        Feeding one bounded single-symbol NUL makes the worker consume its tail
+        lookahead and exit on its own 1-symbol budget, so ``Ppmd7T_Free`` sees a
+        finished worker and becomes a no-op. Measured: valgrind 8154 → 0 invalid
+        writes on a truncated-pack teardown. Best-effort and idempotent; safe to
+        call more than once. See ``docs/internal/ppmd-native-investigation-results.md``
+        (§D root cause, §I mitigation).
+        """
+        decomp = getattr(self, "_decomp", None)
+        if decomp is None:
+            return
+        try:
+            # A fully-decoded member exited its worker on budget / the end mark;
+            # only an incomplete (truncated / abandoned) decode can leave one
+            # parked. Skip the happy path so valid closes cost nothing.
+            if self.finished:
+                return
+            for _ in range(_PPMD_QUIESCE_MAX_CALLS):
+                # ``not needs_input`` is the "worker not parked" signal — the last
+                # call exited on budget, so Free is already a no-op. The ``eof``
+                # short-circuit is deliberately kept ahead of it: at native eof the
+                # worker is finished AND feeding a NUL here would be a decode-after-eof
+                # (the unbounded form of which is itself a crash path on 1.3.x), so
+                # never issue one — skip instead.
+                if decomp.eof or not getattr(decomp, "needs_input", False):
+                    return
+                # One-symbol budget: the worker resumes, consumes the NUL, and
+                # exits on budget (returns the byte), or blocks needing one more
+                # tail byte — the next iteration feeds it. A non-empty return means
+                # the worker hit its budget and exited, so it will not be resumed.
+                if decomp.decode(b"\0", 1):
+                    return
+        except Exception:  # noqa: BLE001 - teardown hygiene; never raise from close()/__del__
+            pass
+
+    def close(self) -> None:
+        self._quiesce_worker()
+
+    def __del__(self) -> None:
+        # GC safety net: quiesce even when the owning stream's close() did not run
+        # (decoder used directly, or stream leaked). Runs before self._decomp is
+        # dropped, so the native worker is finished before Ppmd7T_Free executes.
+        self._quiesce_worker()
 
 
 class BcjDecoder(BaseDecoder):

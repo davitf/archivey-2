@@ -92,6 +92,21 @@ jobs:
           --repeat ${{ env.ARCHIVEY_PPMD_RAW_STREAMS_ITERS }}
           --summary ppmd-raw-streams-soak-${{ matrix.os }}-py${{ matrix.python-version }}.md
 
+      - name: Install valgrind (Linux)
+        if: runner.os == 'Linux' && steps.sync.outcome == 'success'
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Deterministic UAF gate (valgrind, Linux)
+        # Pins the output-buffer use-after-free (ThreadDecoder.c:134) deterministically.
+        # The archivey scenarios MUST be clean (a regression here is an archivey bug and
+        # fails the step); the bare-pyppmd overshoot reproducer is a detector run without
+        # --strict-pyppmd, so its expected-red on 1.3.x does not fail the step. Still
+        # non-required overall. See docs/internal/ppmd-native-investigation-results.md §J.
+        if: runner.os == 'Linux' && steps.sync.outcome == 'success'
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          python scripts/ppmd_uaf_valgrind.py --scenario all
+
       - name: Stress PPMd (pytest marker entry points)
         # Run even when the script step failed (crash signal), but not when setup/sync
         # never installed `uv` (avoids a misleading "uv: command not found").
