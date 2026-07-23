@@ -1,6 +1,6 @@
 # 0014 — Integrity verdicts surface from reads, never from `close()`
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-07 (review of `gzip-zlib-truncation-recovery`, PR #183)
 - **Provenance:** OpenSpec `compressed-streams` (digest verification, read-vs-close
   fault split); `VISION.md` (no silent success; damaged input is first-class);
