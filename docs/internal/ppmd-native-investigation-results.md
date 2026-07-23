@@ -5,7 +5,8 @@
 `docs/internal/ppmd-exit-after-green-exploration.md`,
 `docs/internal/known-issues.md`, `scripts/pyppmd_crash_repro.py`
 **Date started:** 2026-07-23
-**Status:** live notebook — findings appended as experiments finish. Source
+**Status:** complete (empirical + source). Findings appended as experiments
+finished. Source
 citations are against **pyppmd `v1.3.1`** (the pinned wheel; git tag `v1.3.1`,
 commit `580b675`). The wheel installed in this env is `pyppmd 1.3.1`, CPython
 3.11.15, glibc 2.39, Linux 6.18.5.
@@ -18,22 +19,34 @@ is cited and the *source-level cause* is added rather than re-measured.
 
 ## TL;DR verdict
 
+The heap corruption is **not** primarily the Pavlov suballocator — valgrind's
+*first* memory error in every crash family is a **use-after-free of pyppmd's own
+output buffer** at `ThreadDecoder.c:134`, on a block already freed by
+`OutputBuffer_Finish` (`_ppmdmodule.c:552`). Every failure mode below reduces to
+that one bug, gated by one condition: **did the worker finish, or is it left
+blocked in the reader past logical EOF?**
+
 | Failure mode | 7-Zip / Pavlov PPMd core | pyppmd ThreadDecoder / binding | Caller contract |
 |--------------|--------------------------|--------------------------------|-----------------|
-| overshoot `max_length` (`-1` or `+65536`) | Memory-unsafe **primitive**: decodes garbage symbols past true EOF, suballocator writes wild `p->Base + offset` → heap corruption. But never *invoked* this way in real 7-Zip (exact unpack size always known). | **Root trigger:** 1.3.0 `#126` removed the input-empty stop; `-1 → INT_MAX` budget (`_ppmdmodule.c:521`) drives the core past EOF. | Never request more output than the true remaining payload. |
-| post-eof empty decode toward `unpack_size` | Same primitive once desynced. | No after-eof guard in the **C extension** `decode` (guard is cffi-only); restarts a runaway worker on finished range state. | Do not call `decode` after `eof` unless pack delivery is known complete. |
-| half-pack + large NUL | Same primitive (large budget over truncated stream). | Same removed stop + INT_MAX budget. | Cap the synthetic-NUL budget; do not chase `unpack_size` on short pack. |
-| `Ppmd7T_Free` while worker blocked | Not applicable (7-Zip is non-threaded here). | **pyppmd-only:** `Ppmd7T_Free` fakes "input available" (`tc->empty=False`) then cancels; reader does an OOB `src[pos++]` at `pos==size`. | n/a (teardown bug). |
+| overshoot `max_length` (`-1` or `+65536`) | Not the fault site. The desynced model only *generates the garbage symbols*; it does not write outside its own `p->Base` arena first. | **Root cause (pyppmd):** worker left blocked-in-reader (1.3.0 `#126` removed the input-empty stop) while `OutputBuffer_Finish` frees the output block → later wake ⇒ **UAF write, free-running** (reader `pos==size` bug). Valgrind: 33 423 writes at `ThreadDecoder.c:134`. | Never request more output than the true remaining payload. |
+| post-eof empty decode toward `unpack_size` | Not the fault site. | Same UAF. No after-eof guard in the **C extension** `decode` (guard is cffi-only) restarts a runaway worker. | Do not `decode` after `eof` unless pack delivery is known complete. |
+| half-pack + large NUL / after-eof NUL | Not the fault site. | Same UAF (valgrind: 59 522 writes at `ThreadDecoder.c:134`, same single context). | Cap the synthetic-NUL budget; do not chase `unpack_size` on short pack. |
+| `Ppmd7T_Free` while worker blocked | Not applicable (7-Zip is non-threaded here). | **pyppmd-only:** `Ppmd7T_Free` fakes "input available" (`tc->empty=False`) then cancels; that wake is *what drives the UAF above*, and the reader also does an OOB `src[pos++]` at `pos==size`. | n/a (teardown bug). |
 | omit-trailing-null / "extra byte" | **Container/reader convention**, not an encoder action. | pyppmd's reader **blocks** at EOF instead of returning 0, so the caller must feed `b"\0"` to emulate 7-Zip's over-read-zero. | Keep bounded NUL recovery for members produced by real 7-Zip. |
 
-Bottom line: the **memory-unsafety primitive lives in Igor Pavlov's vendored
-PPMd7 model/suballocator** (`Ppmd7.c`), which is safe *only* when the caller
-never decodes past the true payload length. **pyppmd 1.3.x's ThreadDecoder
-rewrite (#126) is what actually drives the core past EOF** by removing the
-input-exhausted stop condition and honouring an `INT_MAX`/oversized output
-budget, with no after-eof guard in the C extension. So it is an **interaction**,
-but the regression and the fix both belong to pyppmd; the core needs the caller
-to respect the length contract it has always required.
+Control that pins it: **exact-sized `decode(packed, len(data))` is 0 valgrind
+errors** — the worker's budget runs out exactly at the payload boundary, it
+returns and is joined, `finished=True`, and `Ppmd7T_Free` never wakes it. Any
+overshoot leaves it blocked-in-reader instead, and the freed output block is then
+written by the resumed worker.
+
+Bottom line: this is a **pyppmd binding bug** — three compounding defects, all in
+`ThreadDecoder.c` / `_ppmdmodule.c` / `blockoutput.h` (Section D), introduced by
+the 1.3.0 `#126` rewrite. Igor Pavlov's `Ppmd7.c` is *memory-unsafe if driven
+past EOF*, but that is a latent property the caller must respect (real 7-Zip
+always decodes to the exact known unpack size and never trips it); it is **not**
+the first corrupting write here. The regression and the fix both belong to
+pyppmd.
 
 ---
 
@@ -166,7 +179,9 @@ bytes + code register, so `Ppmd7_DecodeSymbol` keeps **returning symbols without
 reading input** — it walks the model on a desynchronised range coder, emitting
 garbage, until it either finally demands a byte (reader blocks) or the model
 throws `-1`/`-2`. With `INT_MAX`/oversized budget that window is effectively
-unbounded. This is the mechanism behind `overshoot` and `oversized`
+unbounded — and, crucially, it usually ends with the worker **blocked in the
+reader** rather than finished, which is the precondition for the output-buffer
+UAF (Section D). This is the mechanism behind `overshoot` and `oversized`
 (`scripts/pyppmd_crash_repro.py`), and behind half-pack + large NUL.
 
 ### Premature `eof`
@@ -207,66 +222,118 @@ path (`ThreadDecoder.c:189`). So the state machine is:
 
 ---
 
-## D. Corruption mechanism (root cause function)
+## D. Corruption mechanism (root cause — valgrind-confirmed)
 
-The heap-corruption abort (`malloc(): invalid size (unsorted)` / SIGABRT /
-SIGSEGV, Windows `STATUS_HEAP_CORRUPTION 0xC0000374`) is a **wild write inside
-the PPMd7 suballocator**, driven by decoding past true EOF.
+The heap-corruption abort (`corrupted size vs. prev_size` / `malloc(): invalid
+size` / SIGABRT / SIGSEGV, Windows `STATUS_HEAP_CORRUPTION 0xC0000374`) is a
+**use-after-free of pyppmd's output buffer**, *not* (primarily) a Pavlov
+suballocator wild-write. Valgrind (memcheck) reports the same single error
+context for `overshoot`, `oversized`, and after-eof `extra-null`:
 
-The entire PPMd7 model lives in one allocation `p->Base` (`Ppmd7.c:96-113`), and
-every node is addressed by a byte offset into it:
-
-```c
-#define REF(ptr)   ((UInt32)((Byte *)(ptr) - (p)->Base))   // Ppmd7.c:22
-#define NODE(offs) ((CPpmd7_Node *)(p->Base + (offs)))       // Ppmd7.c:55
+```
+Invalid write of size 1
+   at 0x...: Ppmd7T_decode_run (ThreadDecoder.c:134)
+   by ...: start_thread (pthread_create.c:447)
+ Address 0x... is 1,838 bytes inside a block of size 32,801 free'd
+   at ...: free
+   by ...: OutputBuffer_Finish (blockoutput.h:253)
+   by ...: Ppmd7Decoder_decode (_ppmdmodule.c:552)
+ Block was alloc'd at
+   by ...: OutputBuffer_InitAndGrow (blockoutput.h:79) / Ppmd7Decoder_decode:504
 ```
 
-After the range coder desyncs (Section C), `Ppmd7_DecodeSymbol` returns garbage
-symbols and calls `Ppmd7_Update1/Update2/UpdateBin` → `Ppmd7_Rescale`,
-`CreateSuccessors`, `AllocContext` → the suballocator (`InsertNode` `Ppmd7.c:120`,
-`RemoveNode` `:126`, `GlueFreeBlocks` `:145`, `AllocUnits` `:243`). With garbage
-`NumStats` / `SummFreq` / `Successor` refs, these compute **offsets that fall
-outside the `Base` allocation**, and `p->FreeList[indx] = REF(node)` /
-`NODE(offs)->Next = ...` then write to `Base + wild_offset` — arbitrary heap
-addresses, which corrupts glibc chunk metadata and aborts on the next `malloc`.
+`ThreadDecoder.c:134` is the worker's output write
+`*((Byte *)threadInfo->out->dst + threadInfo->out->pos++) = (Byte) c;`. The block
+it writes into was freed by `OutputBuffer_Finish`'s `Py_DECREF(buffer->list)`
+(`blockoutput.h:253`, reached from `_ppmdmodule.c:552`). So a **worker thread is
+still alive and writing after the Python `decode` call freed the output block.**
 
-This is **Pavlov's code**, and it is memory-unsafe *by design assumption*: PPMd7
-has no end mark and the decoder trusts that the caller stops at the exact
-declared unpack size (7-Zip always knows it from the archive header, so 7-Zip
-never runs the model past EOF). The bug is not that `Ppmd7.c` lacks bounds
-checks — it never claimed to have them; the bug is that **pyppmd hands it an
-`INT_MAX`/oversized budget and no input-empty stop**, so the model *is* run past
-EOF through a documented Python API.
+### The exact causal chain (three compounding defects, all pyppmd-original)
 
-Secondary teardown hazard (`Ppmd7T_Free`, `ThreadDecoder.c:193`): when the
-worker is blocked in the reader, `Free` sets `tc->empty = False` and broadcasts
-`notEmpty` **before** `pthread_cancel`. The woken reader leaves its wait loop and
-executes `return *((const Byte *)inBuffer->src + inBuffer->pos++)` with
-`pos == size` — an **out-of-bounds read one past the input buffer** (whose
-backing Python bytes may already be released), decoding one more garbage symbol
-into a possibly-finished output block before deferred cancellation lands at the
-next cancellation point. Compounded by the reader's empty check being
-`pos == size` (`ThreadDecoder.c:70`) rather than `pos >= size`, so once `pos`
-overshoots by one it never blocks again. This is the `Ppmd7T_Free` /
-exit-after-green race, and it is **pyppmd-only** (7-Zip's non-threaded decoder
-has no such teardown).
+1. **`#126` removed the input-empty stop** (`ThreadDecoder.c`, 1.3.0). In 1.2.0,
+   `Ppmd7T_decode_run` broke out of the symbol loop when the input buffer was
+   consumed:
 
-*(Backtrace attribution under a debug allocator is pending — Section G/task 4.)*
+   ```c
+   // v1.2.0 src/lib/buffer/ThreadDecoder.c
+   Bool inbuf_empty = reader->inBuffer->size == reader->inBuffer->pos;
+   ...
+   if (inbuf_empty && reader->inBuffer->size > 0) { break; }  // <-- REMOVED in 1.3.0
+   ```
+
+   With the whole pack fed in one `decode` call and `max_length` exceeding the
+   payload, the 1.3.x worker no longer stops at input-empty; it keeps decoding
+   (garbage) symbols until the range coder finally needs a byte, then **blocks in
+   the reader** (`pthread_cond_wait(notEmpty)`, `ThreadDecoder.c:77`). The
+   controller's `inempty` path (`ThreadDecoder.c:189`) returns 0 to Python
+   **without joining the still-blocked worker**.
+
+2. **`OutputBuffer_Finish` frees the output block while the worker holds a raw
+   pointer into it.** Back in Python land, `Ppmd7Decoder_decode` breaks its loop
+   on `result == 0` (`_ppmdmodule.c:530`), sets `needs_input`, and calls
+   `OutputBuffer_Finish` (`:552`), whose `Py_DECREF(buffer->list)` frees the
+   PyBytes blocks — including the one `out->dst` still points at. There is **no
+   worker-quiescence step** before the free.
+
+3. **The blocked worker is later resumed with no new input, and free-runs.** The
+   only things that broadcast `notEmpty` are the next `decode` call or
+   `Ppmd7T_Free` at teardown (`:198`). When woken, the reader
+   (`Ppmd_thread_Reader`, `ThreadDecoder.c:81`) executes
+   `return *((const Byte *)inBuffer->src + inBuffer->pos++)` with `pos == size`
+   — an OOB read — advancing `pos` to `size+1`. Because the empty check is
+   `pos == size` (`:70`) and **not** `pos >= size`, the reader **never blocks
+   again**, so the worker free-runs: each iteration decodes a garbage symbol and
+   writes it to the freed `out->dst` (`:134`) — thousands of UAF writes
+   (valgrind counted 33 423 / 59 522 in 6-cycle runs) until the corrupted glibc
+   metadata aborts, a wild read SIGSEGVs, or the deferred `pthread_cancel` lands.
+
+### Why the controls are clean
+
+Exact-sized `decode(packed, len(data))` is **0 valgrind errors**: the worker's
+budget (`i < max_length`) runs out at exactly the payload boundary, the worker
+returns `i`, sets `finished = True`, and is `pthread_join`-ed by the controller's
+`finished` path (`ThreadDecoder.c:185`). No worker is ever left blocked, so
+`Ppmd7T_Free` sees `finished` and does nothing, and `out->dst` is never written
+after the free. This is precisely the measured safe/unsafe split (sized-safe 0%,
+overshoot/oversized/extra-null high-rate).
+
+### Where the Pavlov suballocator fits
+
+The desynced model (`Ppmd7_DecodeSymbol` on a range coder past EOF) is what
+*produces* the garbage symbols the worker then writes, and in principle its
+suballocator (`InsertNode`/`GlueFreeBlocks` via `NODE(offs)`, `Ppmd7.c:120/145/55`)
+can also compute out-of-`Base` offsets. But valgrind's **first** error is always
+the output-buffer UAF in pyppmd's own `ThreadDecoder.c:134`, not a write inside
+`Ppmd7.c`. So the corruption the earlier `pyppmd-upstream-report.md` attributed
+to "walking the native model on a desynchronized range coder" is more precisely a
+**pyppmd output-buffer lifetime bug**; the model walk is the garbage *source*, the
+UAF is the corrupting *write*. Both are enabled by the same removed stop + oversized
+budget.
 
 ---
 
-## E. Ppmd8 parity note (pending measurement)
+## E. Ppmd8 parity (measured)
 
 PPMd8 (var.I / RAR) **does** have a real end mark: `Ppmd8_DecodeSymbol` returns
-`-1` at the EndMarker (`Ppmd8.h:124`), and the same `ThreadDecoder.c`
-`Ppmd8T_decode_run` translates it to `PPMD_RESULT_EOF`. So an unsized PPMd8
-decode terminates on the end mark rather than needing an external size — which is
-why archivey performs no post-eof drain for unsized PPMd8. Whether the same
-overshoot / Free-race primitives reproduce on `Ppmd8Decoder` is still to be
-measured (task 5); the `Ppmd8T_*` wrapper shares the exact structure of the
-Ppmd7 one (same removed stop, same `INT_MAX` budget at `_ppmdmodule.c:1264`, same
-`Free` fake-input-then-cancel at `:302`), so the primitives are expected to
-carry over except that the end mark gives valid streams a clean stop.
+`-1` at the EndMarker (`Ppmd8.h:124`), and `Ppmd8T_decode_run` translates it to
+`PPMD_RESULT_EOF` (`ThreadDecoder.c:235`), which the module maps to `eof=True`.
+
+Measured (this env, 1.3.1): an **unsized** PPMd8 decode of `b"a"*2000`,
+`b"\x00"*2000`, and `"hello world "*100` terminates on the end mark with
+`eof=True` and **overshoot = 0** in each case (drove `decode(b"", 4096)` to
+completion; no fabricated trailing bytes). This confirms archivey's decision to
+perform **no** post-eof drain for unsized PPMd8: the end mark flushes the final
+symbols with no residual buffered output, so skipping the drain cannot truncate a
+valid member (brief gap #8).
+
+The `Ppmd8T_*` wrapper shares the Ppmd7 structure exactly — same removed
+input-empty stop, same `INT_MAX` budget (`_ppmdmodule.c:1264`), same
+`OutputBuffer_Finish` free, same `Ppmd8T_Free` fake-input-then-cancel (`:302`) —
+so **overshooting past the end mark** (an oversized budget on truncated/corrupt
+PPMd8, or empty drains past `eof` toward an inflated `unpack_size`) reproduces the
+identical output-buffer UAF. The end mark only protects *valid* unsized streams
+by giving the worker a clean stop; it does not protect against a caller that
+requests more than the member contains.
 
 ---
 
@@ -281,29 +348,95 @@ carry over except that the end mark gives valid streams a clean stop.
    (`Ppmd7.h:107`), a proxy that fires prematurely on compressible data under a
    small cap; retained-input semantics let a valid stream continue past that
    premature eof but let a truncated stream run the overshoot primitive.
-3. **Corruption:** wild write in the PPMd7 suballocator (`Ppmd7.c` `InsertNode` /
-   `GlueFreeBlocks` via `NODE(offs)` on garbage offsets) after the range coder
-   desyncs from decoding past EOF — Pavlov's memory-unsafe-past-EOF core, invoked
-   past EOF by pyppmd's unbounded ThreadDecoder budget.
-4. **Separability:** the teardown OOB and the removed stop are **pyppmd-only**;
-   the model wild-write is **shared** but never reached by real 7-Zip because
-   7-Zip always decodes to the exact known size. Direct 7-Zip-API overshoot
-   comparison is task E of the brief (see Section G plan).
+3. **Corruption:** use-after-free of pyppmd's output block at
+   `ThreadDecoder.c:134` (freed by `OutputBuffer_Finish`, `_ppmdmodule.c:552`),
+   because the overshooting worker is left blocked-in-reader and later resumed to
+   free-run (reader `pos==size` bug). Valgrind-confirmed as the first error in
+   overshoot / oversized / after-eof families; the Pavlov suballocator supplies
+   the garbage symbols but is not the first faulting write.
+4. **Separability:** the whole crash family is **pyppmd-only** — it is a binding
+   lifetime/threading bug (`ThreadDecoder.c` + `_ppmdmodule.c` + `blockoutput.h`),
+   introduced by `#126` (the input-empty stop existed in 1.2.0, source-confirmed).
+   The Pavlov core's memory-unsafety-past-EOF is real but latent: real 7-Zip
+   decodes to the exact known unpack size and never trips it, and it is not the
+   first corrupting write in pyppmd either.
 
 ---
 
-## G. Empirical plan (in progress)
+## G. Empirical results (this env: pyppmd 1.3.1, CPython 3.11.15, glibc 2.39)
 
-- [ ] Premature-eof repro: `decode(packed, 64)` on `b"a"*4096`, show `eof=True`
-      with `Code == 0` while output ≪ payload; then `decode(b"", 64)` completes.
-- [ ] Corruption backtrace: run `pyppmd_crash_repro.py --mode overshoot/oversized`
-      and half-pack+large-NUL under `MALLOC_CHECK_=3` / glibc malloc debug +
-      `faulthandler`, capture the faulting frame (expect `Ppmd7.c` suballocator).
-- [ ] Reader-blocks vs feed-zero: show a tail-`needs_input` stream completes when
-      fed `b"\0"` and stalls otherwise (emulating 7-Zip's over-read-zero).
-- [ ] Ppmd8 parity: overshoot / post-eof / Free-race on `Ppmd8Decoder`; confirm
-      end-mark makes unsized drains unnecessary.
-- [ ] Version delta 1.2.0 vs 1.3.1 on the same overshoot (if a 1.2.0 wheel builds
-      in-env), to nail the #126 regression window.
+- [x] **Premature-eof:** `decode(b"a"*4096, 64)` → `out=64`, `eof=True`,
+      `needs_input=False` after only 64 of 4096 bytes. `eof` here is the
+      `Ppmd7z_RangeDec_IsFinishedOK` (`Code == 0`, `Ppmd7.h:107`) path at
+      `_ppmdmodule.c:553` (not an end mark — PPMd7 has none). Ignoring it and
+      continuing with `decode(b"", 64)` recovered all 4096 bytes over 63 calls
+      (`match_full=True`). Confirms premature eof is a `Code == 0` proxy artefact,
+      and that continued empty decode is valid *on a complete stream*.
+- [x] **Corruption:** valgrind pins the first error to the output-buffer UAF at
+      `ThreadDecoder.c:134` for `overshoot` (`-1`), `oversized`, and after-eof
+      `extra-null`; exact-sized decode is 0 errors (Section D). gdb on the raw
+      `overshoot` repro aborts with `corrupted size vs. prev_size` at
+      `Ppmd7Decoder_dealloc` (`_ppmdmodule.c:222`) — i.e. corrupted metadata is
+      only *detected* at teardown free, consistent with an earlier UAF.
+      `scripts/pyppmd_crash_repro.py 20 --mode overshoot` → 16/20 crashes here.
+- [x] **Omit-null / reader-blocks:** no `encode()+flush()` stream reports
+      tail-`needs_input` (encoder omits nothing; `Ppmd7Enc.c:67` writes 5
+      unconditional flush bytes). Flushed packs commonly end in `0x00` (that byte
+      is load-bearing compressed data). The "extra byte" is the caller manually
+      feeding the zero that 7-Zip's over-read-zero reader would synthesise, which
+      pyppmd's blocking reader (`ThreadDecoder.c:70-81`) does not.
+- [x] **Ppmd8 parity:** unsized decode terminates on the end mark with
+      overshoot = 0 (Section E). Structural overshoot-past-end-mark shares the
+      Ppmd7 UAF.
+- [x] **Version delta (source-confirmed):** the input-empty stop
+      `if (inbuf_empty && reader->inBuffer->size > 0) break;` is present in
+      `v1.2.0:src/lib/buffer/ThreadDecoder.c` and **absent** in `v1.3.1`
+      (removed by `#126`). 1.2.0's own trade-off bug: that same early break
+      truncates chunked decodes that must keep producing without new input —
+      which is what `#126` set out to fix, swapping a correctness bug for this
+      memory-safety bug.
 
-Findings and the concrete upstream-fix refinement will be appended as each runs.
+---
+
+## H. Concrete upstream fix (refines `pyppmd-upstream-report.md`)
+
+The prior report's four fixes still apply, but the root-cause finding sharpens
+the priority: **the corrupting write is the output-buffer UAF, so the primary fix
+is worker/output lifetime, not (only) budget clamping.**
+
+1. **Never free the output block while a worker may still write to it
+   (primary).** Before `OutputBuffer_Finish` / any `Py_DECREF(buffer->list)` in
+   `Ppmd7Decoder_decode` (`_ppmdmodule.c:552`) and `Ppmd8Decoder_decode`
+   (`:~1300`), ensure the worker is quiescent — either it `finished`, or it is
+   parked in the reader wait with `out->dst` guaranteed not to be dereferenced
+   until re-entry. Equivalently, do not hand the worker a raw pointer into a
+   Python-owned block that the controller can free while the worker is only
+   *paused*. This alone removes the UAF that valgrind flags.
+2. **Restore a stop condition for input-exhausted decodes.** Re-add the 1.2.0
+   input-empty break *without* reintroducing its chunked-truncation bug: stop the
+   symbol loop when the range coder would need a byte that is not available
+   (park), rather than spinning on stale range state. Bound the loop by what the
+   input can actually support instead of `INT_MAX` (`_ppmdmodule.c:521/1264`).
+3. **Fix the reader's empty check:** `pos >= size` (not `== size`) in
+   `Ppmd_thread_Reader` (`ThreadDecoder.c:70`), so an overshoot of one cannot
+   turn into an unbounded free-run.
+4. **Signal termination explicitly in `Ppmd7T_Free`/`Ppmd8T_Free`.** Use a
+   dedicated "terminate" flag the reader re-checks after wakeup instead of faking
+   `tc->empty = False` with no data (`ThreadDecoder.c:198/307`); the reader must
+   return/park on termination rather than reading `src[pos++]`.
+5. **Port the cffi `_eof` guard to the C extension:** `decode` after `eof`
+   returns `b""` without starting a worker (`_ppmdmodule.c:396`, add the early
+   return the cffi backend already has).
+
+Fixes 2–5 are defence-in-depth; **fix 1 is the one the valgrind evidence
+demands**. Until a fixed release ships, archivey's discipline (never overshoot;
+require `unpack_size`/`pack_size`; bounded single NUL; no post-eof drain unless
+pack delivery is known complete) is the correct in-process mitigation, and the
+`Ppmd7T_Free` residual remains the reason PPMd adversarial tests are
+subprocess-isolated.
+
+### Verification when a fixed release ships
+
+Re-run all `scripts/pyppmd_crash_repro.py` modes (`extra-null`, `overshoot`,
+`oversized`, `warmup-overshoot`) plus the valgrind driver of Section D; all must
+report **0 memory errors** and 0 crashes, including under teardown (`del dec`).
