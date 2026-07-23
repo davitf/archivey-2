@@ -145,7 +145,9 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 - **BCJ2 unsupported** — rejected, not garbage.
 - **Native optional wheels / accelerators** may crash or hang on hostile input; we
   mitigate, cannot promise 100%. Includes residual `pyppmd` native-abort risk despite
-  #124/#130 bounds (see `known-issues.md`).
+  #124/#130 bounds (see `known-issues.md`), plus the separate open
+  **exit-after-green** abort of `tests/test_ppmd_raw_streams.py` (soft-passed in
+  required CI; soaked in non-required PPMd stress).
 - **ISO import patches pycdlib’s collections** (cycle guard) — visible if the process
   also uses pycdlib directly.
 - **`.Z` truncation:** only nonzero leftover bits are loud.
