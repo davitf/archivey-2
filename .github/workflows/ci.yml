@@ -181,17 +181,14 @@ jobs:
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         env:
           PYTHONFAULTHANDLER: "1"
-        # Fresh process: dedicated rapidgzip ON / truncated-corrupt accelerator paths
-        # and raw PPMd stream tests. Running these in-process with the long suite
-        # has left the heap corrupted so a later RAR/GC tripwire SIGSEGVs (~63%).
+        # One fresh subprocess per module (PPMd-stress style). A single combined
+        # pytest of these four still aborted after a green run during pytest-cov
+        # flush ("corrupted size vs. prev_size", exit 134). The runner disables
+        # coverage, continues after a failure, and records last-test breadcrumbs.
+        # See docs/internal/known-issues.md.
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          pytest
-          tests/test_rapidgzip_deflate_zlib.py
-          tests/test_accelerator_shutdown.py
-          tests/test_accelerator_corruption.py
-          tests/test_ppmd_raw_streams.py
-          -q
+          python scripts/ci_run_native_modules.py
 
       - name: Run property-safety tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'

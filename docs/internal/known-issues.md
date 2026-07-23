@@ -440,8 +440,7 @@ So a green PPMd stress check means “the known pyppmd runaway probe is quiet,�
 
 ### CI bandage (not a root-cause fix)
 
-Required `[all]` / `[all-lowest]` jobs split the suite into **three pytest
-invocations** (`.github/workflows/ci.yml`), each a fresh process:
+Required `[all]` / `[all-lowest]` jobs split the suite (`.github/workflows/ci.yml`):
 
 ```text
 # 1) Main suite — skip Hypothesis + dedicated accelerator/PPMd stream modules
@@ -452,11 +451,11 @@ pytest tests/ \
   --ignore=tests/test_accelerator_corruption.py \
   --ignore=tests/test_ppmd_raw_streams.py -q
 
-# 2) Dedicated rapidgzip / accelerator / raw-PPMd stream tests
-pytest tests/test_rapidgzip_deflate_zlib.py \
-  tests/test_accelerator_shutdown.py \
-  tests/test_accelerator_corruption.py \
-  tests/test_ppmd_raw_streams.py -q
+# 2) Dedicated rapidgzip / accelerator / raw-PPMd stream tests — one subprocess
+#    per module (scripts/ci_run_native_modules.py). Coverage off; last-nodeid
+#    breadcrumb + GitHub step summary. Continues after a failure so one poisoned
+#    module does not hide whether the others are clean.
+python scripts/ci_run_native_modules.py
 
 # 3) Hypothesis property-safety
 pytest tests/test_property_safety.py -q
@@ -464,10 +463,16 @@ pytest tests/test_property_safety.py -q
 
 (1)↔(3) stops a corrupted main-suite heap from taking down Hypothesis in-process
 (and vice versa). (2) keeps the heaviest in-process rapidgzip ON / truncated-corrupt
-accelerator paths and raw PPMd stream stress out of the long suite — those modules
-finish around ~63% collected order, after which a later RAR/GC tripwire has been the
-repeated SIGSEGV site. `PYTHONFAULTHANDLER=1` is set on these steps so fatal traces
-always dump.
+accelerator paths and raw PPMd stream stress out of the long suite.
+
+**Why (2) is not one combined pytest:** after the first three-way split, a single
+four-module process still aborted on Ubuntu with every test green — fatal site
+`coverage.collector.flush_data` / GC, message `corrupted size vs. prev_size`
+(exit 134). That is a late tripwire after heap poison, not a failing assertion.
+Per-module children + disabling cov on that leg both harden the job and name the
+offender (`=== module … ===`, `Last test before abort: …`, step summary table).
+
+`PYTHONFAULTHANDLER=1` is set on these steps so fatal traces always dump.
 
 This still does **not** claim the main suite is free of every native (AUTO/SEEKABLE
 paths and py7zr/PPMd corpus remain). It is CI hygiene, not a product fix.
@@ -491,8 +496,15 @@ done
 
 # 2) Same soak but keep Hypothesis out of the long process (CI bandage shape)
 for i in $(seq 1 20); do
-  uv run --python 3.11 --no-sync pytest tests/ --ignore=tests/test_property_safety.py -q \
+  uv run --python 3.11 --no-sync pytest tests/ \
+    --ignore=tests/test_property_safety.py \
+    --ignore=tests/test_rapidgzip_deflate_zlib.py \
+    --ignore=tests/test_accelerator_shutdown.py \
+    --ignore=tests/test_accelerator_corruption.py \
+    --ignore=tests/test_ppmd_raw_streams.py -q \
     || { echo "main FAILED pass $i rc=$?"; break; }
+  uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+    || { echo "native-modules FAILED pass $i rc=$?"; break; }
   uv run --python 3.11 --no-sync pytest tests/test_property_safety.py -q \
     || { echo "property FAILED pass $i rc=$?"; break; }
 done
