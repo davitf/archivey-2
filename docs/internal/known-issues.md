@@ -377,3 +377,40 @@ ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress
 - The earlier open questions (is it archivey's wrapper? the 7z path? warmup-only?) are
   resolved: it is pure `pyppmd` (crash reproduces with no archivey imports), warmup only
   shifts allocator layout, and sized decodes are structurally safe.
+
+## Native codec stress inventory
+
+**Status: living checklist.** Each optional native library that can abort the process
+(or corrupt the heap) gets — or will get — a **dedicated, non-required** stress
+workflow with fresh-process children, matching the PPMd pattern. Do **not** make
+these required status checks: a red stress run is signal, not a merge gate.
+
+| Library | Extra | Stress vehicle | Priority | Why |
+|---------|-------|----------------|----------|-----|
+| `pyppmd` | `[7z]` | `ppmd-native-stress.yml` / `scripts/ppmd_native_stress.py` | **done** | Valid-stream heap corruption (Windows + Linux warmup) |
+| `rapidgzip` | `[seekable]` | `native-codec-stress.yml` / `scripts/rapidgzip_native_stress.py` | **done** | Shutdown abort if not `close()`-d; leading suspect for Linux `[all]` suite heap corruption |
+| `inflate64` | `[7z]` | `native-codec-stress.yml` / `scripts/inflate64_native_stress.py` | **done** | No output-size bound; budgeted-read contract; early-warning soak (no pinned flake yet) |
+| `brotli` | `[7z]` | — | P2 | `output_buffer_limit` / CVE-2025-6176 surface; add when a flake appears or after rapidgzip rate is known |
+| `lz4` | `[lz4]` / `[7z]` | — | P3 | Ordinary C extension; no intermittent abort signal yet |
+| `pybcj` | `[7z]` | — | P3 | Small BCJ filter; low flake evidence |
+| `backports.zstd` | `[zstd]` | — | skip / P3 | Stdlib `compression.zstd` on 3.14+; low priority |
+| `cryptography` / `_cffi_backend` | `[crypto]` | — | skip | Not a codec; different failure mode |
+| `ncompress` | (dev) | — | skip | Test-only LZW *compressor* |
+| `pycdlib` | `[iso]` | — | skip | Pure Python |
+
+Shared helpers live in `scripts/native_stress_common.py`. Pytest entry points use the
+`native_codec_stress` marker (excluded from default `addopts`; selected by the
+workflow with `-o addopts=`).
+
+```bash
+uv sync --group dev --extra all
+uv run --no-sync python scripts/rapidgzip_native_stress.py
+uv run --no-sync python scripts/inflate64_native_stress.py
+# Optional: pytest marker wrappers (also non-default)
+ARCHIVEY_RAPIDGZIP_STRESS_ITERS=10 uv run --no-sync \
+  pytest -m native_codec_stress -k rapidgzip -q --timeout=600 -o addopts=
+```
+
+**Not in scope yet:** a mixed-natives soak that loads rapidgzip + pyppmd + inflate64
+(+ brotli) in one long-lived child — that is the axis the Linux full-suite heap
+corruption likely needs, and should be a follow-up once per-lib rates are known.
