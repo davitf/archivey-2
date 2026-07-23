@@ -451,11 +451,16 @@ pytest tests/ \
   --ignore=tests/test_accelerator_corruption.py \
   --ignore=tests/test_ppmd_raw_streams.py -q
 
-# 2) Dedicated rapidgzip / accelerator / raw-PPMd stream tests — one subprocess
-#    per module (scripts/ci_run_native_modules.py). Coverage off; last-nodeid
-#    breadcrumb + GitHub step summary. Continues after a failure so one poisoned
-#    module does not hide whether the others are clean.
-python scripts/ci_run_native_modules.py
+# 2) Dedicated rapidgzip / accelerator / raw-PPMd stream tests via
+#    scripts/ci_run_native_modules.py (one subprocess per module; coverage off;
+#    last-nodeid breadcrumbs). Temporary A/B/C CI steps (all continue-on-error,
+#    then a gate) to see whether the PPMd abort depends on sibling order:
+#      A) PPMd alone
+#      B) PPMd first, then the three accelerator modules
+#      C) accelerators then PPMd (baseline / historical order)
+#    Observed so far: PPMd child goes green (19 passed, sessionfinish exit=0)
+#    then SIGSEGV/SIGABRT on process exit; accelerator siblings stay OK. The
+#    PPMd child still loads rapidgzip via archivey imports even when run alone.
 
 # 3) Hypothesis property-safety
 pytest tests/test_property_safety.py -q
@@ -471,6 +476,11 @@ four-module process still aborted on Ubuntu with every test green — fatal site
 (exit 134). That is a late tripwire after heap poison, not a failing assertion.
 Per-module children + disabling cov on that leg both harden the job and name the
 offender (`=== module … ===`, `Last test before abort: …`, step summary table).
+
+**A/B/C reading guide (temporary):** if A fails the same way as C, the abort is
+intrinsic to the PPMd module process (including whatever natives conftest /
+archivey import), not leftover state from earlier accelerator *test runs*. If
+only B or only C fails, sibling order / runner timing is implicated.
 
 `PYTHONFAULTHANDLER=1` is set on these steps so fatal traces always dump.
 
