@@ -213,8 +213,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Treat signal/abort after sessionfinish exit=0 as soft (do not fail the "
-            "batch). Real pytest failures still fail. Retained for bisects; required "
-            "CI no longer needs this for test_ppmd_raw_streams (see known-issues.md)."
+            "batch). Real pytest failures still fail. Required CI uses this for "
+            "test_ppmd_raw_streams while the upstream Ppmd7T_Free teardown race "
+            "remains (see known-issues.md)."
         ),
     )
     parser.add_argument(

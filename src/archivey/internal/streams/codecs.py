@@ -229,8 +229,9 @@ class CodecParams:
     - ``unpack_size`` — known uncompressed output length (7z folder unpack size). Passed
       to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark.
     - ``pack_size`` — known compressed length for the PPMd coder input (7z pack stream /
-      ZIP compressed size / sized view). Gates post-eof empty drains and large NUL
-      recovery so truncated pack delivery cannot chase ``unpack_size``.
+      ZIP compressed size / sized view). Must match the bytes passed to
+      ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
+      drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
     """
 
     filters: list[dict] | None = None

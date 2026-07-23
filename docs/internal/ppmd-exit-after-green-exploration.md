@@ -2,9 +2,9 @@
 
 **PR:** #188 (this branch)  
 **Issue:** `docs/internal/known-issues.md` → “`pyppmd` exit-after-green abort”  
-**Status:** mitigated (see “Fix applied” below)  
+**Status:** partially mitigated (overshoot fixed; `Ppmd7T_Free` residual + CI soft-pass remain — see “Fix applied”)  
 **Date started:** 2026-07-23  
-**Date closed:** 2026-07-23
+**Date updated:** 2026-07-23
 
 This doc is a live lab notebook. Findings are appended as experiments finish so
 reviewers can read updated versions mid-investigation.
@@ -24,9 +24,11 @@ interpreter teardown after a green `tests/test_ppmd_raw_streams.py` session is:
 4. a dangerous **archivey usage pattern** we can avoid (like the previous
    unbounded `decode(..., -1)` / overshoot mitigation).
 
-Success criteria for a “fix”: reproducible local rate drops to ~0 under a
-documented soak, ideally with a minimal bare-`pyppmd` (or single-culprit) repro,
-then we can remove `--allow-exit-after-green` from required CI.
+Success criteria for a full “fix”: reproducible local rate drops to ~0 under a
+documented soak (including parent-session teardown), ideally with a minimal
+bare-`pyppmd` (or single-culprit) repro, **then** we can remove
+`--allow-exit-after-green` from required CI. Decode-time overshoot alone is
+**not** that bar — the Free-race residual still soft-passes.
 
 ---
 
@@ -168,25 +170,28 @@ until GC / exit — the “exit-after-green” fingerprint under `[all]`).
 Happy-path and underfed-without-NUL-flush do not crash. Other extension modules
 are not required.
 
-### Fix applied
+### Fix applied (partial)
 
 1. **Cap extra-NUL recovery** (`_PPMD_EXTRA_NUL_MAX_OUTPUT = 64`) in
    `PpmdDecoder.flush` and empty-`feed` NUL injection
    (`src/archivey/internal/streams/decompress.py`).
-2. **Subprocess-isolate** unfinished-decoder adversarial tests in
-   `tests/test_ppmd_raw_streams.py` (avoids in-process `Ppmd7T_Free` race
-   poisoning the parent session).
-3. Remove `--allow-exit-after-green` from required CI for this module.
+2. **`pack_size` gate:** post-eof chunked empty drains run only when
+   `fed_compressed >= pack_size` (known-complete). Unknown `pack_size` is
+   conservative (single capped NUL only — no empty drains chasing
+   `unpack_size`).
+3. **Subprocess-isolate** unfinished-decoder adversarial tests; `_run_ppmd_child`
+   accepts teardown SIGSEGV after a green `ok` body (Free-race residual).
+4. **Keep** `--allow-exit-after-green` on required CI for this module until
+   teardown is deterministic or process-isolated by default. Do **not** un-gate
+   on overshoot mitigation alone (PR CI falsified that claim).
 
-### Post-fix soaks
+### Post-mitigation soaks
 
-| Env | Rate |
-|-----|------|
-| `[all]` `--repeat 100` | **0/100** |
-| pyppmd-only `--repeat 100` | **0/100** |
-
-(NUL-cap alone: `[all]` ~0–1/40, pyppmd-only still ~6/100 exit-after-green from
-Free race until subprocess isolation.)
+| Env | Overshoot (large NUL) | Free-race / parent exit-after-green |
+|-----|----------------------|-------------------------------------|
+| Bare half-pack + NUL(rem) | ~85/100 → **0/100** with cap 64 | n/a |
+| Adversarial children | Contained | Child may still SIGSEGV after `ok` (~15%) |
+| Parent `test_ppmd_raw_streams` | Soft-pass | Intermittent; CI keeps allow-exit-after-green |
 
 ### Answers to the original questions
 

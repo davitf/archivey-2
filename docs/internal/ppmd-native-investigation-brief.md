@@ -251,7 +251,32 @@ print(len(out), d.eof, d.needs_input)
 
 ---
 
-## What “done” looks like
+## Gaps to close in this investigation (review addendum)
+
+Re-center deliverables on **clean teardown**, not only overshoot:
+
+1. **Deterministic dispose:** Can a blocked-on-input worker be joined/cancelled
+   from `PpmdDecoder` / `DecompressorStream.close()` so `Ppmd7T_Free` never races
+   GC? Spike: explicit `del self._decomp` / native close before return from a
+   truncated-flush child — does the ~15% SIGSEGV after `ok` disappear?
+2. **Archivey lifecycle vs upstream:** If dispose removes the segfault, document
+   the call sequence archivey must use; if not, the fix is upstream ThreadDecoder.
+3. **PPMd8 parity:** Reproduce overshoot, post-eof empty drains, and Free-race
+   teardown on `Ppmd8Decoder` (archivey’s unsized PPMd8 path uses the same empty
+   loop). Hard facts above are Ppmd7-only today.
+4. **Interpreter / GIL mode:** Failures cluster on 3.12+ and Windows; free-threaded
+   CI exists — does race rate track GC/GIL mode?
+5. **Deterministic seed:** Find order/mem/content that triggers teardown abort
+   reliably so archivey can write a red–green test instead of a probabilistic soak.
+
+### py7zr note (do not copy a myth)
+
+py7zr decodes PPMd **in-process** via the same pyppmd binding
+(`PpmdDecompressor.decompress` → `decode(b"\0", max_length)`). It is not
+process-isolated and is not crash-immune; it typically passes full-remaining
+`max_length` on generally-complete archives and lacks archivey’s hostile
+truncation surface. Real process isolation remains Option D in the exploration
+doc (opt-in / CLI worker), not a v1 library default.
 
 A written answer that states, with citations:
 

@@ -380,10 +380,14 @@ ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress
 
 ## `pyppmd` exit-after-green abort (`test_ppmd_raw_streams` teardown)
 
-**Status: mitigated (2026-07-23).** Separate fingerprint from the mid-decode /
-`warmup_codecs` / unbounded-`decode(..., -1)` bug above. Root cause was an
-archivey usage pattern on **truncated** PPMd7 streams, not an interaction with
-`rapidgzip`/lz4/brotli. Full lab notes:
+**Status: partially mitigated (2026-07-23).** Separate fingerprint from the
+mid-decode / `warmup_codecs` / unbounded-`decode(..., -1)` bug above. The
+**decode-time overshoot** (large NUL flush on truncated streams) is fixed. The
+upstream **`Ppmd7T_Free` teardown race** on unfinished workers is **not**
+eliminated — subprocess isolation contains it so it cannot kill the parent
+pytest session, but children can still SIGSEGV after printing `ok`, and the
+parent process can still intermittently exit-after-green. Required CI therefore
+keeps `--allow-exit-after-green` for this module. Full lab notes:
 `docs/internal/ppmd-exit-after-green-exploration.md`.
 
 ### Symptom (pre-mitigation)
@@ -407,11 +411,12 @@ Two stacked issues on pyppmd 1.3.x:
    same overshoot class as unbounded `decode(..., -1)` and corrupts the heap.
    Bare-`pyppmd` repro of that shape: **85/100** children SIGSEGV; with
    `max_length` capped to 64: **0/100**. Happy-path tests alone: **0/40**.
-2. **Upstream `Ppmd7T_Free` race (avoided in-process):** tearing down a decoder
+2. **Upstream `Ppmd7T_Free` race (contained, not fixed):** tearing down a decoder
    whose worker is still blocked on input can still poison the heap (documented in
-   `pyppmd-upstream-report.md`). Residual low-rate exit-after-green after (1) was
-   cleared by running unfinished-decoder adversarial tests in **subprocess
-   children** (same isolation Windows already needed).
+   `pyppmd-upstream-report.md`). Unfinished-decoder adversarial tests run in
+   **subprocess children** so a child abort cannot take down the parent session;
+   `_run_ppmd_child` accepts teardown signal death after a green `ok` body.
+   Parent-process exit-after-green remains possible → required CI soft-pass.
 
 ### Mitigation in archivey
 
@@ -419,33 +424,29 @@ Two stacked issues on pyppmd 1.3.x:
   `PpmdDecoder.flush` / empty-`feed` NUL injection; at most one synthetic NUL;
   chunked empty drains when finishing a complete pack
   (`src/archivey/internal/streams/decompress.py`).
-- Gate post-eof empty drains on ``pack_size`` (fed compressed ≥ declared pack);
-  known-short packs raise ``TruncatedError`` instead of chasing unpack_size.
-- Keep unfinished-decoder adversarial coverage, but execute those bodies in a
-  fresh subprocess (`tests/test_ppmd_raw_streams.py`).
+- Gate post-eof empty drains on ``pack_size``: drains run only when
+  ``fed_compressed >= pack_size`` (**known-complete**). Unknown ``pack_size`` is
+  treated conservatively (single capped NUL only — no chunked empty drains).
+- Keep unfinished-decoder adversarial coverage in fresh subprocesses; tolerate
+  child teardown abort after a successful body (`tests/test_ppmd_raw_streams.py`).
 
-**Residual tradeoff:** 64 is a crash cushion for the NUL call itself. A single
-final compressed byte can emit thousands of output symbols; finishing those
-tails after premature native ``eof`` needs empty drains toward ``unpack_size``.
-``PpmdDecoder`` now takes optional ``pack_size`` (also filled from
-``StreamConfig.compressed_input_size`` / sized views): post-eof empty drains are
-allowed only when the declared pack was fully delivered; known-short packs stop
-with ``TruncatedError`` instead of chasing unpack (avoids near-EOF
-``MemoryError``). Full-length corruption can still look “complete” and remains an
-upstream/process-isolation residual — see exploration doc.
+**Residual:** (1) `Ppmd7T_Free` teardown race — required CI still uses
+`--allow-exit-after-green` for this module. (2) Declared-complete but internally
+corrupt packs can still fill toward `unpack_size` via empty drains (container CRC
+is the backstop). (3) `pack_size` must measure the same bytes `feed()` counts —
+see `PpmdDecoder` docstring invariant.
 
 ### Verification (this investigation)
 
-| Soak | Before | After |
-|------|--------|-------|
-| `[all]` `ci_run_native_modules --repeat 100` | ~1/20 | **0/100** |
-| pyppmd-only venv `--repeat 100` | 31/40 | **0/100** |
+| Soak | Overshoot (large NUL) | Free-race residual |
+|------|----------------------|--------------------|
+| Bare half-pack + NUL(rem) | ~85/100 → **0/100** with cap 64 | n/a |
+| Adversarial tests in subprocess | Contained | Child may still SIGSEGV after `ok` |
+| Parent `test_ppmd_raw_streams` session | Soft-pass via `--allow-exit-after-green` | Intermittent exit-after-green possible |
 
-Required CI no longer needs `--allow-exit-after-green` for this module. The
-non-required PPMd native stress soak remains as a regression tripwire.
-
-See also: exploration doc, `scripts/ci_run_native_modules.py`,
-`.github/workflows/ppmd-native-stress.yml`.
+Do **not** claim the Free race is gone until teardown is deterministic or
+process-isolated by default. See also: exploration doc,
+`scripts/ci_run_native_modules.py`, `.github/workflows/ppmd-native-stress.yml`.
 
 ## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)
 
