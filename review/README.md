@@ -22,8 +22,8 @@ Round commissioned 2026-07-17 — the **non-security** pass toward the first pub
 
 | Dir | Review | Status |
 |-----|--------|--------|
-| `debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5: test-strategy + structural cleanliness) — every shortcut/duplication/drift/deferred-decision/test-hole with a pay-or-keep verdict, ranked by freezes-at-release cost | Findings in (2026-07-20); pay-list (D5/D6 done) + `QUESTIONS.md` Q1–Q5 open |
-| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2/Q4** still open |
+| `debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5: test-strategy + structural cleanliness) — every shortcut/duplication/drift/deferred-decision/test-hole with a pay-or-keep verdict, ranked by freezes-at-release cost | Findings 2026-07-20; **refreshed 2026-07-23** — S2/S3/T1 + Q1 done; remaining pay-list D1–D4/D7/T2/T3/T7 + DD4; Q2/Q5 open (PRs #172/#176) |
+| `performance/` | The ≤1.3× stdlib perf budget — benchmark-gate efficacy + the real traps | Listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2 decided** (#171); **Q4** still open |
 
 **Live triage:** [`STATUS.md`](STATUS.md).
 

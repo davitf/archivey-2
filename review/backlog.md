@@ -3,8 +3,9 @@
 Non-security review topics worth doing, but *after* the remaining in-flight
 round (`debt-ledger`, `performance`). They differ in character and timing:
 
-- **Topics 4 + 5** (test-strategy, structural-cleanliness) — now in flight as
-  `debt-ledger/` (findings 2026-07-20; pay-list + QUESTIONS open).
+- **Topics 4 + 5** (test-strategy, structural-cleanliness) — in flight as
+  `debt-ledger/` (findings 2026-07-20; **refreshed 2026-07-23** — S2/S3/T1 +
+  wall-drift gate paid; remaining pay-list + Q2/Q5 open; see `STATUS.md`).
 - **Topic 6** (decode-engine performance) — a later *performance* round, once the
   `stream-layering` wrapper work has landed; mostly independent of it.
   *(stream-layering fusion landed in #137 — Topic 6 is unblocked on that axis.

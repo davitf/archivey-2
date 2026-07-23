@@ -2,26 +2,16 @@
 
 Decisions this ledger cannot make unilaterally (pause-and-ask rule). Everything
 else in the ledger carries a recommended verdict the maintainer can simply
-accept or flip.
+accept or flip. **Refresh 2026-07-23:** Q1/Q3/Q4 decided and (where applicable)
+implemented; Q2/Q5 still open but embodied in open PRs.
 
-## Q1 — Performance Q2 (wall-budget enforcement) is now blocking the release's honesty, not just the harness — **DECIDED (2026-07-20)**
+## Q1 — Performance Q2 (wall-budget enforcement) — **DECIDED + DONE (2026-07-20)**
 
 **Decision: (a).** Nightly wall-ratio drift vs the previous successful
 `benchmark-wall` JSON artifact (`benchmark-wall.yml` +
-`--wall-drift-baseline`); quiet days re-publish that artifact (preserving
-`measured_at`); full re-measure at least every ~30 days. Absolute VISION bands
-remain informational; peers `(c)` already in harness. Unblocks D1 wording: CI
-enforces structural axes on every PR and wall-ratio *drift* on nightly — not
-absolute ≤1.3×.
-
-`review/performance/QUESTIONS.md` Q2 has been open since 2026-07-18. The
-ledger's D1 (re-word the ≤1.3× claim) can land its *band* changes without Q2,
-but the sentence "this budget is enforced in CI" vs "measured and published"
-depends on it. Options as the perf review framed them: (a) nightly
-drift-vs-previous-JSON, (b) nightly 2× band on read_all only, (c) stay
-informational. **A choice — any choice — is needed before the VISION/costs
-re-wording can be finished.** Recommendation: (a), it dodges shared-runner
-absolute-ratio flake and catches regressions, which is what the claim needs.
+`--wall-drift-baseline`). Absolute VISION bands remain informational; peers
+already in harness. Landed in **#171**. Unblocks D1 *enforcement* wording;
+band honesty is still D1/Q2.
 
 ## Q2 — ZIP open+list is above the maintainer's own re-scoped band: land L5 pre-release, or publish the real number?
 
@@ -29,46 +19,32 @@ Post-#143/#146, ZIP open+list sits ~3.7–4× vs the Q1-direction band of 2–3�
 7z ~2.0–2.2× vs ≈1.25× native-par. Two honest paths:
 
 - **(a)** Commission **L5** (lazy `ArchiveMember` derivation — needs an
-  OpenSpec change; the remaining cost is `_to_member` + registration per the
-  listing attribution) before 0.2.0 and try to enter the band; or
+  OpenSpec change) before 0.2.0 and try to enter the band; or
 - **(b)** Ship 0.2.0 with the band documented as *aspirational* and the
   measured numbers published beside it (costs.md table), L5 as the named
   follow-up.
 
-Recommendation: **(b)**. L5 restructures the hottest member-model path right
-before release; the honest-number option costs nothing and the claim stays
-falsifiable-but-true. But this is a positioning call — VISION is the
-maintainer's document.
+Recommendation: **(b)**. Open PR **#172** implements that lean (aspirational
+peer bands + published measured ratios). **Accepting #172 ≈ deciding (b).**
+Still needs an explicit maintainer merge (or flip to (a) and close #172).
 
-## Q3 — S2+S3 unification: accept "entry gate for the next backend", or pay pre-release? — **DECIDED (2026-07-20)**
+## Q3 — S2+S3 unification — **DECIDED + DONE (2026-07-20 / #184)**
 
-**Decision: (b) pay before 0.2.0.** Unify S2+S3 as one OpenSpec change
-(`unify-pass-driver`) now — clean structure preferred over shipping with four
-divergent pass-driver copies; the suite is the regression net. T1 (solid-RAR
-mutation) lands first as the safety net. **Rejected:** (a) entry gate for the
-next backend (do not add PLAN/IDEAS entry-gate language).
+**Decision: (b) pay before 0.2.0.** Landed as OpenSpec `unify-pass-driver`
+(#184) with T1 solid-RAR mutation first. Change is ✓ Complete; archive under
+ledger **D7**.
 
-The ledger's recommended verdict (structural.md) had been: carry the four-copy
-pass driver through 0.2.0 and gate the next backend. Maintainer overrode toward
-ledger purity / release-risk tolerance in favor of paying now.
+## Q4 — Is `rapidgzip-truncation-investigation` allowed to ride past 0.2.0? — **DECIDED (2026-07-20); implementation still open**
 
-## Q4 — Is `rapidgzip-truncation-investigation` allowed to ride past 0.2.0? — **DECIDED (2026-07-20)**
-
-**Decision: PAY before 0.2.0.** Do not ship the under-characterized ISIZE
-backstop as release-done. Measurement + narrow/extend/remove stay in
-`openspec/changes/rapidgzip-truncation-investigation/` (enriched with
-`design.md`); implementation is a later PR, not triage.
-
-The shipped ISIZE backstop is, by its own proposal's words, "a heuristic built
-on incomplete knowledge of rapidgzip's actual behavior", and the
-characterization change is 1/11 tasks done. The ledger's earlier lean was KEEP
-(accelerators opt-in, AUTO gated, threat model scopes accelerators out,
-refining later is non-breaking). Maintainer overrode: knowingly-heuristic guard
-on a supported path is unacceptable release debt even when opt-in.
+**Decision: PAY before 0.2.0.** Change enriched (#175); Linux characterization
++ recommended extend ISIZE backstop is in open PR **#177** (was CONFLICTING at
+refresh — rebase). Stdlib gzip recoverable truncation (#183) is adjacent and
+**does not** satisfy this decision.
 
 ## Q5 — Does a `CHANGELOG` entry-zero get written now?
 
-D3 says PAY. The only real question is form: a conventional
-`CHANGELOG.md` starting at 0.2.0 ("initial public release" + highlights), or
-generated release notes only. Recommendation: a committed `CHANGELOG.md` —
-the adoption capstone explicitly looks for one in-repo.
+D3 says PAY. Form options: committed `CHANGELOG.md` starting at 0.2.0, or
+generated release notes only. Recommendation: committed `CHANGELOG.md`.
+Open PR **#176** implements that lean but was CONFLICTING at refresh —
+**rebase + merge ≈ deciding the form.** Still needs an explicit maintainer
+merge (or flip to generated-only and close #176).

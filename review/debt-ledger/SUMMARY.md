@@ -1,30 +1,25 @@
 # Debt ledger — SUMMARY (pre-`0.2.0`)
 
 > Commissioned 2026-07-20 (backlog Topics 4+5) against `main` @ `7bb862b`.
-> Analysis-only: no code changed; `openspec validate --all` green (27/27).
+> **Refreshed 2026-07-23** against `main` @ `8cc3ea5` (post-#184/#183/#171/#188/#189).
+> Analysis-only refresh: no product code changed in this pass.
 > Theme files: [`structural.md`](structural.md),
 > [`drift-and-decisions.md`](drift-and-decisions.md), [`tests.md`](tests.md),
 > [`QUESTIONS.md`](QUESTIONS.md).
 
 ## Headline
 
-The tree is in unusually honest shape for a pre-release codebase: **one**
-deferred-work marker in all of `src/`, specs strict-clean, S1 (the error
-boundary) paid and holding, S4 (ReaderState) reworked rather than accreted,
-CLI docs current, and the threat-model register genuinely authoritative. The
-debt that matters clusters in three places: (1) **a published performance
-claim the project's own measurements falsify** (`VISION.md` ≤1.3× vs the
-maintainer's already-recorded re-scoping that never reached the docs) plus two
-missing release artifacts (SECURITY.md, CHANGELOG); (2) the **S2/S3
-structural prediction came true** — the pass-driver skeleton now exists in
-four divergent copies (RAR's is the fourth, exactly as forecast in 2026-07-12)
-and the member-list pipeline still carries mirrored double-fault guards — but
-none of it is public surface, so the *original* recommended verdict was a *hard
-entry gate on the next backend*, not a release blocker (**overridden 2026-07-20:
-Q3 = (b) pay before 0.2.0** via `unify-pass-driver`); (3) the **generative test nets
-stop at the declarative corpus** — solid-RAR demux, the code where the RAR
-review found its bugs, is never mutated or swept, and the seek-interleaving
-property test that closed stream-decoder F5 exists only for XZ.
+Since the ledger landed (#169), the structural half of the pay list has been
+paid: **S2+S3** and their **T1** safety net shipped in `unify-pass-driver`
+(#184), and the nightly **wall-ratio drift** gate closed debt-ledger Q1 /
+perf Q2 (#171). What still freezes at release is almost all **release
+honesty artifacts** — VISION still publishes the falsified ≤1.3× open/list
+claim (**D1**; open PR #172), no `SECURITY.md` (**D2**), no `CHANGELOG`
+(**D3**; open PR #176, conflicts), and the under-characterized rapidgzip
+ISIZE backstop (**DD4**; open PR #177, conflicts). The remaining generative
+test holes (**T2/T3/T7**) and the stale `open-issues.md` bucket (**D4**) are
+still open; two completed OpenSpec changes (`unify-pass-driver`,
+`gzip-zlib-truncation-recovery`) need archiving (**D7**).
 
 **Freeze-rank legend** — F3: frozen at release (public claim / API / published
 docs; changing later is breaking or reputationally expensive). F2: compounds
@@ -35,65 +30,71 @@ stable over time.
 
 | # | Item | Where | Freeze | Verdict |
 |---|------|-------|--------|---------|
-| **D1** | VISION/philosophy/costs still publish **≤1.3× for open/list** — falsified by own measurements; maintainer's Q1 re-scoping (peer-ratio bands) never reached the docs | `VISION.md:74-76`; `review/performance/QUESTIONS.md` Q1 | **F3** | **PAY** — re-word before release; band honesty doesn't wait on Q2 |
+| **D1** | VISION still publishes **≤1.3× for open/list** — falsified by own measurements; Q1 peer-ratio bands never reached the docs | `VISION.md:76`; perf Q1 | **F3** | **PAY** — open PR **#172** (aspirational bands + measured ratios); merge/refresh |
 | **D2** | No `SECURITY.md` / disclosure process — gates the "safe" positioning per threat-model O5.4 + PLAN | `docs/internal/threat-model.md` O5 | **F3** | **PAY** (SECURITY.md); OSS-Fuzz may trail |
-| **DD1/DD3** | Perf **Q2** (wall enforcement) + ZIP listing above its own band (L5 or honest number) | `review/performance/` | **F3** | **DECIDE** — `QUESTIONS.md` Q1/Q2 |
-| **D3** | No `CHANGELOG`; `0.2.0.dev0` sets the record at release | `pyproject.toml:7` | **F3** | **PAY** (cheap; form → Q5) |
+| **DD1/DD3** | Perf wall enforcement **DECIDED**; ZIP listing above its own band (L5 or honest number) | `review/performance/` | **F3** | **DD1 DONE** (#171). **DD3 DECIDE** with D1 — #172 embodies lean (b) publish honest/aspirational |
+| **D3** | No `CHANGELOG`; `0.2.0.dev0` sets the record at release | `pyproject.toml` | **F3** | **PAY** — open PR **#176** (conflicts; rebase); form → Q5 lean = committed file |
 | **DD6** | Salvage mode absent though it's the founding use case | PLAN / IDEAS / reserved `--salvage` | **F3**→ok | **KEEP** — sequencing decision already recorded; docs verified honest |
-| **T1** | Mutation-fuzz + conformance sweep cover only declarative `CORPUS`; **solid-RAR demux** (where RAR-review bugs lived) has no generative net | `tests/test_mutation_fuzz.py:118`; `rar_reader.py:578-649` | **F2** | **PAY** — mutate static fixtures / build solid RAR into corpus |
+| **DD4** | rapidgzip ISIZE truncation backstop still under-characterized (change **1/13**) | `openspec/changes/rapidgzip-truncation-investigation/` | **F2** | **PAY before 0.2.0** — open PR **#177** (conflicts; rebase). Stdlib gzip path separately paid in #183 |
+| **T2** | Seek-interleaving property test exists only for XZ; lzip/`.Z` share the arithmetic class that hid F1 | `test_seekable_streams.py` | **F2** | **PAY** — parametrize existing test |
 | **T3** | Benchmark gate has no RAR/encrypted/accelerator data cases — D1's claim can't be honest for unmeasured paths | `tests/test_benchmark_gate.py` | **F2** | **PAY** (already tracked as perf P6 remainder) |
-| **T2** | Seek-interleaving property test exists only for XZ; lzip/`.Z` share the arithmetic class that hid F1 | `test_seekable_streams.py:507` | **F2** | **PAY** — parametrize existing test |
-| **S3** | Pass driver now **4 divergent copies** (base/TAR/7z/RAR; close-previous enforced 3 ways + not at all in one) — S3's prediction realized; next backend makes 5 | `base_reader.py:450`, `backends/tar_reader.py`, `backends/sevenzip_reader.py:303`, `backends/rar_reader.py:578` | **F2** | **PAY before 0.2.0** (Q3 = b, 2026-07-20) — OpenSpec `unify-pass-driver`; T1 first |
-| **S2** | Member-list pipeline half-unified: shared stamper/publication landed, but dual drive loops + **mirrored double-fault guards** remain | `base_reader.py` finalize helpers | **F2** | **PAY with S3** in `unify-pass-driver` (Q3 = b) |
-| **D4** | `open-issues.md` contradicts its own bucket rules (P1 decided+implemented yet listed as to-fix; dead change-path refs) | `docs/internal/open-issues.md:34-55,185` | **F2** | **PAY** — 15-min sweep |
-| **D5/D6** | Lifecycle housekeeping: `stop-on-failure-not-policy` complete-but-unarchived; `cli-product/` review done-pending-archive | `openspec list`; `review/STATUS.md` | **F2** | **DONE** (2026-07-20) — OpenSpec → `archive/2026-07-20-stop-on-failure-not-policy/`; review → `archive/2026-07-20-cli-product/` |
-| **T7** | Corpus matrix thin spots post-oracle-retirement: ISO only in `basic`; encrypted-header 7z / multi-volume outside the nets | `tests/sample_archives.py:307-345` | **F2** | **PAY** — half-day audit + cheap extensions |
-| **DD4** | rapidgzip ISIZE truncation backstop ships self-describedly under-characterized (change at 1/11) | `openspec/changes/rapidgzip-truncation-investigation/` | **F2** | **PAY before 0.2.0** (Q4 decided 2026-07-20); implement later — see change `design.md` |
-| **T4** | Free-threaded CI core-only; no multithread `members_report_if_available` test | `ci.yml:168-191` | **F2** | **KEEP scope** (already published honestly) / **PAY one test** |
+| **D4** | `open-issues.md` contradicts its own bucket rules (P1 decided+implemented yet listed as to-fix; dead change-path refs) | `docs/internal/open-issues.md:34-55,191` | **F2** | **PAY** — 15-min sweep |
+| **D7** | Completed OpenSpec changes unarchived: `unify-pass-driver`, `gzip-zlib-truncation-recovery` | `openspec list` | **F2** | **PAY** — archive + sync (same lifecycle as D5) |
+| **T7** | Corpus matrix thin spots: ISO only in `basic`; encrypted-header 7z / multi-volume outside the nets | `tests/sample_archives.py` | **F2** | **PAY** — half-day audit + cheap extensions |
+| **T1** | Solid-RAR mutation net | `tests/test_mutation_fuzz.py` `_SOLID_RAR_*` | **F2** | **DONE** (#184) — static solid RAR4/RAR5 under mutation |
+| **S2/S3** | Pass-stream driver + link finalize unification | `BaseArchiveReader._drive_pass_streams` / `_finalize_links` | **F2** | **DONE** (#184) — OpenSpec `unify-pass-driver` ✓ Complete (needs D7 archive) |
+| **D5/D6** | Lifecycle housekeeping: `stop-on-failure-not-policy`; `cli-product/` | archives | **F2** | **DONE** (2026-07-20) |
+| **T4** | Free-threaded CI core-only; no multithread `members_report_if_available` test | `ci.yml`; `test_concurrent_multithread.py` | **F2** | **KEEP scope** / **PAY one test** (still missing) |
 | **DD7/DD8** | CLI `--json` (wait for schema) and `--raw` quoting remainder | cli-product Q2/Q4 | **F2** | **KEEP** — decided/additive; space reserved |
 | **DD9–DD12** | Threat-model residuals (O1/O6/O7/O8), C3 fidelity, api-coherence Q5, C4 scope | registers | **F1-F2** | **KEEP** — all additive, all already recorded with rationale |
 | **T5/T6** | Remaining fault injections (symlink-EPERM, raw ENOSPC); no stateful concurrency stress | tests.md | **F1** | **KEEP** recorded; pay opportunistically |
 | **DD5** | `seekable-gzip-and-block-writing` (0/24, spec-only, Phase 8) | in-flight change | **F1** | **KEEP** — post-0.2.0 by plan |
-| **S1/S4/S5/S6** | Error boundary paid & holding; ReaderState reworked cleanly; module splits earning seams; one in-code marker; `VerifyingStream` leftover parked | structural.md | — | **fine** (S1 residue + VerifyingStream: KEEP) |
+| **S1/S4/…** | Error boundary paid & holding; ReaderState reworked cleanly; module splits earning seams; `VerifyingStream` leftover parked | structural.md | — | **fine** |
+| **N1** | `pyppmd` teardown UAF / exit-after-green (mitigated; CI soft-pass residual) | `known-issues.md`; #188/#189 | **F1** | **KEEP** — defense-in-depth + valgrind gate landed; drop `--allow-exit-after-green` only after hot-race platforms clear |
 
-## The pre-0.2.0 pay list, in order
+## The remaining pre-0.2.0 pay list, in order
 
-1. **D1** — re-word the perf claim (after deciding Q1/Q2 in `QUESTIONS.md`).
+1. **D1 + DD3** — land/refresh **#172** (re-word VISION/philosophy/costs; decide
+   aspirational bands vs L5 — #172 = lean (b)).
 2. **D2** — write `SECURITY.md`.
-3. **D3** — start `CHANGELOG.md`.
-4. **T1 + T2** — widen the generative nets (solid-RAR mutation; lzip/`.Z`
-   seek property test). Cheap, reuses machinery, and T1 doubles as the
-   safety net for `unify-pass-driver` (S2+S3).
-5. **T3** — benchmark-gate RAR/encrypted/accelerator cases (D1 dependency).
-6. **D4 + T7** — the housekeeping sweep (open-issues, corpus-matrix audit).
-   (**D5/D6** archived 2026-07-20.)
-7. **S2+S3 / `unify-pass-driver`** — pay before 0.2.0 (Q3 = b); proposal in
-   `openspec/changes/unify-pass-driver/` (do **not** add PLAN/IDEAS entry-gate language).
-8. **DD4 / rapidgzip-truncation-investigation** — characterize + narrow/extend/remove
-   ISIZE backstop before 0.2.0 (Q4 = PAY; implementation deferred, change enriched).
+3. **D3 + Q5** — rebase/merge **#176** (`CHANGELOG.md`).
+4. **DD4** — rebase/finish **#177** (`rapidgzip-truncation-investigation`).
+5. **T2** — parametrize seek-interleaving over lzip/`.Z`.
+6. **D4 + D7** — `open-issues.md` sweep; archive `unify-pass-driver` +
+   `gzip-zlib-truncation-recovery`.
+7. **T3** — benchmark-gate RAR/encrypted/accelerator data cases (D1 honesty).
+8. **T7** — corpus-matrix audit (ISO beyond `basic`; note deliberate exclusions).
+9. **T4 (half)** — one `members_report_if_available` multithread barrier test.
 
 Nothing else on the ledger should block 0.2.0; every KEEP above has its
-justification written down here or in the register it points to, which is
-what the zero-debt framing requires.
+justification written down here or in the register it points to.
+
+## Paid since the ledger was commissioned (do not re-open)
+
+| Item | Landed |
+|------|--------|
+| **Q1 / DD1** nightly wall-ratio drift gate | #171 |
+| **D5/D6** archive stop-on-failure + cli-product | #170 |
+| **Q3 / S2+S3 / T1** unify pass driver + solid-RAR mutation | #184 |
+| Stdlib gzip recoverable truncation (adjacent to DD4; not a substitute) | #183 |
+| ADR 0014 — integrity verdicts from reads, never `close()` | #186 |
+| `pyppmd` quiesce-on-close + valgrind UAF gate (mitigation, not closure) | #188/#189 |
 
 ## What is actually fine (don't re-review)
 
 - **S1** held under two new backends — RAR/7z route raw errors through the
   shared boundary; remaining direct stamps are origination sites, not
   translation drift.
+- **S2/S3** paid — one `_drive_pass_streams` + one `_finalize_links` double-fault
+  policy; backends supply hooks (`close_previous`, solid resource cleanup).
 - **S4/ReaderState** was rebuilt around owner-carrying tokens, not patched
   into a sixth mechanism.
-- **Module splits** (`config`/`internal.config`, `measurement`,
-  `extraction_types`, the 7z quartet, `timestamps`) each document a
-  load-bearing reason; no gratuitous seams. Public export tiering in
-  `__init__.py` is deliberate and annotated.
+- **Module splits** each document a load-bearing reason; public export tiering
+  in `__init__.py` is deliberate and annotated.
 - **Docs↔spec↔code sync discipline is working** where changes flowed through
-  OpenSpec: exit codes, STOP-failures-only, ExtractionStatus renames, TAR EOF
-  Option F all agree across spec/docs/code. The drift found is confined to
-  registers updated by hand (`open-issues.md`) and the one pre-OpenSpec
-  document (VISION).
-- **The fuzz architecture** (mutation + Hypothesis + Atheris, accelerators
-  off with the rationale recorded) — coherent; the ledger widens its intake,
-  not its design.
+  OpenSpec. Remaining drift is hand-updated registers (`open-issues.md`) and
+  the one pre-OpenSpec document (VISION) — still D1/D4.
+- **The fuzz architecture** is coherent; T1 widened intake for solid RAR;
+  T2/T7 remain the intake widenings left.
 - `src/` carries essentially **zero comment-level debt** — the registers are
   doing their job.
