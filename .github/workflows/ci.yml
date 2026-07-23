@@ -177,63 +177,32 @@ jobs:
           --ignore=tests/test_ppmd_raw_streams.py
           -q
 
-      # Temporary A/B/C diagnosis for the PPMd-module abort (green tests, then
-      # SIGSEGV/SIGABRT on process exit). Each experiment uses continue-on-error so
-      # later variants still run; the gate step fails the job if any failed.
-      # See docs/internal/known-issues.md.
-      - name: Native modules A — PPMd alone
-        id: native_a
-        if: (success() || failure()) && (matrix.install == 'all' || matrix.install == 'all-lowest')
-        continue-on-error: true
+      - name: Run accelerator stream tests
+        if: matrix.install == 'all' || matrix.install == 'all-lowest'
         env:
           PYTHONFAULTHANDLER: "1"
+        # One fresh subprocess per accelerator module (coverage off, breadcrumbs).
+        # PPMd raw streams are intentionally not in this batch — see next step.
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          python scripts/ci_run_native_modules.py
+
+      - name: Run PPMd raw stream tests
+        if: matrix.install == 'all' || matrix.install == 'all-lowest'
+        env:
+          PYTHONFAULTHANDLER: "1"
+        # Still runs the assertions in required CI, but soft-passes the known
+        # intermittent exit-after-green pyppmd abort (sessionfinish exit=0 then
+        # SIGSEGV/SIGABRT). Hard-fails on real pytest failures. Soak / root-cause
+        # lives in the non-required PPMd native stress workflow.
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
           python scripts/ci_run_native_modules.py
           --modules tests/test_ppmd_raw_streams.py
-
-      - name: Native modules B — PPMd first, then accelerators
-        id: native_b
-        if: (success() || failure()) && (matrix.install == 'all' || matrix.install == 'all-lowest')
-        continue-on-error: true
-        env:
-          PYTHONFAULTHANDLER: "1"
-        run: >
-          uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ci_run_native_modules.py
-          --modules
-          tests/test_ppmd_raw_streams.py
-          tests/test_rapidgzip_deflate_zlib.py
-          tests/test_accelerator_shutdown.py
-          tests/test_accelerator_corruption.py
-
-      - name: Native modules C — accelerators then PPMd (baseline order)
-        id: native_c
-        if: (success() || failure()) && (matrix.install == 'all' || matrix.install == 'all-lowest')
-        continue-on-error: true
-        env:
-          PYTHONFAULTHANDLER: "1"
-        run: >
-          uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ci_run_native_modules.py
-
-      - name: Native modules — require A/B/C green
-        if: (success() || failure()) && (matrix.install == 'all' || matrix.install == 'all-lowest')
-        env:
-          NATIVE_A: ${{ steps.native_a.outcome }}
-          NATIVE_B: ${{ steps.native_b.outcome }}
-          NATIVE_C: ${{ steps.native_c.outcome }}
-        run: |
-          echo "native A (PPMd alone)=$NATIVE_A"
-          echo "native B (PPMd first)=$NATIVE_B"
-          echo "native C (baseline order)=$NATIVE_C"
-          if [ "$NATIVE_A" != success ] || [ "$NATIVE_B" != success ] || [ "$NATIVE_C" != success ]; then
-            echo "::error::One or more native-module experiments failed (see A/B/C steps above)"
-            exit 1
-          fi
+          --allow-exit-after-green
 
       - name: Run property-safety tests
-        if: (success() || failure()) && (matrix.install == 'all' || matrix.install == 'all-lowest')
+        if: matrix.install == 'all' || matrix.install == 'all-lowest'
         env:
           PYTHONFAULTHANDLER: "1"
         run: >

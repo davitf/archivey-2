@@ -413,19 +413,22 @@ Fatal logs list extension modules along the lines of:
 CI runners use **uv’s standalone CPython** (Linux builds report Clang in `sys.version`),
 with pytest-cov enabled via `addopts` (`--cov=archivey …`).
 
-### Why PPMd stress does not cover this
+### Why PPMd stress historically did not cover the exit-after-green abort
 
-`.github/workflows/ppmd-native-stress.yml` / `scripts/ppmd_native_stress.py`:
+`.github/workflows/ppmd-native-stress.yml` / `scripts/ppmd_native_stress.py`
+default scenarios:
 
 - Run each scenario in a **fresh child** (no multi-thousand-test address space).
 - Warmup is LZMA2 / Deflate / Bzip2 **then** PPMd — **no `rapidgzip`**, no Hypothesis,
   no coverage tracer, no `unrar`.
-- Archivey’s bounded PPMd decode mitigation already made the historical
-  `warmup_codecs` soak quiet; this full-suite flake still appears with that mitigation
-  in place.
+- Target mid-decode / warmup_codecs aborts; children exit right after the scenario.
 
-So a green PPMd stress check means “the known pyppmd runaway probe is quiet,” not
-“the full `[all]` process is free of native heap damage.”
+That stayed green while required CI’s `test_ppmd_raw_streams` child died on
+**interpreter teardown after a green session**. The stress workflow now also
+**soaks that pytest module** (`scripts/ci_run_native_modules.py --repeat N`) as a
+hard-failing, non-required step so the fingerprint has a home without blocking
+merges. Bounded PPMd decode mitigation made the historical `warmup_codecs` soak
+quieter; the exit-after-green flake is a separate open item.
 
 ### Leading suspects (unconfirmed)
 
@@ -451,36 +454,41 @@ pytest tests/ \
   --ignore=tests/test_accelerator_corruption.py \
   --ignore=tests/test_ppmd_raw_streams.py -q
 
-# 2) Dedicated rapidgzip / accelerator / raw-PPMd stream tests via
-#    scripts/ci_run_native_modules.py (one subprocess per module; coverage off;
-#    last-nodeid breadcrumbs). Temporary A/B/C CI steps (all continue-on-error,
-#    then a gate) to see whether the PPMd abort depends on sibling order:
-#      A) PPMd alone
-#      B) PPMd first, then the three accelerator modules
-#      C) accelerators then PPMd (baseline / historical order)
-#    Observed so far: PPMd child goes green (19 passed, sessionfinish exit=0)
-#    then SIGSEGV/SIGABRT on process exit; accelerator siblings stay OK. The
-#    PPMd child still loads rapidgzip via archivey imports even when run alone.
+# 2) Accelerator stream tests — one subprocess each (coverage off; breadcrumbs)
+python scripts/ci_run_native_modules.py
 
-# 3) Hypothesis property-safety
+# 3) PPMd raw streams — same runner, but --allow-exit-after-green so the known
+#    intermittent exit-after-green abort does not fail required CI. Real pytest
+#    assertion failures still fail the job.
+python scripts/ci_run_native_modules.py \
+  --modules tests/test_ppmd_raw_streams.py \
+  --allow-exit-after-green
+
+# 4) Hypothesis property-safety
 pytest tests/test_property_safety.py -q
 ```
 
-(1)↔(3) stops a corrupted main-suite heap from taking down Hypothesis in-process
+(1)↔(4) stops a corrupted main-suite heap from taking down Hypothesis in-process
 (and vice versa). (2) keeps the heaviest in-process rapidgzip ON / truncated-corrupt
-accelerator paths and raw PPMd stream stress out of the long suite.
+accelerator paths out of the long suite.
 
-**Why (2) is not one combined pytest:** after the first three-way split, a single
-four-module process still aborted on Ubuntu with every test green — fatal site
-`coverage.collector.flush_data` / GC, message `corrupted size vs. prev_size`
-(exit 134). That is a late tripwire after heap poison, not a failing assertion.
-Per-module children + disabling cov on that leg both harden the job and name the
-offender (`=== module … ===`, `Last test before abort: …`, step summary table).
+**PPMd exit-after-green (separate fingerprint, open investigation):** running
+`tests/test_ppmd_raw_streams.py` alone often finishes `19 passed` /
+`sessionfinish exit=0`, then the child dies with SIGSEGV or
+`corrupted size vs. prev_size` / SIGABRT during interpreter teardown. A/B/C order
+experiments showed this is intermittent and not a deterministic
+“accelerators-before-PPMd” interaction. The dedicated mid-decode
+`ppmd-native-stress` scenarios stayed green on the same SHAs — different surface.
 
-**A/B/C reading guide (temporary):** if A fails the same way as C, the abort is
-intrinsic to the PPMd module process (including whatever natives conftest /
-archivey import), not leftover state from earlier accelerator *test runs*. If
-only B or only C fails, sibling order / runner timing is implicated.
+Required CI therefore **soft-passes** that exit-after-green signal (assertions
+still gate). The non-required PPMd native stress workflow **soaks** the same
+pytest module (`--repeat N`, hard-fail on crash) so the flake stays visible
+without blocking merges. Root-cause fix is a follow-up, not this PR.
+
+**Why accelerator modules are not one combined pytest:** a single multi-module
+process aborted on Ubuntu with every test green during `coverage.collector.flush_data`
+/ GC (`corrupted size vs. prev_size`, exit 134). Per-module children + disabling
+cov on that leg both harden the job and name the offender.
 
 `PYTHONFAULTHANDLER=1` is set on these steps so fatal traces always dump.
 
@@ -514,10 +522,18 @@ for i in $(seq 1 20); do
     --ignore=tests/test_ppmd_raw_streams.py -q \
     || { echo "main FAILED pass $i rc=$?"; break; }
   uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
-    || { echo "native-modules FAILED pass $i rc=$?"; break; }
+    || { echo "accelerators FAILED pass $i rc=$?"; break; }
+  # Soft-pass exit-after-green locally the same way required CI does:
+  uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+    --modules tests/test_ppmd_raw_streams.py --allow-exit-after-green \
+    || { echo "ppmd-raw FAILED pass $i rc=$?"; break; }
   uv run --python 3.11 --no-sync pytest tests/test_property_safety.py -q \
     || { echo "property FAILED pass $i rc=$?"; break; }
 done
+
+# 2b) Hard soak of the PPMd raw-streams exit abort (matches non-required stress step)
+uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+  --modules tests/test_ppmd_raw_streams.py --repeat 20
 
 # 3) A/B: no rapidgzip in the environment (uninstall after sync)
 uv run --python 3.11 --no-sync pip uninstall -y rapidgzip
