@@ -16,9 +16,12 @@ analysis, valgrind evidence, and the 1.2.0→1.3.0 (#126) regression window are 
 Unlike the crash-rate soak in ``scripts/pyppmd_crash_repro.py`` (a probabilistic
 race whose rate swings with allocator layout and Python/GIL mode), this driver is
 **deterministic**: valgrind's memcheck reports the invalid write on the shape that
-reproduces it every run, so it can gate CI. A green run here on a fixed pyppmd —
-or archivey's ``quiesce-on-close`` mitigation for the archivey scenarios — is the
-evidence needed to retire ``--allow-exit-after-green`` for the PPMd module.
+reproduces it every run. It runs in the non-required ``PPMd native stress``
+workflow (Linux). A green run here on a fixed pyppmd — or archivey's
+``quiesce-on-close`` mitigation for the archivey scenarios — across the hot-race
+platforms is the evidence needed to retire ``--allow-exit-after-green`` for the
+PPMd module; it is **not** on its own sufficient on a single host (the observable
+teardown abort is already ~0 there).
 
 Scenarios
 ---------
@@ -141,6 +144,10 @@ def _run_scenario(name: str, cycles: int, timeout: float) -> tuple[int, bool, st
     script = _SCENARIOS[name]
     env = dict(os.environ)
     env["PPMD_UAF_CYCLES"] = str(cycles)
+    # Keep pymalloc (do NOT set PYTHONMALLOC=malloc): the UAF'd output blocks are
+    # large PyBytes that pymalloc routes to raw malloc, so valgrind already tracks
+    # them; forcing libc malloc for every allocation instead floods the report with
+    # CPython-interpreter false positives (measured ~984 errors on a clean run).
     with tempfile.TemporaryDirectory(prefix="ppmd-uaf-") as tmp:
         driver = Path(tmp) / f"{name}.py"
         driver.write_text(script.format(repo=str(_REPO_ROOT)), encoding="utf-8")
@@ -218,18 +225,28 @@ def main(argv: list[str] | None = None) -> int:
     print(f"ppmd_uaf_valgrind: scenarios={names} cycles={args.cycles}")
     for name in names:
         errors, body_ok, tail = _run_scenario(name, args.cycles, args.timeout)
-        expect_clean = name in _EXPECT_CLEAN or (
+        # `pyppmd-overshoot` is a detector: memcheck errors are the *expected*
+        # outcome on 1.3.x and do not fail the run unless --strict-pyppmd requires
+        # a fixed pyppmd. Every other scenario must be clean.
+        clean_required = name in _EXPECT_CLEAN or (
             name == "pyppmd-overshoot" and args.strict_pyppmd
         )
-        status = "OK" if errors == 0 else ("DETECTED" if not expect_clean else "FAIL")
-        if errors != 0 and expect_clean:
-            failed = True
-        if errors < 0:
-            status = "UNKNOWN"
-            failed = failed or expect_clean
-        note = "" if body_ok else " [body did not print ok]"
-        print(f"  {name:<20} memcheck_errors={errors:<6} {status}{note}")
-        if errors != 0 or not body_ok:
+        # A scenario that never ran its body (import error, early crash, wrong env)
+        # or produced no parseable valgrind summary is a failure regardless: a
+        # "0 errors" from a body that never executed the repro is a false PASS.
+        if not body_ok:
+            status, scenario_failed = "FAIL (body did not run)", True
+        elif errors < 0:
+            status, scenario_failed = "FAIL (no valgrind summary)", True
+        elif errors == 0:
+            status, scenario_failed = "OK", False
+        elif clean_required:
+            status, scenario_failed = "FAIL", True
+        else:
+            status, scenario_failed = "DETECTED", False  # detector, expected
+        failed = failed or scenario_failed
+        print(f"  {name:<20} memcheck_errors={errors:<6} {status}")
+        if scenario_failed or errors != 0:
             print(textwrap.indent(tail, "      "))
 
     print()

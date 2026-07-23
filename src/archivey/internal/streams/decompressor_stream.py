@@ -375,7 +375,14 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
         self._inner.seek(point.compressed_offset)
-        self._decoder = self._decoder.recreate(point, self._inner)
+        # Dispose the outgoing decoder deterministically before dropping it:
+        # mid-member a PPMd decode can leave its native worker parked, and relying
+        # on __del__/GC timing to quiesce it is exactly what close() exists to avoid
+        # (no-op for every other codec). recreate() builds a fresh decoder from the
+        # config, not from the old native state, so closing first is safe.
+        old_decoder = self._decoder
+        old_decoder.close()
+        self._decoder = old_decoder.recreate(point, self._inner)
         self._decoder.clear_pending_error()
         self._buffer.clear()
         self._eof = False

@@ -684,8 +684,12 @@ class PpmdDecoder(BaseDecoder):
             if self.finished:
                 return
             for _ in range(_PPMD_QUIESCE_MAX_CALLS):
-                # ``eof`` or ``needs_input`` False ⇒ the last call exited on budget
-                # or the end mark; the worker is not parked and Free is a no-op.
+                # ``not needs_input`` is the "worker not parked" signal — the last
+                # call exited on budget, so Free is already a no-op. The ``eof``
+                # short-circuit is deliberately kept ahead of it: at native eof the
+                # worker is finished AND feeding a NUL here would be a decode-after-eof
+                # (the unbounded form of which is itself a crash path on 1.3.x), so
+                # never issue one — skip instead.
                 if decomp.eof or not getattr(decomp, "needs_input", False):
                     return
                 # One-symbol budget: the worker resumes, consumes the NUL, and

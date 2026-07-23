@@ -176,18 +176,30 @@ upstream (no issue filed there as of 2026-07-16 — ready-to-file draft in
 `docs/internal/pyppmd-upstream-report.md`). Linux and Windows both affected (different
 trigger shapes).** Not adversarial input — happy-path encode/decode of valid PPMd data.
 
-### Root cause (pinpointed from the 1.2.0 → 1.3.1 sdist diff)
+### Root cause (valgrind-confirmed; refined 2026-07-23)
 
-pyppmd runs `Ppmd7Decoder.decode` on a native worker thread. The 1.3.0 rewrite removed
-the worker loop's input-empty stop condition, and `_ppmdmodule.c` translates
+pyppmd runs `Ppmd7Decoder.decode` on a native worker thread. The 1.3.0 rewrite (#126)
+removed the worker loop's input-empty stop condition, and `_ppmdmodule.c` translates
 `max_length=-1` into an `INT_MAX` symbol budget — so on PPMd7 (no end mark) the worker
-decodes **past the true end of the stream**, walking the vendored 7-Zip model on a
-desynchronized range coder until the heap corrupts. The after-eof guard 1.3.0 added went
-to the cffi backend only; the C extension has none, so `decode(b"\0", -1)` after eof
-restarts the runaway worker on finished state (the hottest trigger). Sized decodes stop
-exactly at the payload boundary, which is why they never crash — and why py7zr (which
-always passes `max_length`) never sees this. Full analysis, crash-rate tables, and
-suggested upstream fixes: `docs/internal/pyppmd-upstream-report.md`.
+decodes **past the true end of the stream**, and when its input runs out it is left
+**blocked in the reader** rather than finishing. The **corrupting write itself is a
+use-after-free of pyppmd's own output buffer**: `OutputBuffer_Finish`
+(`_ppmdmodule.c:552`) frees the decode's output block while that blocked worker still
+holds a raw pointer into it, and a later wake (the next call, or `Ppmd7T_Free` at
+teardown) resumes the worker to free-run into the freed block at `ThreadDecoder.c:134`.
+Valgrind pins that as the first error in every crash family; the desynchronized 7-Zip
+model is the *source* of the garbage symbols, not the first out-of-bounds write. The
+after-eof guard 1.3.0 added went to the cffi backend only; the C extension has none, so
+`decode(b"\0", -1)` after eof restarts the runaway worker (a hot trigger). Sized decodes
+stop exactly at the payload boundary — the worker finishes and is joined — which is why
+they never crash, and why py7zr (which always passes `max_length`) never sees this.
+
+Full source-level analysis, valgrind evidence, the 1.2.0→1.3.0 regression window, and
+the corrected, ready-to-file upstream report are in
+`docs/internal/ppmd-native-investigation-results.md` (§D root cause, §J report). The
+older `docs/internal/pyppmd-upstream-report.md` is folded into a pointer to it (it had
+attributed the corruption to the model walk; §J corrects that to the output-buffer UAF).
+The deterministic valgrind gate is `scripts/ppmd_uaf_valgrind.py`.
 
 ### Windows: `STATUS_HEAP_CORRUPTION` on fresh PPMd children
 
@@ -382,13 +394,14 @@ ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress
 
 **Status: partially mitigated (2026-07-23).** Separate fingerprint from the
 mid-decode / `warmup_codecs` / unbounded-`decode(..., -1)` bug above. The
-**decode-time overshoot** (large NUL flush on truncated streams) is fixed. The
-upstream **`Ppmd7T_Free` teardown race** on unfinished workers is **not**
-eliminated — subprocess isolation contains it so it cannot kill the parent
-pytest session, but children can still SIGSEGV after printing `ok`, and the
-parent process can still intermittently exit-after-green. Required CI therefore
-keeps `--allow-exit-after-green` for this module. Full lab notes:
-`docs/internal/ppmd-exit-after-green-exploration.md`.
+**decode-time overshoot** (large NUL flush on truncated streams) is fixed, and a
+**`quiesce-on-close`** step now drives a parked worker to `finished` before the
+decoder is freed so `Ppmd7T_Free` cannot resume it into the freed output block
+(the same UAF, at teardown). Both mitigations attack the same defect: never leave
+a native worker blocked at dispose. Required CI **still** keeps
+`--allow-exit-after-green` for this module — see the caveat below. Full lab notes:
+`docs/internal/ppmd-exit-after-green-exploration.md`; corrected root cause and the
+quiesce measurement: `docs/internal/ppmd-native-investigation-results.md` (§D, §I).
 
 ### Symptom (pre-mitigation)
 
@@ -411,12 +424,17 @@ Two stacked issues on pyppmd 1.3.x:
    same overshoot class as unbounded `decode(..., -1)` and corrupts the heap.
    Bare-`pyppmd` repro of that shape: **85/100** children SIGSEGV; with
    `max_length` capped to 64: **0/100**. Happy-path tests alone: **0/40**.
-2. **Upstream `Ppmd7T_Free` race (contained, not fixed):** tearing down a decoder
-   whose worker is still blocked on input can still poison the heap (documented in
-   `pyppmd-upstream-report.md`). Unfinished-decoder adversarial tests run in
-   **subprocess children** so a child abort cannot take down the parent session;
-   `_run_ppmd_child` accepts teardown signal death after a green `ok` body.
-   Parent-process exit-after-green remains possible → required CI soft-pass.
+2. **Upstream `Ppmd7T_Free` race (now mitigated in-process; still upstream):**
+   tearing down a decoder whose worker is still blocked on input lets
+   `Ppmd7T_Free` resume that worker into the output block already freed by the
+   previous `decode` — the same output-buffer UAF as the overshoot bug, just
+   reached at teardown (valgrind: `ThreadDecoder.c:134`; see the results doc §D).
+   `PpmdDecoder` now **quiesces** a parked worker before dispose (bounded
+   `decode(b"\0", 1)` until it exits on budget), wired through `Decoder.close()`
+   (called from `DecompressorStream.close()` and on seek/recreate) plus a `__del__`
+   safety net. Unfinished-decoder adversarial tests still run in **subprocess
+   children**; `_run_ppmd_child` still accepts teardown signal death after a green
+   `ok` body. See the caveat under *Residual*.
 
 ### Mitigation in archivey
 
@@ -444,15 +462,26 @@ Two stacked issues on pyppmd 1.3.x:
 - **Unsized PPMd8 gets no post-eof drain.** Its end mark terminates valid decodes; a
   drain without an ``unpack_size`` clamp only fabricates trailing bytes (measured: +3
   on an all-zero payload). Sized PPMd8 keeps the drain.
+- **Quiesce a parked worker before dispose** (`PpmdDecoder._quiesce_worker`, via
+  `close()` / `__del__`): drive it to `finished` with bounded `decode(b"\0", 1)` so
+  `Ppmd7T_Free` becomes a no-op. Deterministic evidence:
+  `scripts/ppmd_uaf_valgrind.py` — the archivey scenarios report **0** memcheck
+  errors, the bare-pyppmd overshoot reproducer reports the UAF.
 - Keep unfinished-decoder adversarial coverage in fresh subprocesses; tolerate
   child teardown abort after a successful body (`tests/test_ppmd_raw_streams.py`).
 
-**Residual:** (1) `Ppmd7T_Free` teardown race — required CI still uses
-`--allow-exit-after-green` for this module. (2) Declared-complete but internally
-corrupt sized packs can still fill toward `unpack_size` via empty drains (container
-CRC is the backstop). (3) `pack_size` must measure the same bytes `feed()` counts —
-see `PpmdDecoder` docstring invariant; the 7z plumbing satisfies it by construction
-(pack slice length / preceding coder output).
+**Residual:** (1) `Ppmd7T_Free` teardown race — quiesce-on-close removes the UAF on
+the shapes that reproduce it under valgrind, but it is **defense-in-depth**, not a
+proven elimination: the observable abort rate on archivey's own shapes was already
+~0 on Linux/CPython 3.11 here (child soak 400/400 clean at baseline), and the race
+is timing/platform-dependent (hotter on 3.12+/free-threaded/Windows). Required CI
+therefore **still** keeps `--allow-exit-after-green`; drop it only once the
+deterministic `ppmd_uaf_valgrind.py` gate runs green on the hot-race platforms, not
+on this host's soak alone. (2) Declared-complete but internally corrupt sized packs
+can still fill toward `unpack_size` via empty drains (container CRC is the backstop).
+(3) `pack_size` must measure the same bytes `feed()` counts — see `PpmdDecoder`
+docstring invariant; the 7z plumbing satisfies it by construction (pack slice length
+/ preceding coder output).
 
 ### Verification (this investigation)
 
@@ -461,9 +490,13 @@ see `PpmdDecoder` docstring invariant; the 7z plumbing satisfies it by construct
 | Bare half-pack + NUL(rem) | ~85/100 → **0/100** with cap 64 | n/a |
 | Adversarial tests in subprocess | Contained | Child may still SIGSEGV after `ok` |
 | Parent `test_ppmd_raw_streams` session | Soft-pass via `--allow-exit-after-green` | Intermittent exit-after-green possible |
+| `ppmd_uaf_valgrind.py` (deterministic) | archivey scenarios **0 errors** | quiesce-on-close: **0 errors** with fix; bare overshoot still reproduces |
 
-Do **not** claim the Free race is gone until teardown is deterministic or
-process-isolated by default. See also: exploration doc,
+Do **not** claim the Free race is gone until the deterministic
+`scripts/ppmd_uaf_valgrind.py` gate is green on the hot-race platforms
+(3.12+/free-threaded/Windows) or teardown is process-isolated by default;
+quiesce-on-close is defense-in-depth (see *Residual*). See also: exploration doc,
+`docs/internal/ppmd-native-investigation-results.md` (§D/§I/§J),
 `scripts/ci_run_native_modules.py`, `.github/workflows/ppmd-native-stress.yml`.
 
 ## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)

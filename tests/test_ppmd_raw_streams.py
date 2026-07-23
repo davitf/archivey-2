@@ -362,6 +362,139 @@ def test_archivey_ppmd7_repeated_construct_destroy() -> None:
 
 
 # ---------------------------------------------------------------------------
+# quiesce-on-close wiring + logic (deterministic; no native abort dependency)
+#
+# The teardown use-after-free (docs/internal/ppmd-native-investigation-results.md
+# §D/§I) is a race that does not reproduce reliably in-process, so these tests
+# assert the *mechanism* — that a parked worker is driven to exit on dispose and
+# the happy path is skipped — with fakes, not by trying to provoke a crash.
+# ---------------------------------------------------------------------------
+
+
+class _FakeDecomp:
+    """Stand-in for ``pyppmd.Ppmd7Decoder`` recording ``decode`` calls."""
+
+    def __init__(self, *, needs_input: bool, eof: bool, returns: list[bytes]) -> None:
+        self.needs_input = needs_input
+        self.eof = eof
+        self._returns = list(returns)
+        self.calls: list[tuple[bytes, int]] = []
+
+    def decode(self, data: bytes, length: int) -> bytes:
+        self.calls.append((data, length))
+        return self._returns.pop(0) if self._returns else b""
+
+
+def _ppmd7_with_fake(fake: _FakeDecomp, *, produced: int) -> PpmdDecoder:
+    dec = PpmdDecoder(
+        order=_ORDER, mem_size=_MEM, variant=7, unpack_size=100, pack_size=50
+    )
+    dec._decomp = fake  # type: ignore[assignment]  # test double for the native decoder
+    dec._produced = produced
+    return dec
+
+
+def test_ppmd7_close_quiesces_parked_worker() -> None:
+    """Incomplete member with a parked worker: close() feeds bounded NUL(s) until
+    the worker exits on budget (a non-empty return)."""
+    fake = _FakeDecomp(needs_input=True, eof=False, returns=[b"", b"x"])
+    dec = _ppmd7_with_fake(fake, produced=0)  # not finished
+    dec.close()
+    # First NUL returns b"" (worker blocked again) -> feed once more; second returns
+    # a byte (worker hit its 1-symbol budget and exited) -> stop.
+    assert fake.calls == [(b"\0", 1), (b"\0", 1)]
+
+
+def test_ppmd7_close_skips_finished_decoder() -> None:
+    """A completed member (produced >= unpack_size) must not decode on close."""
+    fake = _FakeDecomp(needs_input=True, eof=False, returns=[b"x"])
+    dec = _ppmd7_with_fake(fake, produced=100)  # finished
+    dec.close()
+    assert fake.calls == []
+
+
+def test_ppmd7_close_skips_at_native_eof() -> None:
+    """At native eof the worker is not parked and a decode-after-eof is unsafe;
+    close() must issue nothing."""
+    fake = _FakeDecomp(needs_input=True, eof=True, returns=[b"x"])
+    dec = _ppmd7_with_fake(fake, produced=0)
+    dec.close()
+    assert fake.calls == []
+
+
+class _SpyDecoder:
+    """Minimal :class:`Decoder` that records ``close()`` and re-registers on recreate."""
+
+    def __init__(self, log: list["_SpyDecoder"]) -> None:
+        self._log = log
+        self.closed = 0
+        log.append(self)
+
+    def recreate(self, point, inner):  # type: ignore[no-untyped-def]
+        return _SpyDecoder(self._log)
+
+    def feed(self, chunk: bytes, max_length: int = -1):  # type: ignore[no-untyped-def]
+        from archivey.internal.streams.decompressor_stream import DecodeOut
+
+        return DecodeOut(b"")
+
+    def flush(self):  # type: ignore[no-untyped-def]
+        from archivey.internal.streams.decompressor_stream import DecodeOut
+
+        return DecodeOut(b"")
+
+    @property
+    def finished(self) -> bool:
+        return True
+
+    @property
+    def pending_error(self):  # type: ignore[no-untyped-def]
+        return None
+
+    def clear_pending_error(self) -> None:
+        pass
+
+    @property
+    def needs_input(self) -> bool:
+        return True
+
+    def build_index(self, inner, last_known):  # type: ignore[no-untyped-def]
+        return [], None
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_decompressor_stream_close_closes_decoder() -> None:
+    """DecompressorStream.close() disposes its decoder (the close() wiring)."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    log: list[_SpyDecoder] = []
+    stream = DecompressorStream(
+        io.BytesIO(b""), make_decoder=lambda _p, _i: _SpyDecoder(log)
+    )
+    stream.close()
+    assert log[0].closed == 1
+
+
+def test_decompressor_stream_seek_recreate_closes_old_decoder() -> None:
+    """Seek/recreate disposes the outgoing decoder before replacing it."""
+    from archivey.internal.streams.decompressor_stream import (
+        DecompressorStream,
+        SeekPoint,
+    )
+
+    log: list[_SpyDecoder] = []
+    stream = DecompressorStream(
+        io.BytesIO(b""), make_decoder=lambda _p, _i: _SpyDecoder(log)
+    )
+    old = log[0]
+    stream._reset_to_seek_point(SeekPoint(0, 0))
+    assert old.closed == 1  # outgoing decoder disposed deterministically
+    assert stream._decoder is log[1] and stream._decoder is not old
+
+
+# ---------------------------------------------------------------------------
 # Adversarial-input regression tests (pyppmd 1.3.x native aborts)
 #
 # pyppmd 1.3.x heap corruption fires when the native decoder runs past the true
