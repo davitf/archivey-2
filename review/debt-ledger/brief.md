@@ -3,6 +3,8 @@
 Commissioned 2026-07-20 against `main` @ `7bb862b`. This is the combined
 "quality & debt" pass that `backlog.md` scoped as Topics 4 (test-suite
 strategy) and 5 (structural cleanliness), run together per its guidance.
+**Ledger refreshed 2026-07-24** against `main` @ `bdf5ffd` (post-#191 D1
+landing + post-#184 structural pay; no new product code in the refresh).
 
 ## The ask
 
