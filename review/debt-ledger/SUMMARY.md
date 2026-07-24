@@ -38,7 +38,7 @@ stable over time.
 | **D1** | VISION/philosophy/costs still publish **≤1.3× for open/list** — falsified by own measurements; maintainer's Q1 re-scoping (peer-ratio bands) never reached the docs | `VISION.md`; `review/performance/QUESTIONS.md` Q1 | **F3** | **DONE** (2026-07-20 / refreshed 2026-07-24) — aspirational peer bands + measured table in `docs/costs.md` (Q2 (b)); L5 → `IDEAS.md` |
 | **D2** | No `SECURITY.md` / disclosure process — gates the "safe" positioning per threat-model O5.4 + PLAN | `docs/internal/threat-model.md` O5 | **F3** | **PAY** (SECURITY.md); OSS-Fuzz may trail |
 | **DD1/DD3** | Perf **Q2** (wall enforcement) + ZIP listing above its own band (L5 or honest number) | `review/performance/` | **F3** | **DECIDED** — Q1 (a) drift (#171); Q2 (b) aspirational bands |
-| **D3** | No `CHANGELOG`; `0.2.0.dev0` sets the record at release | `pyproject.toml:7` | **F3** | **PAY** (cheap; form → Q5) |
+| **D3** | No `CHANGELOG`; `0.2.0.dev0` sets the record at release | `pyproject.toml` | **F3** | **DONE** — committed `CHANGELOG.md` + `docs/internal/release-checklist.md` (Q5) |
 | **DD6** | Salvage mode absent though it's the founding use case | PLAN / IDEAS / reserved `--salvage` | **F3**→ok | **KEEP** — sequencing decision already recorded; docs verified honest |
 | **T1** | Mutation-fuzz + conformance sweep cover only declarative `CORPUS`; **solid-RAR demux** (where RAR-review bugs lived) has no generative net | `tests/test_mutation_fuzz.py:118`; `rar_reader.py:578-649` | **F2** | **PAY** — mutate static fixtures / build solid RAR into corpus |
 | **T3** | Benchmark gate has no RAR/encrypted/accelerator data cases — D1's claim can't be honest for unmeasured paths | `tests/test_benchmark_gate.py` | **F2** | **PAY** (already tracked as perf P6 remainder) |
@@ -60,7 +60,7 @@ stable over time.
 
 1. ~~**D1** — re-word the perf claim~~ **done** (Q1/Q2 decided; VISION/costs/philosophy updated).
 2. **D2** — write `SECURITY.md`.
-3. **D3** — start `CHANGELOG.md`.
+3. ~~**D3** — start `CHANGELOG.md`~~ **done** (committed Keep a Changelog + release checklist).
 4. **T1 + T2** — widen the generative nets (solid-RAR mutation; lzip/`.Z`
    seek property test). Cheap, reuses machinery, and T1 doubles as the
    safety net for `unify-pass-driver` (S2+S3).
