@@ -162,6 +162,94 @@ def test_rapidgzip_silent_empty_fallback_tell_tracks_bytes(tmp_path: Path) -> No
         assert s.tell() == len(chunk)
 
 
+def test_rapidgzip_truncation_close_is_teardown_only(tmp_path: Path) -> None:
+    """ADR 0014: TruncatedError / CorruptionError must raise from read, never close().
+
+    Covers (1) completing ``read()`` that raises, then ``close()`` during ``with`` exit;
+    (2) early-stop after a recovered prefix — ``close()`` stays quiet on content.
+    """
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox jumps over the lazy dog.\n" * 800
+    full = gzip.compress(payload)
+    path = _write(tmp_path, "adr-close.gz", full[: max(18, len(full) // 2)])
+
+    read_err: BaseException | None = None
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        try:
+            s.read()
+        except (TruncatedError, CorruptionError) as exc:
+            read_err = exc
+        # __exit__ → close(); a content fault here would fail the test / leak past read.
+    assert read_err is not None, "completing read must surface truncation/corruption"
+
+    # Early stop: deliver a prefix via sized read, then close without draining.
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        try:
+            prefix = s.read(256)
+        except (TruncatedError, CorruptionError):
+            return  # accelerator raised before any prefix — close path still quiet above
+        if prefix:
+            assert s.tell() == len(prefix)
+        # close via __exit__ must not raise TruncatedError (early stop = no verdict)
+
+
+def test_rapidgzip_isize_soft_short_raises_on_readall(tmp_path: Path) -> None:
+    """Silent-short (non-empty soft EOF): read(-1) must raise, not return then close-quiet.
+
+    Concatenated gzip truncated mid-second-member often yields a non-empty soft EOF of
+    the first member on Linux; further-magic bailout may skip ISIZE — still must not
+    raise from close(). When ISIZE does fire (single-member soft-short), it raises here.
+    """
+    pytest.importorskip("rapidgzip")
+    # Single-member mid-body is soft-empty on Linux; build a cut that can soft-short by
+    # taking a valid small file and stripping the trailer only when rapidgzip returns
+    # non-empty without raising (platform-dependent). Fall back to asserting close-quiet.
+    payload = b"Z" * 50_000
+    full = gzip.compress(payload)
+    # Near-end cuts: may soft-short, raise, or soft-empty depending on rapidgzip build.
+    cut = full[: max(18, len(full) - 6)]
+    path = _write(tmp_path, "soft-short.gz", cut)
+    close_raised = False
+    read_outcome: str
+    s = open_codec_stream(Codec.GZIP, path, config=_GZ_ON)
+    try:
+        try:
+            data = s.read()
+            read_outcome = f"ok:{len(data)}"
+        except TruncatedError:
+            read_outcome = "TruncatedError"
+        except CorruptionError:
+            read_outcome = "CorruptionError"
+        try:
+            s.close()
+        except (TruncatedError, CorruptionError):
+            close_raised = True
+            raise
+    finally:
+        if not s.closed:
+            try:
+                s.close()
+            except Exception:  # noqa: BLE001 - test cleanup
+                pass
+    assert not close_raised
+    # Completing read must not silently accept a truncated single-member stream.
+    # Soft-empty → stdlib raises TruncatedError; accelerator may CorruptionError;
+    # a clean ok:N with N == len(payload) would mean the cut was not truncating enough.
+    if read_outcome.startswith("ok:"):
+        n = int(read_outcome.split(":")[1])
+        assert n < len(payload) or cut == full
+        # size-unknown: ok with short N without exception is only tolerable for
+        # multi-member bailout / incomplete characterization — single-member trailer
+        # strip should have raised. If we got a short silent success, ISIZE failed.
+        if n < len(payload) and n > 0:
+            # Soft-short without raise: deferred multi-member-style hole or missing
+            # EOS observe — treat as failure of the ADR completing-read guarantee.
+            pytest.fail(
+                f"read(-1) returned {n} of {len(payload)} without TruncatedError "
+                "(ADR 0014 completing-read must raise on truncation)"
+            )
+
+
 def test_rapidgzip_intact_single_member_reads_clean(tmp_path: Path) -> None:
     pytest.importorskip("rapidgzip")
     payload = b"the quick brown fox " * 5000

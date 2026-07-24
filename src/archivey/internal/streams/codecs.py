@@ -299,7 +299,8 @@ def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO
     """Bound accelerated output to ``expected_decompressed_size`` when known.
 
     rapidgzip may return a silent short prefix on truncation; ``VerifyingStream``
-    turns that into ``TruncatedError`` at close (and caps over-long output).
+    raises ``TruncatedError`` from the completing / empty read (ADR 0014 — never
+    from ``close()``) and caps over-long output.
     """
     size = config.expected_decompressed_size
     if size is None:
@@ -453,6 +454,19 @@ class _GzipTruncationCheckStream(DelegatingStream):
         data = self._inner.read(size)
         if data:
             self._total += len(data)
+            if size < 0 and self._verify and not self._checked:
+                # Completing read (read/-1): observe soft EOF now and run ISIZE
+                # before returning. Callers that do only ``s.read(); s.close()`` must
+                # still get TruncatedError from the read — never from close (ADR 0014).
+                while True:
+                    nxt = self._inner.read(1)
+                    if not nxt:
+                        break
+                    more = nxt + self._inner.read(-1)
+                    self._total += len(more)
+                    data += more
+                self._checked = True
+                self._verify_not_truncated()
             return data
         if self._verify and not self._checked:
             self._checked = True
@@ -476,10 +490,12 @@ class _GzipTruncationCheckStream(DelegatingStream):
         Retargets the same :class:`GzipDecompressorStream` used when rapidgzip is OFF
         (#183), so large bounded ``read(n)`` recovers a prefix without a byte-at-a-time
         ``GzipFile`` workaround. ``read()`` / ``readall`` still raise without returning
-        bytes (same contract as accelerator-off).
+        bytes (same contract as accelerator-off). The stdlib engine owns truncation
+        after the switch — disarm the ISIZE backstop so faults stay on its read path.
         """
         old = self._inner
         self._inner = GzipDecompressorStream(self._source_path)
+        self._verify = False
         try:
             old.close()
         except Exception:  # noqa: BLE001 - best-effort; ownership moved to stdlib handle
