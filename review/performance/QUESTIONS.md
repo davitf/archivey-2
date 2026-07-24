@@ -39,16 +39,18 @@ Consequences to implement:
    report labels use Q1 bands (ZIP/TAR ≤3×, native ≈1.25×). Still asserted the
    same way the wall budget ends up asserted (Q2 — informational only today).
 2. ZIP open+list: measured **~3.7–4×** after #143 model-build + L2
-   (`slots=True` / trimmed kwargs) — still above 2–3×. Remaining cost is
-   `_to_member` derivation (~3.3 µs/member) + registration (~1.3 µs); further
-   gains need L5 lazy derivation (OpenSpec). 7z open+list after L1 bulk name
-   decode: probe **~2.0×** / harness ~**2.2×** vs py7zr (was ~3.4×); still
-   above the 1.25× native band. RAR harness ratio remains a small-fixture
-   artifact until a larger listing fixture exists (L3).
-3. Read/extract regimes stay as previously framed: decompression-dominated
-   ≤1.3× (met for large-member ZIP after #139), extract inside the ~2× safety
-   band (met at realistic scale), many-small read_all follows the listing
-   story (its cost *is* per-member machinery).
+   (`slots=True` / trimmed kwargs); nightly realistic **2026-07-23** is
+   **4.44×** — still above 2–3×. Remaining cost is `_to_member` derivation
+   (~3.3 µs/member) + registration (~1.3 µs); further gains need L5 lazy
+   derivation (OpenSpec). **Debt-ledger Q2 (2026-07-20): bands are
+   aspirational; measured numbers published; L5 deferred** → `IDEAS.md` /
+   `docs/costs.md`. 7z open+list after L1: nightly **2.13×** vs py7zr; RAR
+   open+list nightly **2.39×** vs rarfile (same aspirational treatment).
+3. Read/extract regimes: decompression-dominated ≤1.3× is met for gzip /
+   tar.bz2 / tar.gz accel-off; ZIP read-all nightly **1.87×** (under ~2×
+   safety, above 1.3×). ZIP extract nightly **2.38×** (slightly above the
+   ~2× safety band). Many-small / listing cost still dominates small-member
+   read_all.
 
 ## Q2 — Where should the wall budget be *enforced*? — **DECIDED (2026-07-20)**
 

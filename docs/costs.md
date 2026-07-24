@@ -3,6 +3,35 @@
 Archivey’s defaults keep the common path cheap and fail loudly when you ask for something
 expensive. This page is the “how not to shoot yourself in the foot” guide.
 
+## Wall-time bands (aspirational)
+
+These are **targets**, not CI hard-fails. Absolute ratios vary by host; the PR gate
+enforces structural invariants (bytes decompressed, seeks, solid decode-once) instead.
+The change-guarded nightly publishes full wall ratios — re-run locally with:
+
+```bash
+uv run --extra all python -m benchmarks.harness --mode full --scale realistic
+```
+
+Measured column from the latest full nightly
+([run 29992136861](https://github.com/davitf/archivey-2/actions/runs/29992136861),
+`2026-07-23`, `main` @ `89720de`, realistic corpus: 64 × 256 KiB members /
+32 MiB gzip). Ratios are host-dependent — treat as directional.
+
+| Workload | Aspirational band | Measured (nightly realistic) |
+| --- | --- | --- |
+| Large-member ZIP/TAR/gzip **read** (decompression-dominated) | ≤ **1.3×** stdlib peer | ZIP read-all **1.87×**; gzip **1.03×**; tar.bz2 **1.03×**; tar.gz accel-off **1.27×** (accel-on **0.45×**) |
+| ZIP/TAR **extract** (safety floor) | ≤ ~**2×** stdlib peer | ZIP extract **2.38×** (above band) |
+| ZIP/TAR **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` / `tarfile` | ZIP **4.44×**; TAR **1.41×** |
+| 7z/RAR **open+list** (native parsers) | ≈parity (~**1.25×**) vs `py7zr` / `rarfile` | 7z **2.13×**; RAR **2.39×** |
+
+Plain uncompressed TAR **read-all** is **1.90×** on the same run — metadata /
+per-member overhead, not a codec story. Everyday listing and extract at these
+ratios are still fine for most callers. The residual ZIP listing gap is mostly
+per-member derivation cost; **lazy `ArchiveMember` derivation (L5)** is the
+named follow-up to move ZIP toward the 2–3× band — deferred past the first
+public release (see `IDEAS.md`).
+
 ## Read `reader.cost`
 
 Every open archive exposes a machine-readable receipt:
