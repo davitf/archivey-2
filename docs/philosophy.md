@@ -67,6 +67,10 @@ evidence-based (magic first). Access cost is queryable (`reader.cost`). Prefer
 `stream_members()` when order matters. Prefer stored hashes (`member.hashes`) when you
 only need integrity fingerprints.
 
+Wall-time expectations are **aspirational peer-ratio bands** (not a silent promise):
+see [Access costs — wall-time bands](costs.md#wall-time-bands-aspirational). Re-run the
+harness if you want numbers on your machine.
+
 ## What this is not
 
 - Not an everything-tool (no in-place modify, no async in v1)

@@ -23,10 +23,15 @@ informational. **A choice — any choice — is needed before the VISION/costs
 re-wording can be finished.** Recommendation: (a), it dodges shared-runner
 absolute-ratio flake and catches regressions, which is what the claim needs.
 
-## Q2 — ZIP open+list is above the maintainer's own re-scoped band: land L5 pre-release, or publish the real number?
+## Q2 — ZIP open+list is above the maintainer's own re-scoped band: land L5 pre-release, or publish the real number? — **DECIDED (2026-07-20)**
+
+**Decision: (b).** Peer-ratio bands are **aspirational**; publish measured
+numbers in `docs/costs.md` / VISION; L5 (lazy `ArchiveMember` derivation) is a
+named post-0.2.0 follow-up in `IDEAS.md`. Measured many-small ZIP ~3.7–4× and
+7z ~2× are good enough for everyday use — do not block the release on L5.
 
 Post-#143/#146, ZIP open+list sits ~3.7–4× vs the Q1-direction band of 2–3×;
-7z ~2.0–2.2× vs ≈1.25× native-par. Two honest paths:
+7z ~2.0–2.2× vs ≈1.25× native-par. Two honest paths were:
 
 - **(a)** Commission **L5** (lazy `ArchiveMember` derivation — needs an
   OpenSpec change; the remaining cost is `_to_member` + registration per the
@@ -35,10 +40,7 @@ Post-#143/#146, ZIP open+list sits ~3.7–4× vs the Q1-direction band of 2–3�
   measured numbers published beside it (costs.md table), L5 as the named
   follow-up.
 
-Recommendation: **(b)**. L5 restructures the hottest member-model path right
-before release; the honest-number option costs nothing and the claim stays
-falsifiable-but-true. But this is a positioning call — VISION is the
-maintainer's document.
+**(b) landed** with this change (refreshed onto main 2026-07-24).
 
 ## Q3 — S2+S3 unification: accept "entry gate for the next backend", or pay pre-release? — **DECIDED (2026-07-20)**
 
