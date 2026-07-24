@@ -121,10 +121,29 @@ bzip2, deflate, and zlib into the same `compressed-streams` errors as stdlib pat
 `CorruptionError` or `TruncatedError`, never raw third-party exceptions. This
 translator SHALL account for platform-varying rapidgzip exception types/messages.
 
-For seekable-source gzip through rapidgzip, the system SHALL backstop truncation
-by comparing full-read decompressed length modulo 2^32 with the gzip ISIZE
-trailer. A conservative multi-member scan SHALL prevent valid concatenated gzip
-streams from being misreported when the trailer records only the last member.
+Upstream rapidgzip often treats incomplete gzip as **soft EOF by design** (empty or
+short/full prefix with no exception). For seekable **path** gzip through rapidgzip the
+system SHALL therefore:
+
+1. Rely on rapidgzip's own end-of-input errors when it raises (translate to
+   `TruncatedError` / `CorruptionError`).
+2. When rapidgzip reaches EOF having delivered **no** decompressed bytes without
+   raising — fully switch the stream to the stdlib gzip-window
+   `DecompressorStream` (**before** returning empty success), so truncation is
+   signaled and any recoverable prefix is streamed on bounded `read(n)`;
+   `read()` / `readall` raise without returning bytes (same contract as
+   accelerator-off). A valid empty gzip SHALL still succeed with zero bytes.
+   After the switch, `tell` / `seek` / `seekable` SHALL reflect the stdlib
+   engine (content faults raise from reads, never `close()`).
+3. When rapidgzip delivered a non-empty prefix (or full payload) and reached EOF
+   without raising — compare decompressed length modulo 2^32 to the gzip ISIZE trailer
+   (**single-member**). On a completing `read()` / `read(-1)`, the system SHALL
+   observe soft EOF and run that compare **before returning** so truncation raises
+   from the completing read (not from a later empty read the caller might skip, and
+   never from `close()`). A conservative multi-member scan (any further `1f 8b 08`) SHALL
+   prevent valid concatenated gzip from being misreported; per-member ISIZE summing is
+   deferred. The system SHALL NOT treat `block_offsets_complete` / `size` or stderr as
+   completeness signals.
 
 rapidgzip does not validate zlib's Adler-32 and returns a silent short read on some
 mid-stream DEFLATE truncations, and raw DEFLATE carries no checksum, so there is no
@@ -132,19 +151,20 @@ ISIZE-equivalent truncation backstop for the deflate/zlib accelerator path. A DE
 member decoded inside a container (e.g. a ZIP member) SHALL rely on the container's own
 checksum (CRC-32 via the shared verifying stage) to catch truncation/corruption. A standalone
 zlib/deflate stream accelerated by rapidgzip MAY therefore miss a truncation that stdlib `zlib`
-would report; this is an accepted limitation of the accelerator path (tracked with the gzip
-truncation work), and corruption inside a DEFLATE block SHALL still surface as `CorruptionError`.
+would report; this is an accepted limitation of the accelerator path, and corruption inside a
+DEFLATE block SHALL still surface as `CorruptionError`.
 
 #### Scenario: accelerator error matrix
 
 | Case | Expected |
 | --- | --- |
 | Corrupt gzip/bzip2/deflate/zlib through rapidgzip | `CorruptionError`; raw accelerator exception never escapes |
-| Truncated gzip through rapidgzip from seekable source | `TruncatedError` via ISIZE backstop or `CorruptionError` from accelerator; never silent short read |
+| Truncated gzip through rapidgzip (path); soft-empty EOF | stdlib `DecompressorStream` fallback → `TruncatedError` (bounded `read(n)` may stream a correct prefix first; `read(-1)` raises without returning); never silent empty success |
+| Truncated gzip through rapidgzip (path); soft short/full EOF | `TruncatedError` via single-member ISIZE backstop (or accelerator raise) |
 | Truncated standalone deflate/zlib through rapidgzip | Corruption in a block → `CorruptionError`; a clean mid-stream cut MAY return a short read undetected (no checksum backstop) |
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
-
+| Valid empty gzip through rapidgzip | Succeeds with zero bytes |
 ### Requirement: Accelerator lifecycle is safe at shutdown
 
 The system SHALL protect rapidgzip streams with a `weakref.finalize` guard that

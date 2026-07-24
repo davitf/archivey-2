@@ -62,10 +62,11 @@ Two recurring notes:
 ¹ gzip truncation (stdlib / accelerator-off path): bounded `read(n)` returns the recoverable
 prefix, then `TruncatedError` on the next empty `read`; `read()` / `readall` raises and returns
 nothing (a silent lossy success is worse than not salvaging — recover the prefix only via a
-chunked loop). The `rapidgzip` accelerator does **not** reliably report truncation, so Archivey
-adds an ISIZE backstop on a seekable path (see `known-issues.md` and
-`seekable-decompressor-streams`). Until an empty→stdlib fallback uses this engine, truncated
-gzip behavior can still differ between accelerator ON and OFF.
+chunked loop). The `rapidgzip` accelerator often soft-EOFs by design (empty or short/full with
+no exception); Archivey backstops **path** gzip by switching to the same stdlib engine on
+silent empty EOF, plus a single-member ISIZE compare on non-empty soft EOF
+(`seekable-decompressor-streams`; see `rapidgzip-upstream-report.md`). Multi-member ISIZE
+summing is deferred. Container members still rely on container CRC/`VerifyingStream`.
 ² brotli has no length/CRC trailer, so a truncated stream is detected only when the
 decompressor never reports "finished" at EOF (surfaced as `TruncatedError`), not by a stored
 size.
@@ -258,9 +259,9 @@ for why the standalone `indexed_gzip`/`indexed_bzip2` are not used.
 **Truncation trade-off:** on a truncated stream, `data = f.read()` / `readall` **raises
 `TruncatedError` and returns nothing** — a silent lossy success is worse than not salvaging.
 The recoverable prefix is reachable only via a chunked `read(n)` loop (large `read(n)` is
-safe; no byte-at-a-time requirement). `rapidgzip` still needs the ISIZE backstop
-(`seekable-decompressor-streams`); an empty→stdlib fallback should retarget this engine so a
-byte-at-a-time workaround is unnecessary.
+safe; no byte-at-a-time requirement). On **path** sources, a silent empty rapidgzip EOF
+fully switches to this same engine; non-empty soft EOF uses the single-member ISIZE
+backstop (`seekable-decompressor-streams`, `rapidgzip-upstream-report.md`).
 
 ### bzip2 — stdlib `bz2`, accelerated by `rapidgzip.IndexedBzip2File`
 

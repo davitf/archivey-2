@@ -1097,8 +1097,16 @@ def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
     path.write_bytes(gzip.compress(payload))
 
     # Simulate an accelerator that silently stopped short of the real payload.
+    # Completing read(-1) observes soft EOF and raises TruncatedError there
+    # (ADR 0014 — not on a later empty read / close).
     stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
-    stream.read(-1)
+    with pytest.raises(TruncatedError):
+        stream.read(-1)
+
+    # Sized reads still deliver the recoverable prefix, then raise on the next empty.
+    stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
+    assert stream.read(32) == payload[:32]
+    assert stream.read(100) == payload[32:64]  # short return at soft EOF
     with pytest.raises(TruncatedError):
         stream.read()
 
@@ -1106,7 +1114,7 @@ def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
 def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
     # A seek that does not leave the sequential frontier (tell()-style seek(0, SEEK_CUR),
     # or a seek to the current offset) keeps the ISIZE check armed, so a short
-    # accelerator output is still caught at EOF.
+    # accelerator output is still caught on the completing read.
     from archivey.internal.streams.codecs import _GzipTruncationCheckStream
 
     payload = b"hello world" * 100
@@ -1116,9 +1124,8 @@ def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
     stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
     stream.read(16)
     stream.seek(0, io.SEEK_CUR)  # no-op: must not disarm the check
-    stream.read(-1)
     with pytest.raises(TruncatedError):
-        stream.read()
+        stream.read(-1)
 
 
 def test_gzip_truncation_check_real_seek_disables_verification(tmp_path) -> None:

@@ -1,0 +1,111 @@
+# Rapidgzip truncation sweep (cross-platform)
+
+# Characterization probe for OpenSpec change ``rapidgzip-truncation-investigation``
+# (task 1.3). Runs the same path-source truncation matrix on macOS and Windows that
+# Linux already published under ``openspec/changes/.../results/linux-x86_64.*``.
+#
+# Non-required status check: a red run must not block merge. Soft EOF / hangs /
+# aborts are the signal we want visibility on, not a merge gate.
+on:
+  pull_request:
+    paths:
+      - "scripts/rapidgzip_truncation_sweep.py"
+      - "openspec/changes/rapidgzip-truncation-investigation/**"
+      - ".github/workflows/rapidgzip-truncation-sweep.yml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/rapidgzip_truncation_sweep.py"
+      - "openspec/changes/rapidgzip-truncation-investigation/**"
+      - ".github/workflows/rapidgzip-truncation-sweep.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: rgz-trunc-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  truncation-sweep:
+    name: ${{ matrix.os }} / rapidgzip truncation sweep
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, tag: macos-arm64 }
+          - { os: windows-latest, tag: windows-amd64 }
+          # Linux control (compare to committed linux-x86_64 results).
+          - { os: ubuntu-latest, tag: linux-x86_64-ci }
+    env:
+      UV_PYTHON: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync (seekable + dev)
+        # seekable pulls rapidgzip; all is fine too but seekable is enough for this probe.
+        run: uv sync --python 3.11 --group dev --extra seekable
+
+      - name: Assert rapidgzip importable
+        run: >
+          uv run --python 3.11 --no-sync python -c
+          "import platform, rapidgzip; print(platform.platform(), getattr(rapidgzip, '__version__', '?'))"
+
+      - name: Run truncation sweep
+        shell: bash
+        run: |
+          set -euo pipefail
+          out_dir="rgz-trunc-out"
+          mkdir -p "$out_dir"
+          tag="${{ matrix.tag }}"
+          uv run --python 3.11 --no-sync python scripts/rapidgzip_truncation_sweep.py \
+            --parallelization 0 \
+            --json-out "$out_dir/${tag}.json" \
+            --md-out "$out_dir/${tag}.md"
+          # Compact summary for PR comments / quick diff vs Linux baseline.
+          uv run --python 3.11 --no-sync python - <<'PY'
+          import json, platform
+          from pathlib import Path
+          tag = "${{ matrix.tag }}"
+          data = json.loads(Path(f"rgz-trunc-out/{tag}.json").read_text())
+          s = data["summary"]
+          silent = s["silent_accelerator_cases"]
+          # Curate: rapidgzip silent where we care (gzip backends)
+          rgz = [c for c in silent if c["backend"] == "rapidgzip"]
+          print(f"platform_tag={tag}")
+          print(f"platform={s['platform']}")
+          print(f"n_results={s['n_results']}")
+          print(f"counts={s['counts_by_backend']}")
+          print(f"silent_rgz={len(rgz)} timeouts={len(s['timeout_accelerator_cases'])} crashes={len(s['crash_accelerator_cases'])}")
+          Path(f"rgz-trunc-out/{tag}.summary.txt").write_text(
+              "\n".join([
+                  f"tag={tag}",
+                  f"system={s['platform']['system']} machine={s['platform']['machine']}",
+                  f"python={s['platform']['python']}",
+                  f"n_results={s['n_results']}",
+                  f"silent_accelerator={len(silent)}",
+                  f"silent_rapidgzip={len(rgz)}",
+                  f"timeouts={len(s['timeout_accelerator_cases'])}",
+                  f"crashes={len(s['crash_accelerator_cases'])}",
+                  f"counts={json.dumps(s['counts_by_backend'], sort_keys=True)}",
+              ]) + "\n"
+          )
+          PY
+
+      - name: Upload sweep artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rgz-trunc-${{ matrix.tag }}
+          path: rgz-trunc-out/
+          if-no-files-found: warn
