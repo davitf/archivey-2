@@ -137,7 +137,10 @@ system SHALL therefore:
    engine (content faults raise from reads, never `close()`).
 3. When rapidgzip delivered a non-empty prefix (or full payload) and reached EOF
    without raising — compare decompressed length modulo 2^32 to the gzip ISIZE trailer
-   (**single-member**). A conservative multi-member scan (any further `1f 8b 08`) SHALL
+   (**single-member**). On a completing `read()` / `read(-1)`, the system SHALL
+   observe soft EOF and run that compare **before returning** so truncation raises
+   from the completing read (not from a later empty read the caller might skip, and
+   never from `close()`). A conservative multi-member scan (any further `1f 8b 08`) SHALL
    prevent valid concatenated gzip from being misreported; per-member ISIZE summing is
    deferred. The system SHALL NOT treat `block_offsets_complete` / `size` or stderr as
    completeness signals.
