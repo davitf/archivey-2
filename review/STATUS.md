@@ -33,7 +33,7 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 
 | ID | Action |
 |----|--------|
-| **P7 residual** | **Accepted** — peer bands aspirational; measured ZIP ~3.7–4× / 7z ~2× published in `docs/costs.md`; **L5** → `IDEAS.md` (debt-ledger Q2 (b)). Optional: **L3** large RAR listing fixture. |
+| **P7 residual** | **Accepted** — peer bands aspirational; nightly realistic (2026-07-23) ZIP open+list **4.44×** / 7z **2.13×** / RAR **2.39×** published in `docs/costs.md`; **L5** → `IDEAS.md` (debt-ledger Q2 (b)). |
 | **P6 remainder** | RAR / encrypted / accelerator *data* harness cases still missing (= debt-ledger T3). |
 
 ---

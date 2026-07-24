@@ -27,8 +27,9 @@ absolute-ratio flake and catches regressions, which is what the claim needs.
 
 **Decision: (b).** Peer-ratio bands are **aspirational**; publish measured
 numbers in `docs/costs.md` / VISION; L5 (lazy `ArchiveMember` derivation) is a
-named post-0.2.0 follow-up in `IDEAS.md`. Measured many-small ZIP ~3.7–4× and
-7z ~2× are good enough for everyday use — do not block the release on L5.
+named post-0.2.0 follow-up in `IDEAS.md`. Nightly realistic (2026-07-23) ZIP
+open+list **4.44×** / 7z **2.13×** / RAR **2.39×** are good enough for
+everyday use — do not block the release on L5.
 
 Post-#143/#146, ZIP open+list sits ~3.7–4× vs the Q1-direction band of 2–3×;
 7z ~2.0–2.2× vs ≈1.25× native-par. Two honest paths were:

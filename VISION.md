@@ -81,13 +81,14 @@ path meets them today. Measured ratios live in [`docs/costs.md`](docs/costs.md)
 - **Decompression-dominated** common paths (large-member ZIP/TAR/gzip read):
   target **≤ 1.3×** the relevant stdlib peer; up to ~**2×** where safety or
   correctness features justify it (e.g. extract with path/symlink guards).
-  Large-member ZIP read and realistic extract are in or near these bands today;
-  many-small member machinery tracks the listing story below.
+  Nightly realistic (2026-07-23): gzip / tar.bz2 ~parity, tar.gz accel-off
+  ~1.3×, ZIP read-all ~1.9× (under the ~2× safety band); ZIP extract ~2.4×
+  (slightly above). Per-member machinery tracks the listing story below.
 - **Metadata / listing** (open+list): aspirational peer ratios — ZIP/TAR at most
   **2–3×** vs `zipfile`/`tarfile`; native 7z/RAR **≈parity** (~1.25×) with
-  `py7zr`/`rarfile`. Measured many-small ZIP listing is ~3.7–4× and 7z listing
-  ~2× — fine for everyday use; closing the residual (lazy `ArchiveMember`
-  derivation) is a named follow-up, not a release blocker.
+  `py7zr`/`rarfile`. Measured realistic ZIP listing is ~4.4×, 7z ~2.1×, RAR
+  ~2.4× — fine for everyday use; closing the ZIP residual (lazy
+  `ArchiveMember` derivation) is a named follow-up, not a release blocker.
 - The bottleneck in real workloads is data movement and *re*-decompression, not
   header parsing. The benchmark suite tracks **bytes decompressed and seek
   patterns**, not just wall time — an implementation that re-reads a solid block

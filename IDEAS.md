@@ -303,11 +303,12 @@
   `--raw` hatch for scripts that need exact names before `--json` exists is
   additive. Parked as debt-ledger DD8.
 - **Lazy `ArchiveMember` derivation (perf L5)** — only named lever to bring
-  many-small ZIP open+list from ~3.7–4× into the aspirational 2–3× peer band
-  (`review/performance/listing-attribution.md`). Touches equality / accounting /
-  listing contract → needs its own OpenSpec. **Deferred past 0.2.0** when deciding
-  debt-ledger Q2 (2026-07-20): bands are aspirational; measured ratios are good
-  enough for everyday use. Same story for 7z listing ~2× vs ~1.25× native-par.
+  ZIP open+list from ~4.4× (nightly realistic, 2026-07-23) into the aspirational
+  2–3× peer band (`review/performance/listing-attribution.md`). Touches equality
+  / accounting / listing contract → needs its own OpenSpec. **Deferred past
+  0.2.0** when deciding debt-ledger Q2 (2026-07-20): bands are aspirational;
+  measured ratios are good enough for everyday use. Same story for 7z listing
+  ~2.1× / RAR ~2.4× vs ~1.25× native-par.
 
 ## Strategy & adoption (2026-07 review backlog)
 
