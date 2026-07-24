@@ -1,8 +1,16 @@
 # Structural debt — S1–S4 revisited, module seams, markers
 
-All line references: `main` @ `7bb862b`.
+All line references: `main` @ `7bb862b` unless a later update note says otherwise.
 
-## S3 — the pass driver is now **four** copies, exactly as predicted (PAY before 0.2.0)
+> **Update 2026-07-24 (#184, `unify-pass-driver` ✓ Complete):** S2 and S3 below
+> are **DONE**. The four close-previous loops are one shared
+> `BaseArchiveReader._drive_pass_streams` (`base_reader.py:450`), called from
+> base/TAR (`close_previous=False`)/7z/RAR; the two link finalizers and the
+> mirrored double-fault guards are one `_finalize_pass_links`
+> (`base_reader.py:1100`). Verdicts below stand as the record of *why* it was
+> paid. S1/S4 unchanged.
+
+## S3 — the pass driver was **four** copies, exactly as predicted (PAID 2026-07-24, #184)
 
 The 2026-07-12 `deep-simplification.md` S3 predicted the native RAR reader
 would add a fourth copy of the "close previous / open current / yield /
@@ -28,7 +36,7 @@ structure preferred; the suite (incl. T1 solid-RAR mutation) is the regression
 net. OpenSpec change: `unify-pass-driver`. Do **not** record PLAN/IDEAS
 entry-gate language.
 
-## S2 — member-list pipeline: **half paid**; the remaining half is the risky half (PAY together with S3)
+## S2 — member-list pipeline: was **half paid**; the risky half is now paid too (PAID 2026-07-24, #184)
 
 The original S2 described two complete pipelines. Since then, real convergence
 happened — credit where due:

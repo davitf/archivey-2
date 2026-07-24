@@ -4,7 +4,12 @@ Decisions this ledger cannot make unilaterally (pause-and-ask rule). Everything
 else in the ledger carries a recommended verdict the maintainer can simply
 accept or flip.
 
-## Q1 — Performance Q2 (wall-budget enforcement) is now blocking the release's honesty, not just the harness — **DECIDED (2026-07-20)**
+## Q1 — Performance Q2 (wall-budget enforcement) is now blocking the release's honesty, not just the harness — **DECIDED (2026-07-20); IMPLEMENTED (2026-07-24, #171)**
+
+**Implemented:** `benchmark-wall.yml` runs the nightly wall-ratio drift gate via
+`--wall-drift-baseline` against the previous successful JSON. D1's enforcement
+wording is unblocked — the claim can now state "structural axes gated per-PR,
+wall-ratio *drift* gated nightly" rather than "≤1.3× enforced in CI".
 
 **Decision: (a).** Nightly wall-ratio drift vs the previous successful
 `benchmark-wall` JSON artifact (`benchmark-wall.yml` +

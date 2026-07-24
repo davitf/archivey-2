@@ -26,7 +26,15 @@ Hypothesis) reach the code where review-found bugs actually lived. References:
   detection, ZIP/TAR/ISO, standalone codecs; PR-sharded + change-guarded
   nightly).
 
-## T1 — the mutation/sweep nets cover only the *declarative* corpus; solid-RAR demux is example-tested only (PAY)
+## T1 — the mutation/sweep nets covered only the *declarative* corpus; solid-RAR demux was example-tested only (PAID 2026-07-24, #184)
+
+> **Update 2026-07-24:** DONE. `test_mutation_fuzz.py` now mutates the static
+> **solid** RAR4/RAR5 fixtures (`_SOLID_RAR_SOURCES`, `test_mutation_fuzz.py:131-145`),
+> so the `pipe_offset` demux loop is inside a generative net and this net also
+> guarded the S2/S3 `unify-pass-driver` refactor. Body below is the original
+> rationale. (Solid symlink/file-version fixtures noted as optional follow-up in
+> the harness comment — not blocking.)
+
 
 `test_mutation_fuzz.py` and `test_corpus_sweep.py` both iterate `CORPUS` from
 `sample_archives.py` (`test_mutation_fuzz.py:77,118`,

@@ -7,7 +7,7 @@ Triage after archiving `cli-product/` and OpenSpec `stop-on-failure-not-policy`
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20) | pay-list D1/D2/D3/T1/T2/T3/D4/T7 + **DD4/rapidgzip-truncation** open; **D5/D6 done**; **Q1/Q3/Q4 decided**; Q2/Q5 open | no |
+| `debt-ledger/` | yes (2026-07-20; refreshed 2026-07-24) | **S2/S3/T1 paid** (#184); **Q1 implemented** (#171); open: D1/D2/D3/T2/T3/D4/T7 + DD4/rapidgzip + **N1 pyppmd-UAF** + **N3 archive-sweep**; Q2/Q5 open | no |
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers (#143/#146/#148); residual band miss; **Q2 decided** (drift gate); **Q4 open** | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
@@ -25,10 +25,11 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 | **D1** | Re-word VISION/philosophy/costs ≤1.3× claim to peer-ratio bands (after Q1/Q2). |
 | **D2** | Write `SECURITY.md` / disclosure process. |
 | **D3** | Start `CHANGELOG.md` (Q5 form). |
-| **T1 / T2** | Solid-RAR mutation net; parametrize seek-interleaving over lzip/`.Z`. |
+| ~~T1~~ / **T2** | ~~Solid-RAR mutation net~~ **done (#184)**; still: parametrize seek-interleaving over lzip/`.Z`. |
 | **T3** | Benchmark-gate RAR / encrypted / accelerator data cases (perf P6 remainder). |
-| **D4 / T7** | `open-issues.md` sweep; corpus-matrix audit. |
-| **DD4** | Finish `rapidgzip-truncation-investigation` (characterize → narrow/extend/remove) before 0.2.0 — later PR; see change `design.md`. |
+| **D4 / T7 / N3** | `open-issues.md` sweep; corpus-matrix audit; `openspec archive` unify-pass-driver + gzip-zlib-truncation-recovery. |
+| **DD4** | Finish `rapidgzip-truncation-investigation` (now 1/13; characterize → narrow/extend/remove) before 0.2.0 — later PR; see change `design.md`. |
+| **N1** | pyppmd native UAF (PPMd `[7z]`): mitigated (#188/#189); file upstream report; revisit CI `--allow-exit-after-green`. |
 
 ### From `performance/`
 
