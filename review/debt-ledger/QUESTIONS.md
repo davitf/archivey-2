@@ -69,9 +69,9 @@ characterization change is 1/11 tasks done. The ledger's earlier lean was KEEP
 refining later is non-breaking). Maintainer overrode: knowingly-heuristic guard
 on a supported path is unacceptable release debt even when opt-in.
 
-## Q5 — Does a `CHANGELOG` entry-zero get written now?
+## Q5 — Does a `CHANGELOG` entry-zero get written now? — **DECIDED + DONE**
 
-D3 says PAY. The only real question is form: a conventional
-`CHANGELOG.md` starting at 0.2.0 ("initial public release" + highlights), or
-generated release notes only. Recommendation: a committed `CHANGELOG.md` —
-the adoption capstone explicitly looks for one in-repo.
+**Decision:** committed Keep a Changelog `CHANGELOG.md` (not generated-only),
+plus `docs/internal/release-checklist.md` for the every-release loop. Pays
+debt-ledger **D3**.
+

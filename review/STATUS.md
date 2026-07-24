@@ -7,7 +7,7 @@ Triage after archiving `cli-product/` and OpenSpec `stop-on-failure-not-policy`
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20) | pay-list D2/D3/T1/T2/T3/D4/T7 + **DD4/rapidgzip-truncation** open; **D1/D5/D6 done**; **Q1–Q4 decided**; Q5 open | no |
+| `debt-ledger/` | yes (2026-07-20) | pay-list D2/T1/T2/T3/D4/T7 + **DD4/rapidgzip-truncation** open; **D1/D3/D5/D6 done**; **Q1–Q5 decided** | no |
 | `performance/` | yes (#134 + follow-ups) | P3–P5 done; listing L0–L3 + peers; residual band miss **accepted as aspirational** (debt-ledger Q2 (b)); wall enforcement **Q2 decided** (drift gate #171); **Q4 open** | no |
 
 Archived this pass: `archive/2026-07-19-api-coherence/`,
@@ -23,7 +23,6 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 | ID | Action |
 |----|--------|
 | **D2** | Write `SECURITY.md` / disclosure process. |
-| **D3** | Start `CHANGELOG.md` (Q5 form). |
 | **T1 / T2** | Solid-RAR mutation net; parametrize seek-interleaving over lzip/`.Z`. |
 | **T3** | Benchmark-gate RAR / encrypted / accelerator data cases (perf P6 remainder). |
 | **D4 / T7** | `open-issues.md` sweep; corpus-matrix audit. |
@@ -48,7 +47,7 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 | **Q2** | ZIP listing above band: L5 pre-release vs publish honest number | **decided** — (b) aspirational bands + measured table; L5 → `IDEAS.md` |
 | **Q3** | S2+S3: entry gate vs pay pre-release | **decided** — (b) pay now; OpenSpec `unify-pass-driver` |
 | **Q4** | rapidgzip-truncation rides past 0.2.0? | **decided** — PAY before 0.2.0; implement later |
-| **Q5** | CHANGELOG form | lean: committed `CHANGELOG.md` |
+| **Q5** | CHANGELOG form | **decided** — committed `CHANGELOG.md` + release checklist |
 
 ### `performance/QUESTIONS.md`
 
@@ -101,4 +100,5 @@ Full table also in `backlog.md` → "Parked from archived deep reviews".
 | cli-product P1–P3/P5–P14/D1 | #144 follow-ups + #163/#165 |
 | OpenSpec `stop-on-failure-not-policy` | #165 → archived 2026-07-20 |
 | Nightly wall-ratio drift gate | #171 |
-| D1 VISION/costs/philosophy peer bands (debt-ledger Q2 (b)) | this PR (refresh of #172) |
+| D1 VISION/costs/philosophy peer bands (debt-ledger Q2 (b)) | **#191** |
+| D3 CHANGELOG + release checklist (Q5) | this PR (refresh of #176) |

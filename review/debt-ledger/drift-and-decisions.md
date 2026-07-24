@@ -29,13 +29,12 @@ security-positioned library launching without a disclosure path is a story
 adopters remember); OSS-Fuzz onboarding can trail the release. **PAY
 (SECURITY.md) before 0.2.0; OSS-Fuzz may follow.**
 
-## D3 — no CHANGELOG (PAY — cheap)
+## D3 — no CHANGELOG — **DONE**
 
-`pyproject.toml` is at `0.2.0.dev0`; there is no `CHANGELOG*` anywhere. The
-first public release sets the record and the precedent (the adoption capstone
-in `backlog.md` Topic 7 names "a trustworthy changelog" as a confidence
-signal). Retro-writing it later from ~170 PRs is strictly more expensive than
-starting it now. **PAY before 0.2.0.**
+Committed Keep a Changelog `CHANGELOG.md` (Unreleased / 0.2.0 scaffold) plus
+`docs/internal/release-checklist.md` (every-release loop: triage, perf vs prior
+tag, docs/security gates, three-config tests, bump/tag/publish). Linked from
+README, CONTRIBUTING, PLAN, MkDocs nav, and the cutover runbook. Pays Q5.
 
 ## D4 — `docs/internal/open-issues.md` has gone stale against its own resolutions (PAY — 15-minute sweep)
 

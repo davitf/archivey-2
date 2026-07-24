@@ -108,8 +108,9 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
    (extras→capability, PyPI metadata, drop `0.2.0.dev0`); **doc sweep + migration guide**
    (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey); **`SECURITY.md` +
    disclosure process** and an **explicit free-threading support statement** (the `3.13t`
-   job runs core-only — document the matrix rather than leaving it implicit). Tag `0.2.0`
-   after this.
+   job runs core-only — document the matrix rather than leaving it implicit). Recurring
+   cut steps (CHANGELOG, perf vs previous tag, tests, tag, publish):
+   `docs/internal/release-checklist.md`. Tag `0.2.0` after this.
 
 **Deferred to a later version (not `0.2.0`):**
 - **Salvage / best-effort read mode** — the founding use case (index truncated/corrupt

@@ -63,8 +63,11 @@ Do these in order — the `archivey` name must be free before this repo can take
 
 ## Releasing after the cutover
 
-The package version is a **static literal** (`[project].version` in `pyproject.toml`),
-not derived from the tag. To cut a release:
+For the recurring release loop (CHANGELOG, perf vs previous tag, docs, tests,
+version bump, tag, publish), use
+[`release-checklist.md`](release-checklist.md).
+
+Minimum mechanical steps once that checklist is satisfied:
 
 1. Bump `[project].version` (drop any `.devN` suffix), commit, merge to `main`.
 2. Tag `vX.Y.Z` and push the tag. `publish.yml` builds, verifies the tag matches the
