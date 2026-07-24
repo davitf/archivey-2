@@ -410,7 +410,14 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
     if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
         return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
-    if isinstance(exc, RuntimeError) and "std::exception" in text:
+    if isinstance(exc, RuntimeError) and (
+        "std::exception" in text or text == "Unknown exception"
+    ):
+        # Opaque catch-alls rapidgzip raises when a C++ fault has no typed Python
+        # mapping. On Windows a near-end truncation surfaces as a bare
+        # RuntimeError("Unknown exception") (the "Unexpected end of file …" detail only
+        # reaches stderr), so the deflate-family path must translate it like its
+        # indexed_bzip2 sibling rather than leak an untranslated RuntimeError.
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
     return None
 
