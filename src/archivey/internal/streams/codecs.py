@@ -421,18 +421,21 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
 
 
 class _GzipTruncationCheckStream(DelegatingStream):
-    """Backstop truncation detection for the rapidgzip accelerator.
+    """Backstop truncation detection for the rapidgzip accelerator (path sources).
 
-    rapidgzip surfaces some truncations as exceptions but silently returns short/zero
-    output for others (notably a cut that leaves no fully-decodable block — its
-    ``EndOfFileReached`` does not always reach Python). On a full sequential read to EOF,
-    this compares the total decompressed length (mod 2**32) against the gzip ISIZE trailer;
-    a mismatch means truncation — unless the file is multi-member (the trailer is only the
-    *last* member's size), which is disambiguated by scanning for a further gzip header.
+    Upstream rapidgzip treats many incomplete streams as soft EOF (by design): ``read()``
+    may return empty or a short/full prefix with no exception. This wrapper:
 
-    Only used for a seekable **path** source, where the trailer and the scan are cheaply
-    available via an independent handle; a caller ``seek`` disables the check (the
-    sequential byte total is then meaningless, and partial reads are never verified).
+    1. On EOF with **zero** bytes delivered — fully switch ``_inner`` to the stdlib
+       gzip-window :func:`GzipDecompressorStream` *before* returning empty success, so
+       truncation is loud and any recoverable prefix is streamed (valid empty gzip still
+       succeeds with zero bytes). Switching the inner keeps ``tell``/``seek``/`seekable`
+       honest (ADR 0014: content faults raise from reads, never ``close()``).
+    2. On EOF after **non-empty** delivery — compare decompressed length (mod 2**32) to
+       the gzip ISIZE trailer (single-member). Multi-member files keep the conservative
+       “further ``1f 8b 08`` ⇒ do not raise” rule (per-member ISIZE sum is deferred).
+
+    A caller ``seek`` off the sequential frontier disarms both checks.
     """
 
     def __init__(self, inner: BinaryIO, source_path: str) -> None:
@@ -450,8 +453,11 @@ class _GzipTruncationCheckStream(DelegatingStream):
         data = self._inner.read(size)
         if data:
             self._total += len(data)
-        elif self._verify and not self._checked:
+            return data
+        if self._verify and not self._checked:
             self._checked = True
+            if self._total == 0:
+                return self._begin_stdlib_fallback(size)
             self._verify_not_truncated()
         return data
 
@@ -464,24 +470,48 @@ class _GzipTruncationCheckStream(DelegatingStream):
             self._verify = False
         return result
 
+    def _begin_stdlib_fallback(self, size: int) -> bytes:
+        """Replace rapidgzip with the stdlib gzip engine after a silent empty EOF.
+
+        Retargets the same :class:`GzipDecompressorStream` used when rapidgzip is OFF
+        (#183), so large bounded ``read(n)`` recovers a prefix without a byte-at-a-time
+        ``GzipFile`` workaround. ``read()`` / ``readall`` still raise without returning
+        bytes (same contract as accelerator-off).
+        """
+        old = self._inner
+        self._inner = GzipDecompressorStream(self._source_path)
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 - best-effort; ownership moved to stdlib handle
+            pass
+        data = self._inner.read(size)
+        if data:
+            self._total += len(data)
+        return data
+
     def _verify_not_truncated(self) -> None:
         try:
             with open(self._source_path, "rb") as f:
                 size = f.seek(0, io.SEEK_END)
-                if (
-                    size < 18
-                ):  # header(10) + min deflate + trailer(8): too small to trust
-                    return
+                if size < 18:
+                    # Incomplete member (header-only / truncated before a full trailer).
+                    # Empty delivery is handled by the stdlib fallback; non-empty soft EOF
+                    # with a file this short is still truncation.
+                    raise TruncatedError(
+                        "gzip stream is truncated: compressed size is too small for a "
+                        "complete gzip member (the rapidgzip accelerator did not raise)"
+                    )
                 f.seek(-4, io.SEEK_END)
                 isize = int.from_bytes(f.read(4), "little")
+        except TruncatedError:
+            raise
         except OSError:
             return
         if self._total % (1 << 32) == isize:
             return
         # Mismatch: truncation, unless this is a concatenated multi-member gzip (then the
-        # trailer is only the last member's size). A conservative scan: any further gzip
-        # header means "treat as multi-member" and do not raise (a false match only costs a
-        # missed truncation, never a false positive on a valid file).
+        # trailer is only the last member's size). Conservative scan: any further gzip
+        # header ⇒ do not raise (false-negative only; per-member ISIZE sum is deferred).
         if self._has_additional_gzip_member():
             return
         raise TruncatedError(
@@ -728,8 +758,8 @@ class GzipCodec(StreamCodec):
             stream = _open_rapidgzip(source)
             if config.expected_decompressed_size is not None:
                 return _wrap_accelerated_length(stream, config)
-            # ISIZE backstop for path sources (handles multi-member; defeatable by a
-            # chance 1f8b08 in huge truncated payloads — container size is preferred).
+            # Path-source truncation backstop: empty→stdlib fallback + single-member ISIZE
+            # (multi-member keeps conservative further-magic bailout; sum deferred).
             if isinstance(source, (str, os.PathLike)):
                 return _GzipTruncationCheckStream(stream, os.fspath(source))
             return stream

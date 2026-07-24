@@ -13,8 +13,24 @@ across the ledger, threat model, and codecs code.
 | Measure first, then choose narrow / extend / remove | settled in proposal |
 | Backstop = narrowest check that covers silent cases; never false-positive on valid input | settled in delta spec |
 | Block-wise multi-member header scan (no full-file read) | done (#14) |
-| **Finish before 0.2.0** (debt-ledger Q4 = PAY) | decided 2026-07-20; implementation deferred |
-| Which of narrow / extend / remove | **open until measurements** |
+| **Finish before 0.2.0** (debt-ledger Q4 = PAY) | decided 2026-07-20; implementation deferred to §3 after lock-in |
+| Fix priorities: (1) no silent success, (2) recover partial data, (3) seek on good inputs | settled with maintainer |
+| DIY reverse deflate-block / trailer seek for gzip | **rejected** |
+| Soft EOF / silent empty-short is upstream **design** (not a binding bug) | settled — `UPSTREAM_TRUNCATION_REPORT.md` + `docs/internal/rapidgzip-upstream-report.md` |
+| Do not parse rapidgzip stderr; do not trust `block_offsets_complete` / `size` | settled |
+| **Composed stack:** empty→stdlib on zero-byte EOF + keep/extend single-member ISIZE (close `<18`) | **locked** 2026-07-20 |
+| Multi-member per-member ISIZE sum | **deferred** — member discovery is a forward `1f 8b 08` scan with false-header risk (same class as today’s bailout / rapidgzip speculative decode); keep “any further magic ⇒ do not raise” |
+| `tell_compressed()==0` header-only trap | **rejected** — bit offset 160 is fixture-specific, not a general empty-gzip constant |
+| File upstream issue for `is_stream_complete()` | **no** — soft EOF is by design; document in `docs/internal/rapidgzip-upstream-report.md` (pyppmd-style), do not file a “bug” |
+| `parallelization=0` (all cores) | **keep** — intentional; motivation for rapidgzip + benchmarks |
+| §2 lock vs macOS/Windows (1.3) | **lock §2 now**; confirm silent set via CI probe on macOS/Windows before 0.2.0 |
+
+## Deferred / out of scope for §3
+
+- Per-member ISIZE summing for concatenated gzip (see above).
+- Changing `parallelization` away from `0`.
+- DIY gzip seek indexes / reverse block scans.
+- Relying on upstream adding a completeness flag (document only).
 
 Rejected framing: “KEEP the open change past 0.2.0 because accelerators are
 opt-in / threat-model-scoped.” Opt-in and non-defended still ship a
@@ -82,6 +98,15 @@ From `_GzipTruncationCheckStream` / helpers (see `codecs.py`):
 | Accelerator hang sandbox / SECURITY.md wording | Threat-model residual; separate from truncation characterization. |
 | CLI misleading “install rapidgzip” when AUTO declined | cli-product polish; unrelated to ISIZE correctness. |
 
+## Upstream research (2026-07-20)
+
+See **`UPSTREAM_TRUNCATION_REPORT.md`** (companion to `FINDINGS.md`). Headline:
+rapidgzip’s parallel reader **intentionally** soft-EOFs many truncations
+(return empty/short, mark `block_offsets_complete`); stderr Unexpected-end is a
+rethrow path near the trailer, not a silent-success channel; `parallelization=0`
+means all cores. Upstream evidence supports FINDINGS’ **empty→stdlib + ISIZE**
+stack; do not remove ISIZE based on a “header-only only” hypothesis.
+
 ## Suggested measurement shape (refines tasks §1)
 
 For each fixture shape (empty payload, &lt;1 block, multi-block, multi-member,
@@ -106,10 +131,34 @@ and the suspected ~10-byte header-only case):
 - `openspec validate --strict rapidgzip-truncation-investigation` green;
   sync delta into main `seekable-decompressor-streams` when landing.
 
-## Compose with `gzip-zlib-truncation-recovery`
+## Linux measurement outcome (2026-07-20)
 
-The stdlib gzip path is now a gzip-window `DecompressorStream` that recovers a
-truncated prefix on large bounded `read(n)` (no byte-at-a-time requirement). Any
-empty→stdlib fallback designed here SHOULD retarget that engine rather than
-`gzip.GzipFile` / a `_STDLIB_READ_SIZE = 1` loop. Until that fallback lands,
-truncated gzip behavior can still differ between accelerator ON and OFF.
+Full write-up: [`FINDINGS.md`](FINDINGS.md). Raw tables:
+`results/linux-x86_64.{md,json}`. Sweep tool:
+`scripts/rapidgzip_truncation_sweep.py`.
+
+**Contradiction of the “~10-byte only” hypothesis:** on Linux x86_64 /
+rapidgzip 0.16.0, for every complete single-member fixture in the matrix,
+cuts from offset **10** through most of the body **silently return `b""`**
+while stdlib `gzip` raises `EOFError`. Near the trailer rapidgzip raises;
+the full file matches. `parallelization` 0 vs 1 did not change gzip
+outcomes. Multi-block/multi-member also show **silent_short**, and in a
+few trailer-stripped cuts rapidgzip returns the **full** payload while
+stdlib raises.
+
+**Current backstop:** catches most silent∩raise cuts when compressed size
+`≥ 18` (ISIZE mismatch). Misses the `< 18` band (including bare header-10)
+and multi-member bailouts. So the machinery is load-bearing — but incomplete.
+
+**Recommendation (locked 2026-07-20):** empty→stdlib on zero-byte EOF +
+single-member ISIZE (close `<18`); multi-member ISIZE sum deferred; keep
+`parallelization=0`; document soft EOF in `docs/internal/rapidgzip-upstream-report.md`.
+Details in `FINDINGS.md` / decisions table above.
+
+## Compose with `gzip-zlib-truncation-recovery` (#183)
+
+The empty→stdlib fallback **retargets** the gzip-window `DecompressorStream`
+(not `gzip.GzipFile` / a `_STDLIB_READ_SIZE = 1` loop): large bounded `read(n)`
+recovers a prefix; `read()` / `readall` raise without returning bytes; content
+faults raise from reads, never `close()` (ADR 0014). Switching `_inner` keeps
+`tell` / `seek` / `seekable` honest after fallback.
