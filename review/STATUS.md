@@ -65,7 +65,7 @@ OpenSpec archived: `archive/2026-07-20-stop-on-failure-not-policy/`.
 |----|-------|
 | **P8** | rapidgzip AUTO threshold may be conservative for seek. |
 | **P9** | Measurement blind spots (7z password-confirm; RAR solid rewind). |
-| Extract residual | Safety floor; realistic ~1.9× already in band. |
+| Extract residual | Safety floor; nightly realistic ZIP extract **2.38×** (slightly above ~2×). |
 | **L5** | Lazy `ArchiveMember` derivation — **deferred** → `IDEAS.md` (debt-ledger Q2 (b)). |
 | Topic 6 | Decode-engine performance — `backlog.md` (includes stream Q4). |
 
