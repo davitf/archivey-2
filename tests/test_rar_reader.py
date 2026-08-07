@@ -965,3 +965,29 @@ def test_unrar_owned_stream_success_and_warning_pass() -> None:
 def test_unrar_owned_stream_negative_rc_from_terminate_is_not_error() -> None:
     """F4: a negative return code means we terminated the process (early close)."""
     _close_unrar_owned(rc=-15, named_member=True, has_verifiable_hash=False)
+
+
+def test_open_unrar_p_missing_stdout_pipe_is_typed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An `unrar` spawn that yields no stdout pipe must not cross as a raw RuntimeError.
+
+    Defensive: `Popen` is asked for `stdout=PIPE`, so this should be unreachable. It is
+    typed anyway because every archive-read failure surfaces as an `ArchiveyError`, and
+    the raw error would otherwise escape `open_archive` untranslated (review F15).
+    """
+
+    class _NoStdout:
+        stdout = None
+        stdin = None
+
+        def kill(self) -> None:
+            self.killed = True
+
+    proc = _NoStdout()
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/bin/true")
+    monkeypatch.setattr(rar_unrar.subprocess, "Popen", lambda *a, **k: proc)
+
+    with pytest.raises(ArchiveyError):
+        rar_unrar.open_unrar_p(tmp_path / "nonexistent.rar")
+    assert proc.killed is True

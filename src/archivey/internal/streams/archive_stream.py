@@ -20,6 +20,7 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, NoReturn
 
+from archivey.config import REWIND_REDECODE_WARN_BYTES
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticSummary,
@@ -412,42 +413,88 @@ class ArchiveStream(ReadOnlyIOStream):
         self._maybe_warn_rewind(before, result)
         return result
 
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """Delegate the cost question inward; ``ArchiveStream``s nest over each other."""
+        inner = self._inner
+        if inner is None:
+            return None
+        ask = getattr(inner, "nearest_resume_offset", None)
+        if ask is None:
+            return None
+        offset = ask(target)
+        return offset if isinstance(offset, int) else None
+
     def _maybe_warn_rewind(self, before: int, after: int) -> None:
-        """Emit once when a backward seek will re-decompress from the start (O(n))."""
+        """Report a backward seek that discards an expensive amount of decoded progress.
+
+        The predicate is the seek's actual cost, not the codec's identity. A format that
+        *can* carry an index does not always *have* a useful one: a single-block ``.xz``
+        has one seek point (the origin) and restarts from byte zero exactly like a codec
+        with no index, and an engaged ``rapidgzip`` can hold an index sparse enough for
+        the same thing. Keying on codec identity was silent on both.
+
+        **The cost is what the rewind throws away**, not what the seek call itself
+        decodes: ``before - nearest_resume_offset(after)`` — the bytes that must be
+        decoded again to get back to where the caller was. The seek call alone is a poor
+        proxy; ``seek(10)`` after reading a gigabyte decodes ten bytes and destroys a
+        gigabyte of progress, and it is the gigabyte that makes a seek loop quadratic.
+
+        **Recorded once per stream, escalated every time.** Deduplication keeps the report
+        bounded and readable; the policy is control flow for a caller who asked to be
+        stopped, and a guard that disarms after firing once is not a guard.
+        """
         warning = self._rewind_warning
-        if warning is None or self._rewind_warned or after >= before:
+        if warning is None or after >= before:
+            return
+        # A stream that cannot answer has no seek-point table to answer *from*, which for
+        # a decompressing stream (the only kind that carries a RewindWarning at all — see
+        # StoredCodec) means the decoder restarts at the origin. Falling back to 0 keeps
+        # the index-less codecs — stdlib LZMA Alone, brotli, lz4 — reporting, which is
+        # the behaviour this change must not lose while replacing the codec-name rule.
+        resume = self.nearest_resume_offset(after) or 0
+        distance = before - resume
+        if distance < REWIND_REDECODE_WARN_BYTES:
+            return
+        context = StreamRewindContext(
+            codec=warning.codec_name,
+            from_offset=before,
+            to_offset=after,
+            accelerator=warning.accelerator,
+        )
+        message = self._rewind_message(warning, distance)
+        collector = resolve_collector(self._diagnostics_collector)
+        if self._rewind_warned:
+            collector.escalate_only(
+                code=DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+                message=message,
+                context=context,
+            )
             return
         self._rewind_warned = True
-        if warning.accelerator is not None:
-            if warning.suggest_install:
-                message = (
-                    f"Seeking backward in a {warning.codec_name} stream without a "
-                    f"random-access accelerator re-decompresses from the start "
-                    f"(O(n) per rewind). Install the 'seekable' extra "
-                    f"({warning.accelerator}) for indexed random access."
-                )
-            else:
-                message = (
-                    f"Seeking backward in a {warning.codec_name} stream without "
-                    f"indexed random access re-decompresses from the start "
-                    f"(O(n) per rewind). The '{warning.accelerator}' accelerator "
-                    f"is installed but was not engaged for this stream."
-                )
-        else:
-            message = (
-                f"Seeking backward in a {warning.codec_name} stream re-decompresses "
-                f"from the start (O(n) per rewind): this codec has no random-access index."
-            )
-        resolve_collector(self._diagnostics_collector).emit(
+        collector.emit(
             code=DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
             message=message,
-            context=StreamRewindContext(
-                codec=warning.codec_name,
-                from_offset=before,
-                to_offset=after,
-                accelerator=warning.accelerator,
-            ),
+            context=context,
             logger=logger,
+        )
+
+    @staticmethod
+    def _rewind_message(warning: RewindWarning, distance: int) -> str:
+        cost = (
+            f"Backward seek in a {warning.codec_name} stream discards {distance} "
+            f"decompressed bytes; returning to the previous position re-decompresses "
+            f"them"
+        )
+        if warning.accelerator is None:
+            return f"{cost}, because this codec has no random-access index."
+        if warning.suggest_install:
+            return (
+                f"{cost}. Install the 'seekable' extra ({warning.accelerator}) for "
+                f"indexed random access."
+            )
+        return (
+            f"{cost}. The '{warning.accelerator}' accelerator has no closer resume point "
+            f"in its index (or was not engaged for this stream)."
         )
 
     def tell(self, /) -> int:

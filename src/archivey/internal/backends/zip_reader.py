@@ -52,6 +52,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import (
     ArchiveyError,
+    ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
@@ -185,6 +186,21 @@ _BACKSLASH_SEPARATOR_SYSTEMS: frozenset[CreateSystem] = frozenset(
 _CREATE_SYSTEM_BY_VALUE: dict[int, CreateSystem] = {
     member.value: member for member in CreateSystem
 }
+
+
+# stdlib zipfile's wording when its handle is gone; archivey's own guards raise the same
+# message so the two are indistinguishable to a caller.
+_CLOSED_ARCHIVE_MESSAGE = "Attempt to use ZIP archive that was already closed"
+
+
+def _closed_archive_error() -> ArchiveyUsageError:
+    """The handle under a live reader was closed — a lifecycle fault, not damage.
+
+    Deliberately not a ``CorruptionError``: the archive bytes are fine, so reporting
+    damage sends the caller hunting a bad file. This is the underlying-handle variant of
+    using a reader after ``close()``, which already raises ``ArchiveyUsageError``.
+    """
+    return ArchiveyUsageError(_CLOSED_ARCHIVE_MESSAGE)
 
 
 # Raw exceptions a ZIP member open/read can raise that _translate_exception maps to typed
@@ -512,6 +528,9 @@ class ZipReader(BaseArchiveReader):
             # A corrupt local-header offset makes stdlib zipfile seek to a bad position
             # ("negative seek value -N") before reading the member. That is archive
             # corruption, surfaced as a typed error rather than a raw ValueError.
+            # The closed-handle ValueError is *not* corruption and is carved out ahead of
+            # this arm, in _reraise_member_error (it cannot be returned from here:
+            # ArchiveyUsageError is deliberately not an ArchiveyError).
             return CorruptionError(f"Corrupt ZIP member offset/structure: {exc!r}")
         if isinstance(exc, OSError) and str(exc) == _BZIP2_INVALID_DATA:
             # The stdlib bz2 decompressor signals a corrupt bzip2 member body as
@@ -755,7 +774,7 @@ class ZipReader(BaseArchiveReader):
         with self._zipfile_lock():
             fp = zf.fp
             if fp is None:
-                raise ValueError("Attempt to use ZIP archive that was already closed")
+                raise _closed_archive_error()
             saved = fp.tell()
             try:
                 fp.seek(info.header_offset)
@@ -776,7 +795,7 @@ class ZipReader(BaseArchiveReader):
         with self._zipfile_lock():
             fp = zf.fp
             if fp is None:
-                raise ValueError("Attempt to use ZIP archive that was already closed")
+                raise _closed_archive_error()
             saved = fp.tell()
             try:
                 fp.seek(info.header_offset)
@@ -905,7 +924,7 @@ class ZipReader(BaseArchiveReader):
         with self._zipfile_lock():
             fp = zf.fp
             if fp is None:
-                raise ValueError("Attempt to use ZIP archive that was already closed")
+                raise _closed_archive_error()
             saved = fp.tell()
             try:
                 fp.seek(info.header_offset)
@@ -958,11 +977,11 @@ class ZipReader(BaseArchiveReader):
         data_start, length = self._local_data_region(info)
         fp = self._archive.fp
         if fp is None:
-            raise ValueError("Attempt to use ZIP archive that was already closed")
+            raise _closed_archive_error()
 
         def _check_open() -> None:
             if self._archive.fp is None:
-                raise ValueError("Attempt to use ZIP archive that was already closed")
+                raise _closed_archive_error()
 
         return SlicingStream(
             cast("BinaryIO", fp),
@@ -1110,7 +1129,13 @@ class ZipReader(BaseArchiveReader):
         without member stamping (it carries its own message and must not be
         reclassified). Shared by the member-open and compressed-confirm decrypt paths
         so their translate/stamp/raise tail stays identical.
+
+        The closed-handle ``ValueError`` is intercepted here rather than in
+        ``_translate_exception``, which can only return an ``ArchiveyError``; a lifecycle
+        fault is deliberately not one.
         """
+        if isinstance(exc, ValueError) and _CLOSED_ARCHIVE_MESSAGE in str(exc):
+            raise _closed_archive_error() from exc
         self._raise_translated(exc, member_name, stamp_encryption=False)
 
     def _zip_open_raw(
@@ -1421,6 +1446,7 @@ class ZipReadBackend(ReadBackend):
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
     # so even a forward-only pass needs a seekable source.
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
+    USES_ENCODING = True  # zipfile metadata_encoding for non-UTF-8 names
 
     def open_read(
         self,

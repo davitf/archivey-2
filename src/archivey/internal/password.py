@@ -93,9 +93,12 @@ class _PasswordCandidates:
     def has_static_candidates(self) -> bool:
         """True when the caller supplied concrete password bytes (not merely a provider).
 
-        Used by ``open_archive`` to reject passwords on formats with no encryption.
         A bare :data:`~archivey.config.PasswordProvider` is not "supplying a password"
-        until a backend asks for one — formats that never ask must not fail open.
+        until a backend asks for one, which is why the 7z header-encryption path
+        distinguishes the two: it must decide *before* asking whether it has anything to
+        try. ``open_archive`` deliberately does **not** use this — a password on a format
+        with no encryption is a resource offered, not an assertion, so all three forms
+        are accepted alike (``archive-reading``).
         """
         with self._state_lock:
             return bool(self._known_good or self._candidates)

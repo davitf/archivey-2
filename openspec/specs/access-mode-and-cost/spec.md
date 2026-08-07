@@ -93,7 +93,8 @@ Guaranteed fully-resolved complete list → `members()` (RA) or `scan_members()`
 
 | Index topology | Availability |
 | --- | --- |
-| Leading (directory, ISO) | Both modes, as complete report |
+| Leading (ISO) | Both modes, as complete report |
+| Scan-based (directory) | `None` until a pass completes — a filesystem walk is not an index (its `listing_cost` is `REQUIRES_SCANNING`), so it has nothing to peek at |
 | Trailing (ZIP CD, 7z EOF header) | Both modes today, as complete report (those backends require seekable sources; `SUPPORTS_STREAMING_NON_SEEKABLE` is false). Future trailing+non-seekable → `None` on non-seekable |
 | No-index (TAR), no prior materialization/pass | `None` |
 | No-index after completed successful pass / `scan_members` / `members` | Complete report |
@@ -111,6 +112,7 @@ MUST NOT change the complete-or-raise behaviour of `members()` / `scan_members()
 | --- | --- |
 | Streaming ZIP (upfront index) | Full list; no scan/data read; forward pass still available |
 | No-index, not yet iterated | `None` |
+| Directory archive, either mode, not yet iterated | `None` — consistent with its own `listing_cost=REQUIRES_SCANNING` |
 | No-index after completed pass / `scan_members` | Complete fully-resolved report |
 | No-index after incomplete pass already ran | Incomplete report with recovered prefix and `error` |
 | ZIP symlink via `members_report_if_available` | Link fields unset; `members`/`scan_members` resolve them |
@@ -248,9 +250,31 @@ simultaneous schedule). They SHALL NOT permit or deny capabilities —
 `concurrent_members` is the only gate (`reader-concurrency`). Solid open-*order* cost
 is reported here and steered toward `stream_members()`, not gated.
 
+**An out-of-order `open()` on a solid archive SHALL emit no diagnostic and no warning,
+and this is deliberate.** Three separate reviews have now proposed adding one, so the
+reason is recorded here rather than rediscovered a fourth time:
+
+- The signal already exists, *earlier*, and is impossible to miss: `cost.access_cost`
+  is `SOLID` on the receipt every reader publishes at open, before the caller does
+  anything. Compare the rewind case (`seekable-decompressor-streams`), which has **no**
+  open-time signal at all and is the reason that one does emit — if the case with no
+  prior warning does not justify an ambient one, the case that already told you at open
+  certainly does not.
+- A `warnings.warn` here would be the library's first, against the project rule that
+  prefers structured diagnostics precisely because "a logging warning most applications
+  never see is a surprise deferred, not avoided" (`VISION.md`).
+- Emitting per `open()` on the workload that provokes it (walking every member of a
+  solid archive) would produce one occurrence per member — noise proportional to the
+  thing already reported once, accurately, as a cost.
+
+The library's answer to solid open-order cost is the receipt plus the `open()`
+docstring's pointer to `stream_members()`. A caller who wants to be *stopped* has
+`ListingLimits` and the extraction ratio guards, not an advisory.
+
 #### Scenario: cost vs capability
 
 | Case | Expected |
 | --- | --- |
 | `concurrent_members=True` on `DIRECT` and `SOLID` readers, multiple streams | Both supported and byte-correct; only reported/repeated work differs |
+| Out-of-order `open()` on a solid 7z / RAR / compressed TAR | Members read correctly; **no** diagnostic and **no** `warnings.warn`; `cost.access_cost == SOLID` was the signal, at open |
 

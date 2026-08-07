@@ -11,14 +11,16 @@ errors, rather than silently dropping a format whose dependency is absent (see
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from archivey.internal.base_reader import ReadBackend, WriteBackend
 
+from archivey.cost import StreamCapability
 from archivey.exceptions import (
     UnsupportedFormatError,
     UnsupportedOperationError,
@@ -70,6 +72,18 @@ class FormatAvailability:
     format: ArchiveFormat
     support: FormatSupport
     missing: tuple[MissingComponent, ...] = ()  # empty when FULL
+    required_source: StreamCapability = StreamCapability.SEEKABLE
+    """The weakest source shape this format can be read from.
+
+    ``StreamCapability`` is ordered, so this is a *minimum*: a source is strong enough
+    when ``availability.required_source <= reader.cost.stream_capability``. It exists so
+    that "can I pipe this straight in, or must I buffer it to disk first?" is a query
+    rather than a `StreamNotSeekableError` to catch.
+
+    Independent of ``support`` — a format whose optional dependency is missing still
+    answers the question. The ``SEEKABLE`` default is the conservative answer, and is
+    what a format with no registered backend at all reports.
+    """
 
 
 # Optional member-codecs each container can use, beyond the always-present stdlib codecs.
@@ -180,7 +194,19 @@ class BackendRegistry:
         """Compute the tri-state support of ``fmt`` compositionally (see ``backend-registry``)."""
         backend_cls = self._readers.get(fmt)
         if backend_cls is None:
+            # No backend, so no source shape to report: the SEEKABLE default stands as
+            # the conservative answer.
             return FormatAvailability(fmt, FormatSupport.NONE, ())
+
+        # Derived from the flag open_archive() itself enforces, so the queryable answer
+        # cannot drift from the enforced one. Reported on every path below, including the
+        # unavailable ones — whether a format needs to seek does not depend on whether
+        # its dependency happens to be installed.
+        required_source = (
+            StreamCapability.FORWARD_ONLY
+            if backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE
+            else StreamCapability.SEEKABLE
+        )
 
         if not self._backend_available(backend_cls):
             dep = backend_cls.OPTIONAL_DEPENDENCY
@@ -192,6 +218,7 @@ class BackendRegistry:
                 fmt,
                 FormatSupport.NONE,
                 (MissingComponent(dep, hint),),
+                required_source,
             )
 
         # The format's own stream codec — a bare single-file compressor's sole codec, or
@@ -203,7 +230,9 @@ class BackendRegistry:
             if not is_codec_available(stream_codec):
                 requirement = codec_requirement(stream_codec)
                 assert requirement is not None  # an optional codec always declares one
-                return FormatAvailability(fmt, FormatSupport.NONE, (requirement,))
+                return FormatAvailability(
+                    fmt, FormatSupport.NONE, (requirement,), required_source
+                )
 
         # Backend + stream codec usable; fold in the optional *member* codecs the
         # container can use. A multi-codec container missing some still opens -> PARTIAL.
@@ -215,8 +244,10 @@ class BackendRegistry:
                 missing.append(requirement)
 
         if not missing:
-            return FormatAvailability(fmt, FormatSupport.FULL, ())
-        return FormatAvailability(fmt, FormatSupport.PARTIAL, tuple(missing))
+            return FormatAvailability(fmt, FormatSupport.FULL, (), required_source)
+        return FormatAvailability(
+            fmt, FormatSupport.PARTIAL, tuple(missing), required_source
+        )
 
     # --- selection -----------------------------------------------------------------------
 

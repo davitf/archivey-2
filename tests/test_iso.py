@@ -215,9 +215,11 @@ def test_file_member_storage_attributes(rock_ridge_iso: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_password_rejected(rock_ridge_iso: Path) -> None:
-    with pytest.raises(UnsupportedOperationError):
-        open_archive(rock_ridge_iso, password=b"secret")
+def test_password_is_accepted_and_recorded(rock_ridge_iso: Path) -> None:
+    from archivey.diagnostics import DiagnosticCode
+
+    with open_archive(rock_ridge_iso, password=b"secret") as reader:
+        assert reader.diagnostics.counts[DiagnosticCode.PASSWORD_ARGUMENT_UNUSED] == 1
 
 
 def test_write_rejected() -> None:

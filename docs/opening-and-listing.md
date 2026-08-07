@@ -67,6 +67,23 @@ compressors. ZIP, 7z, RAR and ISO keep their index at the end of the archive or
 address it by offset, so they have to seek: opening one from a pipe raises
 `StreamNotSeekableError`, and the fix is to buffer it to a file or a `BytesIO` first.
 
+**You do not have to find that out by trying.** `format_availability(fmt).required_source`
+is the weakest source shape the format can be read from, so "pipe it if you can,
+otherwise spool it to disk" is a comparison rather than a `try`/`except`:
+
+```python
+from archivey import StreamCapability, detect_format, format_availability
+
+if format_availability(detect_format(head)).required_source <= StreamCapability.FORWARD_ONLY:
+    ...  # feed the pipe straight in with streaming=True
+else:
+    ...  # spool to a file first
+```
+
+`StreamCapability` is ordered (`FORWARD_ONLY < SEEKABLE`), which is why `<=` reads as
+"this source is strong enough" — and why the same comparison works against an already
+open archive's `reader.cost.stream_capability`.
+
 ### Multi-volume archives
 
 Only 7z and RAR split across volumes. **Pass the path of any one volume and Archivey
@@ -123,10 +140,15 @@ archivey.open_archive("secret.zip", password=["likely", "fallback"])
 Put the most likely password first: every wrong candidate costs work before it is
 rejected, which can be expensive (especially on 7z).
 
-Passing a password to a format that has no encryption at all — a tar, say — raises
-`UnsupportedOperationError` rather than ignoring it, since it usually means the call
-is not doing what you think. A `PasswordProvider` callable is exempt: it is only
-called if something actually asks for a password.
+Passing a password to a format that has no encryption at all — a tar, say — is
+**accepted and never consulted**, and records a `PASSWORD_ARGUMENT_UNUSED` diagnostic
+you can query on `reader.diagnostics`. That is deliberate. `password=` is a *keyring you are offering*, not a claim that this
+archive is encrypted — "here are the twenty passwords we know, open whatever you can"
+is the point of the list form — so one plain `.tar` in a batch should not stop the run.
+All three forms behave alike here: a string, a list, and a `PasswordProvider` callable.
+
+A *wrong* password on an archive that really is encrypted still fails loudly with
+`EncryptionError`, which is the case that actually costs you something.
 
 ## Damaged archives
 

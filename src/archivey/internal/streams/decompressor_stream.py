@@ -373,6 +373,21 @@ class DecompressorStream(ReadOnlyIOStream):
         i = bisect.bisect_right(self._seek_points, SeekPoint(pos, 0)) - 1
         return self._seek_points[i]
 
+    def nearest_resume_offset(self, target: int) -> int:
+        """Decompressed offset the decoder must restart from to reach ``target``.
+
+        The origin when no seek point lies closer, which is what makes a single-block
+        ``.xz`` behave exactly like a codec with no index at all — the case
+        ``STREAM_REWIND_REDECOMPRESSES`` used to be blind to, because it keyed on the
+        codec's identity rather than on this.
+
+        Deliberately reads the table **as it stands** and never calls
+        ``_ensure_index_built()``: a diagnostic that built an index would change the cost
+        it is reporting on. An index still being filled in reports a resume point further
+        back than the finished one would, which errs toward telling the caller.
+        """
+        return self._find_best_seek_point(target).decompressed_offset
+
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
         self._inner.seek(point.compressed_offset)
         # Dispose the outgoing decoder deterministically before dropping it:

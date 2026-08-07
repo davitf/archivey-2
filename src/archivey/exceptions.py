@@ -121,6 +121,22 @@ class UnportableNameError(FilterRejectionError):
     """
 
 
+class DeceptiveNameError(FilterRejectionError):
+    """A member name is built to display as something other than what it is.
+
+    Raised for Unicode bidi **override/isolate** characters (U+202A–202E, U+2066–2069),
+    which reorder the surrounding text so that ``evil‮gnp.exe`` reads as a ``.png``
+    in every listing a person will see. Distinct from its siblings because a caller
+    triaging a batch acts differently on each: nothing here escapes the destination
+    (``PathTraversalError``) and nothing is unwritable on this platform
+    (``UnportableNameError``) — the name is simply a lie.
+
+    The three *directional marks* (U+061C, U+200E, U+200F) are **not** covered: they
+    reorder nothing and appear in legitimate Arabic and Hebrew filenames. They are
+    reported at listing time as ``MEMBER_NAME_BIDI_CONTROL`` and extract normally.
+    """
+
+
 class ResourceLimitError(ArchiveyError):
     """A configured listing or extraction resource limit was exceeded.
 

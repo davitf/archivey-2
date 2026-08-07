@@ -46,6 +46,15 @@ archivey.extract("archive.zip", "out/")
   never leaves a half-written destination file.
 - **Special files** (devices, FIFOs, sockets) are always rejected; NTFS junctions are
   detected, flagged, and never traversed.
+- **Deceptive names:** a member name (or link target) containing a Unicode bidi
+  **override or isolate** — U+202A–202E, U+2066–2069 — is rejected with
+  `DeceptiveNameError`. Those characters reorder the surrounding text, which is how
+  `evil‮gnp.exe` displays as `evil.png` in every listing a person will see. The three
+  *directional marks* (U+061C, U+200E, U+200F) are **not** rejected: they reorder
+  nothing and occur in legitimate Arabic and Hebrew filenames. Right-to-left script
+  itself is unaffected — `فهرس.txt` contains no control character at all. Listing and
+  reading still present either kind exactly as stored, with a
+  `MEMBER_NAME_BIDI_CONTROL` diagnostic; only writing one to disk is refused.
 - **Decompression bombs at extraction:** cumulative output cap, per-member ratio,
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.

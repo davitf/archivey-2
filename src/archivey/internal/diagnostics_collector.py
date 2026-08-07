@@ -238,6 +238,45 @@ class DiagnosticCollector:
 
         return diagnostic
 
+    def escalate_only(
+        self,
+        *,
+        code: DiagnosticCode,
+        message: str,
+        context: DiagnosticContext,
+        severity: DiagnosticSeverity = DiagnosticSeverity.WARNING,
+    ) -> None:
+        """Evaluate ``code``'s policy and raise on ``RAISE`` — recording nothing.
+
+        For a diagnostic that is *recorded* at most once per stream but whose policy must
+        be honoured on every occurrence. Deduplication keeps the report bounded and
+        readable; escalation is control flow for a caller who explicitly asked to be
+        stopped, and a guard that disarms after firing once is not a guard.
+
+        This is the rule for **every** once-per-stream code (see ``diagnostics``), not a
+        per-code exception. The dedup bookkeeping stays with the emitter, which is what
+        knows the scope; this collector only knows the policy.
+
+        Nothing is counted, retained, logged or called back, so a caller reading
+        ``reader.diagnostics`` sees exactly the one record the first occurrence left. The
+        raised error still carries a full :class:`Diagnostic` value describing *this*
+        occurrence — the caller being stopped should see the seek that stopped them, not
+        the first one.
+        """
+        validate_code_context(code, context)
+        if self._policy.resolve(code) is not DiagnosticDisposition.RAISE:
+            return
+        raise DiagnosticRaisedError(
+            message,
+            diagnostic=Diagnostic(
+                occurrence_id=uuid.uuid4().hex,
+                code=code,
+                severity=severity,
+                message=message,
+                context=context,
+            ),
+        )
+
 
 def _attach_diagnostic(member: ArchiveMember, diagnostic: Diagnostic) -> None:
     """Append a diagnostic to a member's attached tuple (library retention slot)."""

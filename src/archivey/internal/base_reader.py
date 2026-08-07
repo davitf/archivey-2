@@ -15,6 +15,7 @@ from typing import (
     Callable,
     ContextManager,
     Iterator,
+    Literal,
     Mapping,
     NoReturn,
 )
@@ -25,7 +26,14 @@ if TYPE_CHECKING:
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
-from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticSummary,
+    EmptyArchiveContext,
+    ExtractionReport,
+    MemberListReport,
+    UnconfirmedFormatContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -48,6 +56,7 @@ from archivey.internal.extraction_types import (
     OnError,
     OverwritePolicy,
 )
+from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.measurement import (
     ByteCounter,
@@ -55,7 +64,7 @@ from archivey.internal.measurement import (
     measurement_enabled,
 )
 from archivey.internal.naming import (
-    _warn_for_bidirectional_controls,
+    emit_member_name_bidi_control,
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
@@ -142,9 +151,16 @@ class ReadBackend(ABC):
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
     # Whether this backend's format has encryption a password could unlock. Checked
     # centrally by open_archive(): a password passed for a format that cannot use one is
-    # API misuse and is rejected uniformly (backends never see it). ZIP sets this True;
-    # the native 7z/RAR readers will too.
+    # accepted and recorded as PASSWORD_ARGUMENT_UNUSED (a keyring offered, not an
+    # assertion about this archive). ZIP sets this True; the native 7z/RAR readers too.
     SUPPORTS_PASSWORD: bool = False
+    # Whether this backend applies a caller-supplied `encoding=` when decoding member
+    # names. False for backends that decode names some other way — 7z stores UTF-16LE,
+    # RAR decodes in its native parser, the directory and single-file names come from the
+    # filesystem — so open_archive() can record ENCODING_ARGUMENT_UNUSED instead of the
+    # backend silently `del encoding`-ing it, which is how five of them used to differ
+    # from ZIP and TAR with no signal at all.
+    USES_ENCODING: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
@@ -313,6 +329,9 @@ class BaseArchiveReader(ArchiveReader):
             SeekCounter() if self._measure else None
         )
         self._materialized: _Materialized | None = None
+        # Set by open_archive on the reader it is about to return; read only by the
+        # empty-listing check in _publish_materialized. None for a reader built directly.
+        self._format_provenance: FormatProvenance | None = None
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
         # When true, progressive registration enforces ListingLimits (scan_members).
@@ -772,6 +791,86 @@ class BaseArchiveReader(ArchiveReader):
     @abstractmethod
     def _close_archive(self) -> None: ...
 
+    def _emit_empty_listing_diagnostics(self) -> None:
+        """Report a clean, zero-member listing, and an unconfirmed format behind it.
+
+        Not an error: a legitimately empty tar is 10240 zero bytes, byte-identical to a
+        zero-filled garbage file of the same length, so no predicate over the bytes can
+        separate them and any "zero members is a problem" rule would reject a file
+        ``tar(1)`` itself produces. Saying "this archive is empty" is the true thing;
+        "this file is probably garbage" would be a guess.
+
+        The format codes narrow that: they fire only when the format was never confirmed
+        against the bytes. Both run only on an empty listing, so a normal archive pays
+        nothing.
+        """
+        format_name = self._format.display_name
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.EMPTY_ARCHIVE,
+            message=f"Archive listed no members ({format_name})",
+            context=EmptyArchiveContext(
+                archive_name=self._archive_name, format=format_name
+            ),
+        )
+
+        provenance = self._format_provenance
+        if provenance is None:
+            return
+
+        if provenance.chosen_by == "extension":
+            # Detection fell through to the filename because magic, the content probes
+            # and far magic all declined — the same answer detect_format gives when it
+            # refuses the bytes. No rescan is needed to know the format is unconfirmed.
+            self._emit_unconfirmed_format("extension", None)
+            return
+
+        if provenance.chosen_by != "argument" or not isinstance(
+            provenance.source, Path
+        ):
+            # "content"/"directory": the bytes agreed. A non-Path argument source is
+            # skipped rather than seeking a live source back to its origin.
+            return
+
+        from archivey.exceptions import ArchiveyError as _ArchiveyError
+        from archivey.internal.detection import detect_format
+
+        try:
+            detected = detect_format(provenance.source).format
+        except _ArchiveyError:
+            detected = None  # detection refuses these bytes outright
+        if detected is self._format:
+            return
+        self._emit_unconfirmed_format(
+            "argument", detected.display_name if detected is not None else None
+        )
+
+    def _emit_unconfirmed_format(
+        self,
+        chosen_by: Literal["argument", "extension"],
+        detected_format: str | None,
+    ) -> None:
+        code = (
+            DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
+            if chosen_by == "argument"
+            else DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
+        )
+        format_name = self._format.display_name
+        detected_text = detected_format or "nothing (detection refuses these bytes)"
+        self._diagnostics_collector.emit(
+            code=code,
+            message=(
+                f"Listed no members as {format_name}, which was chosen by "
+                f"{chosen_by} and not confirmed by the archive's bytes; "
+                f"content detection reports {detected_text}"
+            ),
+            context=UnconfirmedFormatContext(
+                archive_name=self._archive_name,
+                format=format_name,
+                chosen_by=chosen_by,
+                detected_format=detected_format,
+            ),
+        )
+
     def _publish_materialized(
         self,
         members: list[ArchiveMember],
@@ -781,6 +880,9 @@ class BaseArchiveReader(ArchiveReader):
     ) -> _Materialized:
         if error is not None:
             self._stamp_error_context(error)
+        elif not members:
+            # Emitted before the snapshot below so it appears on the published report.
+            self._emit_empty_listing_diagnostics()
         holder = _Materialized(
             report=MemberListReport(
                 members=tuple(members),
@@ -969,7 +1071,11 @@ class BaseArchiveReader(ArchiveReader):
             return
         member._member_id = idx
         member._archive_id = self._archive_id
-        _warn_for_bidirectional_controls(member.name)
+        emit_member_name_bidi_control(
+            self._diagnostics_collector,
+            member=member,
+            archive_name=self._archive_name,
+        )
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:

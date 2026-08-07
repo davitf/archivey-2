@@ -33,7 +33,6 @@ from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     TruncatedError,
-    UnsupportedOperationError,
 )
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
@@ -209,20 +208,21 @@ def test_xz_size_from_header(tmp_path: Path) -> None:
     path = tmp_path / "data.xz"
     with lzma.open(path, "wb") as f:
         f.write(b"x" * 1234)
-    # Cheap size from the XZ index requires declared seek demand.
+    # The XZ index is a bounded backward peek, so a seekable source answers with or
+    # without declared seek demand: seekable_members is a member-stream capability and
+    # must not change metadata.
     with open_archive(path, seekable_members=True) as ar:
         assert ar.members()[0].size == 1234
     with open_archive(path) as ar:
-        assert ar.members()[0].size is None
+        assert ar.members()[0].size == 1234
 
 
 def test_lzip_size_from_trailer(tmp_path: Path) -> None:
     path = tmp_path / "data.lz"
     path.write_bytes(make_lzip_member(b"y" * 777))
-    with open_archive(path, seekable_members=True) as ar:
-        assert ar.members()[0].size == 777
-    with open_archive(path) as ar:
-        assert ar.members()[0].size is None
+    for kwargs in ({}, {"seekable_members": True}):
+        with open_archive(path, **kwargs) as ar:  # type: ignore[arg-type]
+            assert ar.members()[0].size == 777
 
 
 @pytest.mark.parametrize(
@@ -328,11 +328,12 @@ def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
         member = ar.members()[0]
         assert member.size == len(payload)
         assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
-    # Same gate as size: without declared SEEKABLE, omit size and trailer CRC.
+    # Same gate as size — and that gate is the *source's* shape, not the caller's
+    # declaration, so a plain open gets both (the dedupe caller never asks to seek).
     with open_archive(path) as ar:
         member = ar.members()[0]
-        assert member.size is None
-        assert HashAlgorithm.CRC32 not in member.hashes
+        assert member.size == len(payload)
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
 
 
 def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
@@ -529,9 +530,11 @@ def test_unix_compress_seekable_reads(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_password_raises() -> None:
-    with pytest.raises(UnsupportedOperationError):
-        open_archive(io.BytesIO(gzip.compress(b"x")), password=b"secret")
+def test_password_is_accepted_and_recorded() -> None:
+    from archivey.diagnostics import DiagnosticCode
+
+    with open_archive(io.BytesIO(gzip.compress(b"x")), password=b"secret") as reader:
+        assert reader.diagnostics.counts[DiagnosticCode.PASSWORD_ARGUMENT_UNUSED] == 1
 
 
 # ---------------------------------------------------------------------------

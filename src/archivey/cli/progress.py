@@ -6,8 +6,8 @@ import sys
 from collections.abc import Callable
 from typing import Protocol, TextIO, cast
 
+from archivey import ExtractionProgress
 from archivey.cli.format import escape_member_name
-from archivey.internal.extraction_types import ExtractionProgress
 
 
 class _TqdmBar(Protocol):

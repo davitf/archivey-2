@@ -184,16 +184,28 @@ jobs:
 
       # RAR *data* tests (and the structural gate's rar_* cases) need RARLAB unrar.
       # Listing works without it; with CI=true the gate fail-closes if data cases omit.
-      # Install *unrar only* — the ``rar`` writer enables corpus RAR builds whose
-      # digest expectations are Linux-fixture-oriented; keep writer off the PATH here.
-      - name: Install unrar (Linux)
+      #
+      # The `rar` WRITER additionally enables the corpus's 41 declarative RAR cases,
+      # which otherwise run on no leg at all. It is installed on Linux only. The
+      # previous comment here blamed "digest expectations [that] are
+      # Linux-fixture-oriented"; measured, that was not the blocker — the corpus makes
+      # no platform-dependent assertion about a RAR member (mode/uid/mtime are asserted
+      # only for tar, digest *values* never), and the sweep was failing on two wrong
+      # assertions in the test itself. See
+      # dev-docs/investigations/rar-corpus-sweep-diagnosis.md.
+      #
+      # macOS keeps the writer off the PATH: nothing found is plausibly
+      # platform-specific, but that is an expectation, not a measurement, so the claim
+      # stays "the RAR column is exercised on Linux".
+      - name: Install unrar + rar writer (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y unrar
+        run: sudo apt-get update && sudo apt-get install -y unrar rar
       - name: Install unrar (macOS)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         run: |
           brew install --cask rar
-          # Cask ships both rar + unrar; drop the writer so corpus builders skip.
+          # Cask ships both rar + unrar; drop the writer — the corpus RAR column is
+          # claimed on Linux only (see the Linux step above).
           rm -f "$(brew --prefix)/bin/rar"
           command -v unrar
           command -v rar && exit 1 || true

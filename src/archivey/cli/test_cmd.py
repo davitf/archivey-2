@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from typing import TextIO
 
+from archivey import ExtractionProgress
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import (
@@ -19,7 +20,6 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
-from archivey.internal.extraction_types import ExtractionProgress
 
 
 def run_test(

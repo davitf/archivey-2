@@ -166,9 +166,14 @@ to the embedded archive and parse the wrong bytes.
 
 ## 13. Passwords: wrong formats, candidate order, ZipCrypto STORED trap
 
-Static passwords on formats without encryption → `UnsupportedOperationError`
-(`core.py:221–229`). A `PasswordProvider` alone is fine (unused backends never
-call it). Candidate order matters — especially 7z key derivation cost
+A password on a format without encryption is **accepted, never consulted, and
+recorded as `PASSWORD_ARGUMENT_UNUSED`** — in every form (a single value, a list, a
+`PasswordProvider`). It is a keyring offered, not an assertion about this archive
+(`archive-reading` §assertion vs resource). This changed in the simplicity &
+consistency review batch; it used to raise `UnsupportedOperationError` for a static
+value while a provider callable opened fine, which was an asymmetry reachable only by
+wrapping your list in a lambda. A *wrong* password on an *encrypted* archive still
+fails loudly. Candidate order matters — especially 7z key derivation cost
 (`core.py:148–150`). For multi-candidate ZipCrypto **STORED** members, ~1/256
 wrong passwords pass the one-byte check and confirmation may CRC-scan the full
 member (`core.py:152–160`).
@@ -332,11 +337,17 @@ members by `modified` raises or mis-orders across formats.
 
 Only 7z (concatenate) and RAR (open vol 1, unrar resolves siblings) accept
 multi-volume sequences (`core.py:202–216`). Length-1 sequences ≡ scalar
-(`core.py:144–146`). Directory path forces DIRECTORY even if `format=` says
-otherwise (`core.py:187–191`).
+(`core.py:144–146`). A directory path resolves to DIRECTORY, and a conflicting
+`format=` is **rejected for a directory path** with `ArchiveyUsageError` — it is not
+silently overruled (`#225`).
 
-**If undocumented:** `open_archive([a.tar, b.tar])` raises; `format=ZIP` on a
-directory path opens as a directory tree.
+Note the scope: "rejected" is specific to the directory case, where honouring the
+argument would hand back a reader over the wrong data. A wrong `format=` elsewhere is
+still an override that wins — that is what the argument is for, and F7's answer to it
+is a diagnostic on an empty listing, not a refusal.
+
+**If undocumented:** `open_archive([a.tar, b.tar])` raises; a caller expects
+`format=ZIP` on a directory path to be honoured or ignored, and gets neither.
 
 ---
 

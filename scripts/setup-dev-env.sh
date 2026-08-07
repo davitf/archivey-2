@@ -49,8 +49,11 @@ install_linux_packages() {
     -o Acquire::Check-Valid-Until=false \
     update || echo "! apt-get update reported errors; continuing with cached indexes" >&2
   # unrar: RAR member-data tests (multiverse component).
+  # rar: the WRITER, which the declarative corpus needs to build its 41 RAR cases.
+  #   Without it they skip quietly and the RAR column of the conformance sweep is
+  #   unexercised (F16 / O6; see dev-docs/investigations/rar-corpus-sweep-diagnosis.md).
   # p7zip-full: encrypted ZIP fixtures built by shelling out to `7z`.
-  ${SUDO} apt-get install -y unrar p7zip-full
+  ${SUDO} apt-get install -y unrar rar p7zip-full
 }
 
 install_macos_packages() {
@@ -115,7 +118,10 @@ import shutil
 
 from benchmarks.harness import missing_baseline_requirements
 
-for tool in ("unrar", "7z"):
+# `rar` is the writer: without it the corpus's 41 declarative RAR cases skip
+# quietly and the sweep's RAR column is unexercised, which is exactly the kind of
+# silent gap this block exists to make visible.
+for tool in ("unrar", "rar", "7z"):
     found = shutil.which(tool)
     print(f"{'ok  ' if found else 'MISSING'} {tool}{f': {found}' if found else ''}")
 

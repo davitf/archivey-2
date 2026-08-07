@@ -9,15 +9,19 @@ Stage 4 with the real ISO backend.
 from __future__ import annotations
 
 import importlib.util
+import io
+import operator
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import pytest
 
 from archivey import (
     ArchiveFormat,
     FormatSupport,
+    StreamCapability,
+    StreamNotSeekableError,
     format_availability,
     list_known_formats,
     list_supported_formats,
@@ -28,6 +32,12 @@ from archivey.internal.base_reader import ReadBackend
 from archivey.internal.registry import BackendRegistry
 from archivey.internal.streams import codecs as codecs_module
 from archivey.types import ContainerFormat, MagicSignature
+from tests.sample_archives import (
+    CORPUS,
+    FORMAT_KEYS,
+    corpus_archive_path,
+    skip_unless_runnable,
+)
 
 # ---------------------------------------------------------------------------
 # Synthetic backends, registered into a *fresh* registry (no global pollution)
@@ -336,3 +346,109 @@ def test_iso_reader_missing_pycdlib_hint_matches_availability(
     assert "pycdlib" in message
     assert "archivey[recommended]" in message
     assert iso_reader.IsoReadBackend.INSTALL_HINT in message
+
+
+# ---------------------------------------------------------------------------
+# required_source — the pipe/seek split, as data
+# ---------------------------------------------------------------------------
+
+
+class _NonSeekable(io.RawIOBase):
+    """Forward-only byte source — the pipe shape."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._inner.read(n)
+
+    def readinto(self, b) -> int:  # type: ignore[override]
+        return self._inner.readinto(b)
+
+    def seekable(self) -> bool:
+        return False
+
+
+# The documented table, written out rather than derived, so a backend that flips
+# SUPPORTS_STREAMING_NON_SEEKABLE has to change this list too instead of silently
+# agreeing with itself.
+_FORWARD_ONLY_CONTAINERS = {ContainerFormat.TAR, ContainerFormat.RAW_STREAM}
+
+
+@pytest.mark.parametrize("fmt", list_known_formats(), ids=lambda f: f.display_name)
+def test_required_source_is_declared_for_every_known_format(fmt: ArchiveFormat) -> None:
+    """Every known format answers "can I read this from a pipe?" without being tried."""
+    expected = (
+        StreamCapability.FORWARD_ONLY
+        if fmt.container in _FORWARD_ONLY_CONTAINERS
+        else StreamCapability.SEEKABLE
+    )
+    assert format_availability(fmt).required_source is expected
+
+
+@pytest.mark.parametrize("key", ["tar", "tar.gz", "gz", "zip", "iso", "7z"])
+def test_required_source_predicts_whether_a_pipe_works(
+    key: str, tmp_path: Path
+) -> None:
+    """The field is only worth having if it agrees with what actually happens.
+
+    Opening from a non-seekable source succeeds exactly when the format's
+    ``required_source`` is satisfied by ``FORWARD_ONLY`` — which is what makes the
+    comparison against ``reader.cost.stream_capability`` a usable substitute for
+    catching ``StreamNotSeekableError``.
+    """
+    entry = next(
+        e for e in CORPUS if e.id == ("single-file" if key == "gz" else "basic")
+    )
+    skip_unless_runnable(entry, key)
+    data = corpus_archive_path(entry, key, tmp_path).read_bytes()
+
+    required = format_availability(FORMAT_KEYS[key]).required_source
+    pipe_is_enough = required <= StreamCapability.FORWARD_ONLY
+
+    if pipe_is_enough:
+        with open_archive(_NonSeekable(data), streaming=True) as reader:
+            assert reader.cost.stream_capability is StreamCapability.FORWARD_ONLY
+    else:
+        with pytest.raises(StreamNotSeekableError):
+            open_archive(_NonSeekable(data), streaming=True)
+
+
+def test_required_source_survives_a_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whether ISO needs to seek does not depend on whether ``pycdlib`` is installed."""
+    monkeypatch.setattr(
+        "archivey.internal.registry._optional", lambda name: None, raising=True
+    )
+    availability = format_availability(ArchiveFormat.ISO)
+    assert availability.support is FormatSupport.NONE
+    assert availability.required_source is StreamCapability.SEEKABLE
+
+
+def test_unregistered_format_defaults_to_the_conservative_answer() -> None:
+    """A format nothing can read has no honest source shape; SEEKABLE sends you to buffer."""
+    availability = BackendRegistry().format_availability(ArchiveFormat.ZIP)
+    assert availability.support is FormatSupport.NONE
+    assert availability.required_source is StreamCapability.SEEKABLE
+
+
+def test_stream_capability_is_ordered_weakest_first() -> None:
+    """``required_source`` reads as a minimum only because the enum is ordered."""
+    assert StreamCapability.FORWARD_ONLY < StreamCapability.SEEKABLE
+    assert StreamCapability.SEEKABLE >= StreamCapability.FORWARD_ONLY
+    assert StreamCapability.FORWARD_ONLY <= StreamCapability.FORWARD_ONLY
+    assert not (StreamCapability.SEEKABLE < StreamCapability.FORWARD_ONLY)
+    assert sorted(StreamCapability) == [
+        StreamCapability.FORWARD_ONLY,
+        StreamCapability.SEEKABLE,
+    ]
+
+
+def test_stream_capability_does_not_compare_against_foreign_types() -> None:
+    with pytest.raises(TypeError):
+        operator.lt(StreamCapability.SEEKABLE, "seekable")

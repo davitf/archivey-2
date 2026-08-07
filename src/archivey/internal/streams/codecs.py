@@ -188,6 +188,31 @@ class _AcceleratorStream(DelegatingStream):
             self._trap.trapped = None
             raise exc
 
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """Decompressed offset the accelerator would restart from to reach ``target``.
+
+        An engaged accelerator is not automatically cheap: measured against rapidgzip
+        0.16, ``gzip.compress`` of 5 MB of random data yields three block offsets
+        (0, ~4.2 MB, 5 MB), so a backward seek into the first gap discards megabytes of
+        decoded progress. That is the same event as a single-block ``.xz`` rewind, which
+        is why the predicate is this distance rather than "an accelerator is present".
+
+        ``available_block_offsets()`` (~0.01 ms) rather than ``block_offsets()``: the
+        latter forces the *complete* index, so asking the cost would change it. A partial
+        index reports a resume point further back, which errs toward telling the caller.
+        """
+        offsets = getattr(self._inner, "available_block_offsets", None)
+        if offsets is None:
+            return None
+        try:
+            known = offsets()
+        except Exception:  # noqa: BLE001 - a diagnostic probe never breaks a read
+            return None
+        preceding = [value for value in known.values() if value <= target]
+        if not preceding:
+            return None
+        return max(preceding)
+
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
         self._reraise_trapped()
@@ -385,26 +410,23 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
 def _rapidgzip_rewind_warning(
     codec_name: str, config: StreamConfig
 ) -> RewindWarning | None:
-    """Rewind diagnostic for DEFLATE-family codecs that rapidgzip can accelerate.
+    """How to phrase a rewind report for the DEFLATE-family codecs rapidgzip accelerates.
 
-    Below the AUTO size threshold the rewind is cheap enough that warning (and
-    especially telling the user to install an already-present package) is noise —
-    stay quiet. Otherwise name the accelerator and say whether to install it or
-    that it was present but not engaged.
+    Always names the accelerator; whether to report at all is the seek's re-decode
+    distance. An *engaged* accelerator no longer suppresses it — measured, rapidgzip's
+    index over a ``gzip.compress`` output is sparse (three points across 5 MB), so a
+    backward seek into a gap re-decodes megabytes with the accelerator running.
+
+    The old "below the AUTO size threshold, stay quiet" arm is gone: the distance
+    threshold covers it, and covers it better (a small member cannot produce a large
+    re-decode distance). ``suggest_install`` stays False when the accelerator is present
+    or engaged, so a caller is never told to install what they already have.
     """
-    if _deflate_family_uses_accelerator(config):
-        return None
-    size = config.compressed_input_size
-    if (
-        config.use_rapidgzip is AcceleratorMode.AUTO
-        and size is not None
-        and size < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
-    ):
-        return None
+    engaged = _deflate_family_uses_accelerator(config)
     return RewindWarning(
         codec_name,
         accelerator="rapidgzip",
-        suggest_install=_rapidgzip is None,
+        suggest_install=not engaged and _rapidgzip is None,
     )
 
 
@@ -900,13 +922,19 @@ class StreamCodec:
         return False
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        """A :class:`RewindWarning` when a backward seek re-decompresses from the start, else None.
+        """How to phrase ``STREAM_REWIND_REDECOMPRESSES`` for this codec.
 
-        Default ``None`` (the codec has a native random-access index, or none is needed). Codecs
-        whose rewind is O(n) override this; gzip/bzip2 return ``None`` when their accelerator is
-        active. The outer ``ArchiveStream`` carries this and warns once on the first rewind.
+        It no longer decides *whether* to report: that is the seek's measured re-decode
+        distance, computed by ``ArchiveStream`` against the live seek-point table (a
+        format that can carry an index does not always have a useful one — a single-block
+        ``.xz`` re-decodes from byte zero like a codec with none). This only supplies the
+        codec name and, where one exists, the accelerator to mention.
+
+        ``None`` means "a backward seek here re-decodes nothing" — true only of
+        ``STORED``. The default names the codec and no accelerator; ``suggest_install``
+        is meaningless without one.
         """
-        return None
+        return RewindWarning(self.codec.value, suggest_install=False)
 
     # --- availability ---
 
@@ -969,6 +997,11 @@ class StoredCodec(StreamCodec):
         if isinstance(source, (str, os.PathLike)):
             return open(os.fspath(source), "rb")
         return ensure_binaryio(source)
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        # Nothing is decoded, so a backward seek re-decodes nothing. The only codec for
+        # which "never report a rewind" is the truthful answer.
+        return None
 
 
 class GzipCodec(StreamCodec):
@@ -1119,12 +1152,13 @@ class Bzip2Codec(StreamCodec):
         return self.translate
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        if _bzip2_uses_accelerator(config):
-            return None
+        # An engaged accelerator no longer suppresses the report: its index can be sparse
+        # enough that a backward seek still re-decodes megabytes. The distance decides.
         return RewindWarning(
             "bzip2",
             accelerator="rapidgzip",
-            suggest_install=_rapidgzip_bzip2 is None,
+            suggest_install=not _bzip2_uses_accelerator(config)
+            and _rapidgzip_bzip2 is None,
         )
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:

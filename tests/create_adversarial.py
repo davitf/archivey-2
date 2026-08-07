@@ -46,6 +46,11 @@ _HOSTILE: dict[str, bytes] = {
     "lone_surrogate": b"\xed\xa0\x80",  # WTF-8 encoding of U+D800 (invalid UTF-8)
     "invalid_utf8": b"\xff\xfe",
     "rtl_override": b"\xe2\x80\xae",  # U+202E RIGHT-TO-LEFT OVERRIDE (valid UTF-8)
+    # U+200F RIGHT-TO-LEFT MARK. Also a bidi control, also warned about — but a
+    # *directional mark*, which reorders nothing and occurs in legitimate Arabic and
+    # Hebrew filenames. It must extract, which is what proves the extraction rejection
+    # covers the override/isolate subset and not the whole advisory set.
+    "rtl_mark": b"\xe2\x80\x8f",
     "overlong": b"\xc0\xaf",  # overlong encoding of "/" (invalid UTF-8)
 }
 
@@ -218,6 +223,7 @@ ExtractOutcome = Literal[
     "path_traversal",
     "symlink_escape",
     "filesystem_name_refusal",
+    "deceptive_name",
     "not_reached",
 ]
 
@@ -323,6 +329,13 @@ CORPUS: tuple[Adversarial, ...] = (
         "zip-name-rtl-override",
         "rtl_override",
         utf8=True,
+        extract_outcome="deceptive_name",
+        warning_text="bidirectional control",
+    ),
+    _zip_name_case(
+        "zip-name-rtl-mark",
+        "rtl_mark",
+        utf8=True,
         warning_text="bidirectional control",
     ),
     _tar_name_case(
@@ -333,6 +346,12 @@ CORPUS: tuple[Adversarial, ...] = (
     _tar_name_case(
         "tar-name-rtl-override",
         "rtl_override",
+        extract_outcome="deceptive_name",
+        warning_text="bidirectional control",
+    ),
+    _tar_name_case(
+        "tar-name-rtl-mark",
+        "rtl_mark",
         extract_outcome="success",
         warning_text="bidirectional control",
     ),

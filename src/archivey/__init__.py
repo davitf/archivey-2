@@ -65,10 +65,12 @@ from archivey.diagnostics import (
     DiagnosticSeverity,
     DiagnosticSummary,
     DigestContext,  # noqa: F401
+    EmptyArchiveContext,  # noqa: F401
     ExtractionOutcomeContext,  # noqa: F401
     ExtractionReport,
     FormatConflictContext,  # noqa: F401
     MemberListReport,
+    MemberNameControlsContext,  # noqa: F401
     MemberTimestampContext,  # noqa: F401
     NameCollisionContext,  # noqa: F401
     NameEncodingContext,  # noqa: F401
@@ -79,12 +81,15 @@ from archivey.diagnostics import (
     SeekIndexContext,  # noqa: F401
     StreamRewindContext,  # noqa: F401
     SymlinkTargetContext,  # noqa: F401
+    UnconfirmedFormatContext,  # noqa: F401
+    UnusedArgumentContext,  # noqa: F401
 )
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     ConcurrentAccessError,
     CorruptionError,
+    DeceptiveNameError,
     DiagnosticRaisedError,
     EncryptionError,
     ExtractionError,
@@ -212,6 +217,7 @@ __all__ = [
     "SymlinkEscapeError",
     "SpecialFileError",
     "UnportableNameError",
+    "DeceptiveNameError",
     "ResourceLimitError",
     "UnsupportedFeatureError",
     "PackageNotInstalledError",

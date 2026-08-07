@@ -8,6 +8,7 @@ Access *mode* is not modelled here — it is the plain ``streaming: bool`` param
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -43,8 +44,20 @@ class AccessCost(Enum):
     """Reading member N may require decompressing earlier members in its solid block."""
 
 
+@functools.total_ordering
 class StreamCapability(Enum):
-    """A property of the underlying *source* bytes, independent of the format layout."""
+    """A property of the underlying *source* bytes, independent of the format layout.
+
+    **Ordered by strength**, weakest first: ``FORWARD_ONLY < SEEKABLE``. There is only
+    one possible direction — a seekable source can serve every read a forward-only one
+    can — so the comparison means "is at least as strong as", not a preference. That is
+    what lets a requirement stated as a capability (``FormatAvailability.required_source``)
+    be tested against a source's actual capability (``CostReceipt.stream_capability``)
+    with ``<=`` instead of a lookup table.
+
+    ``ListingCost`` and ``AccessCost`` are deliberately *not* ordered: their members name
+    kinds of work, not strengths of one resource.
+    """
 
     SEEKABLE = "seekable"
     """The source supports arbitrary ``seek()``; positions can be revisited."""
@@ -52,6 +65,21 @@ class StreamCapability(Enum):
     FORWARD_ONLY = "forward_only"
     """Non-seekable source (pipe/socket): it cannot be rewound at all. Re-reading any
     earlier position requires a brand-new stream."""
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, StreamCapability):
+            return NotImplemented
+        return _STREAM_CAPABILITY_ORDER.index(self) < _STREAM_CAPABILITY_ORDER.index(
+            other
+        )
+
+
+# Weakest first. Declared after the class because the members do not exist until it is
+# built; `total_ordering` fills in <=, > and >= from `__lt__` above.
+_STREAM_CAPABILITY_ORDER: tuple[StreamCapability, ...] = (
+    StreamCapability.FORWARD_ONLY,
+    StreamCapability.SEEKABLE,
+)
 
 
 @dataclass(frozen=True)

@@ -70,8 +70,10 @@ def test_public_symbols_are_in_all() -> None:
     demoted_but_importable = {
         "ArchiveEofContext",
         "DigestContext",
+        "EmptyArchiveContext",
         "ExtractionOutcomeContext",
         "FormatConflictContext",
+        "MemberNameControlsContext",
         "MemberTimestampContext",
         "NameCollisionContext",
         "NameEncodingContext",
@@ -82,6 +84,8 @@ def test_public_symbols_are_in_all() -> None:
         "SeekIndexContext",
         "StreamRewindContext",
         "SymlinkTargetContext",
+        "UnconfirmedFormatContext",
+        "UnusedArgumentContext",
         "WriteError",
     }
 

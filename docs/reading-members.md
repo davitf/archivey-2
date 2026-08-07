@@ -76,6 +76,13 @@ Three things about the yielded streams are worth knowing:
   therefore the password is right" does not follow: pass a selector, or read each
   stream, if you want the archive actually checked.
 
+    This applies to **data** encryption — the common case, where the member list is
+    readable and only the payloads are ciphertext. It does not apply to
+    **header**-encrypted 7z and RAR, where the listing itself is encrypted: there the
+    password is needed at `open_archive()` and opening without one raises
+    `EncryptionError` before you get a member to skip. That is format law, not a
+    laziness choice — see [Formats](formats.md).
+
 Links are the one to watch, because `reader.open()` *does* follow them. Following a
 link means reading the target's bytes, and those live somewhere else in the archive —
 in a single forward pass that position may already be behind you. Formats that could

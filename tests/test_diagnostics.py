@@ -551,3 +551,70 @@ def test_empty_summary_helper() -> None:
 def test_public_severity_and_exports() -> None:
     assert DiagnosticSeverity.WARNING.value == "warning"
     assert DiagnosticDisposition.COLLECT.value == "collect"
+
+
+# ---------------------------------------------------------------------------
+# The review batch: unused arguments, empty listings, unconfirmed formats
+# ---------------------------------------------------------------------------
+
+
+def test_empty_zip_reports_only_emptiness() -> None:
+    """A magic-confirmed empty archive is empty, and that is all there is to say."""
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        assert reader.members() == []
+        assert dict(reader.diagnostics.counts) == {DiagnosticCode.EMPTY_ARCHIVE: 1}
+
+
+def test_empty_archive_is_emitted_once_per_reader() -> None:
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        reader.members()
+        reader.members()
+        assert reader.diagnostics.counts[DiagnosticCode.EMPTY_ARCHIVE] == 1
+
+
+def test_encoding_hint_from_detection_is_not_reported_unused() -> None:
+    """Only the *caller's* explicit encoding counts.
+
+    The detector's ``encoding_hint`` reaches the same backend parameter; a hint nobody
+    asked for going unused is not news, and reporting it would fire on ordinary opens.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        reader.members()
+        assert DiagnosticCode.ENCODING_ARGUMENT_UNUSED not in reader.diagnostics.counts
+
+
+def test_unused_argument_context_carries_no_password_material() -> None:
+    """`diagnostics`: no diagnostic surface may contain passwords or candidate counts."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+    data = buf.getvalue()
+
+    import tarfile
+
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    del data
+
+    with open_archive(io.BytesIO(tar_buf.getvalue()), password="hunter2") as reader:
+        (record,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
+        ]
+        serialized = json.dumps(record.to_dict())
+        assert "hunter2" not in serialized
+        assert record.context.argument == "password"  # type: ignore[union-attr]

@@ -19,13 +19,16 @@ from archivey.config import (
     ListingLimits,
     PasswordInput,
 )
-from archivey.diagnostics import ExtractionReport
+from archivey.diagnostics import (
+    DiagnosticCode,
+    ExtractionReport,
+    UnusedArgumentContext,
+)
 from archivey.exceptions import (
     ArchiveyUsageError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
     UnsupportedFormatError,
-    UnsupportedOperationError,
 )
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
@@ -36,6 +39,7 @@ from archivey.internal.extraction_types import (
     OnError,
     OverwritePolicy,
 )
+from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.open_site import capture_open_site
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import (
@@ -82,6 +86,28 @@ __all__ = [
     "open_archive",
     "open_stream",
 ]
+
+
+def _format_provenance(
+    source: OpenSourceInput,
+    requested_format: ArchiveFormat | None,
+    detected: FormatInfo | None,
+) -> FormatProvenance:
+    """Record where the resolved format came from, for the empty-listing check.
+
+    ``detected is None`` means detection never ran: either the caller asserted a format,
+    or the source is a directory path (which resolves to ``DIRECTORY`` before detection).
+    The re-detection source is kept only for the asserted case, and only when it is a
+    ``Path`` — reopening a file cannot disturb the reader, while seeking a live stream
+    back to its origin can.
+    """
+    if detected is not None:
+        chosen_by = "extension" if detected.detected_by == "extension" else "content"
+        return FormatProvenance(chosen_by=chosen_by)
+    if requested_format is None:
+        return FormatProvenance(chosen_by="directory")
+    path = Path(source) if isinstance(source, (str, Path)) else None
+    return FormatProvenance(chosen_by="argument", source=path)
 
 
 def _raise_multi_volume_not_supported(
@@ -239,14 +265,44 @@ def open_archive(
     registry = get_registry()
     backend_cls = registry.reader_for_format(resolved_format)
 
-    # Concrete passwords for formats with no encryption are API misuse (rejected
-    # here). A PasswordProvider alone is fine — unused backends never call it.
-    if passwords.has_static_candidates() and not backend_cls.SUPPORTS_PASSWORD:
-        raise UnsupportedOperationError(
-            f"Format {resolved_format!r} does not support passwords "
-            f"(it carries no encryption).",
-            source_format=resolved_format,
-            archive_name=archive_name,
+    # `password=` and `encoding=` are *resources offered for use if needed*, not
+    # assertions about this archive, so a backend that cannot use one is a diagnostic
+    # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
+    # the assertion, and it is still refused above for a directory path.
+    if passwords.has_passwords() and not backend_cls.SUPPORTS_PASSWORD:
+        # Every form behaves alike now. A provider callable already opened fine here
+        # while a plain string raised — an asymmetry reachable only by wrapping your
+        # password list in a lambda, which nobody would guess.
+        collector.emit(
+            code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+            message=(
+                f"password= was supplied for {resolved_format.display_name}, which "
+                f"carries no encryption a password could unlock; it will not be used."
+            ),
+            context=UnusedArgumentContext(
+                archive_name=archive_name,
+                argument="password",
+                format=resolved_format.display_name,
+                reason="format carries no encryption",
+            ),
+        )
+
+    if encoding is not None and not backend_cls.USES_ENCODING:
+        # Only the *caller's* explicit encoding. The detector's encoding_hint reaches the
+        # same parameter, and a hint nobody asked for going unused is not news.
+        collector.emit(
+            code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+            message=(
+                f"encoding={encoding!r} was supplied for "
+                f"{resolved_format.display_name}, which decodes member names without "
+                f"it; the value will not be applied."
+            ),
+            context=UnusedArgumentContext(
+                archive_name=archive_name,
+                argument="encoding",
+                format=resolved_format.display_name,
+                reason="backend decodes member names without a caller-supplied encoding",
+            ),
         )
 
     # Access-mode contract: streaming=False never implicitly buffers a pipe.
@@ -282,7 +338,7 @@ def open_archive(
         effective_encoding = detected.encoding_hint
 
     backend = backend_cls()
-    return backend.open_read(
+    reader = backend.open_read(
         reader_source,
         format=resolved_format,
         streaming=streaming,
@@ -294,6 +350,11 @@ def open_archive(
         member_streams=member_streams,
         open_site=open_site,
     )
+    # An empty listing is only interesting when the bytes never confirmed the format.
+    # That is known here and the listing is not, so carry it to the reader rather than
+    # adding a parameter to every backend's open_read for a fact none of them reads.
+    reader._format_provenance = _format_provenance(source, format, detected)
+    return reader
 
 
 def open_stream(
@@ -329,6 +390,14 @@ def open_stream(
 
     if isinstance(source, (str, Path)):
         path = Path(source)
+        if path.is_dir():
+            # Split out of the is_file() check: a directory exists, so "not found" sends
+            # the caller looking for a missing file. open_archive() reads the same path
+            # happily as a directory archive, which is the likely intent.
+            raise ArchiveyUsageError(
+                f"{path} is a directory, not a compressed stream; "
+                f"use open_archive() to read a directory tree"
+            )
         if not path.is_file():
             raise FileNotFoundError(f"Compressed stream not found: {path}")
         codec_input: Path | BinaryIO = path

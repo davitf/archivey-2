@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, TypeGuard
 
-from archivey.exceptions import TruncatedError
+from archivey.exceptions import (
+    ArchiveyUsageError,
+    StreamNotSeekableError,
+    TruncatedError,
+)
 from archivey.internal.streams.streamtools import (
     ensure_full_count_reads,
     is_stream,
@@ -142,7 +146,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def __init__(self, sources: Sequence[Path | BinaryIO]) -> None:
         super().__init__()
         if not sources:
-            raise ValueError("at least one volume is required")
+            raise ArchiveyUsageError("at least one volume is required")
         self._streams: list[BinaryIO] = []
         self._owned: list[BinaryIO] = []
         # Retained so format-specific openers (RAR) can recover real volume paths —
@@ -164,7 +168,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 size = stream.seek(0, os.SEEK_END)
                 stream.seek(pos)
             except (OSError, AttributeError, io.UnsupportedOperation) as exc:
-                raise ValueError("all volume streams must be seekable") from exc
+                # Same refusal as a non-seekable *single* source, so it gets the same
+                # type: a volume set is concatenated by offset and cannot be joined
+                # from a forward-only stream.
+                raise StreamNotSeekableError(
+                    "all volume streams must be seekable"
+                ) from exc
             self._streams.append(stream)
             total += size
             offsets.append(total)
@@ -266,7 +275,7 @@ def join_volumes(paths: Sequence[Path]) -> BinaryIO:
     """Concatenate an ordered volume set into one seekable file-like object."""
 
     if not paths:
-        raise ValueError("volume path sequence must not be empty")
+        raise ArchiveyUsageError("volume path sequence must not be empty")
     _validate_7z_volume_sequence(paths)
     return ConcatenatedFile(paths)
 
@@ -311,7 +320,7 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
     if _is_source_sequence(source):
         items = [_coerce_path_or_stream(item) for item in source]
         if not items:
-            raise ValueError("source sequence must not be empty")
+            raise ArchiveyUsageError("source sequence must not be empty")
         if len(items) == 1:
             return _resolve_single(items[0])
         first = items[0]

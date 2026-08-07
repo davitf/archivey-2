@@ -21,12 +21,14 @@ from pathlib import Path
 from typing import Callable
 
 from archivey.exceptions import (
+    DeceptiveNameError,
     PathTraversalError,
     SpecialFileError,
     SymlinkEscapeError,
     UnportableNameError,
 )
 from archivey.internal.extraction_types import ExtractionPolicy
+from archivey.internal.naming import BIDI_REORDERING_CONTROLS
 from archivey.types import ArchiveMember, MemberType
 
 # Split a member name into path components on either separator; a ".." component after
@@ -46,13 +48,40 @@ def _within(path: Path, root: Path) -> bool:
     return path == root or path.is_relative_to(root)
 
 
+def _reject_bidi_override(value: str, *, member_name: str, what: str) -> None:
+    """Refuse a bidi override/isolate in a string that is about to become a path.
+
+    Only the *reordering* controls (U+202A–202E, U+2066–2069): they open a span and
+    reorder the surrounding text, which is what makes ``evil<RLO>gnp.exe`` display as a
+    ``.png``. The three directional marks are deliberately absent from
+    ``BIDI_REORDERING_CONTROLS`` — they reorder nothing and occur in legitimate Arabic
+    and Hebrew filenames. Listing still presents either kind as stored, with
+    ``MEMBER_NAME_BIDI_CONTROL``; this is only about writing one to a filesystem a
+    person will read back.
+
+    ASCII cannot contain them — skip the scan on the common path.
+    """
+    if value.isascii():
+        return
+    found = [char for char in value if char in BIDI_REORDERING_CONTROLS]
+    if not found:
+        return
+    spelled = ", ".join(f"U+{ord(char):04X}" for char in found)
+    raise DeceptiveNameError(
+        f"Bidirectional override ({spelled}) in {what}: {value!r}. It would display "
+        f"as a different name than it is; extract it under a name you choose.",
+        member_name=member_name,
+    )
+
+
 def check_universal(member: ArchiveMember, dest: Path) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
     ``dest`` is the extraction root. Raises a :class:`FilterRejectionError` subclass
-    (``PathTraversalError`` / ``SymlinkEscapeError`` / ``SpecialFileError``) on the first
-    violation; returns ``None`` when the member is safe to extract. Applied to the
-    original member, before any policy transform, regardless of the active policy.
+    (``PathTraversalError`` / ``SymlinkEscapeError`` / ``SpecialFileError`` /
+    ``DeceptiveNameError``) on the first violation; returns ``None`` when the member is
+    safe to extract. Applied to the original member, before any policy transform,
+    regardless of the active policy.
     """
     name = member.name
 
@@ -84,6 +113,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
         raise PathTraversalError(
             f"Path traversal ('..') in member name: {name!r}", member_name=name
         )
+    _reject_bidi_override(name, member_name=name, what="member name")
 
     rel = name.rstrip("/")
     if member.type != MemberType.DIRECTORY and rel in ("", "."):
@@ -135,6 +165,12 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
                     f"{name!r} -> {target!r}",
                     member_name=name,
                 ) from exc
+            # A target carrying an override is the same disguise with an extra hop: the
+            # listing shows a plausible target and the link on disk points at something
+            # that reads differently.
+            _reject_bidi_override(
+                target, member_name=name, what=f"link target of {name!r}"
+            )
         if member.type == MemberType.SYMLINK:
             link_parent = (dest_root / name).parent
             resolved_target = (link_parent / member.link_target).resolve()

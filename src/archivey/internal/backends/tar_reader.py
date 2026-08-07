@@ -19,6 +19,8 @@ After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
 - A rejected (non-null) header where ``tarfile`` stopped → ``CorruptionError``.
 - A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING`` unless
   ``config.strict_archive_eof`` escalates to ``TruncatedError``.
+- Under ``config.strict_archive_eof``, a non-zero byte anywhere between a *complete*
+  trailer and EOF → ``ARCHIVE_TRAILING_DATA`` → ``CorruptionError``. Zero padding passes.
 
 Note: after ``getmembers()`` / a walk, ``tarfile`` has typically already consumed the
 *first* trailer zero-block; the EOF probe therefore inspects the *next* 512 bytes.
@@ -84,6 +86,11 @@ from archivey.types import (
     MemberType,
     StreamFormat,
 )
+
+# Read size for the strict trailing-bytes scan. The tail past the trailer is unbounded
+# (a concatenated archive, a padded record, arbitrary junk), so it is consumed in chunks
+# rather than with one read().
+_TRAILING_SCAN_CHUNK = 64 * 1024
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
 # standalone stream codec (gz/bz2/xz/zst/lz4/lzip/lzma-alone/zlib/brotli/unix-compress).
@@ -524,6 +531,7 @@ class TarReader(BaseArchiveReader):
         with self._handle_guard():
             chunk = fileobj.read(512)
         if len(chunk) == 512 and chunk == b"\x00" * 512:
+            self._verify_nothing_but_zeros_to_eof()
             return
         if len(chunk) == 512:
             # A non-null block where the second trailer block belongs: tarfile treated a
@@ -537,6 +545,67 @@ class TarReader(BaseArchiveReader):
         )
         self._emit_eof_marker(
             observed_bytes=len(chunk), observed_kind=observed_kind, corrupt=False
+        )
+
+    def _verify_nothing_but_zeros_to_eof(self) -> None:
+        """Under ``strict_archive_eof``, require every byte past the trailer to be zero.
+
+        The flag is documented as what you set for "a provably complete listing", and
+        without this it asserted only that the two trailer blocks were present — 4 KiB of
+        arbitrary appended bytes passed silently. Zeros still pass, deliberately: writers
+        pad to 10 KiB records routinely, so "nothing but zeros" is the strongest rule that
+        does not reject what ``tar(1)`` itself writes.
+
+        Concatenated archives fail here, which is the intended answer — they are two
+        archives and only the first was listed.
+
+        **This is why the flag is opt-in.** The scan is O(tail length), and on a
+        compressed tar the tail must be decompressed to be inspected, so it cannot become
+        an unconditional advisory. Read in bounded chunks: the tail may be arbitrarily
+        long and must not be materialized.
+        """
+        if not self._config.strict_archive_eof:
+            return
+        fileobj = self._tar.fileobj
+        if fileobj is None:
+            return
+        offset = 0
+        while True:
+            with self._handle_guard():
+                chunk = fileobj.read(_TRAILING_SCAN_CHUNK)
+            if not chunk:
+                return
+            stripped = chunk.lstrip(b"\x00")
+            if stripped:
+                self._emit_trailing_data(
+                    observed_bytes=offset + (len(chunk) - len(stripped))
+                )
+                return
+            offset += len(chunk)
+
+    def _emit_trailing_data(self, *, observed_bytes: int) -> None:
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            message=(
+                "TAR archive continues past its end-of-archive marker: a non-zero byte "
+                f"appears {observed_bytes} bytes after the trailer. The listing does not "
+                "account for it (this file may be two archives concatenated). Reported "
+                "because strict_archive_eof=True asked for a provably complete listing."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="tar",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=observed_bytes,
+                observed_kind="nonzero",
+            ),
+            logger=backends_logger,
+            escalate_as=CorruptionError,
+            escalate_kwargs={
+                "source_format": self._format,
+                "archive_name": self._archive_name,
+            },
         )
 
     def _emit_eof_marker(
@@ -752,6 +821,7 @@ class TarReadBackend(ReadBackend):
     # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True
+    USES_ENCODING = True  # passed to tarfile.open(encoding=...) for name decoding
 
     def open_read(
         self,

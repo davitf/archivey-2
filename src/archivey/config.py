@@ -76,6 +76,23 @@ class AcceleratorMode(Enum):
 RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 1 * 1024 * 1024
 
 
+# How many decompressed bytes a backward seek must re-decode before
+# STREAM_REWIND_REDECOMPRESSES reports it: target offset minus the nearest preceding
+# seek point, measured at seek time.
+#
+# ABSOLUTE, NOT RELATIVE, and the counterexample is why. A relative rule ("you re-decoded
+# more than the distance you jumped") sounds like it captures disproportionate work, but
+# on a 1 GB single-block .xz, seeking from the end back to 900 MB re-decodes 900 MB while
+# jumping only ~100 MB — a 0.11x ratio, under any sane relative threshold. Relative goes
+# quietest exactly where the absolute cost is highest. The caller cares about wall time,
+# which tracks bytes re-decoded.
+#
+# Same number as RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE above. They measure different
+# quantities (compressed input size vs decompressed re-decode distance) but encode the
+# same judgement: below about a megabyte the work is not worth a caller's attention.
+REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for :func:`archivey.extract` / :meth:`extract_all`.
@@ -134,7 +151,14 @@ class ArchiveyConfig:
     # Tri-state for rapidgzip's bundled bzip2 random-access backend.
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     # When True, a missing TAR (etc.) end-of-archive marker becomes TruncatedError
-    # instead of ARCHIVE_EOF_MARKER_MISSING (see gotchas / strict_archive_eof).
+    # instead of ARCHIVE_EOF_MARKER_MISSING, AND every byte from the trailer to EOF must
+    # be zero — a non-zero byte raises CorruptionError (trailing junk, or a second
+    # archive concatenated on). Zero padding still passes; `tar` writes 10 KiB records.
+    #
+    # COST: that second check reads to EOF, so this flag is O(tail length), not O(512
+    # bytes). On a non-seekable source it is a real scan, and on a compressed tar the
+    # tail is decompressed to inspect it. That cost is why the check is gated on the
+    # flag rather than emitted as an unconditional advisory.
     strict_archive_eof: bool = False
     # Legacy encoding for a ZIP member name stored without the UTF-8 flag whose bytes are
     # also not valid UTF-8 (the sniff prefers UTF-8 first). Default cp437 per APPNOTE; set a

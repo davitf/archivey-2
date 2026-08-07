@@ -13,7 +13,11 @@ import subprocess
 from pathlib import Path
 from typing import BinaryIO, cast
 
-from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
+from archivey.exceptions import (
+    PackageNotInstalledError,
+    ReadError,
+    UnsupportedFeatureError,
+)
 
 _cached_unrar: str | None = None
 
@@ -154,7 +158,10 @@ def open_unrar_p(
             pass
     if proc.stdout is None:
         proc.kill()
-        raise RuntimeError("unrar produced no stdout pipe")
+        # Defensive: Popen was asked for stdout=PIPE, so this should be unreachable. Typed
+        # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
+        # RuntimeError here would cross open_archive untranslated.
+        raise ReadError("unrar produced no stdout pipe")
     return proc, cast(BinaryIO, proc.stdout)
 
 

@@ -112,6 +112,22 @@ class DelegatingStream(ReadOnlyIOStream):
         self._inner = inner
         self._readinto_passthrough = readinto_passthrough
 
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """Forward the rewind-cost query inward (see ``ArchiveStream._maybe_warn_rewind``).
+
+        Decompressed streams reach the public handle through several of these wrappers
+        (truncation backstop, accelerator guard, byte counters), and only the innermost
+        one knows the seek-point table. Forwarding by default here keeps every wrapper
+        transparent to the question; a wrapper that *changes* the offset space (a slice)
+        must override or decline. ``None`` from an inner that cannot answer means "no cost
+        signal", which the caller treats as "say nothing" rather than "free".
+        """
+        ask = getattr(self._inner, "nearest_resume_offset", None)
+        if ask is None:
+            return None
+        offset = ask(target)
+        return offset if isinstance(offset, int) else None
+
     def read(self, n: int = -1, /) -> bytes:
         return self._inner.read(n)
 

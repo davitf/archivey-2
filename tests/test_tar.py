@@ -895,11 +895,24 @@ def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_password_rejected() -> None:
-    # TAR carries no encryption; a password is API misuse, rejected like the other
-    # unencrypted formats (single-file compressors, ISO, directory) rather than ignored.
-    with pytest.raises(UnsupportedOperationError):
-        open_archive(io.BytesIO(_build_tar()), format=ArchiveFormat.TAR, password="x")
+@pytest.mark.parametrize(
+    "password",
+    ["x", ["a", "b"], lambda _request: "x"],
+    ids=["str", "list", "provider"],
+)
+def test_password_is_accepted_and_recorded_in_every_form(password: object) -> None:
+    # TAR carries no encryption. All three password forms behave alike: accepted, never
+    # consulted, one diagnostic. A provider callable already opened fine here while a
+    # plain string raised -- an asymmetry reachable only by wrapping your password list
+    # in a lambda, which nobody would guess (review O5).
+    from archivey.diagnostics import DiagnosticCode
+
+    with open_archive(
+        io.BytesIO(_build_tar()),
+        format=ArchiveFormat.TAR,
+        password=password,  # type: ignore[arg-type]
+    ) as reader:
+        assert reader.diagnostics.counts[DiagnosticCode.PASSWORD_ARGUMENT_UNUSED] == 1
 
 
 def test_password_provider_ok_on_unencrypted_format() -> None:

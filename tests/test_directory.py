@@ -501,13 +501,14 @@ def test_source_name_for_path_and_stream(tmp_path: Path) -> None:
     assert source_name(io.BytesIO(b"")) is None
 
 
-def test_password_rejected(simple_dir: Path) -> None:
-    # Directories carry no encryption; a password is API misuse, rejected like the
-    # other unencrypted formats rather than silently ignored.
-    from archivey.exceptions import UnsupportedOperationError
+def test_password_is_accepted_and_recorded(simple_dir: Path) -> None:
+    # Directories carry no encryption. A password is a keyring offered, not an assertion
+    # about this archive, so it is accepted and the discard is recorded rather than
+    # raising (archive-reading: assertion vs resource).
+    from archivey.diagnostics import DiagnosticCode
 
-    with pytest.raises(UnsupportedOperationError):
-        open_archive(simple_dir, password="x")
+    with open_archive(simple_dir, password="x") as reader:
+        assert reader.diagnostics.counts[DiagnosticCode.PASSWORD_ARGUMENT_UNUSED] == 1
 
 
 # ---------------------------------------------------------------------------
